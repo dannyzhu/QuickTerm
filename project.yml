@@ -1,0 +1,51 @@
+name: QuickTerm
+options:
+  bundleIdPrefix: dev.danny
+  deploymentTarget:
+    macOS: "15.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
+targets:
+  QuickTerm:
+    type: application
+    platform: macOS
+    sources:
+      - Sources
+    dependencies:
+      - framework: vendor/ghostty/macos/GhosttyKit.xcframework
+        embed: false
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: Carbon.framework
+      - sdk: CoreText.framework
+      - sdk: UniformTypeIdentifiers.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.danny.quickterm
+        GENERATE_INFOPLIST_FILE: true
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        INFOPLIST_KEY_NSHumanReadableCopyright: "MIT"
+        ENABLE_HARDENED_RUNTIME: false
+        CODE_SIGN_IDENTITY: "-"
+    postBuildScripts:
+      - name: Bundle Ghostty Resources
+        script: |
+          RES_SRC="$SRCROOT/vendor/ghostty/zig-out/share/ghostty"
+          RES_DST="$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/ghostty"
+          rm -rf "$RES_DST"; mkdir -p "$RES_DST"
+          cp -R "$RES_SRC/" "$RES_DST/"
+          TI_SRC="$SRCROOT/vendor/ghostty/zig-out/share/terminfo"
+          TI_DST="$BUILT_PRODUCTS_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/terminfo"
+          rm -rf "$TI_DST"; mkdir -p "$TI_DST"
+          cp -R "$TI_SRC/" "$TI_DST/"
+        basedOnDependencyAnalysis: false
+  QuickTermTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests
+    dependencies:
+      - target: QuickTerm
