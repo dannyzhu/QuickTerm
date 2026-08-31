@@ -10,6 +10,8 @@ final class MainWindowController: BaseTerminalController {
     let ghostty: Ghostty.App
     let keybindings = KeybindingMap()
     private var keyMonitor: Any?
+    private var mouseMonitor: Any?
+    private var resizeTarget: Ghostty.SurfaceView?
 
     /// 悬停即焦点（spec §4.2，忠实 Hyprland focus_follows_mouse）。
     /// 嵌入层 SurfaceView.mouseMoved 会查此标志并调用 Ghostty.moveFocus。
@@ -60,6 +62,57 @@ final class MainWindowController: BaseTerminalController {
             self.perform(hit.action, precise: hit.precise)
             return nil
         }
+
+        // ⌘ 状态跟踪（拖拽源浮层）+ ⌘+右键拖拽调整 pane 大小（spec §4.2）
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.flagsChanged, .rightMouseDown, .rightMouseDragged, .rightMouseUp]
+        ) { [weak self] event in
+            guard let self else { return event }
+            if event.type == .flagsChanged {
+                ModifierState.shared.commandHeld = event.modifierFlags.contains(.command)
+                return event
+            }
+            guard event.window === self.window,
+                  event.modifierFlags.contains(.command) else { return event }
+            switch event.type {
+            case .rightMouseDown:
+                self.resizeTarget = self.paneUnderPointer(event)
+                return self.resizeTarget == nil ? event : nil
+            case .rightMouseDragged:
+                guard let pane = self.resizeTarget else { return event }
+                self.resizeByDrag(pane: pane, dx: event.deltaX, dy: event.deltaY)
+                return nil
+            case .rightMouseUp:
+                let hadTarget = self.resizeTarget != nil
+                self.resizeTarget = nil
+                return hadTarget ? nil : event
+            default:
+                return event
+            }
+        }
+    }
+
+    private func paneUnderPointer(_ event: NSEvent) -> Ghostty.SurfaceView? {
+        guard let content = window?.contentView else { return nil }
+        var v = content.hitTest(content.convert(event.locationInWindow, from: nil))
+        while let cur = v {
+            if let s = cur as? Ghostty.SurfaceView { return s }
+            v = cur.superview
+        }
+        // 命中覆盖层等兄弟视图时按几何位置回退查找
+        return paneList.first {
+            $0.window === window && $0.convert($0.bounds, to: nil).contains(event.locationInWindow)
+        }
+    }
+
+    private func resizeByDrag(pane: Ghostty.SurfaceView, dx: CGFloat, dy: CGFloat) {
+        guard let node = model.tree.root?.node(view: pane),
+              let bounds = window?.contentLayoutRect else { return }
+        let amount = UInt16(min(max(abs(dx) >= abs(dy) ? abs(dx) : abs(dy), 1), 200))
+        let direction: SplitTree<Ghostty.SurfaceView>.Spatial.Direction =
+            abs(dx) >= abs(dy) ? (dx > 0 ? .right : .left) : (dy > 0 ? .down : .up)
+        model.tree = (try? model.tree.resizing(
+            node: node, by: amount, in: direction, with: bounds)) ?? model.tree
     }
 
     @available(*, unavailable)
@@ -68,6 +121,7 @@ final class MainWindowController: BaseTerminalController {
     deinit {
         NotificationCenter.default.removeObserver(self)
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
     }
 
     // MARK: WM 动作（spec §5.1 全表）
@@ -211,11 +265,20 @@ final class MainWindowController: BaseTerminalController {
 
     private func handleDrop(_ drop: TerminalSplitOperation.Drop) {
         guard drop.payload !== drop.destination else { return }
+        // 中心 = 交换位置（spec §4.2）
+        if drop.zone == .center {
+            if let swapped = try? model.tree.swapping(drop.payload, drop.destination) {
+                model.tree = swapped
+                Ghostty.moveFocus(to: drop.payload)
+            }
+            return
+        }
         let direction: SplitTree<Ghostty.SurfaceView>.NewDirection = switch drop.zone {
         case .top: .up
         case .bottom: .down
         case .left: .left
         case .right: .right
+        case .center: .right  // 已在上方返回；穷尽 switch
         }
         guard let sourceNode = model.tree.root?.node(view: drop.payload) else { return }
         let without = model.tree.removing(sourceNode)

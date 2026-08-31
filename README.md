@@ -45,3 +45,9 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 
 QuickTerm 优先复用你已有的 `~/.config/ghostty/config`（字体、光标、滚动、终端级键位等）。
 QuickTerm 自身配置 `~/.config/quickterm/config.toml`（M4 起支持，格式见设计方案 §4.7）。
+
+## 快捷键（M1）
+
+Cmd+Return 新建 pane · Cmd+W 关闭 · Cmd+方向 焦点 · Cmd+Shift+方向 交换 ·
+Cmd+J 切分裂方向 · Cmd+F 缩放 · Cmd+Ctrl+方向 调大小（+Shift 微调）· Cmd+Ctrl+= 等分 ·
+Alt+Tab / Cmd+[ ] 循环 pane · ⌘+左键拖 移动/分裂 · ⌘+右键拖 调大小

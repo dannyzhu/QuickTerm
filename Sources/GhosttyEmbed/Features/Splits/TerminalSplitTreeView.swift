@@ -93,6 +93,10 @@ private struct TerminalSplitLeaf: View {
 
     @State private var dropState: DropState = .idle
     @State private var isSelfDragging: Bool = false
+    // QuickTerm：⌘ 按住状态（浮出拖拽源）
+    @ObservedObject private var modifierState = ModifierState.shared
+    @State private var dragSourceDragging: Bool = false
+    @State private var dragSourceHovering: Bool = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -118,6 +122,16 @@ private struct TerminalSplitLeaf: View {
                 if !isSelfDragging, case .dropping(let zone) = dropState {
                     zone.overlay(in: geometry)
                         .allowsHitTesting(false)
+                }
+            }
+            .overlay {
+                // QuickTerm（spec §4.2）：按住 ⌘ 时整个 pane 成为拖拽源——
+                // 拖到目标中心=交换、边缘=分裂插入；松开 ⌘ 即消失，不影响正常鼠标操作
+                if modifierState.commandHeld {
+                    Ghostty.SurfaceDragSource(
+                        surfaceView: surfaceView,
+                        isDragging: $dragSourceDragging,
+                        isHovering: $dragSourceHovering)
                 }
             }
             .onPreferenceChange(Ghostty.DraggingSurfaceKey.self) { value in
@@ -199,15 +213,22 @@ enum TerminalSplitDropZone: String, Equatable {
     case bottom
     case left
     case right
+    // QuickTerm 扩展（spec §4.2）：拖到目标中心 = 交换位置
+    case center
 
     /// Determines which drop zone the cursor is in based on proximity to edges.
     ///
     /// Divides the view into four triangular regions by drawing diagonals from
     /// corner to corner. The drop zone is determined by which edge the cursor
     /// is closest to, creating natural triangular hit regions for each side.
+    /// QuickTerm：中央 40%×40% 区域为 .center（交换）。
     static func calculate(at point: CGPoint, in size: CGSize) -> TerminalSplitDropZone {
         let relX = point.x / size.width
         let relY = point.y / size.height
+
+        if (0.3...0.7).contains(relX), (0.3...0.7).contains(relY) {
+            return .center
+        }
 
         let distToLeft = relX
         let distToRight = 1 - relX
@@ -255,6 +276,10 @@ enum TerminalSplitDropZone: String, Equatable {
                     .fill(overlayColor)
                     .frame(width: geometry.size.width / 2)
             }
+        case .center:
+            Rectangle()
+                .fill(overlayColor)
+                .padding(geometry.size.width * 0.15)
         }
     }
 }

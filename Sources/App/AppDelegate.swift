@@ -40,3 +40,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
+
+// 拖放按 UUID 反查 surface（SurfaceView+Transferable 的 find(uuid:) 依赖此协议）
+extension AppDelegate: Ghostty.Delegate {
+    func ghosttySurface(id: UUID) -> Ghostty.SurfaceView? {
+        controller?.paneList.first { $0.id == id }
+    }
+}
