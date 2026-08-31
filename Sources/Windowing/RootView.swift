@@ -34,15 +34,25 @@ final class WorkspaceModel: ObservableObject {
 struct RootView: View {
     @ObservedObject var model: WorkspaceModel
     let ghostty: Ghostty.App
+    let stats: SystemStatsService
     let action: (TerminalSplitOperation) -> Void
+    let onSelectWorkspace: (Int) -> Void
 
     var body: some View {
-        ZStack {
-            // M3 之前的固定底色：Tokyo Night background #1a1b26
-            Color(red: 0x1a / 255.0, green: 0x1b / 255.0, blue: 0x26 / 255.0)
-            TerminalSplitTreeView(tree: model.tree, action: action)
-                .padding(10)
+        VStack(spacing: 0) {
+            if model.barVisible {
+                StatusBarView(
+                    model: model, stats: stats,
+                    onSelectWorkspace: onSelectWorkspace,
+                    onToggleMute: { [weak stats] in stats?.toggleMute() })
+            }
+            ZStack {
+                Palette.background  // M3 换连续壁纸层
+                TerminalSplitTreeView(tree: model.tree, action: action)
+                    .padding(10)
+            }
         }
+        .background(Palette.background)
         .ignoresSafeArea(.container, edges: .top)
         .environmentObject(ghostty)
     }

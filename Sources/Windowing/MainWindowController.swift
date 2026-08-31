@@ -9,8 +9,10 @@ final class MainWindowController: BaseTerminalController {
     let model = WorkspaceModel()
     let ghostty: Ghostty.App
     let keybindings = KeybindingMap()
+    let stats = SystemStatsService()
     private var keyMonitor: Any?
     private var mouseMonitor: Any?
+    private var scrollMonitor: Any?
     private var resizeTarget: Ghostty.SurfaceView?
 
     /// 悬停即焦点（spec §4.2，忠实 Hyprland focus_follows_mouse）。
@@ -40,8 +42,9 @@ final class MainWindowController: BaseTerminalController {
         window.windowController = self
 
         window.contentView = NSHostingView(rootView: RootView(
-            model: model, ghostty: ghostty,
-            action: { [weak self] op in self?.handleSplitOperation(op) }))
+            model: model, ghostty: ghostty, stats: stats,
+            action: { [weak self] op in self?.handleSplitOperation(op) },
+            onSelectWorkspace: { [weak self] i in self?.switchWorkspace(i) }))
 
         // 首个 pane
         let first = newSurface(inheritingFrom: nil)
@@ -90,6 +93,21 @@ final class MainWindowController: BaseTerminalController {
                 return event
             }
         }
+
+        // 顶栏区域滚轮 → 循环工作区（spec §4.4）
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, let window = self.window, event.window === window,
+                  self.model.barVisible, let content = window.contentView else { return event }
+            // 顶栏占内容区最顶部 26pt（fullSizeContentView：内容区 = 整个窗口）
+            let y = content.convert(event.locationInWindow, from: nil).y
+            guard y > content.bounds.maxY - 26 else { return event }
+            let delta = event.scrollingDeltaY + event.scrollingDeltaX
+            guard abs(delta) > 0.5 else { return nil }
+            let count = WorkspaceModel.workspaceCount
+            let next = (self.model.activeIndex + (delta < 0 ? 1 : count - 1)) % count
+            self.switchWorkspace(next)
+            return nil
+        }
     }
 
     private func paneUnderPointer(_ event: NSEvent) -> Ghostty.SurfaceView? {
@@ -122,6 +140,7 @@ final class MainWindowController: BaseTerminalController {
         NotificationCenter.default.removeObserver(self)
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
+        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
     }
 
     // MARK: WM 动作（spec §5.1 全表）
