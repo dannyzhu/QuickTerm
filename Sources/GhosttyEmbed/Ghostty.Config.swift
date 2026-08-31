@@ -4,6 +4,9 @@ import GhosttyKit
 extension Ghostty {
     /// Maps to a `ghostty_config_t` and the various operations on that.
     class Config: ObservableObject {
+        /// QuickTerm 覆盖配置文件路径（配置链第 3 层）；AppDelegate 在创建 Ghostty.App 前设置。
+        static var quickTermOverlayPath: String?
+
         // The underlying C pointer to the Ghostty config structure. This
         // should never be accessed directly. Any operations on this should
         // be called from the functions on this or another class.
@@ -74,6 +77,13 @@ extension Ghostty {
             // pass some special parameters to control the debugger.
             if !isRunningInXcode() {
                 ghostty_config_load_cli_args(cfg)
+            }
+
+            // QuickTerm 配置链第 3 层（spec §4.7）：在默认文件（~/.config/ghostty/config）
+            // 与 CLI 参数之后、finalize 之前加载 QuickTerm 覆盖文件（主题/透明度等）。
+            if let overlay = Config.quickTermOverlayPath,
+               FileManager.default.fileExists(atPath: overlay) {
+                ghostty_config_load_file(cfg, overlay)
             }
 
             ghostty_config_load_recursive_files(cfg)

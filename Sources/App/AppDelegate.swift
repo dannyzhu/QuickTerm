@@ -9,8 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         category: String(describing: AppDelegate.self)
     )
 
-    private var window: HiddenTitlebarWindow!
-    private let model = WorkspaceModel()
+    private(set) var controller: MainWindowController!
 
     /// 引擎实例（GhosttyEmbed 层通过 NSApp.delegate 访问）
     var ghostty: Ghostty.App!
@@ -19,10 +18,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
 
+        // 配置链第 3 层：QuickTerm 覆盖文件（透明度等），必须先于引擎创建
+        Ghostty.Config.quickTermOverlayPath = EngineOverlay.install()
+
         // 引擎：内部完成配置加载（含 ~/.config/ghostty/config）/ app_new；
         // ghostty_init 已在 main.swift 中先于 NSApplicationMain 调用
         ghostty = Ghostty.App()
-        guard ghostty.readiness == .ready, let app = ghostty.app else {
+        guard ghostty.readiness == .ready else {
             let alert = NSAlert()
             alert.messageText = "QuickTerm 引擎初始化失败"
             alert.informativeText = "libghostty 未能启动（readiness: \(ghostty.readiness)）。请检查 GhosttyKit 构建与资源包。"
@@ -31,20 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        window = HiddenTitlebarWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1024, height: 720),
-            styleMask: [],  // HiddenTitlebarWindow 内部固定样式
-            backing: .buffered, defer: false)
-        window.title = "QuickTerm"
-
-        let surfaceView = Ghostty.SurfaceView(app, baseConfig: nil)
-        model.tree = SplitTree(view: surfaceView)
-
-        window.contentView = NSHostingView(rootView: RootView(
-            model: model, ghostty: ghostty, action: { _ in }))
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        window.makeFirstResponder(surfaceView)
+        controller = MainWindowController(ghostty: ghostty)
         NSApp.activate(ignoringOtherApps: true)
     }
 
