@@ -80,9 +80,12 @@ if ! nm "$FAT" 2>/dev/null | grep -q "T _ghostty_init"; then
   echo "repacking fat archive (libtool dropped members)..."
   TMPD="$(mktemp -d)"
   i=0
-  for a in $(find "$GHOSTTY/.zig-cache" -name "*.a" | grep -v ghostty-fat); do
+  # 缓存里可能同名多份（不同优化级别/版本）：每个档案名只取最新一份
+  for name in $(find "$GHOSTTY/.zig-cache" -name "*.a" | grep -v ghostty-fat | xargs -n1 basename | sort -u); do
+    a="$(ls -t $(find "$GHOSTTY/.zig-cache" -name "$name" | grep -v ghostty-fat) | head -1)"
     i=$((i+1)); mkdir "$TMPD/d$i"
-    (cd "$TMPD/d$i" && ar x "$a" && chmod 644 ./* && for f in *.o; do mv "$f" "../${i}_$f"; done)
+    (cd "$TMPD/d$i" && ar x "$a" && chmod 644 ./* 2>/dev/null || true
+     for f in *.o; do mv "$f" "../${i}_$f" 2>/dev/null || true; done)
   done
   (cd "$TMPD" && ar qc libghostty-fat.a ./*.o && ranlib libghostty-fat.a)
   nm "$TMPD/libghostty-fat.a" | grep -q "T _ghostty_init" || { echo "error: repack 后仍缺 _ghostty_init"; exit 1; }

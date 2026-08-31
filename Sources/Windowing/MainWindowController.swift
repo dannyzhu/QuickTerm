@@ -76,13 +76,16 @@ final class MainWindowController: BaseTerminalController {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self?.reloadConfigFile() }
         }
 
+        QTCrumb.log("controller init: config applied")
         // 状态恢复（spec §4.8）：树布局 + 各 pane cwd + 活动工作区；失败则全新开始
         if restoreState() {
+            QTCrumb.log("restored trees, panes=\(paneList.count)")
             if let focused = focusedSurface {
                 window.makeFirstResponder(focused)
             }
         } else {
             let first = newSurface(inheritingFrom: nil)
+            QTCrumb.log("fresh pane: surface=\(first.surface != nil) error=\(String(describing: first.error))")
             model.tree = SplitTree(view: first)
             window.makeFirstResponder(first)
         }

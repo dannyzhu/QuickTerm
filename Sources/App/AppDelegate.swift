@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let undoManager = UndoManager()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        QTCrumb.log("didFinishLaunching")
         NSApp.setActivationPolicy(.regular)
 
         // 配置链第 3 层：ThemeManager 在 init 中写入 overlay（主题配色 + 透明度），
@@ -26,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 引擎：内部完成配置加载（含 ~/.config/ghostty/config）/ app_new；
         // ghostty_init 已在 main.swift 中先于 NSApplicationMain 调用
         ghostty = Ghostty.App()
+        QTCrumb.log("engine readiness=\(ghostty.readiness)")
         guard ghostty.readiness == .ready else {
             let alert = NSAlert()
             alert.messageText = "QuickTerm 引擎初始化失败"
@@ -36,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         controller = MainWindowController(ghostty: ghostty, themeManager: themeManager)
+        QTCrumb.log("controller done, panes=\(controller.paneList.count)")
         MainMenu.install(delegate: self)
         NSApp.activate(ignoringOtherApps: true)
     }

@@ -16,10 +16,13 @@ enum EngineOverlay {
         let contents = """
         # 由 QuickTerm 生成，请勿手改（会被覆盖）。用户配置请写 ~/.config/ghostty/config
         # 或 ~/.config/quickterm/config.toml 的 [ghostty] 段。
-        background-opacity = 0.985
-        unfocused-split-opacity = 0.96
         window-padding-x = 2
         window-padding-y = 2
+        # macOS 26 的 CVDisplayLink（已废弃 API）存在会话级配额：大量创建 surface 后
+        # CVDisplayLinkCreateWithActiveCGDisplays 会失败（表现为 surface init OOM）。
+        # 关闭 vsync 完全绕开 DisplayLink（渲染仍由 CoreAnimation 节流）。
+        # 详见 docs/porting-notes.md「DisplayLink 会话配额」。
+        window-vsync = false
         \(extra)
         """
         do {

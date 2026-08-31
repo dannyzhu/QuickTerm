@@ -16,6 +16,8 @@ targets:
       - path: Themes
         type: folder
         buildPhase: resources
+      - path: Resources
+        buildPhase: resources
     dependencies:
       - framework: vendor/ghostty/macos/GhosttyKit.xcframework
         embed: false
@@ -31,6 +33,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.danny.quickterm
         GENERATE_INFOPLIST_FILE: true
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        INFOPLIST_KEY_CFBundleIconFile: AppIcon
         INFOPLIST_KEY_NSHumanReadableCopyright: "MIT"
         ENABLE_HARDENED_RUNTIME: false
         CODE_SIGN_IDENTITY: "-"

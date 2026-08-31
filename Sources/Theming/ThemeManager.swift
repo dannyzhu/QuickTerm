@@ -107,6 +107,7 @@ final class ThemeManager: ObservableObject {
     func overlayExtra() -> String {
         var lines: [String] = []
         if followEngineColors {
+            // theme = "ghostty"：配色与透明度完全跟随 ~/.config/ghostty/config
             var out: [String] = []
             if !opacityEnabled {
                 out.append("background-opacity = 1.0")
@@ -115,6 +116,9 @@ final class ThemeManager: ObservableObject {
             if !ghosttyPassthrough.isEmpty { out.append(ghosttyPassthrough) }
             return out.joined(separator: "\n")
         }
+        // QuickTerm 主题模式：Omarchy 透明度语义（spec §1.1）
+        lines.append(opacityEnabled ? "background-opacity = 0.985" : "background-opacity = 1.0")
+        lines.append(opacityEnabled ? "unfocused-split-opacity = 0.96" : "unfocused-split-opacity = 1.0")
         func emit(_ configKey: String, _ tomlKey: String, fallback: String? = nil) {
             if let v = current.hex(tomlKey) ?? fallback.flatMap({ current.hex($0) }) {
                 lines.append("\(configKey) = \(v)")
