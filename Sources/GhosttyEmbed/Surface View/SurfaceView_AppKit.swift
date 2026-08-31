@@ -441,6 +441,8 @@ extension Ghostty {
         func focusDidChange(_ focused: Bool) {
             guard let surface = self.surface else { return }
             guard self.focused != focused else { return }
+            // QuickTerm：`focused` 非 @Published；通知 SwiftUI 观察者（PaneChrome 边框）刷新
+            objectWillChange.send()
             self.focused = focused
 
             // If we lost our focus then remove the mouse event suppression so

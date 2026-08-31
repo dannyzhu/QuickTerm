@@ -128,6 +128,8 @@ private struct TerminalSplitLeaf: View {
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Terminal pane")
+            // QuickTerm：pane 视觉（焦点边框 / gaps_in / 弹入动画），见 PaneChrome.swift
+            .modifier(PaneChrome(surfaceView: surfaceView))
         }
     }
 
