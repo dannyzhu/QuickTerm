@@ -78,20 +78,39 @@ test -d "$OUT" || { echo "error: 未找到 $OUT"; exit 1; }
 FAT="$OUT/macos-arm64/libghostty-fat.a"
 if ! nm "$FAT" 2>/dev/null | grep -q "T _ghostty_init"; then
   echo "repacking fat archive (libtool dropped members)..."
-  TMPD="$(mktemp -d)"
-  i=0
-  # 缓存里可能同名多份（不同优化级别/版本）：每个档案名只取最新一份
-  for name in $(find "$GHOSTTY/.zig-cache" -name "*.a" | grep -v ghostty-fat | xargs -n1 basename | sort -u); do
-    a="$(ls -t $(find "$GHOSTTY/.zig-cache" -name "$name" | grep -v ghostty-fat) | head -1)"
-    i=$((i+1)); mkdir "$TMPD/d$i"
-    (cd "$TMPD/d$i" && ar x "$a" && chmod 644 ./* 2>/dev/null || true
-     for f in *.o; do mv "$f" "../${i}_$f" 2>/dev/null || true; done)
-  done
-  (cd "$TMPD" && ar qc libghostty-fat.a ./*.o && ranlib libghostty-fat.a)
-  nm "$TMPD/libghostty-fat.a" | grep -q "T _ghostty_init" || { echo "error: repack 后仍缺 _ghostty_init"; exit 1; }
-  cp "$TMPD/libghostty-fat.a" "$FAT"
-  rm -rf "$TMPD"
-  echo "repacked: $FAT"
+  python3 - "$GHOSTTY" "$FAT" <<'PYEOF'
+import os, subprocess, sys, tempfile
+ghostty, fat = sys.argv[1], sys.argv[2]
+cache = os.path.join(ghostty, ".zig-cache")
+# 每个档案名只取最新一份（缓存可能残留多优化级别副本）
+newest = {}
+for root, _, files in os.walk(cache):
+    for f in files:
+        if f.endswith(".a") and "ghostty-fat" not in f:
+            p = os.path.join(root, f)
+            if f not in newest or os.path.getmtime(p) > os.path.getmtime(newest[f]):
+                newest[f] = p
+with tempfile.TemporaryDirectory() as tmp:
+    objs = []
+    for i, (name, path) in enumerate(sorted(newest.items())):
+        d = os.path.join(tmp, f"d{i}")
+        os.makedirs(d)
+        subprocess.run(["ar", "x", path], cwd=d, check=True)
+        for member in os.listdir(d):
+            src = os.path.join(d, member)
+            os.chmod(src, 0o644)
+            if member.endswith(".o"):
+                dst = os.path.join(tmp, f"{i}_{member}")
+                os.rename(src, dst)
+                objs.append(dst)
+    out = os.path.join(tmp, "fat.a")
+    subprocess.run(["ar", "qc", out] + objs, check=True)
+    subprocess.run(["ranlib", out], check=True)
+    syms = subprocess.run(["nm", out], capture_output=True, text=True).stdout
+    assert " T _ghostty_init" in syms, "repack 后仍缺 _ghostty_init"
+    subprocess.run(["cp", out, fat], check=True)
+print("repacked:", fat)
+PYEOF
 fi
 
 echo "OK: $OUT"

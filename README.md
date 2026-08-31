@@ -51,3 +51,12 @@ QuickTerm 自身配置 `~/.config/quickterm/config.toml`（M4 起支持，格式
 Cmd+Return 新建 pane · Cmd+W 关闭 · Cmd+方向 焦点 · Cmd+Shift+方向 交换 ·
 Cmd+J 切分裂方向 · Cmd+F 缩放 · Cmd+Ctrl+方向 调大小（+Shift 微调）· Cmd+Ctrl+= 等分 ·
 Alt+Tab / Cmd+[ ] 循环 pane · ⌘+左键拖 移动/分裂 · ⌘+右键拖 调大小
+
+## 配置（M4）
+
+`~/.config/quickterm/config.toml`（主菜单 → 设置 可自动创建模板；保存即热重载）：
+`theme`（主题名或 "ghostty" 完全跟随 ghostty 配置）· `workspaces`（1–10）·
+`[keybinds]` 改键（动作清单见 Cmd+K）· `[ghostty]` 任意 ghostty 选项透传（最高优先级）。
+
+已知环境注意：macOS 26 对已废弃的 CVDisplayLink 存在会话级配额，QuickTerm 默认
+`window-vsync = false` 绕开（可在 `[ghostty]` 覆盖，配额耗尽时注销重登恢复）。

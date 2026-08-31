@@ -76,16 +76,13 @@ final class MainWindowController: BaseTerminalController {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self?.reloadConfigFile() }
         }
 
-        QTCrumb.log("controller init: config applied")
         // 状态恢复（spec §4.8）：树布局 + 各 pane cwd + 活动工作区；失败则全新开始
-        if restoreState() {
-            QTCrumb.log("restored trees, panes=\(paneList.count)")
+        if !AppDelegate.isRunningTests, restoreState() {
             if let focused = focusedSurface {
                 window.makeFirstResponder(focused)
             }
         } else {
             let first = newSurface(inheritingFrom: nil)
-            QTCrumb.log("fresh pane: surface=\(first.surface != nil) error=\(String(describing: first.error))")
             model.tree = SplitTree(view: first)
             window.makeFirstResponder(first)
         }
@@ -544,8 +541,11 @@ final class MainWindowController: BaseTerminalController {
         let wasFocused = view.focused
         model.tree = model.tree.removing(node)  // 放弃引用 → SurfaceView.deinit 释放 surface
         if model.tree.isEmpty {
-            // 仅当所有工作区皆空才关窗口；否则停留在空工作区（可 Cmd+Return 重开）
-            if model.trees.allSatisfy(\.isEmpty) { window?.close() }
+            // 仅当所有工作区皆空才关窗口；否则停留在空工作区（可 Cmd+Return 重开）。
+            // 测试宿主中不关窗（后续测试仍需窗口）。
+            if model.trees.allSatisfy(\.isEmpty), !AppDelegate.isRunningTests {
+                window?.close()
+            }
         } else if wasFocused, let next = paneList.first {
             Ghostty.moveFocus(to: next)
         }

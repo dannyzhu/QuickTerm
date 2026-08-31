@@ -8,10 +8,9 @@ final class WorkspaceTests: XCTestCase {
         get throws { try XCTUnwrap((NSApp.delegate as? AppDelegate)?.controller) }
     }
 
-    override func setUp() async throws {
-        // 每个用例从工作区 0 开始
-        try controller.model.switchTo(0)
-    }
+    // 注意：不用 `override func setUp() async`——override 会剥离 @MainActor 隔离，
+    // 在后台线程改 @Published 状态会炸掉 TEST_HOST（SwiftUI 后台发布）。
+    // 需要归位的用例在（@MainActor 的）测试体内自行 switchTo(0)。
 
     func testDefaultFiveWorkspaces() throws {
         let c = try controller
@@ -21,6 +20,7 @@ final class WorkspaceTests: XCTestCase {
 
     func testSwitchKeepsTreesIndependent() throws {
         let c = try controller
+        c.model.switchTo(0)
         let ws0Count = c.paneList.count
         c.switchWorkspace(1)
         XCTAssertEqual(c.model.activeIndex, 1)
@@ -39,6 +39,7 @@ final class WorkspaceTests: XCTestCase {
 
     func testMoveFocusedPaneToEmptyWorkspaceAndBack() throws {
         let c = try controller
+        c.model.switchTo(0)
         // 在工作区 0 加一个 pane 再移走它
         let focused = try XCTUnwrap(c.focusedSurface)
         let extra = c.newSurface(inheritingFrom: focused)
