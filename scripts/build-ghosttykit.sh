@@ -71,5 +71,25 @@ cd "$GHOSTTY"
   -Demit-xcframework=true -Demit-macos-app=false -Dxcframework-target=native
 
 test -d "$OUT" || { echo "error: 未找到 $OUT"; exit 1; }
+
+# --- 归档修复：Xcode 26.6 的 libtool 会因对齐问题丢弃 Zig 生成的归档成员
+# --- （libghostty_zcu.o 等），导致 _ghostty_init/ImGui 符号缺失。
+# --- 从全部组成档案重打完整 fat 归档，替换 xcframework 内的副本。
+FAT="$OUT/macos-arm64/libghostty-fat.a"
+if ! nm "$FAT" 2>/dev/null | grep -q "T _ghostty_init"; then
+  echo "repacking fat archive (libtool dropped members)..."
+  TMPD="$(mktemp -d)"
+  i=0
+  for a in $(find "$GHOSTTY/.zig-cache" -name "*.a" | grep -v ghostty-fat); do
+    i=$((i+1)); mkdir "$TMPD/d$i"
+    (cd "$TMPD/d$i" && ar x "$a" && chmod 644 ./* && for f in *.o; do mv "$f" "../${i}_$f"; done)
+  done
+  (cd "$TMPD" && ar qc libghostty-fat.a ./*.o && ranlib libghostty-fat.a)
+  nm "$TMPD/libghostty-fat.a" | grep -q "T _ghostty_init" || { echo "error: repack 后仍缺 _ghostty_init"; exit 1; }
+  cp "$TMPD/libghostty-fat.a" "$FAT"
+  rm -rf "$TMPD"
+  echo "repacked: $FAT"
+fi
+
 echo "OK: $OUT"
 echo "resources: $GHOSTTY/zig-out/share/ghostty （打包进 app bundle）"

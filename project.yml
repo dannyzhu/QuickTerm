@@ -24,6 +24,7 @@ targets:
       - sdk: UniformTypeIdentifiers.framework
     settings:
       base:
+        OTHER_LDFLAGS: "-lc++"
         PRODUCT_BUNDLE_IDENTIFIER: dev.danny.quickterm
         GENERATE_INFOPLIST_FILE: true
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
@@ -49,3 +50,15 @@ targets:
       - Tests
     dependencies:
       - target: QuickTerm
+      - framework: vendor/ghostty/macos/GhosttyKit.xcframework
+        embed: false
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: Carbon.framework
+      - sdk: CoreText.framework
+    settings:
+      base:
+        OTHER_LDFLAGS: "-lc++"
+        GENERATE_INFOPLIST_FILE: true
+        CODE_SIGN_IDENTITY: "-"
