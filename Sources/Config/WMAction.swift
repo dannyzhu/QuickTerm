@@ -20,11 +20,21 @@ enum WMAction: String, CaseIterable {
     case moveToWorkspace1 = "move-to-workspace-1", moveToWorkspace2 = "move-to-workspace-2"
     case moveToWorkspace3 = "move-to-workspace-3", moveToWorkspace4 = "move-to-workspace-4"
     case moveToWorkspace5 = "move-to-workspace-5"
+    case gotoWorkspace6 = "goto-workspace-6", gotoWorkspace7 = "goto-workspace-7"
+    case gotoWorkspace8 = "goto-workspace-8", gotoWorkspace9 = "goto-workspace-9"
+    case gotoWorkspace10 = "goto-workspace-10"
+    case moveToWorkspace6 = "move-to-workspace-6", moveToWorkspace7 = "move-to-workspace-7"
+    case moveToWorkspace8 = "move-to-workspace-8", moveToWorkspace9 = "move-to-workspace-9"
+    case moveToWorkspace10 = "move-to-workspace-10"
     case toggleBar = "toggle-bar"
     case themePicker = "theme-picker"
     case backgroundMenu = "next-background"
     case toggleOpacity = "toggle-opacity"
     case toggleGaps = "toggle-gaps"
+    case keybindingHelp = "keybind-help"
+    case mainMenu = "main-menu"
+    case scratchpad = "scratchpad"
+    case toggleFullscreen = "toggle-fullscreen"
 
     /// goto/move 系列的工作区序号（0-based），非工作区动作为 nil
     var workspaceIndex: Int? {
@@ -34,9 +44,17 @@ enum WMAction: String, CaseIterable {
         case .gotoWorkspace3, .moveToWorkspace3: 2
         case .gotoWorkspace4, .moveToWorkspace4: 3
         case .gotoWorkspace5, .moveToWorkspace5: 4
+        case .gotoWorkspace6, .moveToWorkspace6: 5
+        case .gotoWorkspace7, .moveToWorkspace7: 6
+        case .gotoWorkspace8, .moveToWorkspace8: 7
+        case .gotoWorkspace9, .moveToWorkspace9: 8
+        case .gotoWorkspace10, .moveToWorkspace10: 9
         default: nil
         }
     }
+
+    var isGotoWorkspace: Bool { rawValue.hasPrefix("goto-workspace-") }
+    var isMoveToWorkspace: Bool { rawValue.hasPrefix("move-to-workspace-") }
 
     /// 速查表（Cmd+K）展示用中文说明
     var help: String {
@@ -70,11 +88,25 @@ enum WMAction: String, CaseIterable {
         case .moveToWorkspace3: "移动 pane 到工作区 3"
         case .moveToWorkspace4: "移动 pane 到工作区 4"
         case .moveToWorkspace5: "移动 pane 到工作区 5"
+        case .gotoWorkspace6: "切到工作区 6"
+        case .gotoWorkspace7: "切到工作区 7"
+        case .gotoWorkspace8: "切到工作区 8"
+        case .gotoWorkspace9: "切到工作区 9"
+        case .gotoWorkspace10: "切到工作区 10"
+        case .moveToWorkspace6: "移动 pane 到工作区 6"
+        case .moveToWorkspace7: "移动 pane 到工作区 7"
+        case .moveToWorkspace8: "移动 pane 到工作区 8"
+        case .moveToWorkspace9: "移动 pane 到工作区 9"
+        case .moveToWorkspace10: "移动 pane 到工作区 10"
         case .toggleBar: "顶栏显示/隐藏"
         case .themePicker: "主题选择器"
         case .backgroundMenu: "背景选择/下一张"
         case .toggleOpacity: "透明度开关"
         case .toggleGaps: "gaps 开关"
+        case .keybindingHelp: "快捷键速查"
+        case .mainMenu: "QuickTerm 主菜单"
+        case .scratchpad: "Scratchpad 浮动终端"
+        case .toggleFullscreen: "整窗全屏（非原生）"
         }
     }
 }

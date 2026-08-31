@@ -18,8 +18,35 @@ struct KeyCombo: Hashable {
 struct KeybindingMap {
     private let map: [KeyCombo: WMAction]
 
-    init(map: [KeyCombo: WMAction] = KeybindingMap.defaults) {
+    init(map: [KeyCombo: WMAction]) {
         self.map = map
+    }
+
+    /// 从默认表 + config 覆盖构建（spec §4.7 [keybinds]）。
+    /// workspaceCount > 5 时追加 Cmd+6…9,0（及 Shift 变体）。
+    init(workspaceCount: Int = 5,
+         overrides: [WMAction: KeyCombo] = [:],
+         unbound: Set<WMAction> = []) {
+        var m = KeybindingMap.defaults
+        if workspaceCount > 5 {
+            let keys = ["6", "7", "8", "9", "0"]
+            let gotos: [WMAction] = [.gotoWorkspace6, .gotoWorkspace7, .gotoWorkspace8,
+                                     .gotoWorkspace9, .gotoWorkspace10]
+            let moves: [WMAction] = [.moveToWorkspace6, .moveToWorkspace7, .moveToWorkspace8,
+                                     .moveToWorkspace9, .moveToWorkspace10]
+            for i in 0..<min(workspaceCount - 5, 5) {
+                m[KeyCombo(key: keys[i], .command)] = gotos[i]
+                m[KeyCombo(key: keys[i], [.command, .shift])] = moves[i]
+            }
+        }
+        for (action, combo) in overrides {
+            m = m.filter { $0.value != action }  // 一个动作只保留一个组合
+            m[combo] = action
+        }
+        for action in unbound {
+            m = m.filter { $0.value != action }
+        }
+        self.map = m
     }
 
     static let defaults: [KeyCombo: WMAction] = [
@@ -59,6 +86,10 @@ struct KeybindingMap {
         KeyCombo(key: "space", [.command, .control]): .backgroundMenu,
         KeyCombo(key: "backspace", .command): .toggleOpacity,
         KeyCombo(key: "backspace", [.command, .shift]): .toggleGaps,
+        KeyCombo(key: "k", .command): .keybindingHelp,
+        KeyCombo(key: "space", [.command, .option]): .mainMenu,
+        KeyCombo(key: "s", .command): .scratchpad,
+        KeyCombo(key: "f", [.command, .control]): .toggleFullscreen,
     ]
 
     /// 事件 → 动作。resize 系列附加 Shift = 10px 微调（precise）。

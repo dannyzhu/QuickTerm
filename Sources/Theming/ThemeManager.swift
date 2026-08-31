@@ -10,6 +10,18 @@ final class ThemeManager: ObservableObject {
     @Published var opacityEnabled = true   // Cmd+Backspace
     @Published var gapsEnabled = true      // Cmd+Shift+Backspace
 
+    /// config: theme = "ghostty" → 不覆盖配色，完全跟随 ~/.config/ghostty/config
+    private(set) var followEngineColors = false
+    /// config [ghostty] 段（配置链第 4 层，追加在 overlay 最末 = 最终覆盖）
+    private(set) var ghosttyPassthrough = ""
+
+    func updateFromConfig(passthrough: String, followEngine: Bool) {
+        guard passthrough != ghosttyPassthrough || followEngine != followEngineColors else { return }
+        ghosttyPassthrough = passthrough
+        followEngineColors = followEngine
+        writeOverlay()
+    }
+
     /// 引擎重载钩子（MainWindowController 注入：app + 全部 surface reload）
     var onOverlayChanged: (() -> Void)?
 
@@ -94,6 +106,15 @@ final class ThemeManager: ObservableObject {
 
     func overlayExtra() -> String {
         var lines: [String] = []
+        if followEngineColors {
+            var out: [String] = []
+            if !opacityEnabled {
+                out.append("background-opacity = 1.0")
+                out.append("unfocused-split-opacity = 1.0")
+            }
+            if !ghosttyPassthrough.isEmpty { out.append(ghosttyPassthrough) }
+            return out.joined(separator: "\n")
+        }
         func emit(_ configKey: String, _ tomlKey: String, fallback: String? = nil) {
             if let v = current.hex(tomlKey) ?? fallback.flatMap({ current.hex($0) }) {
                 lines.append("\(configKey) = \(v)")
@@ -121,6 +142,9 @@ final class ThemeManager: ObservableObject {
             // 覆盖 EngineOverlay 基础段（同键后写者胜）
             lines.append("background-opacity = 1.0")
             lines.append("unfocused-split-opacity = 1.0")
+        }
+        if !ghosttyPassthrough.isEmpty {
+            lines.append(ghosttyPassthrough)  // 配置链第 4 层：最终覆盖
         }
         return lines.joined(separator: "\n")
     }

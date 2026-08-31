@@ -4,7 +4,42 @@ import SwiftUI
 enum OverlayPanel: Equatable {
     case themes
     case backgrounds
-    case keybindings   // M4：Cmd+K 速查
+    case keybindings   // Cmd+K 速查
+    case menu          // Cmd+Alt+Space 主菜单
+}
+
+/// 主菜单条目（spec §4.6 v1 清单）
+enum MenuEntry: Int, CaseIterable {
+    case newTerminal, themes, backgrounds, toggleBar, toggleGaps, toggleOpacity
+    case keybindings, settings, about
+
+    var title: String {
+        switch self {
+        case .newTerminal: "新建终端"
+        case .themes: "主题…"
+        case .backgrounds: "背景…"
+        case .toggleBar: "顶栏 显示/隐藏"
+        case .toggleGaps: "Gaps 开关"
+        case .toggleOpacity: "透明度开关"
+        case .keybindings: "快捷键速查"
+        case .settings: "设置（config.toml）"
+        case .about: "关于 QuickTerm"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .newTerminal: "plus.rectangle"
+        case .themes: "paintpalette"
+        case .backgrounds: "photo"
+        case .toggleBar: "menubar.rectangle"
+        case .toggleGaps: "squareshape.split.2x2"
+        case .toggleOpacity: "circle.lefthalf.filled"
+        case .keybindings: "keyboard"
+        case .settings: "gearshape"
+        case .about: "info.circle"
+        }
+    }
 }
 
 /// Walker 风格通用居中面板：Monaco 18、2px accent 边框、直角、0.95 透明背景。
@@ -20,6 +55,7 @@ struct OverlayPanelView: View {
             case .themes: themeList
             case .backgrounds: backgroundGrid
             case .keybindings: keybindingList
+            case .menu: menuList
             case nil: EmptyView()
             }
         }
@@ -100,12 +136,33 @@ struct OverlayPanelView: View {
         }
     }
 
-    // MARK: 快捷键速查（M4，数据来自映射表本身）
+    // MARK: 主菜单（Cmd+Alt+Space，spec §4.6）
+
+    private var menuList: some View {
+        VStack(spacing: 0) {
+            ForEach(MenuEntry.allCases, id: \.rawValue) { entry in
+                HStack(spacing: 12) {
+                    Image(systemName: entry.symbol).frame(width: 20)
+                    Text(entry.title)
+                    Spacer()
+                }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 16)
+                .background(model.panelSelection == entry.rawValue
+                            ? theme.foreground.opacity(0.07) : .clear)
+                .contentShape(Rectangle())
+                .onTapGesture { onChoose(entry.rawValue) }
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    // MARK: 快捷键速查（数据来自映射表本身）
 
     private var keybindingList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(KeybindingMap().displayBindings(), id: \.action) { entry in
+                ForEach(model.keybindingRows, id: \.action) { entry in
                     HStack {
                         Text(entry.combo).frame(width: 110, alignment: .leading)
                         Text(entry.action.help)

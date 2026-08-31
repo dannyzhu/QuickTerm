@@ -28,9 +28,30 @@ final class WorkspaceModel: ObservableObject {
         trees.indices.contains(index) ? trees[index].isEmpty : true
     }
 
+    /// config workspaces=N（1–10）：扩容补空树；缩容仅当被裁的树全空（否则保留至最后非空）
+    func setWorkspaceCount(_ n: Int) {
+        let target = min(max(n, 1), 10)
+        if target > trees.count {
+            trees.append(contentsOf: Array(
+                repeating: SplitTree<Ghostty.SurfaceView>(), count: target - trees.count))
+        } else if target < trees.count {
+            let lastNonEmpty = trees.lastIndex { !$0.isEmpty }.map { $0 + 1 } ?? 0
+            let safeTarget = max(target, lastNonEmpty)
+            trees.removeLast(trees.count - safeTarget)
+        }
+        activeIndex = min(activeIndex, trees.count - 1)
+    }
+
     // 浮动面板 UI 状态（键盘导航由控制器监视器驱动）
     @Published var activePanel: OverlayPanel?
     @Published var panelSelection: Int = 0
+
+    // Scratchpad（spec §4.1：跨工作区浮动终端）
+    @Published var scratchpadVisible = false
+    @Published var scratchpadSurface: Ghostty.SurfaceView?
+
+    // Cmd+K 速查数据（打开面板时由控制器按当前生效映射填充）
+    @Published var keybindingRows: [(combo: String, action: WMAction)] = []
 }
 
 /// SwiftUI 根视图：底色 + 平铺树（gaps_out = 10，spec §1.1）。
@@ -60,6 +81,17 @@ struct RootView: View {
                 }
                 TerminalSplitTreeView(tree: model.tree, action: action)
                     .padding(theme.gapsEnabled ? 10 : 0)
+
+                if model.scratchpadVisible, let scratch = model.scratchpadSurface {
+                    Color.black.opacity(0.2)
+                        .onTapGesture { model.scratchpadVisible = false }
+                    GeometryReader { geo in
+                        Ghostty.SurfaceWrapper(surfaceView: scratch)
+                            .frame(width: geo.size.width * 0.7, height: geo.size.height * 0.6)
+                            .border(theme.accent, width: 2)
+                            .position(x: geo.size.width / 2, y: geo.size.height / 2)
+                    }
+                }
 
                 if model.activePanel != nil {
                     Color.black.opacity(0.25).onTapGesture { model.activePanel = nil }

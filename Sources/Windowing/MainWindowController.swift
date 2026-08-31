@@ -8,13 +8,15 @@ import SwiftUI
 final class MainWindowController: BaseTerminalController {
     let model = WorkspaceModel()
     let ghostty: Ghostty.App
-    let keybindings = KeybindingMap()
+    private(set) var keybindings = KeybindingMap()
     let stats = SystemStatsService()
     let themeManager: ThemeManager
     private var keyMonitor: Any?
     private var mouseMonitor: Any?
     private var scrollMonitor: Any?
     private var resizeTarget: Ghostty.SurfaceView?
+    private var configWatcher: ConfigWatcher?
+    private var lastConfigContent: String?
 
     /// 悬停即焦点（spec §4.2，忠实 Hyprland focus_follows_mouse）。
     /// 嵌入层 SurfaceView.mouseMoved 会查此标志并调用 Ghostty.moveFocus。
@@ -65,12 +67,27 @@ final class MainWindowController: BaseTerminalController {
         }
         applyAppearance()
 
-        // 首个 pane
-        let first = newSurface(inheritingFrom: nil)
-        model.tree = SplitTree(view: first)
+        // 配置链第 4 层：config.toml（键位/工作区数/主题/[ghostty] 透传）+ 热重载
+        lastConfigContent = (try? String(contentsOf: ConfigStore.configURL, encoding: .utf8)) ?? ""
+        applyConfig(ConfigStore.load())
+        configWatcher = ConfigWatcher(
+            directory: ConfigStore.configURL.deletingLastPathComponent()
+        ) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self?.reloadConfigFile() }
+        }
+
+        // 状态恢复（spec §4.8）：树布局 + 各 pane cwd + 活动工作区；失败则全新开始
+        if restoreState() {
+            if let focused = focusedSurface {
+                window.makeFirstResponder(focused)
+            }
+        } else {
+            let first = newSurface(inheritingFrom: nil)
+            model.tree = SplitTree(view: first)
+            window.makeFirstResponder(first)
+        }
         window.center()
         window.makeKeyAndOrderFront(nil)
-        window.makeFirstResponder(first)
 
         // 进程退出 / close 动作 → 移除 pane
         NotificationCenter.default.addObserver(
@@ -124,11 +141,67 @@ final class MainWindowController: BaseTerminalController {
             guard y > content.bounds.maxY - 26 else { return event }
             let delta = event.scrollingDeltaY + event.scrollingDeltaX
             guard abs(delta) > 0.5 else { return nil }
-            let count = WorkspaceModel.workspaceCount
+            let count = self.model.trees.count
             let next = (self.model.activeIndex + (delta < 0 ? 1 : count - 1)) % count
             self.switchWorkspace(next)
             return nil
         }
+    }
+
+    // MARK: config.toml（配置链第 4 层，spec §4.7）
+
+    private func reloadConfigFile() {
+        let content = (try? String(contentsOf: ConfigStore.configURL, encoding: .utf8)) ?? ""
+        guard content != lastConfigContent else { return }
+        lastConfigContent = content
+        applyConfig(ConfigStore.parse(content))
+    }
+
+    func applyConfig(_ settings: ConfigStore.Settings) {
+        keybindings = KeybindingMap(
+            workspaceCount: settings.workspaces,
+            overrides: settings.overrides,
+            unbound: settings.unbound)
+        model.setWorkspaceCount(settings.workspaces)
+        themeManager.updateFromConfig(
+            passthrough: settings.ghosttyPassthrough,
+            followEngine: settings.themeName == "ghostty")
+        if let name = settings.themeName, name != "ghostty",
+           let theme = themeManager.themes.first(where: { $0.name == name }),
+           theme != themeManager.current {
+            themeManager.apply(theme)
+        }
+    }
+
+    // MARK: 状态恢复（spec §4.8）
+
+    private static var stateURL: URL {
+        EngineOverlay.url.deletingLastPathComponent().appendingPathComponent("state.json")
+    }
+
+    struct PersistedState: Codable {
+        var version = 1
+        var trees: [SplitTree<Ghostty.SurfaceView>]
+        var activeIndex: Int
+    }
+
+    func saveState() {
+        let state = PersistedState(trees: model.trees, activeIndex: model.activeIndex)
+        if let data = try? JSONEncoder().encode(state) {
+            try? data.write(to: Self.stateURL, options: .atomic)
+        }
+    }
+
+    /// 恢复上次的树布局（每叶按存档 cwd 重开 shell）；成功返回 true
+    private func restoreState() -> Bool {
+        guard let data = try? Data(contentsOf: Self.stateURL),
+              let state = try? JSONDecoder().decode(PersistedState.self, from: data),
+              state.version == 1,
+              !state.trees.allSatisfy(\.isEmpty) else { return false }
+        model.trees = state.trees
+        model.setWorkspaceCount(max(model.trees.count, 1))
+        model.activeIndex = min(max(state.activeIndex, 0), model.trees.count - 1)
+        return true
     }
 
     /// 浅色主题联动（spec §4.5）：窗口外观 + 引擎 color scheme
@@ -226,9 +299,11 @@ final class MainWindowController: BaseTerminalController {
         case .cyclePaneNext: cycleFocus(.next)
         case .cyclePanePrev: cycleFocus(.previous)
 
-        case .gotoWorkspace1, .gotoWorkspace2, .gotoWorkspace3, .gotoWorkspace4, .gotoWorkspace5:
+        case .gotoWorkspace1, .gotoWorkspace2, .gotoWorkspace3, .gotoWorkspace4, .gotoWorkspace5,
+             .gotoWorkspace6, .gotoWorkspace7, .gotoWorkspace8, .gotoWorkspace9, .gotoWorkspace10:
             if let i = action.workspaceIndex { switchWorkspace(i) }
-        case .moveToWorkspace1, .moveToWorkspace2, .moveToWorkspace3, .moveToWorkspace4, .moveToWorkspace5:
+        case .moveToWorkspace1, .moveToWorkspace2, .moveToWorkspace3, .moveToWorkspace4, .moveToWorkspace5,
+             .moveToWorkspace6, .moveToWorkspace7, .moveToWorkspace8, .moveToWorkspace9, .moveToWorkspace10:
             if let i = action.workspaceIndex { moveFocusedPane(to: i) }
         case .toggleBar:
             model.barVisible.toggle()
@@ -247,12 +322,58 @@ final class MainWindowController: BaseTerminalController {
             themeManager.toggleOpacity()
         case .toggleGaps:
             themeManager.toggleGaps()
+
+        case .keybindingHelp:
+            openPanel(.keybindings)
+        case .mainMenu:
+            openPanel(.menu)
+        case .scratchpad:
+            toggleScratchpad()
+        case .toggleFullscreen:
+            toggleSimpleFullscreen()
+        }
+    }
+
+    // MARK: Scratchpad（spec §4.1）
+
+    private func toggleScratchpad() {
+        if model.scratchpadVisible {
+            model.scratchpadVisible = false
+            if let focused = focusedSurface { Ghostty.moveFocus(to: focused) }
+            return
+        }
+        if model.scratchpadSurface == nil {
+            model.scratchpadSurface = newSurface(inheritingFrom: focusedSurface)
+        }
+        model.scratchpadVisible = true
+        if let scratch = model.scratchpadSurface {
+            Ghostty.moveFocus(to: scratch)
+        }
+    }
+
+    // MARK: 非原生全屏（精简版，spec §5.1 Ctrl+Cmd+F；简化决定见 M4 计划）
+
+    private var savedFrame: NSRect?
+
+    private func toggleSimpleFullscreen() {
+        guard let window, let screen = window.screen ?? NSScreen.main else { return }
+        if let frame = savedFrame {
+            NSApp.presentationOptions = []
+            window.setFrame(frame, display: true, animate: false)
+            savedFrame = nil
+        } else {
+            savedFrame = window.frame
+            NSApp.presentationOptions = [.autoHideDock, .autoHideMenuBar]
+            window.setFrame(screen.frame, display: true, animate: false)
         }
     }
 
     // MARK: 浮动面板（Walker 风格）
 
     func openPanel(_ panel: OverlayPanel, selection: Int = 0) {
+        if panel == .keybindings {
+            model.keybindingRows = keybindings.displayBindings()
+        }
         model.activePanel = panel
         model.panelSelection = selection
     }
@@ -261,6 +382,7 @@ final class MainWindowController: BaseTerminalController {
         switch model.activePanel {
         case .themes: themeManager.themes.count
         case .backgrounds: themeManager.current.backgroundURLs.count
+        case .menu: MenuEntry.allCases.count
         case .keybindings, nil: 0
         }
     }
@@ -295,9 +417,34 @@ final class MainWindowController: BaseTerminalController {
         case .backgrounds:
             themeManager.selectBackground(index)
             model.activePanel = nil
+        case .menu:
+            model.activePanel = nil
+            switch MenuEntry(rawValue: index) {
+            case .newTerminal: perform(.newTerminal)
+            case .themes: perform(.themePicker)
+            case .backgrounds: perform(.backgroundMenu)
+            case .toggleBar: perform(.toggleBar)
+            case .toggleGaps: perform(.toggleGaps)
+            case .toggleOpacity: perform(.toggleOpacity)
+            case .keybindings: perform(.keybindingHelp)
+            case .settings: openSettingsFile()
+            case .about: NSApp.orderFrontStandardAboutPanel(nil)
+            case nil: break
+            }
         case .keybindings, nil:
             model.activePanel = nil
         }
+    }
+
+    /// 设置 = 打开 config.toml（不存在则先写模板，spec §4.6 简化决定）
+    private func openSettingsFile() {
+        let url = ConfigStore.configURL
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? ConfigStore.template.write(to: url, atomically: true, encoding: .utf8)
+        }
+        NSWorkspace.shared.open(url)
     }
 
     // MARK: 工作区（spec §5.2）
@@ -402,8 +549,14 @@ final class MainWindowController: BaseTerminalController {
     }
 
     @objc private func ghosttyDidCloseSurface(_ notification: Foundation.Notification) {
-        guard let view = notification.object as? Ghostty.SurfaceView,
-              paneList.contains(view) else { return }
+        guard let view = notification.object as? Ghostty.SurfaceView else { return }
+        if view === model.scratchpadSurface {
+            // Scratchpad 进程退出：销毁，下次 Cmd+S 重建
+            model.scratchpadVisible = false
+            model.scratchpadSurface = nil
+            return
+        }
+        guard paneList.contains(view) else { return }
         let processAlive = (notification.userInfo?["process_alive"] as? Bool) ?? false
         closePane(view, confirmIfNeeded: processAlive)
     }
