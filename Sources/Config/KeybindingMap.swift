@@ -44,6 +44,17 @@ struct KeybindingMap {
         KeyCombo(key: "tab", [.option, .shift]): .cyclePanePrev,
         KeyCombo(key: "]", .command): .cyclePaneNext,
         KeyCombo(key: "[", .command): .cyclePanePrev,
+        KeyCombo(key: "1", .command): .gotoWorkspace1,
+        KeyCombo(key: "2", .command): .gotoWorkspace2,
+        KeyCombo(key: "3", .command): .gotoWorkspace3,
+        KeyCombo(key: "4", .command): .gotoWorkspace4,
+        KeyCombo(key: "5", .command): .gotoWorkspace5,
+        KeyCombo(key: "1", [.command, .shift]): .moveToWorkspace1,
+        KeyCombo(key: "2", [.command, .shift]): .moveToWorkspace2,
+        KeyCombo(key: "3", [.command, .shift]): .moveToWorkspace3,
+        KeyCombo(key: "4", [.command, .shift]): .moveToWorkspace4,
+        KeyCombo(key: "5", [.command, .shift]): .moveToWorkspace5,
+        KeyCombo(key: "space", [.command, .shift]): .toggleBar,
     ]
 
     /// 事件 → 动作。resize 系列附加 Shift = 10px 微调（precise）。
@@ -80,7 +91,8 @@ struct KeybindingMap {
         if flags.contains(.option) { parts.append("⌥") }
         if flags.contains(.shift) { parts.append("⇧") }
         if flags.contains(.command) { parts.append("⌘") }
-        let names = ["return": "↩", "tab": "⇥", "left": "←", "right": "→", "up": "↑", "down": "↓"]
+        let names = ["return": "↩", "tab": "⇥", "space": "␣",
+                     "left": "←", "right": "→", "up": "↑", "down": "↓"]
         parts.append(names[combo.key] ?? combo.key.uppercased())
         return parts.joined()
     }
@@ -94,6 +106,7 @@ struct KeybindingMap {
         case 126: return "up"
         case 36, 76: return "return"
         case 48: return "tab"
+        case 49: return "space"
         default:
             guard let chars = event.charactersIgnoringModifiers, !chars.isEmpty else { return nil }
             return chars.lowercased()

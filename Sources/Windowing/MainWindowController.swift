@@ -175,7 +175,49 @@ final class MainWindowController: BaseTerminalController {
 
         case .cyclePaneNext: cycleFocus(.next)
         case .cyclePanePrev: cycleFocus(.previous)
+
+        case .gotoWorkspace1, .gotoWorkspace2, .gotoWorkspace3, .gotoWorkspace4, .gotoWorkspace5:
+            if let i = action.workspaceIndex { switchWorkspace(i) }
+        case .moveToWorkspace1, .moveToWorkspace2, .moveToWorkspace3, .moveToWorkspace4, .moveToWorkspace5:
+            if let i = action.workspaceIndex { moveFocusedPane(to: i) }
+        case .toggleBar:
+            model.barVisible.toggle()
         }
+    }
+
+    // MARK: 工作区（spec §5.2）
+
+    func switchWorkspace(_ index: Int) {
+        guard index != model.activeIndex else { return }
+        model.switchTo(index)  // 值语义切换：瞬时、无动画（忠实 Omarchy）
+        if let focused = focusedSurface {
+            Ghostty.moveFocus(to: focused)
+        }
+    }
+
+    /// 把焦点 pane 移到目标工作区并跟随（Cmd+Shift+数字）
+    func moveFocusedPane(to index: Int) {
+        guard model.trees.indices.contains(index), index != model.activeIndex,
+              let focused = focusedSurface,
+              let node = model.tree.root?.node(view: focused) else { return }
+
+        // 先算目标树（失败则不动源树）
+        let newTarget: SplitTree<Ghostty.SurfaceView>
+        if model.trees[index].isEmpty {
+            newTarget = SplitTree(view: focused)
+        } else if let anchor = model.trees[index].root?.leaves().first,
+                  let t = try? model.trees[index].inserting(
+                    view: focused, at: anchor,
+                    direction: model.trees[index].dwindleDirection(for: anchor)) {
+            newTarget = t
+        } else {
+            return
+        }
+
+        model.tree = model.tree.removing(node)
+        model.trees[index] = newTarget
+        model.switchTo(index)
+        Ghostty.moveFocus(to: focused)
     }
 
     private func moveFocus(_ direction: SplitTree<Ghostty.SurfaceView>.Spatial.Direction) {
@@ -237,7 +279,8 @@ final class MainWindowController: BaseTerminalController {
         let wasFocused = view.focused
         model.tree = model.tree.removing(node)  // 放弃引用 → SurfaceView.deinit 释放 surface
         if model.tree.isEmpty {
-            window?.close()
+            // 仅当所有工作区皆空才关窗口；否则停留在空工作区（可 Cmd+Return 重开）
+            if model.trees.allSatisfy(\.isEmpty) { window?.close() }
         } else if wasFocused, let next = paneList.first {
             Ghostty.moveFocus(to: next)
         }

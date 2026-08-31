@@ -14,6 +14,25 @@ enum WMAction: String, CaseIterable {
     case resizeLeft = "resize-left", resizeRight = "resize-right"
     case resizeUp = "resize-up", resizeDown = "resize-down"
     case cyclePaneNext = "cycle-pane-next", cyclePanePrev = "cycle-pane-prev"
+    case gotoWorkspace1 = "goto-workspace-1", gotoWorkspace2 = "goto-workspace-2"
+    case gotoWorkspace3 = "goto-workspace-3", gotoWorkspace4 = "goto-workspace-4"
+    case gotoWorkspace5 = "goto-workspace-5"
+    case moveToWorkspace1 = "move-to-workspace-1", moveToWorkspace2 = "move-to-workspace-2"
+    case moveToWorkspace3 = "move-to-workspace-3", moveToWorkspace4 = "move-to-workspace-4"
+    case moveToWorkspace5 = "move-to-workspace-5"
+    case toggleBar = "toggle-bar"
+
+    /// goto/move 系列的工作区序号（0-based），非工作区动作为 nil
+    var workspaceIndex: Int? {
+        switch self {
+        case .gotoWorkspace1, .moveToWorkspace1: 0
+        case .gotoWorkspace2, .moveToWorkspace2: 1
+        case .gotoWorkspace3, .moveToWorkspace3: 2
+        case .gotoWorkspace4, .moveToWorkspace4: 3
+        case .gotoWorkspace5, .moveToWorkspace5: 4
+        default: nil
+        }
+    }
 
     /// 速查表（Cmd+K）展示用中文说明
     var help: String {
@@ -37,6 +56,17 @@ enum WMAction: String, CaseIterable {
         case .resizeDown: "向下调整大小（+⇧ 微调）"
         case .cyclePaneNext: "下一个 pane"
         case .cyclePanePrev: "上一个 pane"
+        case .gotoWorkspace1: "切到工作区 1"
+        case .gotoWorkspace2: "切到工作区 2"
+        case .gotoWorkspace3: "切到工作区 3"
+        case .gotoWorkspace4: "切到工作区 4"
+        case .gotoWorkspace5: "切到工作区 5"
+        case .moveToWorkspace1: "移动 pane 到工作区 1"
+        case .moveToWorkspace2: "移动 pane 到工作区 2"
+        case .moveToWorkspace3: "移动 pane 到工作区 3"
+        case .moveToWorkspace4: "移动 pane 到工作区 4"
+        case .moveToWorkspace5: "移动 pane 到工作区 5"
+        case .toggleBar: "顶栏显示/隐藏"
         }
     }
 }

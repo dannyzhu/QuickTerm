@@ -1,8 +1,32 @@
 import SwiftUI
 
-/// 单工作区状态（M2 扩展为多工作区数组）。AppKit 控制器是唯一写入方，SwiftUI 纯读。
+/// 多工作区状态（spec §5.2：默认 5 个，值语义切换 = 瞬时无动画）。
+/// AppKit 控制器是唯一写入方，SwiftUI 纯读。
 final class WorkspaceModel: ObservableObject {
-    @Published var tree: SplitTree<Ghostty.SurfaceView> = .init()
+    static let workspaceCount = 5
+
+    @Published var trees: [SplitTree<Ghostty.SurfaceView>]
+    @Published var activeIndex: Int = 0
+    @Published var barVisible = true
+
+    init() {
+        trees = Array(repeating: SplitTree<Ghostty.SurfaceView>(), count: Self.workspaceCount)
+    }
+
+    /// 活动工作区的树（M1 全部调用点经此代理，无需改动）
+    var tree: SplitTree<Ghostty.SurfaceView> {
+        get { trees[activeIndex] }
+        set { trees[activeIndex] = newValue }
+    }
+
+    func switchTo(_ index: Int) {
+        guard trees.indices.contains(index) else { return }
+        activeIndex = index
+    }
+
+    func isEmpty(_ index: Int) -> Bool {
+        trees.indices.contains(index) ? trees[index].isEmpty : true
+    }
 }
 
 /// SwiftUI 根视图：底色 + 平铺树（gaps_out = 10，spec §1.1）。
