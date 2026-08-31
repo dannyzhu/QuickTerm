@@ -1,0 +1,17 @@
+# Xcode / build
+build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Generated project (由 xcodegen 生成，可重建)
+QuickTerm.xcodeproj/
+
+# Toolchain & vendor build outputs
+.tools/
+vendor/ghostty/zig-out/
+vendor/ghostty/.zig-cache/
+vendor/ghostty/macos/GhosttyKit.xcframework/
+
+# macOS
+.DS_Store
