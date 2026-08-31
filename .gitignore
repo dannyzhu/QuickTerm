@@ -15,3 +15,6 @@ vendor/ghostty/macos/GhosttyKit.xcframework/
 
 # macOS
 .DS_Store
+
+# 主题背景图由 scripts/fetch-themes.sh 拉取，不进 git
+Themes/*/backgrounds/

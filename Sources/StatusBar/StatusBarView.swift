@@ -3,6 +3,7 @@ import SwiftUI
 /// 仿 waybar 顶栏（spec §4.4）：26pt · Monaco 12 · SF Symbols 单色 · 无圆角。
 /// 左 logo+工作区胶囊 / 中时钟 / 右 cpu·网络·音量·电池。
 struct StatusBarView: View {
+    @EnvironmentObject var theme: ThemeManager
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var stats: SystemStatsService
     let onSelectWorkspace: (Int) -> Void
@@ -20,16 +21,16 @@ struct StatusBarView: View {
             clock  // 独立居中，不受两侧宽度影响（waybar center 模块语义）
         }
         .font(.custom("Monaco", size: 12))
-        .foregroundStyle(Palette.foreground)
+        .foregroundStyle(theme.foreground)
         .frame(height: 26)
         .padding(.horizontal, 8)
-        .background(Palette.background)
+        .background(theme.background)
     }
 
     private var leftSection: some View {
         HStack(spacing: 8) {
             Text("◆")
-                .foregroundStyle(Palette.accent)
+                .foregroundStyle(theme.accent)
                 .accessibilityLabel("QuickTerm")
             HStack(spacing: 3) {
                 ForEach(0..<WorkspaceModel.workspaceCount, id: \.self) { i in
@@ -45,7 +46,7 @@ struct StatusBarView: View {
         } label: {
             Text(model.activeIndex == i ? "■" : "\(i + 1)")
                 .frame(minWidth: 18, minHeight: 20)
-                .foregroundStyle(model.activeIndex == i ? Palette.accent : Palette.foreground)
+                .foregroundStyle(model.activeIndex == i ? theme.accent : theme.foreground)
                 .opacity(model.activeIndex == i || !model.isEmpty(i) ? 1 : 0.5)
                 .contentShape(Rectangle())
         }
@@ -56,7 +57,7 @@ struct StatusBarView: View {
     private var clock: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             Text(clockText(context.date))
-                .foregroundStyle(Palette.foreground)
+                .foregroundStyle(theme.foreground)
                 .onTapGesture { altClock.toggle() }
         }
     }
@@ -100,7 +101,7 @@ struct StatusBarView: View {
             }
             Image(systemName: batterySymbol(percent))
         }
-        .foregroundStyle(low ? Palette.alert : Palette.foreground)
+        .foregroundStyle(low ? theme.alert : theme.foreground)
     }
 
     private func batterySymbol(_ percent: Int) -> String {

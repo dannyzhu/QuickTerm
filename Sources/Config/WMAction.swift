@@ -21,6 +21,10 @@ enum WMAction: String, CaseIterable {
     case moveToWorkspace3 = "move-to-workspace-3", moveToWorkspace4 = "move-to-workspace-4"
     case moveToWorkspace5 = "move-to-workspace-5"
     case toggleBar = "toggle-bar"
+    case themePicker = "theme-picker"
+    case backgroundMenu = "next-background"
+    case toggleOpacity = "toggle-opacity"
+    case toggleGaps = "toggle-gaps"
 
     /// goto/move 系列的工作区序号（0-based），非工作区动作为 nil
     var workspaceIndex: Int? {
@@ -67,6 +71,10 @@ enum WMAction: String, CaseIterable {
         case .moveToWorkspace4: "移动 pane 到工作区 4"
         case .moveToWorkspace5: "移动 pane 到工作区 5"
         case .toggleBar: "顶栏显示/隐藏"
+        case .themePicker: "主题选择器"
+        case .backgroundMenu: "背景选择/下一张"
+        case .toggleOpacity: "透明度开关"
+        case .toggleGaps: "gaps 开关"
         }
     }
 }

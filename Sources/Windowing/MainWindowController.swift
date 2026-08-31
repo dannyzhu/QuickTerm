@@ -10,6 +10,7 @@ final class MainWindowController: BaseTerminalController {
     let ghostty: Ghostty.App
     let keybindings = KeybindingMap()
     let stats = SystemStatsService()
+    let themeManager: ThemeManager
     private var keyMonitor: Any?
     private var mouseMonitor: Any?
     private var scrollMonitor: Any?
@@ -31,8 +32,9 @@ final class MainWindowController: BaseTerminalController {
         paneList.first { $0.focused } ?? paneList.first
     }
 
-    init(ghostty: Ghostty.App) {
+    init(ghostty: Ghostty.App, themeManager: ThemeManager) {
         self.ghostty = ghostty
+        self.themeManager = themeManager
         let window = HiddenTitlebarWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1024, height: 720),
             styleMask: [],  // HiddenTitlebarWindow 内部固定样式
@@ -44,7 +46,24 @@ final class MainWindowController: BaseTerminalController {
         window.contentView = NSHostingView(rootView: RootView(
             model: model, ghostty: ghostty, stats: stats,
             action: { [weak self] op in self?.handleSplitOperation(op) },
-            onSelectWorkspace: { [weak self] i in self?.switchWorkspace(i) }))
+            onSelectWorkspace: { [weak self] i in self?.switchWorkspace(i) },
+            onPanelChoose: { [weak self] i in self?.choosePanelItem(i) })
+            .environmentObject(themeManager))
+
+        // 主题热切换：overlay 变更 → 引擎 app 级 + 全部 surface 热重载（spec §3.2，< 200ms）
+        themeManager.onOverlayChanged = { [weak self] in
+            guard let self else { return }
+            self.ghostty.reloadConfig(soft: false)
+            for tree in self.model.trees {
+                for pane in tree.root?.leaves() ?? [] {
+                    if let surface = pane.surface {
+                        self.ghostty.reloadConfig(surface: surface, soft: false)
+                    }
+                }
+            }
+            self.applyAppearance()
+        }
+        applyAppearance()
 
         // 首个 pane
         let first = newSurface(inheritingFrom: nil)
@@ -58,10 +77,12 @@ final class MainWindowController: BaseTerminalController {
             self, selector: #selector(ghosttyDidCloseSurface(_:)),
             name: Ghostty.Notification.ghosttyCloseSurface, object: nil)
 
-        // WM 级组合键：在事件分发前拦截；未命中一律放行给 surface（终端级键不受影响）
+        // WM 级组合键：在事件分发前拦截；未命中一律放行给 surface（终端级键不受影响）。
+        // 浮动面板打开时优先接管 ↑↓/回车/Esc 导航。
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, let window = self.window, event.window === window,
-                  let hit = self.keybindings.action(for: event) else { return event }
+            guard let self, let window = self.window, event.window === window else { return event }
+            if self.model.activePanel != nil, self.handlePanelKey(event) { return nil }
+            guard let hit = self.keybindings.action(for: event) else { return event }
             self.perform(hit.action, precise: hit.precise)
             return nil
         }
@@ -107,6 +128,16 @@ final class MainWindowController: BaseTerminalController {
             let next = (self.model.activeIndex + (delta < 0 ? 1 : count - 1)) % count
             self.switchWorkspace(next)
             return nil
+        }
+    }
+
+    /// 浅色主题联动（spec §4.5）：窗口外观 + 引擎 color scheme
+    private func applyAppearance() {
+        let light = themeManager.current.isLight
+        window?.appearance = NSAppearance(named: light ? .aqua : .darkAqua)
+        if let app = ghostty.app {
+            ghostty_app_set_color_scheme(
+                app, light ? GHOSTTY_COLOR_SCHEME_LIGHT : GHOSTTY_COLOR_SCHEME_DARK)
         }
     }
 
@@ -201,6 +232,71 @@ final class MainWindowController: BaseTerminalController {
             if let i = action.workspaceIndex { moveFocusedPane(to: i) }
         case .toggleBar:
             model.barVisible.toggle()
+
+        case .themePicker:
+            openPanel(.themes, selection: themeManager.themes.firstIndex(of: themeManager.current) ?? 0)
+        case .backgroundMenu:
+            // 面板已开 → 直接循环下一张（带回绕）；否则打开背景选择器
+            if model.activePanel == .backgrounds {
+                themeManager.nextBackground()
+                model.panelSelection = themeManager.backgroundIndex
+            } else {
+                openPanel(.backgrounds, selection: themeManager.backgroundIndex)
+            }
+        case .toggleOpacity:
+            themeManager.toggleOpacity()
+        case .toggleGaps:
+            themeManager.toggleGaps()
+        }
+    }
+
+    // MARK: 浮动面板（Walker 风格）
+
+    func openPanel(_ panel: OverlayPanel, selection: Int = 0) {
+        model.activePanel = panel
+        model.panelSelection = selection
+    }
+
+    private var panelItemCount: Int {
+        switch model.activePanel {
+        case .themes: themeManager.themes.count
+        case .backgrounds: themeManager.current.backgroundURLs.count
+        case .keybindings, nil: 0
+        }
+    }
+
+    /// 面板键盘导航；返回 true = 已消费
+    private func handlePanelKey(_ event: NSEvent) -> Bool {
+        switch KeybindingMap.normalizedKey(for: event) {
+        case "escape":
+            model.activePanel = nil
+            return true
+        case "up":
+            model.panelSelection = max(0, model.panelSelection - 1)
+            return true
+        case "down":
+            model.panelSelection = min(max(0, panelItemCount - 1), model.panelSelection + 1)
+            return true
+        case "return":
+            choosePanelItem(model.panelSelection)
+            return true
+        default:
+            return false  // 其余键（含 WM 组合键）继续走正常链
+        }
+    }
+
+    func choosePanelItem(_ index: Int) {
+        switch model.activePanel {
+        case .themes:
+            if themeManager.themes.indices.contains(index) {
+                themeManager.apply(themeManager.themes[index])
+            }
+            model.activePanel = nil
+        case .backgrounds:
+            themeManager.selectBackground(index)
+            model.activePanel = nil
+        case .keybindings, nil:
+            model.activePanel = nil
         }
     }
 

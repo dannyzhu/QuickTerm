@@ -55,6 +55,10 @@ struct KeybindingMap {
         KeyCombo(key: "4", [.command, .shift]): .moveToWorkspace4,
         KeyCombo(key: "5", [.command, .shift]): .moveToWorkspace5,
         KeyCombo(key: "space", [.command, .shift]): .toggleBar,
+        KeyCombo(key: "space", [.command, .control, .shift]): .themePicker,
+        KeyCombo(key: "space", [.command, .control]): .backgroundMenu,
+        KeyCombo(key: "backspace", .command): .toggleOpacity,
+        KeyCombo(key: "backspace", [.command, .shift]): .toggleGaps,
     ]
 
     /// 事件 → 动作。resize 系列附加 Shift = 10px 微调（precise）。
@@ -107,6 +111,8 @@ struct KeybindingMap {
         case 36, 76: return "return"
         case 48: return "tab"
         case 49: return "space"
+        case 51: return "backspace"
+        case 53: return "escape"
         default:
             guard let chars = event.charactersIgnoringModifiers, !chars.isEmpty else { return nil }
             return chars.lowercased()

@@ -4,15 +4,13 @@ import SwiftUI
 /// gaps_in=5（每叶 2.5，相邻合成 5）、直角、popin 87% 弹入动画。焦点态随悬停即时切换。
 struct PaneChrome: ViewModifier {
     @ObservedObject var surfaceView: Ghostty.SurfaceView
+    @EnvironmentObject var theme: ThemeManager
     @State private var appeared = false
-
-    static let accent = Color(red: 0x7a / 255.0, green: 0xa2 / 255.0, blue: 0xf7 / 255.0)
-    static let inactive = Color(white: 0x59 / 255.0).opacity(0.67)
 
     func body(content: Content) -> some View {
         content
-            .border(surfaceView.focused ? Self.accent : Self.inactive, width: 2)
-            .padding(2.5)
+            .border(surfaceView.focused ? theme.accent : Palette.inactiveBorder, width: 2)
+            .padding(theme.gapsEnabled ? 2.5 : 0)
             .scaleEffect(appeared ? 1 : 0.87)
             .opacity(appeared ? 1 : 0)
             .onAppear {

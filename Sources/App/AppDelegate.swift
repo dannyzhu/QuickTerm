@@ -18,8 +18,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
 
-        // 配置链第 3 层：QuickTerm 覆盖文件（透明度等），必须先于引擎创建
-        Ghostty.Config.quickTermOverlayPath = EngineOverlay.install()
+        // 配置链第 3 层：ThemeManager 在 init 中写入 overlay（主题配色 + 透明度），
+        // 必须先于引擎创建，引擎首次加载即带主题
+        Ghostty.Config.quickTermOverlayPath = EngineOverlay.url.path
+        let themeManager = ThemeManager()
 
         // 引擎：内部完成配置加载（含 ~/.config/ghostty/config）/ app_new；
         // ghostty_init 已在 main.swift 中先于 NSApplicationMain 调用
@@ -33,7 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        controller = MainWindowController(ghostty: ghostty)
+        controller = MainWindowController(ghostty: ghostty, themeManager: themeManager)
         MainMenu.install(delegate: self)
         NSApp.activate(ignoringOtherApps: true)
     }

@@ -13,6 +13,9 @@ targets:
     platform: macOS
     sources:
       - Sources
+      - path: Themes
+        type: folder
+        buildPhase: resources
     dependencies:
       - framework: vendor/ghostty/macos/GhosttyKit.xcframework
         embed: false

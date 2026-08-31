@@ -27,16 +27,22 @@ final class WorkspaceModel: ObservableObject {
     func isEmpty(_ index: Int) -> Bool {
         trees.indices.contains(index) ? trees[index].isEmpty : true
     }
+
+    // 浮动面板 UI 状态（键盘导航由控制器监视器驱动）
+    @Published var activePanel: OverlayPanel?
+    @Published var panelSelection: Int = 0
 }
 
 /// SwiftUI 根视图：底色 + 平铺树（gaps_out = 10，spec §1.1）。
 /// M2 在 VStack 顶部加状态栏；M3 底层换连续壁纸。
 struct RootView: View {
     @ObservedObject var model: WorkspaceModel
+    @EnvironmentObject var theme: ThemeManager
     let ghostty: Ghostty.App
     let stats: SystemStatsService
     let action: (TerminalSplitOperation) -> Void
     let onSelectWorkspace: (Int) -> Void
+    let onPanelChoose: (Int) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,12 +53,22 @@ struct RootView: View {
                     onToggleMute: { [weak stats] in stats?.toggleMute() })
             }
             ZStack {
-                Palette.background  // M3 换连续壁纸层
+                // 连续壁纸层（spec §3.2）：一张图横跨所有 pane，透过微透明表面与 gaps 露出
+                theme.background
+                if let url = theme.currentBackgroundURL {
+                    WallpaperThumb(url: url).id(url)
+                }
                 TerminalSplitTreeView(tree: model.tree, action: action)
-                    .padding(10)
+                    .padding(theme.gapsEnabled ? 10 : 0)
+
+                if model.activePanel != nil {
+                    Color.black.opacity(0.25).onTapGesture { model.activePanel = nil }
+                    OverlayPanelView(model: model, onChoose: onPanelChoose)
+                        .padding(40)
+                }
             }
         }
-        .background(Palette.background)
+        .background(theme.background)
         .ignoresSafeArea(.container, edges: .top)
         .environmentObject(ghostty)
     }
