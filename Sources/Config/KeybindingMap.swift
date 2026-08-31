@@ -1,0 +1,102 @@
+import AppKit
+
+/// 组合键：规范化键名 + 修饰键集合（仅比较 cmd/alt/ctrl/shift 四位）。
+struct KeyCombo: Hashable {
+    let key: String              // "w" / "return" / "up" / "[" / "=" / "tab" …
+    let modifiers: UInt          // NSEvent.ModifierFlags 与 relevantMask 交集的 rawValue
+
+    static let relevantMask: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+
+    init(key: String, _ modifiers: NSEvent.ModifierFlags) {
+        self.key = key
+        self.modifiers = modifiers.intersection(Self.relevantMask).rawValue
+    }
+}
+
+/// WM 级默认键位表（spec §5.1，已确认的两处偏移含在内）。
+/// 不在表内的组合一律放行给终端 surface——绝不拦截 Cmd+C/V、字号键等。
+struct KeybindingMap {
+    private let map: [KeyCombo: WMAction]
+
+    init(map: [KeyCombo: WMAction] = KeybindingMap.defaults) {
+        self.map = map
+    }
+
+    static let defaults: [KeyCombo: WMAction] = [
+        KeyCombo(key: "return", .command): .newTerminal,
+        KeyCombo(key: "w", .command): .closePane,
+        KeyCombo(key: "left", .command): .focusLeft,
+        KeyCombo(key: "right", .command): .focusRight,
+        KeyCombo(key: "up", .command): .focusUp,
+        KeyCombo(key: "down", .command): .focusDown,
+        KeyCombo(key: "left", [.command, .shift]): .swapLeft,
+        KeyCombo(key: "right", [.command, .shift]): .swapRight,
+        KeyCombo(key: "up", [.command, .shift]): .swapUp,
+        KeyCombo(key: "down", [.command, .shift]): .swapDown,
+        KeyCombo(key: "j", .command): .toggleSplitDirection,
+        KeyCombo(key: "f", .command): .toggleZoom,
+        KeyCombo(key: "=", [.command, .control]): .equalize,
+        KeyCombo(key: "left", [.command, .control]): .resizeLeft,
+        KeyCombo(key: "right", [.command, .control]): .resizeRight,
+        KeyCombo(key: "up", [.command, .control]): .resizeUp,
+        KeyCombo(key: "down", [.command, .control]): .resizeDown,
+        KeyCombo(key: "tab", .option): .cyclePaneNext,
+        KeyCombo(key: "tab", [.option, .shift]): .cyclePanePrev,
+        KeyCombo(key: "]", .command): .cyclePaneNext,
+        KeyCombo(key: "[", .command): .cyclePanePrev,
+    ]
+
+    /// 事件 → 动作。resize 系列附加 Shift = 10px 微调（precise）。
+    func action(for event: NSEvent) -> (action: WMAction, precise: Bool)? {
+        guard let key = KeybindingMap.normalizedKey(for: event) else { return nil }
+        return action(key: key, modifiers: event.modifierFlags)
+    }
+
+    func action(key: String, modifiers: NSEvent.ModifierFlags) -> (action: WMAction, precise: Bool)? {
+        if let hit = map[KeyCombo(key: key, modifiers)] {
+            return (hit, false)
+        }
+        // resize 微调：去掉 shift 再查一次，命中 resize* 则 precise
+        if modifiers.contains(.shift) {
+            let withoutShift = modifiers.subtracting(.shift)
+            if let hit = map[KeyCombo(key: key, withoutShift)],
+               [.resizeLeft, .resizeRight, .resizeUp, .resizeDown].contains(hit) {
+                return (hit, true)
+            }
+        }
+        return nil
+    }
+
+    /// 键名速查（Cmd+K 面板数据源）：action → 显示用组合键描述
+    func displayBindings() -> [(combo: String, action: WMAction)] {
+        map.map { (Self.describe($0.key), $0.value) }
+            .sorted { $0.1.rawValue < $1.1.rawValue }
+    }
+
+    private static func describe(_ combo: KeyCombo) -> String {
+        var parts: [String] = []
+        let flags = NSEvent.ModifierFlags(rawValue: combo.modifiers)
+        if flags.contains(.control) { parts.append("⌃") }
+        if flags.contains(.option) { parts.append("⌥") }
+        if flags.contains(.shift) { parts.append("⇧") }
+        if flags.contains(.command) { parts.append("⌘") }
+        let names = ["return": "↩", "tab": "⇥", "left": "←", "right": "→", "up": "↑", "down": "↓"]
+        parts.append(names[combo.key] ?? combo.key.uppercased())
+        return parts.joined()
+    }
+
+    /// NSEvent → 规范化键名（方向/回车/Tab 用 keyCode，其余用忽略修饰键的字符）
+    static func normalizedKey(for event: NSEvent) -> String? {
+        switch event.keyCode {
+        case 123: return "left"
+        case 124: return "right"
+        case 125: return "down"
+        case 126: return "up"
+        case 36, 76: return "return"
+        case 48: return "tab"
+        default:
+            guard let chars = event.charactersIgnoringModifiers, !chars.isEmpty else { return nil }
+            return chars.lowercased()
+        }
+    }
+}

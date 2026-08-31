@@ -8,6 +8,8 @@ import SwiftUI
 final class MainWindowController: BaseTerminalController {
     let model = WorkspaceModel()
     let ghostty: Ghostty.App
+    let keybindings = KeybindingMap()
+    private var keyMonitor: Any?
 
     /// 悬停即焦点（spec §4.2，忠实 Hyprland focus_follows_mouse）。
     /// 嵌入层 SurfaceView.mouseMoved 会查此标志并调用 Ghostty.moveFocus。
@@ -50,12 +52,108 @@ final class MainWindowController: BaseTerminalController {
         NotificationCenter.default.addObserver(
             self, selector: #selector(ghosttyDidCloseSurface(_:)),
             name: Ghostty.Notification.ghosttyCloseSurface, object: nil)
+
+        // WM 级组合键：在事件分发前拦截；未命中一律放行给 surface（终端级键不受影响）
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, let window = self.window, event.window === window,
+                  let hit = self.keybindings.action(for: event) else { return event }
+            self.perform(hit.action, precise: hit.precise)
+            return nil
+        }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not supported") }
 
-    deinit { NotificationCenter.default.removeObserver(self) }
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+    }
+
+    // MARK: WM 动作（spec §5.1 全表）
+
+    func perform(_ action: WMAction, precise: Bool = false) {
+        switch action {
+        case .newTerminal:
+            let pane = newSurface(inheritingFrom: focusedSurface)
+            if model.tree.isEmpty {
+                model.tree = SplitTree(view: pane)
+            } else if let focused = focusedSurface,
+                      let t = try? model.tree.inserting(
+                        view: pane, at: focused,
+                        direction: model.tree.dwindleDirection(for: focused)) {
+                model.tree = t
+            }
+            Ghostty.moveFocus(to: pane)
+
+        case .closePane:
+            if let focused = focusedSurface { closePane(focused) }
+
+        case .focusLeft: moveFocus(.left)
+        case .focusRight: moveFocus(.right)
+        case .focusUp: moveFocus(.up)
+        case .focusDown: moveFocus(.down)
+
+        case .swapLeft: swapFocused(.left)
+        case .swapRight: swapFocused(.right)
+        case .swapUp: swapFocused(.up)
+        case .swapDown: swapFocused(.down)
+
+        case .toggleSplitDirection:
+            guard let focused = focusedSurface else { return }
+            model.tree = (try? model.tree.togglingSplitDirection(around: focused)) ?? model.tree
+
+        case .toggleZoom:
+            guard let focused = focusedSurface,
+                  let node = model.tree.root?.node(view: focused) else { return }
+            // zoom = 只渲染该子树；再按取消（spec §3.2）
+            model.tree = SplitTree(
+                root: model.tree.root,
+                zoomed: model.tree.zoomed == node ? nil : node)
+
+        case .equalize:
+            model.tree = model.tree.equalized()
+
+        case .resizeLeft: resizeFocused(.left, precise: precise)
+        case .resizeRight: resizeFocused(.right, precise: precise)
+        case .resizeUp: resizeFocused(.up, precise: precise)
+        case .resizeDown: resizeFocused(.down, precise: precise)
+
+        case .cyclePaneNext: cycleFocus(.next)
+        case .cyclePanePrev: cycleFocus(.previous)
+        }
+    }
+
+    private func moveFocus(_ direction: SplitTree<Ghostty.SurfaceView>.Spatial.Direction) {
+        guard let focused = focusedSurface,
+              let node = model.tree.root?.node(view: focused),
+              let target = model.tree.focusTarget(for: .spatial(direction), from: node) else { return }
+        Ghostty.moveFocus(to: target, from: focused)
+    }
+
+    private func swapFocused(_ direction: SplitTree<Ghostty.SurfaceView>.Spatial.Direction) {
+        guard let focused = focusedSurface,
+              let node = model.tree.root?.node(view: focused),
+              let target = model.tree.focusTarget(for: .spatial(direction), from: node),
+              let swapped = try? model.tree.swapping(focused, target) else { return }
+        model.tree = swapped
+        Ghostty.moveFocus(to: focused)
+    }
+
+    private func resizeFocused(_ direction: SplitTree<Ghostty.SurfaceView>.Spatial.Direction, precise: Bool) {
+        guard let focused = focusedSurface,
+              let node = model.tree.root?.node(view: focused),
+              let bounds = window?.contentLayoutRect else { return }
+        model.tree = (try? model.tree.resizing(
+            node: node, by: precise ? 10 : 100, in: direction, with: bounds)) ?? model.tree
+    }
+
+    private func cycleFocus(_ direction: SplitTree<Ghostty.SurfaceView>.FocusDirection) {
+        guard let focused = focusedSurface,
+              let node = model.tree.root?.node(view: focused),
+              let target = model.tree.focusTarget(for: direction, from: node) else { return }
+        Ghostty.moveFocus(to: target, from: focused)
+    }
 
     // MARK: Surface 生命周期
 

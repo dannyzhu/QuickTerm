@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         controller = MainWindowController(ghostty: ghostty)
+        MainMenu.install(delegate: self)
         NSApp.activate(ignoringOtherApps: true)
     }
 
