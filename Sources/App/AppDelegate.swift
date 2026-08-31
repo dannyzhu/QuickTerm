@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import OSLog
+import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static let logger = Logger(
@@ -8,8 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         category: String(describing: AppDelegate.self)
     )
 
-    private var window: NSWindow!
-    private var surfaceView: Ghostty.SurfaceView!
+    private var window: HiddenTitlebarWindow!
+    private let model = WorkspaceModel()
 
     /// 引擎实例（GhosttyEmbed 层通过 NSApp.delegate 访问）
     var ghostty: Ghostty.App!
@@ -18,7 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
 
-        // 引擎：内部完成 ghostty_init / 配置加载（含 ~/.config/ghostty/config）/ app_new
+        // 引擎：内部完成配置加载（含 ~/.config/ghostty/config）/ app_new；
+        // ghostty_init 已在 main.swift 中先于 NSApplicationMain 调用
         ghostty = Ghostty.App()
         guard ghostty.readiness == .ready, let app = ghostty.app else {
             let alert = NSAlert()
@@ -29,18 +31,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        window = NSWindow(
+        window = HiddenTitlebarWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1024, height: 720),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [],  // HiddenTitlebarWindow 内部固定样式
             backing: .buffered, defer: false)
         window.title = "QuickTerm"
 
-        surfaceView = Ghostty.SurfaceView(app, baseConfig: nil)
-        // SurfaceScrollView 是尺寸同步的宿主：layout() 里把 surface frame 对齐并调
-        // sizeDidChange → ghostty_surface_set_size（裸 SurfaceView 不会自己跟随 resize）
-        window.contentView = SurfaceScrollView(
-            contentSize: window.contentLayoutRect.size,
-            surfaceView: surfaceView)
+        let surfaceView = Ghostty.SurfaceView(app, baseConfig: nil)
+        model.tree = SplitTree(view: surfaceView)
+
+        window.contentView = NSHostingView(rootView: RootView(
+            model: model, ghostty: ghostty, action: { _ in }))
         window.center()
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(surfaceView)

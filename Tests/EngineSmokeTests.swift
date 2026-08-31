@@ -25,13 +25,24 @@ final class EngineSmokeTests: XCTestCase {
 }
 
 final class SurfaceHostingTests: XCTestCase {
-    /// 回归锁（拖拽窗口终端不跟随 bug）：contentView 必须是 SurfaceScrollView 宿主，
-    /// 而非裸 SurfaceView——尺寸同步（sizeDidChange → ghostty_surface_set_size）由宿主驱动。
+    /// 回归锁（拖拽窗口终端不跟随 bug）：M1 起 contentView 为 NSHostingView（RootView →
+    /// TerminalSplitTreeView → SurfaceWrapper → SurfaceScrollView 链），尺寸同步由
+    /// SurfaceScrollView.layout() 驱动；断言窗口结构 + 树非空 + 隐藏标题栏样式。
     @MainActor
-    func testWindowHostsSurfaceScrollView() throws {
+    func testWindowHostsSplitTreeContent() throws {
         let window = try XCTUnwrap(NSApp.windows.first { $0.title == "QuickTerm" })
-        XCTAssertTrue(window.contentView is SurfaceScrollView,
-                      "window.contentView 应为 SurfaceScrollView（实际: \(type(of: window.contentView!))）")
+        XCTAssertTrue(window is HiddenTitlebarWindow, "主窗口应为 HiddenTitlebarWindow")
+        XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
+        XCTAssertEqual(window.titleVisibility, .hidden)
+        let content = try XCTUnwrap(window.contentView)
+        XCTAssertTrue(String(describing: type(of: content)).contains("NSHostingView"),
+                      "contentView 应为 NSHostingView（实际: \(type(of: content))）")
+        // 树非空：窗口内确实存在一个 SurfaceScrollView 后代（尺寸同步宿主在链上）
+        func findScrollHost(_ v: NSView) -> Bool {
+            if v is SurfaceScrollView { return true }
+            return v.subviews.contains(where: findScrollHost)
+        }
+        XCTAssertTrue(findScrollHost(content), "视图链中应存在 SurfaceScrollView 宿主")
     }
 
     /// 宿主布局行为：resize 后 surfaceView.frame 跟随宿主 bounds。
