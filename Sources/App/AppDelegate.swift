@@ -36,7 +36,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "QuickTerm"
 
         surfaceView = Ghostty.SurfaceView(app, baseConfig: nil)
-        window.contentView = surfaceView
+        // SurfaceScrollView 是尺寸同步的宿主：layout() 里把 surface frame 对齐并调
+        // sizeDidChange → ghostty_surface_set_size（裸 SurfaceView 不会自己跟随 resize）
+        window.contentView = SurfaceScrollView(
+            contentSize: window.contentLayoutRect.size,
+            surfaceView: surfaceView)
         window.center()
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(surfaceView)
