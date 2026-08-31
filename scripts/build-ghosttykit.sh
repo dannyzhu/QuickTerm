@@ -33,6 +33,39 @@ if [ ! -x "$ZIG" ]; then
 fi
 echo "using zig: $("$ZIG" version)"
 
+# --- SDK overlay：Xcode 26.x SDK 的 tbd 主文档缺 arm64-macos target，
+# --- Zig 0.15 链接器不做 arm64→arm64e 回退，导致全部符号 undefined。
+# --- 做一个符号链接 overlay，仅拷贝并修补 usr/lib 的 tbd；用 xcrun shim 指向它。
+SDK="$(/usr/bin/xcrun --show-sdk-path)"
+OV="$TOOLS/sdk-arm64fix"
+if [ ! -f "$OV/usr/lib/libSystem.tbd" ] || ! grep -q 'arm64-macos' "$OV/usr/lib/libSystem.tbd"; then
+  rm -rf "$OV"; mkdir -p "$OV/usr/lib/system"
+  for e in "$SDK"/*; do b="$(basename "$e")"; [ "$b" = "usr" ] || ln -s "$e" "$OV/$b"; done
+  for e in "$SDK/usr"/*; do b="$(basename "$e")"; [ "$b" = "lib" ] || ln -s "$e" "$OV/usr/$b"; done
+  for e in "$SDK/usr/lib"/*; do b="$(basename "$e")"
+    if [ -d "$e" ] && [ "$b" != "system" ]; then ln -s "$e" "$OV/usr/lib/$b"
+    elif [ -f "$e" ]; then cp "$e" "$OV/usr/lib/$b"; fi
+  done
+  cp "$SDK/usr/lib/system/"*.tbd "$OV/usr/lib/system/"
+  perl -pi -e 's/\barm64e-macos\b/arm64-macos, arm64e-macos/ if /targets:/ && /arm64e-macos/ && !/\barm64-macos\b/;' \
+    "$OV/usr/lib/"*.tbd "$OV/usr/lib/system/"*.tbd
+  echo "sdk overlay: $OV"
+fi
+mkdir -p "$TOOLS/bin"
+cat > "$TOOLS/bin/xcrun" <<'SHIM'
+#!/bin/bash
+for a in "$@"; do
+  if [ "$a" = "--show-sdk-path" ]; then
+    echo "${QUICKTERM_SDK:?QUICKTERM_SDK not set}"
+    exit 0
+  fi
+done
+exec /usr/bin/xcrun "$@"
+SHIM
+chmod +x "$TOOLS/bin/xcrun"
+export QUICKTERM_SDK="$OV"
+export PATH="$TOOLS/bin:$PATH"
+
 cd "$GHOSTTY"
 "$ZIG" build -Doptimize=ReleaseFast \
   -Demit-xcframework=true -Demit-macos-app=false -Dxcframework-target=native

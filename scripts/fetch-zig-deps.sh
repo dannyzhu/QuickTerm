@@ -30,4 +30,17 @@ fi
   "$ZIG" fetch "$f" > /dev/null
   echo "fetched:  $(basename "$url")"
 done
+# 传递依赖中的 git+https 引用（Zig git 客户端不走代理）：改用 GitHub codeload tarball。
+# 目前已知：vaxis → uucode@5f05f8f8（同 commit tarball 的包哈希与 git 拉取一致）
+GIT_DEPS="jacobsandlund/uucode#5f05f8f83a75caea201f12cc8ea32a2d82ea9732"
+for dep in $GIT_DEPS; do
+  repo="${dep%%#*}"; commit="${dep##*#}"
+  f="$DEPS/$(basename "$repo")-$commit.tar.gz"
+  if [ ! -f "$f" ]; then
+    echo "download: https://github.com/$repo/archive/$commit.tar.gz"
+    curl -fL --retry 3 "https://github.com/$repo/archive/$commit.tar.gz" -o "$f"
+  fi
+  "$ZIG" fetch "$f" > /dev/null
+  echo "fetched:  $(basename "$f")"
+done
 echo "OK: 依赖已全部灌入 Zig 缓存"
