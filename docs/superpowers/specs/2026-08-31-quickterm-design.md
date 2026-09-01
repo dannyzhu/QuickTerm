@@ -4,6 +4,7 @@
 **修订 v2**：字体改 Monaco（UI 图标用 SF Symbols）；工作区固定 `Cmd+数字`、默认 5 个、取消 Ctrl+Tab；确认 `Cmd+方向键` 切换终端；新增 `Cmd+鼠标拖拽` 移动/分裂/调整 pane
 **修订 v3**：快捷键全部可经 config `[keybinds]` 自配置（定义格式与动作清单）；引擎配置优先复用 `~/.config/ghostty/config`（四层配置链）
 **修订 v4**：焦点跟随鼠标（悬停即激活 pane、外框高亮、直接输入）；激活/非激活 pane 动态透明度 0.985/0.96；决策点全部确认
+**修订 v5**（2026-09-01，v1.0 交付后用户以真机截图确认）：工作区默认布局改为 **scrolling 无限横向画布**（Omarchy/Hyprland `scrolling` 布局：`column_width = 0.49`，新 pane 插入焦点列右侧、视口跟随焦点列滚动、相邻列在两缘自然露出）；dwindle 保留，`Cmd+L` 按工作区切换（对应 Omarchy `Super+L`）。详见 §4.2-bis
 
 一句话定位：**把 Omarchy 的 Hyprland 平铺桌面装进一个 macOS 原生窗口，里面全是终端。** 纯 Swift（AppKit + SwiftUI 混合），终端引擎为 libghostty（GhosttyKit），界面与快捷键忠实效仿 Omarchy。
 
@@ -146,6 +147,15 @@ AppDelegate (AppKit 生命周期)
 **焦点跟随鼠标（忠实 Hyprland focus_follows_mouse）**：鼠标移入某个 pane 即激活它——外框立即变 accent 高亮、键盘输入直达该 pane，无需点击；点击与键盘方向导航同样有效。实现：每个 pane 挂 NSTrackingArea（mouseEntered → 焦点切换）；Scratchpad/菜单等覆盖层打开时挂起悬停切换，防误切。
 
 **动态透明度（忠实 Omarchy active/inactive opacity）**：激活 pane 背景更实（0.985）、非激活更透（0.96），透出壁纸层次；焦点变化即时过渡。实现候选：引擎原生 `unfocused-split-opacity` 机制，或按焦点对 surface 热更新 `background-opacity`——M1 依实测手感二选一。
+
+#### 4.2-bis 双布局（v5）：scrolling 无限画布为默认
+
+Omarchy 实为双布局体系（源码：`layout = "dwindle"` + `scrolling.column_width = 0.49`，`Super+L` 按工作区切换并持久化）。QuickTerm 对齐：
+
+- **scrolling（新工作区默认）**：工作区 = 无限横向列条带。每列宽 = 49% 视口（可调 25%–90%）、列内可纵向栈叠；`Cmd+Return` 在焦点列**右侧插入新列**（继承 cwd）；视口以最小滚动量保证焦点列完全可见，相邻列在两缘自然露出（= Omarchy 截图行为，露边源于"列宽<半屏+视口跟随"，非特效）；滚动 ~0.15s easeOut。
+- **scrolling 键位语义**：`Cmd+←/→` 跨列焦点、`Cmd+↑/↓` 列内焦点；`Cmd+Shift+方向` 列换位/列内换位；`Cmd+J` 焦点 pane 併入左列纵栈 ⇄ 拆出独立列；`Cmd+Ctrl+←/→` 调列宽 ±5%、`Cmd+Ctrl+=` 全列重置 0.49（`Cmd+Ctrl+↑/↓` 在此布局无操作）；`Cmd+W` 关 pane、空列删除焦点左移；zoom/循环/拖拽语义同表（拖拽：左右缘=插新列、上下缘=併栈、中心=交换）；触控板双指横滑平移画布、松手吸附列边界（附带项）。
+- **dwindle（保留）**：行为与 v4 完全一致；`Cmd+L` 在两布局间切换，pane 全保留（树叶序 ⇄ 列序互转）。
+- 持久化升级 v2（含每工作区布局类型）；旧存档不兼容自动全新开始。
 
 **鼠标布局操作（忠实 Omarchy Super+拖动）**：`Cmd+左键拖动` pane——拖到目标 pane **中心 = 交换位置**，拖到目标 pane **上/下/左/右边缘 = 在该侧分裂插入**（把一块区域分隔成多块）；`Cmd+右键拖动` = 调整 pane 大小（换算到就近分隔条比例）。实现照抄 Ghostty 的 split 拖拽（自定义 UTType + 最近边缘三角判定 drop zone），仅把触发条件改为按住 Cmd。普通鼠标仍可拖分隔条调比例、双击等分。
 
