@@ -96,7 +96,9 @@ extension ConfigStoreTests {
 
 extension ConfigStoreTests {
     func testInactiveOpacityParsing() {
-        XCTAssertEqual(ConfigStore.parse("").inactiveOpacity, 0.85, accuracy: 0.001, "默认 0.85")
+        XCTAssertEqual(ConfigStore.parse("").inactiveOpacity, 0.75, accuracy: 0.001, "默认 0.75")
+        XCTAssertEqual(ConfigStore.parse("").inactiveBlur, 2.5, accuracy: 0.001, "默认模糊 2.5")
+        XCTAssertEqual(ConfigStore.parse("inactive-blur = 99").inactiveBlur, 10, accuracy: 0.001, "clamp")
         XCTAssertEqual(ConfigStore.parse("inactive-opacity = 0.7").inactiveOpacity, 0.7, accuracy: 0.001)
         XCTAssertEqual(ConfigStore.parse("inactive-opacity = 0.1").inactiveOpacity, 0.3, accuracy: 0.001, "clamp 下限")
     }
@@ -104,10 +106,12 @@ extension ConfigStoreTests {
     @MainActor
     func testEffectiveInactiveOpacityRespectsToggle() {
         let manager = ThemeManager()
-        manager.updateFromConfig(passthrough: "", followEngine: false, inactiveOpacity: 0.8)
+        manager.updateFromConfig(passthrough: "", followEngine: false,
+                                 inactiveOpacity: 0.8, inactiveBlur: 3)
         manager.opacityEnabled = true
         XCTAssertEqual(manager.effectiveInactiveOpacity, 0.8, accuracy: 0.001)
         manager.opacityEnabled = false
         XCTAssertEqual(manager.effectiveInactiveOpacity, 1.0, accuracy: 0.001, "总开关关闭 = 不透明")
+        XCTAssertEqual(manager.effectiveInactiveBlur, 0, accuracy: 0.001, "总开关关闭 = 无模糊")
     }
 }
