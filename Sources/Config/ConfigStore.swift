@@ -29,8 +29,10 @@ enum ConfigStore {
         var panePadding: Int = 14
         /// 每屏可见列数（scrolling；nil = 未设置，走菜单选择/UserDefaults，默认 2）
         var visibleColumns: Int?
-        /// pane 背景透明度（0.5–1.0，默认 0.85；全部 pane，文字不受影响）
+        /// pane 背景透明度（0.5–1.0，默认 0.85 = 非激活基准；文字不受影响）
         var paneOpacity: Double = 0.85
+        /// 激活 pane 背景等效透明度（0.5–1.0，默认 0.96）
+        var activeOpacity: Double = 0.96
         /// 非激活 pane 高斯模糊半径（0–10pt，默认 2.5；磨砂感）
         var inactiveBlur: Double = 2.5
         var overrides: [WMAction: KeyCombo] = [:]
@@ -83,6 +85,9 @@ enum ConfigStore {
                 }
                 if key == "pane-opacity", let v = Double(value) {
                     settings.paneOpacity = min(max(v, 0.5), 1.0)
+                }
+                if key == "active-opacity", let v = Double(value) {
+                    settings.activeOpacity = min(max(v, 0.5), 1.0)
                 }
                 if key == "inactive-blur", let v = Double(value) {
                     settings.inactiveBlur = min(max(v, 0), 10)

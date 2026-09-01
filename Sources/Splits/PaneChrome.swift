@@ -12,7 +12,11 @@ struct PaneChrome: ViewModifier {
             // 非激活 pane：背面垫窗口内 backdrop 模糊——磨砂的是透出的壁纸，文字锐利。
             // 激活 pane 无 backdrop = 清玻璃（透出清晰壁纸）。
             .background {
-                if !surfaceView.focused, theme.frostedInactive {
+                if surfaceView.focused {
+                    // 激活 = 清玻璃但更实（合成到 active-opacity，默认 0.96）
+                    theme.background.opacity(theme.activeUnderlayAlpha)
+                } else if theme.frostedInactive {
+                    // 非激活 = 磨砂玻璃（backdrop 模糊壁纸，文字锐利）
                     VisualEffectBlur()
                 }
             }

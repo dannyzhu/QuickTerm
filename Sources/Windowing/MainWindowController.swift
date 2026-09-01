@@ -196,7 +196,8 @@ final class MainWindowController: BaseTerminalController {
             followEngine: settings.themeName == "ghostty",
             panePadding: settings.panePadding,
             paneOpacity: settings.paneOpacity,
-            inactiveBlur: settings.inactiveBlur)
+            inactiveBlur: settings.inactiveBlur,
+            activeOpacity: settings.activeOpacity)
         if let name = settings.themeName, name != "ghostty",
            let theme = themeManager.themes.first(where: { $0.name == name }),
            theme != themeManager.current {

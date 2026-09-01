@@ -16,15 +16,26 @@ final class ThemeManager: ObservableObject {
     private(set) var ghosttyPassthrough = ""
     /// pane 内终端四边留白（config `pane-padding`，spec v6 默认 14）
     private(set) var panePadding = 14
-    /// pane 背景透明度（config `pane-opacity`，默认 0.85；全部 pane，注入引擎 background-opacity）
+    /// pane 背景透明度（config `pane-opacity`，默认 0.85 = 非激活基准，注入引擎 background-opacity）
     @Published private(set) var paneOpacity = 0.85
+    /// 激活 pane 背景等效透明度（config `active-opacity`，默认 0.96；
+    /// 引擎仍用 paneOpacity，激活侧以底色垫层合成到该值——零引擎 reload）
+    @Published private(set) var activeOpacity = 0.96
     /// 非激活 pane 磨砂背景开关（config `inactive-blur` > 0；模糊的是身后壁纸，文字锐利）
     @Published private(set) var inactiveBlur = 2.5
 
     var frostedInactive: Bool { opacityEnabled && inactiveBlur > 0 }
 
+    /// 激活 pane 垫层 alpha：使 paneOpacity 与垫层合成后 = activeOpacity
+    var activeUnderlayAlpha: Double {
+        guard opacityEnabled, paneOpacity < 1, activeOpacity > paneOpacity else { return 0 }
+        return min((activeOpacity - paneOpacity) / (1 - paneOpacity), 1)
+    }
+
     func updateFromConfig(passthrough: String, followEngine: Bool, panePadding: Int = 14,
-                          paneOpacity: Double = 0.85, inactiveBlur: Double = 2.5) {
+                          paneOpacity: Double = 0.85, inactiveBlur: Double = 2.5,
+                          activeOpacity: Double = 0.96) {
+        self.activeOpacity = activeOpacity  // 纯 UI 层
         self.inactiveBlur = inactiveBlur  // 纯 UI 层
         guard passthrough != ghosttyPassthrough
                 || followEngine != followEngineColors

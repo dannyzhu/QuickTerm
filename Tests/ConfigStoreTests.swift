@@ -100,6 +100,8 @@ extension ConfigStoreTests {
         XCTAssertEqual(ConfigStore.parse("").inactiveBlur, 2.5, accuracy: 0.001, "默认磨砂开")
         XCTAssertEqual(ConfigStore.parse("inactive-blur = 99").inactiveBlur, 10, accuracy: 0.001, "clamp")
         XCTAssertEqual(ConfigStore.parse("pane-opacity = 0.7").paneOpacity, 0.7, accuracy: 0.001)
+        XCTAssertEqual(ConfigStore.parse("").activeOpacity, 0.96, accuracy: 0.001, "激活默认 0.96")
+        XCTAssertEqual(ConfigStore.parse("active-opacity = 0.9").activeOpacity, 0.9, accuracy: 0.001)
         XCTAssertEqual(ConfigStore.parse("pane-opacity = 0.1").paneOpacity, 0.5, accuracy: 0.001, "clamp 下限")
     }
 
@@ -110,6 +112,9 @@ extension ConfigStoreTests {
                                  paneOpacity: 0.8, inactiveBlur: 3)
         manager.opacityEnabled = true
         XCTAssertTrue(manager.frostedInactive)
+        // 合成校验：paneOpacity 0.8 + 垫层 → activeOpacity 0.96
+        let a = manager.activeUnderlayAlpha
+        XCTAssertEqual(1 - (1 - 0.8) * (1 - a), 0.96, accuracy: 0.001, "垫层合成到 active-opacity")
         XCTAssertTrue(manager.overlayExtra().contains("background-opacity = 0.8"))
         manager.opacityEnabled = false
         XCTAssertFalse(manager.frostedInactive, "总开关关闭 = 无磨砂")
