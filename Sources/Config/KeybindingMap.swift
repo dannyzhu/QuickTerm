@@ -93,6 +93,7 @@ struct KeybindingMap {
         KeyCombo(key: "l", .command): .toggleLayout,
         KeyCombo(key: ",", .command): .openSettings,
         KeyCombo(key: "escape", .command): .exitFullscreen,
+        KeyCombo(key: "t", .command): .toggleFloat,
     ]
 
     /// 事件 → 动作。resize 系列附加 Shift = 10px 微调（precise）。

@@ -38,6 +38,7 @@ enum WMAction: String, CaseIterable {
     case toggleLayout = "toggle-layout"
     case openSettings = "open-settings"
     case exitFullscreen = "exit-fullscreen"
+    case toggleFloat = "toggle-float"
 
     /// goto/move 系列的工作区序号（0-based），非工作区动作为 nil
     var workspaceIndex: Int? {
@@ -113,6 +114,7 @@ enum WMAction: String, CaseIterable {
         case .toggleLayout: "布局切换（scrolling ⇄ dwindle）"
         case .openSettings: "打开配置文件（QuickTerm + ghostty）"
         case .exitFullscreen: "退出全屏（仅全屏时生效）"
+        case .toggleFloat: "pane 浮动 ⇄ 平铺（⌘拖移动、⌘右拖调大小）"
         }
     }
 }

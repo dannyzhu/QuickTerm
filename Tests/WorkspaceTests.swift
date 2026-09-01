@@ -97,3 +97,58 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertNil(map.action(key: "6", modifiers: .command), "工作区仅 1–5")
     }
 }
+
+extension WorkspaceTests {
+    @MainActor
+    func testToggleFloatRoundTrip() throws {
+        let c = try controller
+        c.model.switchTo(0)
+        c.perform(.newTerminal)
+        let pane = try XCTUnwrap(c.focusedSurface)
+        let tiledBefore = c.model.layout.paneList.count
+
+        c.toggleFloat(pane)
+        XCTAssertEqual(c.model.floating.count, 1, "浮起后浮动层 +1")
+        XCTAssertEqual(c.model.layout.paneList.count, tiledBefore - 1, "平铺层 -1")
+        XCTAssertTrue(c.model.floating.first?.pane === pane)
+        XCTAssertTrue(c.paneList.contains(pane), "paneList 覆盖浮动层")
+
+        c.toggleFloat(pane)
+        XCTAssertTrue(c.model.floating.isEmpty, "塞回后浮动层清空")
+        XCTAssertEqual(c.model.layout.paneList.count, tiledBefore, "平铺层恢复")
+
+        c.closePane(pane, confirmIfNeeded: false)
+    }
+
+    func testToggleFloatKeybinding() {
+        let map = KeybindingMap()
+        XCTAssertEqual(map.action(key: "t", modifiers: .command)?.action, .toggleFloat,
+                       "Cmd+T = 浮动切换（不再穿透给 ghostty new_tab）")
+    }
+
+    @MainActor
+    func testFloatingPaneClampAndPersistV3() throws {
+        let c = try controller
+        let wild = FloatingPane(
+            pane: c.newSurface(inheritingFrom: nil),
+            rect: CGRect(x: 2.0, y: -1.0, width: 0.05, height: 5.0)).clamped()
+        XCTAssertGreaterThanOrEqual(wild.rect.width, 0.15)
+        XCTAssertLessThanOrEqual(wild.rect.height, 1.0)
+        XCTAssertGreaterThanOrEqual(wild.rect.origin.y, 0)
+
+        // v3 往返含浮动层；v2 JSON（无 floatings 字段）可解且浮动为空
+        let state = MainWindowController.PersistedState(
+            layouts: c.model.layouts, floatings: c.model.floatings, activeIndex: 0)
+        let data = try JSONEncoder().encode(state)
+        let decoded = try JSONDecoder().decode(MainWindowController.PersistedState.self, from: data)
+        XCTAssertEqual(decoded.version, 3)
+        XCTAssertEqual(decoded.floatings?.count, c.model.floatings.count)
+
+        var v2 = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        v2["version"] = 2
+        v2.removeValue(forKey: "floatings")
+        let v2data = try JSONSerialization.data(withJSONObject: v2)
+        let decodedV2 = try JSONDecoder().decode(MainWindowController.PersistedState.self, from: v2data)
+        XCTAssertNil(decodedV2.floatings, "v2 存档兼容：浮动层缺省")
+    }
+}

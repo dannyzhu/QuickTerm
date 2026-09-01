@@ -16,6 +16,7 @@ final class MainWindowController: BaseTerminalController {
     private var mouseMonitor: Any?
     private var scrollMonitor: Any?
     private var resizeTarget: Ghostty.SurfaceView?
+    private var floatingMoveIndex: Int?
     private var configWatcher: ConfigWatcher?
     private var lastConfigContent: String?
     private var stripPanSerial = 0
@@ -39,8 +40,15 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 活动工作区全部 pane
-    var paneList: [Ghostty.SurfaceView] { model.layout.paneList }
+    /// 活动工作区全部 pane（平铺 + 浮动；线性循环与焦点扫描覆盖两层）
+    var paneList: [Ghostty.SurfaceView] {
+        model.layout.paneList + model.floating.map(\.pane)
+    }
+    /// 焦点 pane 是否在浮动层
+    var focusedIsFloating: Bool {
+        guard let f = focusedSurface else { return false }
+        return model.floating.contains { $0.pane === f }
+    }
     /// 全部工作区（含 scratchpad）所有 pane
     var allPanes: [Ghostty.SurfaceView] { model.allPanes }
 
@@ -121,7 +129,8 @@ final class MainWindowController: BaseTerminalController {
 
         // ⌘ 状态跟踪（拖拽源浮层）+ ⌘+右键拖拽调整大小（spec §4.2）
         mouseMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.flagsChanged, .rightMouseDown, .rightMouseDragged, .rightMouseUp]
+            matching: [.flagsChanged, .rightMouseDown, .rightMouseDragged, .rightMouseUp,
+                       .leftMouseDown, .leftMouseDragged, .leftMouseUp]
         ) { [weak self] event in
             guard let self else { return event }
             if event.type == .flagsChanged {
@@ -131,12 +140,31 @@ final class MainWindowController: BaseTerminalController {
             guard event.window === self.window,
                   event.modifierFlags.contains(.command) else { return event }
             switch event.type {
+            case .leftMouseDown:
+                // ⌘+左键：浮动 pane = 自由移动（置顶）；平铺 pane 放行给 DnD 拖拽源
+                if let idx = self.floatingIndex(of: self.paneUnderPointer(event)) {
+                    self.floatingMoveIndex = self.raiseFloating(at: idx)
+                    return nil
+                }
+                return event
+            case .leftMouseDragged:
+                guard let idx = self.floatingMoveIndex else { return event }
+                self.moveFloating(at: idx, dx: event.deltaX, dy: event.deltaY)
+                return nil
+            case .leftMouseUp:
+                let had = self.floatingMoveIndex != nil
+                self.floatingMoveIndex = nil
+                return had ? nil : event
             case .rightMouseDown:
                 self.resizeTarget = self.paneUnderPointer(event)
                 return self.resizeTarget == nil ? event : nil
             case .rightMouseDragged:
                 guard let pane = self.resizeTarget else { return event }
-                self.resizeByDrag(pane: pane, dx: event.deltaX, dy: event.deltaY)
+                if let idx = self.floatingIndex(of: pane) {
+                    self.resizeFloating(at: idx, dx: event.deltaX, dy: event.deltaY)
+                } else {
+                    self.resizeByDrag(pane: pane, dx: event.deltaX, dy: event.deltaY)
+                }
                 return nil
             case .rightMouseUp:
                 let hadTarget = self.resizeTarget != nil
@@ -212,13 +240,16 @@ final class MainWindowController: BaseTerminalController {
     }
 
     struct PersistedState: Codable {
-        var version = 2
+        var version = 3
         var layouts: [WorkspaceLayout]
+        /// v3 起；v2 存档缺省为空浮动层
+        var floatings: [[FloatingPane]]?
         var activeIndex: Int
     }
 
     func saveState() {
-        let state = PersistedState(layouts: model.layouts, activeIndex: model.activeIndex)
+        let state = PersistedState(
+            layouts: model.layouts, floatings: model.floatings, activeIndex: model.activeIndex)
         if let data = try? JSONEncoder().encode(state) {
             try? data.write(to: Self.stateURL, options: .atomic)
         }
@@ -228,9 +259,15 @@ final class MainWindowController: BaseTerminalController {
     private func restoreState() -> Bool {
         guard let data = try? Data(contentsOf: Self.stateURL),
               let state = try? JSONDecoder().decode(PersistedState.self, from: data),
-              state.version == 2,
-              !state.layouts.allSatisfy(\.isEmpty) else { return false }
+              (2...3).contains(state.version) else { return false }
+        let floatings = state.floatings ?? Array(repeating: [], count: state.layouts.count)
+        guard !(state.layouts.allSatisfy(\.isEmpty) && floatings.allSatisfy(\.isEmpty)) else { return false }
         model.layouts = state.layouts
+        model.floatings = floatings
+        if model.floatings.count < model.layouts.count {
+            model.floatings.append(contentsOf: Array(
+                repeating: [], count: model.layouts.count - model.floatings.count))
+        }
         model.setWorkspaceCount(max(model.layouts.count, 1))
         model.activeIndex = min(max(state.activeIndex, 0), model.layouts.count - 1)
         return true
@@ -399,6 +436,8 @@ final class MainWindowController: BaseTerminalController {
         case .exitFullscreen:
             // 仅全屏时退出（Ctrl+Cmd+F 本身即开关；Cmd+Esc 为专用退出）
             if savedFrame != nil { toggleSimpleFullscreen() }
+        case .toggleFloat:
+            toggleFloat()
         }
     }
 
@@ -428,6 +467,77 @@ final class MainWindowController: BaseTerminalController {
     func cycleVisibleColumns() {
         let next = visibleColumns >= 4 ? 2 : visibleColumns + 1
         setVisibleColumns(next)
+    }
+
+    // MARK: 浮动 pane（spec v7：Cmd+T / ⌘拖移动 / ⌘右拖调大小）
+
+    func toggleFloat(_ target: Ghostty.SurfaceView? = nil) {
+        guard let focused = target ?? focusedSurface else { return }
+        if let idx = model.floating.firstIndex(where: { $0.pane === focused }) {
+            // 塞回平铺：scrolling = 尾列右侧新列；dwindle = 规则插入
+            let fp = model.floating.remove(at: idx)
+            switch model.layout {
+            case .scrolling(let strip):
+                model.layout = .scrolling(strip.insertingColumnRight(
+                    of: strip.paneList.last, pane: fp.pane, widthFactor: columnFactor))
+            case .dwindle(let tree):
+                if tree.isEmpty {
+                    model.layout = .dwindle(SplitTree(view: fp.pane))
+                } else if let anchor = tree.root?.leaves().first,
+                          let t = try? tree.inserting(
+                            view: fp.pane, at: anchor,
+                            direction: tree.dwindleDirection(for: anchor)) {
+                    model.layout = .dwindle(t)
+                }
+            }
+            Ghostty.moveFocus(to: fp.pane)
+        } else {
+            // 原地浮起：取当前屏幕位置尺寸 → 归一化（SwiftUI top-left 坐标）
+            let rect = normalizedRect(of: focused) ?? CGRect(x: 0.2, y: 0.15, width: 0.55, height: 0.6)
+            removeFromActiveLayout(focused)
+            model.floating.append(FloatingPane(pane: focused, rect: rect).clamped())
+            Ghostty.moveFocus(to: focused)
+        }
+    }
+
+    private func normalizedRect(of pane: Ghostty.SurfaceView) -> CGRect? {
+        guard let content = window?.contentView, pane.window === window else { return nil }
+        let f = pane.convert(pane.bounds, to: content)
+        let W = content.bounds.width, H = content.bounds.height
+        guard W > 0, H > 0, f.width > 10 else { return nil }
+        // AppKit bottom-left → SwiftUI top-left
+        return CGRect(x: f.minX / W, y: 1 - (f.maxY / H),
+                      width: f.width / W, height: f.height / H)
+    }
+
+    private func floatingIndex(of pane: Ghostty.SurfaceView?) -> Int? {
+        guard let pane else { return nil }
+        return model.floating.firstIndex { $0.pane === pane }
+    }
+
+    /// ⌘+左键拖动浮动 pane（deltaY 向下为正 = SwiftUI y 正方向）
+    private func moveFloating(at index: Int, dx: CGFloat, dy: CGFloat) {
+        guard let content = window?.contentView else { return }
+        var fp = model.floating[index]
+        fp.rect.origin.x += dx / max(content.bounds.width, 1)
+        fp.rect.origin.y += dy / max(content.bounds.height, 1)
+        model.floating[index] = fp.clamped()
+    }
+
+    private func resizeFloating(at index: Int, dx: CGFloat, dy: CGFloat) {
+        guard let content = window?.contentView else { return }
+        var fp = model.floating[index]
+        fp.rect.size.width += dx / max(content.bounds.width, 1)
+        fp.rect.size.height += dy / max(content.bounds.height, 1)
+        model.floating[index] = fp.clamped()
+    }
+
+    /// 置顶（数组末位 = 最顶）
+    private func raiseFloating(at index: Int) -> Int {
+        guard index != model.floating.count - 1 else { return index }
+        let fp = model.floating.remove(at: index)
+        model.floating.append(fp)
+        return model.floating.count - 1
     }
 
     // MARK: Scratchpad（spec §4.1）
@@ -569,6 +679,15 @@ final class MainWindowController: BaseTerminalController {
         guard model.layouts.indices.contains(index), index != model.activeIndex,
               let focused = focusedSurface else { return }
 
+        // 浮动 pane：连浮动状态一起搬去目标工作区
+        if let idx = model.floating.firstIndex(where: { $0.pane === focused }) {
+            let fp = model.floating.remove(at: idx)
+            model.floatings[index].append(fp)
+            model.switchTo(index)
+            Ghostty.moveFocus(to: focused)
+            return
+        }
+
         // 先算目标（失败不动源）
         let newTarget: WorkspaceLayout
         switch model.layouts[index] {
@@ -703,6 +822,10 @@ final class MainWindowController: BaseTerminalController {
     }
 
     private func removeFromActiveLayout(_ view: Ghostty.SurfaceView) {
+        if let idx = model.floating.firstIndex(where: { $0.pane === view }) {
+            model.floating.remove(at: idx)
+            return
+        }
         switch model.layout {
         case .dwindle(let tree):
             guard let node = tree.root?.node(view: view) else { return }

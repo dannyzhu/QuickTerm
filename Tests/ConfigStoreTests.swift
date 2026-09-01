@@ -57,7 +57,7 @@ final class ConfigStoreTests: XCTestCase {
             layouts: c.model.layouts, activeIndex: c.model.activeIndex)
         let data = try JSONEncoder().encode(state)
         let decoded = try JSONDecoder().decode(MainWindowController.PersistedState.self, from: data)
-        XCTAssertEqual(decoded.version, 2)
+        XCTAssertEqual(decoded.version, 3)
         XCTAssertEqual(decoded.layouts.count, c.model.layouts.count)
         XCTAssertEqual(decoded.activeIndex, c.model.activeIndex)
         XCTAssertEqual(decoded.layouts[c.model.activeIndex].paneList.count,

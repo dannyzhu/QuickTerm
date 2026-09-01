@@ -6,11 +6,14 @@ final class WorkspaceModel: ObservableObject {
     static let workspaceCount = 5
 
     @Published var layouts: [WorkspaceLayout]
+    /// 每工作区的浮动层（与 layouts 平行索引；spec v7）
+    @Published var floatings: [[FloatingPane]]
     @Published var activeIndex: Int = 0
     @Published var barVisible = true
 
     init() {
         layouts = (0..<Self.workspaceCount).map { _ in .empty }
+        floatings = Array(repeating: [], count: Self.workspaceCount)
     }
 
     /// 活动工作区布局
@@ -19,12 +22,22 @@ final class WorkspaceModel: ObservableObject {
         set { layouts[activeIndex] = newValue }
     }
 
-    /// 全部工作区的所有 pane（主题重载/按 id 反查用）
-    var allPanes: [Ghostty.SurfaceView] {
-        layouts.flatMap(\.paneList) + (scratchpadSurface.map { [$0] } ?? [])
+    /// 活动工作区浮动层
+    var floating: [FloatingPane] {
+        get { floatings[activeIndex] }
+        set { floatings[activeIndex] = newValue }
     }
 
-    var allEmpty: Bool { layouts.allSatisfy(\.isEmpty) }
+    /// 全部工作区的所有 pane（主题重载/按 id 反查用）
+    var allPanes: [Ghostty.SurfaceView] {
+        layouts.flatMap(\.paneList)
+            + floatings.flatMap { $0.map(\.pane) }
+            + (scratchpadSurface.map { [$0] } ?? [])
+    }
+
+    var allEmpty: Bool {
+        layouts.allSatisfy(\.isEmpty) && floatings.allSatisfy(\.isEmpty)
+    }
 
     func switchTo(_ index: Int) {
         guard layouts.indices.contains(index) else { return }
@@ -32,7 +45,8 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func isEmpty(_ index: Int) -> Bool {
-        layouts.indices.contains(index) ? layouts[index].isEmpty : true
+        guard layouts.indices.contains(index) else { return true }
+        return layouts[index].isEmpty && floatings[index].isEmpty
     }
 
     /// config workspaces=N（1–10）：扩容补空；缩容仅当被裁的全空（否则保留至最后非空）
@@ -40,10 +54,12 @@ final class WorkspaceModel: ObservableObject {
         let target = min(max(n, 1), 10)
         if target > layouts.count {
             layouts.append(contentsOf: (layouts.count..<target).map { _ in WorkspaceLayout.empty })
+            floatings.append(contentsOf: Array(repeating: [], count: target - floatings.count))
         } else if target < layouts.count {
-            let lastNonEmpty = layouts.lastIndex { !$0.isEmpty }.map { $0 + 1 } ?? 0
+            let lastNonEmpty = (0..<layouts.count).last { !isEmpty($0) }.map { $0 + 1 } ?? 0
             let safeTarget = max(target, lastNonEmpty)
             layouts.removeLast(layouts.count - safeTarget)
+            floatings.removeLast(floatings.count - safeTarget)
         }
         activeIndex = min(activeIndex, layouts.count - 1)
     }
@@ -117,6 +133,19 @@ struct RootView: View {
                         onDrop: onScrollingDrop)
                         .padding(theme.gapsEnabled ? 5 : 0)
                 }
+
+                // 浮动层（spec v7）：悬浮于平铺之上；数组序 = z 序
+                GeometryReader { geo in
+                    ForEach(model.floating) { fp in
+                        ScrollingPaneCell(surfaceView: fp.pane, onDrop: { _, _, _ in })
+                            .frame(width: fp.rect.width * geo.size.width,
+                                   height: fp.rect.height * geo.size.height)
+                            .position(x: (fp.rect.origin.x + fp.rect.width / 2) * geo.size.width,
+                                      y: (fp.rect.origin.y + fp.rect.height / 2) * geo.size.height)
+                            .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
+                    }
+                }
+                .allowsHitTesting(!model.floating.isEmpty)
 
                 if model.scratchpadVisible, let scratch = model.scratchpadSurface {
                     Color.black.opacity(0.2)
