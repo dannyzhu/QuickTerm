@@ -25,6 +25,12 @@ struct StatusBarView: View {
         .frame(height: 26)
         .padding(.horizontal, 8)
         .background(theme.background)
+        .contentShape(Rectangle())
+        // 标准标题栏行为：空白处双击 = zoom 铺满屏幕可视区域，再双击还原。
+        // 胶囊/时钟/音量等子控件的手势优先，不受影响。
+        .onTapGesture(count: 2) {
+            (NSApp.mainWindow ?? NSApp.keyWindow)?.zoom(nil)
+        }
     }
 
     private var leftSection: some View {
