@@ -187,7 +187,8 @@ final class MainWindowController: BaseTerminalController {
         model.setWorkspaceCount(settings.workspaces)
         themeManager.updateFromConfig(
             passthrough: settings.ghosttyPassthrough,
-            followEngine: settings.themeName == "ghostty")
+            followEngine: settings.themeName == "ghostty",
+            panePadding: settings.panePadding)
         if let name = settings.themeName, name != "ghostty",
            let theme = themeManager.themes.first(where: { $0.name == name }),
            theme != themeManager.current {

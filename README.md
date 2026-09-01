@@ -58,7 +58,7 @@ Cmd+Ctrl+←→ 调列宽/大小 · Cmd+Ctrl+= 等分 · Alt+Tab / Cmd+[ ] 循�
 ## 配置（M4）
 
 `~/.config/quickterm/config.toml`（主菜单 → 设置 可自动创建模板；保存即热重载）：
-`theme`（主题名或 "ghostty" 完全跟随 ghostty 配置）· `workspaces`（1–10）·
+`theme`（主题名或 "ghostty" 完全跟随 ghostty 配置）· `workspaces`（1–10）· `pane-padding`（默认 3）·
 `[keybinds]` 改键（动作清单见 Cmd+K）· `[ghostty]` 任意 ghostty 选项透传（最高优先级）。
 
 已知环境注意：macOS 26 对已废弃的 CVDisplayLink 存在会话级配额，QuickTerm 默认

@@ -20,15 +20,16 @@ struct ScrollingStripView: View {
                 // zoom：焦点 pane 占满内容区（同 dwindle 语义）
                 ScrollingPaneCell(surfaceView: zoomed, onDrop: onDrop)
             } else {
+                let widths = strip.columnWidths(viewport: geo.size.width)
                 HStack(alignment: .top, spacing: columnGap) {
                     ForEach(Array(strip.columns.enumerated()),
-                            id: \.element.panes.first!.id) { _, column in
+                            id: \.element.panes.first!.id) { index, column in
                         VStack(spacing: 0) {
                             ForEach(column.panes, id: \.id) { pane in
                                 ScrollingPaneCell(surfaceView: pane, onDrop: onDrop)
                             }
                         }
-                        .frame(width: max(CGFloat(column.widthFactor) * geo.size.width, 50))
+                        .frame(width: max(widths[index], 50))
                     }
                 }
                 .frame(height: geo.size.height, alignment: .top)
@@ -57,27 +58,35 @@ struct ScrollingStripView: View {
     }
 
     private func scrollToFocus(id: UUID?, viewport: CGFloat) {
-        guard let id, let pane = strip.paneList.first(where: { $0.id == id }) else { return }
-        let target = strip.targetOffset(for: pane, current: offset, viewport: viewport, gap: columnGap)
+        let target: CGFloat
+        let total = strip.totalWidth(viewport: viewport, gap: columnGap)
+        if total <= viewport {
+            // 不溢出：无条件居中（单列=全宽 offset 0；两列=左右等隙），与焦点无关
+            target = (total - viewport) / 2
+        } else if let id, let pane = strip.paneList.first(where: { $0.id == id }) {
+            target = strip.targetOffset(for: pane, current: offset, viewport: viewport, gap: columnGap)
+        } else {
+            return
+        }
         guard abs(target - offset) > 0.5 else { return }
         withAnimation(.easeOut(duration: 0.15)) { offset = target }
     }
 
-    /// 双指横滑平移（附带项）：滑动跟手，结束吸附最近列左缘
+    /// 双指横滑平移（附带项）：滑动跟手，结束吸附最近列左缘。
+    /// 内容不溢出（单列/双列居中）时无可平移量，直接忽略。
     private func applyPan(viewport: CGFloat) {
         guard let pan, pan.serial != lastPanSerial else { return }
         lastPanSerial = pan.serial
-        let total = strip.columns.reduce(CGFloat(0)) {
-            $0 + CGFloat($1.widthFactor) * viewport + columnGap
-        } - columnGap
-        let maxOffset = max(0, total - viewport)
+        let total = strip.totalWidth(viewport: viewport, gap: columnGap)
+        guard total > viewport else { return }
+        let maxOffset = total - viewport
         if pan.ended {
-            // 吸附：最近的列起点
+            let widths = strip.columnWidths(viewport: viewport)
             var x: CGFloat = 0
             var best: CGFloat = 0
-            for column in strip.columns {
+            for width in widths {
                 if abs(x - offset) < abs(best - offset) { best = x }
-                x += CGFloat(column.widthFactor) * viewport + columnGap
+                x += width + columnGap
             }
             withAnimation(.easeOut(duration: 0.15)) { offset = min(max(best, 0), maxOffset) }
         } else {

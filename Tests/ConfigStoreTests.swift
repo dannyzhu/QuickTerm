@@ -64,3 +64,24 @@ final class ConfigStoreTests: XCTestCase {
                        c.paneList.count, "布局（含 pane 数）应完整往返")
     }
 }
+
+extension ConfigStoreTests {
+    func testPanePaddingParsing() {
+        XCTAssertEqual(ConfigStore.parse("").panePadding, 3, "默认 3（spec v6）")
+        XCTAssertEqual(ConfigStore.parse("pane-padding = 8").panePadding, 8)
+        XCTAssertEqual(ConfigStore.parse("pane-padding = 99").panePadding, 32, "clamp 上限")
+        XCTAssertEqual(ConfigStore.parse("pane-padding = -1").panePadding, 0, "clamp 下限")
+    }
+
+    @MainActor
+    func testPanePaddingReachesOverlay() {
+        let manager = ThemeManager()
+        XCTAssertTrue(manager.overlayExtra().contains("window-padding-x = 3"), "默认 3")
+        manager.updateFromConfig(passthrough: "", followEngine: false, panePadding: 6)
+        XCTAssertTrue(manager.overlayExtra().contains("window-padding-x = 6"))
+        XCTAssertTrue(manager.overlayExtra().contains("window-padding-y = 6"))
+        manager.updateFromConfig(passthrough: "", followEngine: true, panePadding: 6)
+        XCTAssertTrue(manager.overlayExtra().contains("window-padding-x = 6"),
+                      "theme=ghostty 模式仍注入（QuickTerm 自身特性）")
+    }
+}

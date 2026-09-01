@@ -112,3 +112,36 @@ final class ScrollingStripTests: XCTestCase {
         XCTAssertEqual(decoded.columns[1].widthFactor, 0.54, accuracy: 0.001)
     }
 }
+
+extension ScrollingStripTests {
+    @MainActor
+    func testSingleColumnFillsViewport() throws {
+        let a = try pane()
+        let strip = ScrollingStrip(pane: a)
+        let widths = strip.columnWidths(viewport: 1000)
+        XCTAssertEqual(widths, [1000], "单列升格为占满视口（参照 Omarchy）")
+        XCTAssertEqual(strip.targetOffset(for: a, current: 0, viewport: 1000, gap: 5), 0)
+    }
+
+    @MainActor
+    func testTwoColumnsCenteredWithEqualEdgeGaps() throws {
+        let a = try pane(), b = try pane()
+        let strip = ScrollingStrip(pane: a).insertingColumnRight(of: a, pane: b)
+        let vp: CGFloat = 1000, gap: CGFloat = 5
+        // 总宽 = 490+5+490 = 985 ≤ 1000 → 居中：offset = (985−1000)/2 = −7.5
+        let offset = strip.targetOffset(for: b, current: 0, viewport: vp, gap: gap)
+        XCTAssertEqual(offset, -7.5, accuracy: 0.01, "两列整组居中")
+        let leftGap = -offset                                  // 渲染 x = −offset
+        let rightGap = vp - (strip.totalWidth(viewport: vp, gap: gap) + leftGap)
+        XCTAssertEqual(leftGap, rightGap, accuracy: 0.01, "左右间隙相等（参照 Omarchy）")
+    }
+
+    @MainActor
+    func testThreeColumnsOverflowStillLeftClamped() throws {
+        let a = try pane(), b = try pane(), c = try pane()
+        var strip = ScrollingStrip(pane: a).insertingColumnRight(of: a, pane: b)
+        strip = strip.insertingColumnRight(of: b, pane: c)
+        // 溢出模式回归：焦点 a、current 0 → 0（左缘贴边，右露边）
+        XCTAssertEqual(strip.targetOffset(for: a, current: 0, viewport: 1000, gap: 5), 0)
+    }
+}

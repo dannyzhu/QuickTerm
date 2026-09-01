@@ -191,22 +191,39 @@ struct ScrollingStrip: Codable {
         return next
     }
 
-    // MARK: 视口滚动（纯函数，可测）
+    // MARK: 视口几何（纯函数，可测；渲染与滚动共用同一套有效列宽）
 
-    /// 最小滚动量让锚 pane 所在列完全可见。
-    /// - current: 当前偏移（内容坐标，向右为正）
-    /// - 返回 clamp 到 [0, 内容总宽−视口] 的新偏移
+    /// 有效列宽（pt）：**单列升格为占满视口**（参照 Omarchy/Hyprland scrolling 行为），
+    /// 多列按各自 widthFactor；底层 factor 不被改写（回到多列时恢复）。
+    func columnWidths(viewport: CGFloat) -> [CGFloat] {
+        guard columns.count != 1 else { return [viewport] }
+        return columns.map { CGFloat($0.widthFactor) * viewport }
+    }
+
+    func totalWidth(viewport: CGFloat, gap: CGFloat) -> CGFloat {
+        let widths = columnWidths(viewport: viewport)
+        guard !widths.isEmpty else { return 0 }
+        return widths.reduce(0, +) + gap * CGFloat(widths.count - 1)
+    }
+
+    /// 视口偏移：
+    /// - 内容总宽 ≤ 视口：整组**居中**（两侧等隙——两列 0.49 时左右间隙相等，参照 Omarchy）
+    /// - 溢出：最小滚动量让锚 pane 所在列完全可见（露边行为，截图 1/2）
+    /// 偏移为内容坐标向右为正；居中时可为负（负值 = 左侧留白）。
     func targetOffset(for pane: Ghostty.SurfaceView,
                       current: CGFloat, viewport: CGFloat, gap: CGFloat) -> CGFloat {
         guard viewport > 0, let (c, _) = position(of: pane) else { return current }
+        let widths = columnWidths(viewport: viewport)
+        let total = totalWidth(viewport: viewport, gap: gap)
+        if total <= viewport {
+            return (total - viewport) / 2
+        }
         var x: CGFloat = 0
-        for i in 0..<c { x += CGFloat(columns[i].widthFactor) * viewport + gap }
-        let width = CGFloat(columns[c].widthFactor) * viewport
-        let total = columns.reduce(CGFloat(0)) { $0 + CGFloat($1.widthFactor) * viewport + gap } - gap
-        let minOffset = x + width - viewport   // 右缘对齐
-        let maxOffset = x                      // 左缘对齐
+        for i in 0..<c { x += widths[i] + gap }
+        let minOffset = x + widths[c] - viewport   // 右缘对齐
+        let maxOffset = x                          // 左缘对齐
         let desired = min(max(current, minOffset), maxOffset)
-        return min(max(desired, 0), max(0, total - viewport))
+        return min(max(desired, 0), total - viewport)
     }
 
     // MARK: 与 dwindle 互转（Cmd+L；保 pane 保序）

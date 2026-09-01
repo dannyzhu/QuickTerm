@@ -14,11 +14,16 @@ final class ThemeManager: ObservableObject {
     private(set) var followEngineColors = false
     /// config [ghostty] 段（配置链第 4 层，追加在 overlay 最末 = 最终覆盖）
     private(set) var ghosttyPassthrough = ""
+    /// pane 内终端四边留白（config `pane-padding`，spec v6 默认 3）
+    private(set) var panePadding = 3
 
-    func updateFromConfig(passthrough: String, followEngine: Bool) {
-        guard passthrough != ghosttyPassthrough || followEngine != followEngineColors else { return }
+    func updateFromConfig(passthrough: String, followEngine: Bool, panePadding: Int = 3) {
+        guard passthrough != ghosttyPassthrough
+                || followEngine != followEngineColors
+                || panePadding != self.panePadding else { return }
         ghosttyPassthrough = passthrough
         followEngineColors = followEngine
+        self.panePadding = panePadding
         writeOverlay()
     }
 
@@ -105,10 +110,12 @@ final class ThemeManager: ObservableObject {
     // MARK: 引擎覆盖层（配置链第 3 层；映射照 omarchy ghostty.conf.tpl）
 
     func overlayExtra() -> String {
-        var lines: [String] = []
+        var lines: [String] = ["window-padding-x = \(panePadding)",
+                               "window-padding-y = \(panePadding)"]
         if followEngineColors {
             // theme = "ghostty"：配色与透明度完全跟随 ~/.config/ghostty/config
-            var out: [String] = []
+            // （pane-padding 仍是 QuickTerm 自身特性，照常注入；[ghostty] 段可最终覆盖）
+            var out: [String] = lines
             if !opacityEnabled {
                 out.append("background-opacity = 1.0")
                 out.append("unfocused-split-opacity = 1.0")

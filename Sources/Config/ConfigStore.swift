@@ -10,6 +10,7 @@ enum ConfigStore {
     # QuickTerm 配置（spec §4.7）。保存即热重载。
     # theme = "tokyo-night"     # 或 "ghostty"：不覆盖配色，完全跟随 ghostty 配置
     # workspaces = 5            # 1–10
+    # pane-padding = 3          # pane 内终端四边留白（pt，0–32）
 
     [keybinds]
     # 动作 = "modifier+key"；"none" 解绑。动作清单见 Cmd+K 速查表。
@@ -24,6 +25,8 @@ enum ConfigStore {
     struct Settings: Equatable {
         var themeName: String?
         var workspaces: Int = 5
+        /// pane 内终端四边留白（pt，注入引擎 window-padding-x/y；spec v6 默认 3）
+        var panePadding: Int = 3
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
         var ghosttyPassthrough: String = ""
@@ -65,6 +68,9 @@ enum ConfigStore {
                 if key == "theme" { settings.themeName = value }
                 if key == "workspaces", let n = Int(value) {
                     settings.workspaces = min(max(n, 1), 10)
+                }
+                if key == "pane-padding", let n = Int(value) {
+                    settings.panePadding = min(max(n, 0), 32)
                 }
             case "keybinds":
                 guard let action = WMAction(rawValue: key) else { continue }
