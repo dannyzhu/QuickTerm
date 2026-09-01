@@ -393,6 +393,9 @@ final class MainWindowController: BaseTerminalController {
             toggleSimpleFullscreen()
         case .openSettings:
             openSettingsFile()
+        case .exitFullscreen:
+            // 仅全屏时退出（Ctrl+Cmd+F 本身即开关；Cmd+Esc 为专用退出）
+            if savedFrame != nil { toggleSimpleFullscreen() }
         }
     }
 

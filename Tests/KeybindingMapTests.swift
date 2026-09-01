@@ -39,6 +39,9 @@ final class KeybindingMapTests: XCTestCase {
         XCTAssertNil(map.action(key: "c", modifiers: .command), "Cmd+C 必须放行")
         XCTAssertNil(map.action(key: "v", modifiers: .command), "Cmd+V 必须放行")
         XCTAssertNil(map.action(key: "-", modifiers: .command), "Cmd+- 字号必须放行")
+        XCTAssertEqual(map.action(key: "escape", modifiers: .command)?.action, .exitFullscreen,
+                       "Cmd+Esc = 退出全屏（裸 Esc 不受影响）")
+        XCTAssertNil(map.action(key: "escape", modifiers: []), "裸 Esc 必须放行给终端")
         XCTAssertEqual(map.action(key: ",", modifiers: .command)?.action, .openSettings,
                        "Cmd+, = 打开配置（WM 层拦截，不再穿透给 ghostty open_config）")
         XCTAssertEqual(map.action(key: "k", modifiers: .command)?.action, .keybindingHelp,
