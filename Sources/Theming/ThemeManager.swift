@@ -16,22 +16,21 @@ final class ThemeManager: ObservableObject {
     private(set) var ghosttyPassthrough = ""
     /// pane 内终端四边留白（config `pane-padding`，spec v6 默认 14）
     private(set) var panePadding = 14
-    /// 非激活 pane 整体透明度（config `inactive-opacity`，默认 0.75）
-    @Published private(set) var inactiveOpacity = 0.75
-    /// 非激活 pane 高斯模糊半径（config `inactive-blur`，默认 2.5）
+    /// pane 背景透明度（config `pane-opacity`，默认 0.85；全部 pane，注入引擎 background-opacity）
+    @Published private(set) var paneOpacity = 0.85
+    /// 非激活 pane 磨砂背景开关（config `inactive-blur` > 0；模糊的是身后壁纸，文字锐利）
     @Published private(set) var inactiveBlur = 2.5
 
-    /// PaneChrome 实际使用值（透明度总开关关闭时恢复不透明/无模糊）
-    var effectiveInactiveOpacity: Double { opacityEnabled ? inactiveOpacity : 1.0 }
-    var effectiveInactiveBlur: Double { opacityEnabled ? inactiveBlur : 0 }
+    var frostedInactive: Bool { opacityEnabled && inactiveBlur > 0 }
 
     func updateFromConfig(passthrough: String, followEngine: Bool, panePadding: Int = 14,
-                          inactiveOpacity: Double = 0.75, inactiveBlur: Double = 2.5) {
-        self.inactiveOpacity = inactiveOpacity  // 纯 UI 层，无需引擎 reload
-        self.inactiveBlur = inactiveBlur
+                          paneOpacity: Double = 0.85, inactiveBlur: Double = 2.5) {
+        self.inactiveBlur = inactiveBlur  // 纯 UI 层
         guard passthrough != ghosttyPassthrough
                 || followEngine != followEngineColors
-                || panePadding != self.panePadding else { return }
+                || panePadding != self.panePadding
+                || paneOpacity != self.paneOpacity else { return }
+        self.paneOpacity = paneOpacity
         ghosttyPassthrough = passthrough
         followEngineColors = followEngine
         self.panePadding = panePadding
@@ -134,8 +133,9 @@ final class ThemeManager: ObservableObject {
             if !ghosttyPassthrough.isEmpty { out.append(ghosttyPassthrough) }
             return out.joined(separator: "\n")
         }
-        // QuickTerm 主题模式：Omarchy 透明度语义（spec §1.1）
-        lines.append(opacityEnabled ? "background-opacity = 0.985" : "background-opacity = 1.0")
+        // pane 背景透明度（清玻璃/磨砂玻璃的基础；文字不受影响）
+        lines.append(opacityEnabled
+            ? "background-opacity = \(paneOpacity)" : "background-opacity = 1.0")
         lines.append(opacityEnabled ? "unfocused-split-opacity = 0.96" : "unfocused-split-opacity = 1.0")
         func emit(_ configKey: String, _ tomlKey: String, fallback: String? = nil) {
             if let v = current.hex(tomlKey) ?? fallback.flatMap({ current.hex($0) }) {

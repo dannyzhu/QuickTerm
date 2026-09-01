@@ -9,9 +9,13 @@ struct PaneChrome: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            // 非激活 pane：高斯模糊（磨砂）+ 整体淡出（壁纸透出）；边框保持锐利
-            .blur(radius: surfaceView.focused ? 0 : theme.effectiveInactiveBlur)
-            .opacity(surfaceView.focused ? 1.0 : theme.effectiveInactiveOpacity)
+            // 非激活 pane：背面垫窗口内 backdrop 模糊——磨砂的是透出的壁纸，文字锐利。
+            // 激活 pane 无 backdrop = 清玻璃（透出清晰壁纸）。
+            .background {
+                if !surfaceView.focused, theme.frostedInactive {
+                    VisualEffectBlur()
+                }
+            }
             .border(surfaceView.focused ? theme.accent : Palette.inactiveBorder, width: 2)
             .padding(theme.gapsEnabled ? 5 : 0)
             .scaleEffect(appeared ? 1 : 0.87)
