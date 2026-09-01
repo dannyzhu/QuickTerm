@@ -9,6 +9,8 @@ struct PaneChrome: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            // 非激活 pane 整体淡出（Hyprland active/inactive opacity 语义，壁纸透出）
+            .opacity(surfaceView.focused ? 1.0 : theme.effectiveInactiveOpacity)
             .border(surfaceView.focused ? theme.accent : Palette.inactiveBorder, width: 2)
             .padding(theme.gapsEnabled ? 5 : 0)
             .scaleEffect(appeared ? 1 : 0.87)

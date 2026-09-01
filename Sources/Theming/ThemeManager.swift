@@ -16,8 +16,15 @@ final class ThemeManager: ObservableObject {
     private(set) var ghosttyPassthrough = ""
     /// pane 内终端四边留白（config `pane-padding`，spec v6 默认 14）
     private(set) var panePadding = 14
+    /// 非激活 pane 整体透明度（config `inactive-opacity`，默认 0.85）
+    @Published private(set) var inactiveOpacity = 0.85
 
-    func updateFromConfig(passthrough: String, followEngine: Bool, panePadding: Int = 14) {
+    /// PaneChrome 实际使用值（透明度总开关关闭时恢复不透明）
+    var effectiveInactiveOpacity: Double { opacityEnabled ? inactiveOpacity : 1.0 }
+
+    func updateFromConfig(passthrough: String, followEngine: Bool, panePadding: Int = 14,
+                          inactiveOpacity: Double = 0.85) {
+        self.inactiveOpacity = inactiveOpacity  // 纯 UI 层，无需引擎 reload
         guard passthrough != ghosttyPassthrough
                 || followEngine != followEngineColors
                 || panePadding != self.panePadding else { return }

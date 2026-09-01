@@ -194,7 +194,8 @@ final class MainWindowController: BaseTerminalController {
         themeManager.updateFromConfig(
             passthrough: settings.ghosttyPassthrough,
             followEngine: settings.themeName == "ghostty",
-            panePadding: settings.panePadding)
+            panePadding: settings.panePadding,
+            inactiveOpacity: settings.inactiveOpacity)
         if let name = settings.themeName, name != "ghostty",
            let theme = themeManager.themes.first(where: { $0.name == name }),
            theme != themeManager.current {
