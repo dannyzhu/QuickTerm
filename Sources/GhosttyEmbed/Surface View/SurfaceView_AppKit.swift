@@ -218,7 +218,9 @@ extension Ghostty {
         var notificationIdentifiers: Set<String> = []
 
         private var markedText: NSMutableAttributedString
-        private(set) var focused: Bool = true
+        // QuickTerm：初始值 true 会让新建 pane 未获焦点就亮激活边框（双激活竞态）；
+        // 改为 false，仅由 become/resignFirstResponder 的 focusDidChange 回调驱动。
+        private(set) var focused: Bool = false
         private var prevPressureStage: Int = 0
         private var appearanceObserver: NSKeyValueObservation?
 

@@ -297,7 +297,7 @@ final class MainWindowController: BaseTerminalController {
                     model.layout = .dwindle(t)
                 }
             }
-            Ghostty.moveFocus(to: pane)
+            Ghostty.moveFocus(to: pane, from: focusedSurface)
 
         case .closePane:
             if let focused = focusedSurface { closePane(focused) }
