@@ -31,8 +31,8 @@ enum ConfigStore {
         var visibleColumns: Int?
         /// pane 背景透明度（0.5–1.0，默认 0.85 = 非激活基准；文字不受影响）
         var paneOpacity: Double = 0.85
-        /// 激活 pane 背景等效透明度（0.5–1.0，默认 0.96）
-        var activeOpacity: Double = 0.96
+        /// 激活 pane 背景等效透明度（0.5–1.0，默认 0.98）
+        var activeOpacity: Double = 0.98
         /// 非激活 pane 高斯模糊半径（0–10pt，默认 2.5；磨砂感）
         var inactiveBlur: Double = 2.5
         var overrides: [WMAction: KeyCombo] = [:]
