@@ -75,8 +75,8 @@ let gap: CGFloat = 26
 let paneTop = barY - 34
 let paneBottom = content.minY
 let paneH = paneTop - paneBottom
-let activeW = content.width * 0.52
-let dimW = content.width * 0.34
+let activeW = content.width * 0.70
+let dimW = content.width * 0.18
 let border: CGFloat = 10
 
 func pane(_ r: NSRect, borderColor: NSColor, fill: NSColor) {
@@ -123,12 +123,13 @@ pane(dim, borderColor: inactiveBorder, fill: bg1)
 let lineWidths: [CGFloat] = [0.62, 0.45, 0.72]
 let lineColors: [NSColor] = [magenta.withAlphaComponent(0.55),
                              muted, accent.withAlphaComponent(0.45)]
+let lineInset: CGFloat = 30
 for (i, w) in lineWidths.enumerated() {
     lineColors[i].setFill()
     NSBezierPath(rect: NSRect(
-        x: dim.minX + 44,
+        x: dim.minX + lineInset,
         y: dim.maxY - 96 - CGFloat(i) * 74,
-        width: dim.width * w, height: 26)).fill()
+        width: (dim.width - lineInset * 2) * w, height: 26)).fill()
 }
 
 // 露边列（右缘，被圆角裁掉一部分——scrolling 的"右边还有"）
