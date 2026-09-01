@@ -75,8 +75,8 @@ let gap: CGFloat = 26
 let paneTop = barY - 34
 let paneBottom = content.minY
 let paneH = paneTop - paneBottom
-let activeW = content.width * 0.46
-let dimW = content.width * 0.40
+let activeW = content.width * 0.52
+let dimW = content.width * 0.34
 let border: CGFloat = 10
 
 func pane(_ r: NSRect, borderColor: NSColor, fill: NSColor) {
@@ -92,21 +92,30 @@ func pane(_ r: NSRect, borderColor: NSColor, fill: NSColor) {
 let active = NSRect(x: content.minX, y: paneBottom, width: activeW, height: paneH)
 pane(active, borderColor: accent, fill: paneBG)
 
-// ❯ 提示符 + 光标块（整体在列内水平居中，光标不越过边框）
-let promptFont = NSFont(name: "Monaco", size: 260) ?? .monospacedSystemFont(ofSize: 260, weight: .bold)
-let prompt = NSAttributedString(string: "❯", attributes: [
-    .font: promptFont, .foregroundColor: green,
-])
-let ps = prompt.size()
-let cursorW: CGFloat = 54
-let cursorGap: CGFloat = 26
-let groupW = ps.width + cursorGap + cursorW
-let groupX = active.minX + (active.width - groupW) / 2
-prompt.draw(at: NSPoint(x: groupX, y: active.midY - ps.height / 2 + 8))
+// ❯ + 光标（手绘粗笔画，加大加粗：56pt 笔宽尖角 chevron + 大光标块，列内居中）
+let chevSpanX: CGFloat = 130
+let chevSpanY: CGFloat = 340
+let chevStroke: CGFloat = 56
+let cursorW: CGFloat = 88
+let cursorH: CGFloat = 340
+let pairGap: CGFloat = 26
+let visualChevW = chevSpanX + chevStroke
+let groupW = visualChevW + pairGap + cursorW
+let gx = active.minX + (active.width - groupW) / 2 + chevStroke / 2
+let cy = active.midY
+let chevron = NSBezierPath()
+chevron.move(to: NSPoint(x: gx, y: cy + chevSpanY / 2))
+chevron.line(to: NSPoint(x: gx + chevSpanX, y: cy))
+chevron.line(to: NSPoint(x: gx, y: cy - chevSpanY / 2))
+chevron.lineWidth = chevStroke
+chevron.lineCapStyle = .butt
+chevron.lineJoinStyle = .miter
+green.setStroke()
+chevron.stroke()
 accent.setFill()
-let cursorX = min(groupX + ps.width + cursorGap, active.maxX - border - 24 - cursorW)
-NSBezierPath(rect: NSRect(x: cursorX, y: active.midY - 80,
-                          width: cursorW, height: 168)).fill()
+NSBezierPath(rect: NSRect(x: gx + chevSpanX + chevStroke / 2 + pairGap,
+                          y: cy - cursorH / 2,
+                          width: cursorW, height: cursorH)).fill()
 
 // 暗列（中）：三条内容示意线
 let dim = NSRect(x: active.maxX + gap, y: paneBottom, width: dimW, height: paneH)
