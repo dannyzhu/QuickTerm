@@ -384,6 +384,8 @@ final class MainWindowController: BaseTerminalController {
             toggleScratchpad()
         case .toggleFullscreen:
             toggleSimpleFullscreen()
+        case .openSettings:
+            openSettingsFile()
         }
     }
 
@@ -489,7 +491,8 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 设置 = 打开 config.toml（不存在则先写模板，spec §4.6 简化决定）
+    /// 设置（Cmd+, / 菜单）：打开 QuickTerm config.toml（不存在则先写模板），
+    /// 若存在 ~/.config/ghostty/config 一并打开（配置链第 2 层，用户常改）
     private func openSettingsFile() {
         let url = ConfigStore.configURL
         if !FileManager.default.fileExists(atPath: url.path) {
@@ -498,6 +501,11 @@ final class MainWindowController: BaseTerminalController {
             try? ConfigStore.template.write(to: url, atomically: true, encoding: .utf8)
         }
         NSWorkspace.shared.open(url)
+        let ghosttyConfig = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/ghostty/config")
+        if FileManager.default.fileExists(atPath: ghosttyConfig.path) {
+            NSWorkspace.shared.open(ghosttyConfig)
+        }
     }
 
     // MARK: 工作区（spec §5.2）

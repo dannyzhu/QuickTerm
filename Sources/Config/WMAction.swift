@@ -36,6 +36,7 @@ enum WMAction: String, CaseIterable {
     case scratchpad = "scratchpad"
     case toggleFullscreen = "toggle-fullscreen"
     case toggleLayout = "toggle-layout"
+    case openSettings = "open-settings"
 
     /// goto/move 系列的工作区序号（0-based），非工作区动作为 nil
     var workspaceIndex: Int? {
@@ -109,6 +110,7 @@ enum WMAction: String, CaseIterable {
         case .scratchpad: "Scratchpad 浮动终端"
         case .toggleFullscreen: "整窗全屏（非原生）"
         case .toggleLayout: "布局切换（scrolling ⇄ dwindle）"
+        case .openSettings: "打开配置文件（QuickTerm + ghostty）"
         }
     }
 }

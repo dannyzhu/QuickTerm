@@ -91,6 +91,7 @@ struct KeybindingMap {
         KeyCombo(key: "s", .command): .scratchpad,
         KeyCombo(key: "f", [.command, .control]): .toggleFullscreen,
         KeyCombo(key: "l", .command): .toggleLayout,
+        KeyCombo(key: ",", .command): .openSettings,
     ]
 
     /// 事件 → 动作。resize 系列附加 Shift = 10px 微调（precise）。

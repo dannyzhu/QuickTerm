@@ -39,6 +39,8 @@ final class KeybindingMapTests: XCTestCase {
         XCTAssertNil(map.action(key: "c", modifiers: .command), "Cmd+C 必须放行")
         XCTAssertNil(map.action(key: "v", modifiers: .command), "Cmd+V 必须放行")
         XCTAssertNil(map.action(key: "-", modifiers: .command), "Cmd+- 字号必须放行")
+        XCTAssertEqual(map.action(key: ",", modifiers: .command)?.action, .openSettings,
+                       "Cmd+, = 打开配置（WM 层拦截，不再穿透给 ghostty open_config）")
         XCTAssertEqual(map.action(key: "k", modifiers: .command)?.action, .keybindingHelp,
                        "Cmd+K = 速查表（忠实 Omarchy，偏移说明 2）")
         XCTAssertNil(map.action(key: "q", modifiers: .command), "Cmd+Q 系统行为")
