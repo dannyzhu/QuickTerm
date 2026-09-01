@@ -16,8 +16,8 @@ final class ThemeManager: ObservableObject {
     private(set) var ghosttyPassthrough = ""
     /// pane 内终端四边留白（config `pane-padding`，spec v6 默认 14）
     private(set) var panePadding = 14
-    /// pane 背景透明度（config `pane-opacity`，默认 0.85 = 非激活基准，注入引擎 background-opacity）
-    @Published private(set) var paneOpacity = 0.85
+    /// pane 背景透明度（config `pane-opacity`，默认 0.92 = 非激活基准，注入引擎 background-opacity）
+    @Published private(set) var paneOpacity = 0.92
     /// 激活 pane 背景等效透明度（config `active-opacity`，默认 0.98；
     /// 引擎仍用 paneOpacity，激活侧以底色垫层合成到该值——零引擎 reload）
     @Published private(set) var activeOpacity = 0.98
@@ -26,6 +26,10 @@ final class ThemeManager: ObservableObject {
 
     var frostedInactive: Bool { opacityEnabled && inactiveBlur > 0 }
 
+    /// 顶部状态条等 chrome 的背景透明度：与 app 透明配置一致
+    /// （pane-opacity 数值 + Cmd+Backspace 总开关；关闭 = 不透明）
+    var effectiveChromeOpacity: Double { opacityEnabled ? paneOpacity : 1.0 }
+
     /// 激活 pane 垫层 alpha：使 paneOpacity 与垫层合成后 = activeOpacity
     var activeUnderlayAlpha: Double {
         guard opacityEnabled, paneOpacity < 1, activeOpacity > paneOpacity else { return 0 }
@@ -33,7 +37,7 @@ final class ThemeManager: ObservableObject {
     }
 
     func updateFromConfig(passthrough: String, followEngine: Bool, panePadding: Int = 14,
-                          paneOpacity: Double = 0.85, inactiveBlur: Double = 2.5,
+                          paneOpacity: Double = 0.92, inactiveBlur: Double = 2.5,
                           activeOpacity: Double = 0.98) {
         self.activeOpacity = activeOpacity  // 纯 UI 层
         self.inactiveBlur = inactiveBlur  // 纯 UI 层

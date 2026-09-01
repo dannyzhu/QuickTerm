@@ -107,6 +107,21 @@ struct RootView: View {
     let onPanelChoose: (Int) -> Void
 
     var body: some View {
+        ZStack {
+            // 连续壁纸层（spec §3.2）升为整窗背景：延伸到状态条身后，
+            // 半透明状态条（与 pane-opacity 同源）才能真正透出壁纸。
+            theme.background
+            if let url = theme.currentBackgroundURL {
+                WallpaperThumb(url: url).id(url)
+            }
+            content
+        }
+        .background(theme.background)
+        .ignoresSafeArea(.container, edges: .top)
+        .environmentObject(ghostty)
+    }
+
+    private var content: some View {
         VStack(spacing: 0) {
             if model.barVisible {
                 StatusBarView(
@@ -115,12 +130,6 @@ struct RootView: View {
                     onToggleMute: { [weak stats] in stats?.toggleMute() })
             }
             ZStack {
-                // 连续壁纸层（spec §3.2）：一张图横跨所有 pane，透过微透明表面与 gaps 露出
-                theme.background
-                if let url = theme.currentBackgroundURL {
-                    WallpaperThumb(url: url).id(url)
-                }
-
                 switch model.layout {
                 case .dwindle(let tree):
                     TerminalSplitTreeView(tree: tree, action: action)
@@ -165,8 +174,5 @@ struct RootView: View {
                 }
             }
         }
-        .background(theme.background)
-        .ignoresSafeArea(.container, edges: .top)
-        .environmentObject(ghostty)
     }
 }
