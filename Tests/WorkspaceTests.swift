@@ -126,6 +126,75 @@ extension WorkspaceTests {
                        "Cmd+T = 浮动切换（不再穿透给 ghostty new_tab）")
     }
 
+    /// 浮起默认几何（类 Omarchy）：宽 = 默认列宽 × 0.75，高 = 内容区 45%，居中
+    func testFloatDefaultRectOmarchyGeometry() {
+        let r = FloatingPane.defaultRect(columnFactor: 0.49)  // 2 列默认
+        XCTAssertEqual(r.width, 0.3675, accuracy: 0.0001, "宽 = 0.49 × 0.75")
+        XCTAssertEqual(r.height, 0.45, accuracy: 0.0001, "高 = 内容区 45%")
+        XCTAssertEqual(r.midX, 0.5, accuracy: 0.0001, "水平居中")
+        XCTAssertEqual(r.midY, 0.5, accuracy: 0.0001, "垂直居中")
+        // 4 列更窄；极小因子有下限（保持可用）
+        XCTAssertEqual(FloatingPane.defaultRect(columnFactor: 0.245).width,
+                       0.18375, accuracy: 0.0001)
+        XCTAssertEqual(FloatingPane.defaultRect(columnFactor: 0.05).width, 0.15)
+    }
+
+    /// 浮起走 defaultRect（不再原地沿用平铺大尺寸）
+    @MainActor
+    func testToggleFloatUsesDefaultRect() throws {
+        let c = try controller
+        c.model.switchTo(0)
+        c.perform(.newTerminal)
+        let pane = try XCTUnwrap(c.focusedSurface)
+        c.toggleFloat(pane)
+        defer {
+            c.toggleFloat(pane)
+            c.closePane(pane, confirmIfNeeded: false)
+        }
+        let rect = try XCTUnwrap(c.model.floating.first?.rect)
+        XCTAssertEqual(rect, FloatingPane.defaultRect(columnFactor: c.columnFactor))
+    }
+
+    /// 归一化换算与 NSHostingView 的 flipped 坐标一致
+    /// （回归：曾按 bottom-left 假设双重翻转，遮挡带整体垂直镜像）
+    @MainActor
+    func testNormalizedContentPointTopLeft() throws {
+        let c = try controller
+        let content = try XCTUnwrap(c.window?.contentView)
+        let W = content.bounds.width
+        let H = content.bounds.height
+        let innerH = H - StatusBarView.height  // barVisible 默认 true
+        // 窗口坐标恒为 bottom-left：取状态条正下方 10pt、左缘 1/4 处
+        let loc = NSPoint(x: W / 4, y: H - StatusBarView.height - 10)
+        let p = try XCTUnwrap(c.normalizedContentPoint(loc))
+        XCTAssertEqual(p.x, 0.25, accuracy: 0.01)
+        XCTAssertEqual(p.y, 10 / innerH, accuracy: 0.01, "top-left 基准：条下 10pt ≈ 顶部")
+        // 内容区底缘上方 10pt → 接近 1
+        let low = try XCTUnwrap(c.normalizedContentPoint(NSPoint(x: W / 2, y: 10)))
+        XCTAssertEqual(low.y, (innerH - 10) / innerH, accuracy: 0.01)
+    }
+
+    /// hover 遮挡：只有更高 z 的浮动 pane 构成遮挡（模型几何，不依赖 hitTest——
+    /// ⌘ 拖拽源浮层、overlay 滚动条等非 surface 覆盖不会误判）
+    func testHoverOcclusionGeometry() {
+        let a = CGRect(x: 0.1, y: 0.1, width: 0.3, height: 0.3)   // z0
+        let b = CGRect(x: 0.3, y: 0.3, width: 0.3, height: 0.3)   // z1（最顶）
+        let rects = [a, b]
+        let inBoth = CGPoint(x: 0.35, y: 0.35)
+        let onlyA = CGPoint(x: 0.15, y: 0.15)
+        let outside = CGPoint(x: 0.9, y: 0.9)
+        // 平铺 pane（nil）：任一浮动覆盖即遮挡
+        XCTAssertTrue(HoverOcclusion.isOccluded(paneFloatIndex: nil, floatingRects: rects, at: onlyA))
+        XCTAssertTrue(HoverOcclusion.isOccluded(paneFloatIndex: nil, floatingRects: rects, at: inBoth))
+        XCTAssertFalse(HoverOcclusion.isOccluded(paneFloatIndex: nil, floatingRects: rects, at: outside))
+        // 浮动 z0：只被更高 z 遮挡，不被自己遮挡
+        XCTAssertTrue(HoverOcclusion.isOccluded(paneFloatIndex: 0, floatingRects: rects, at: inBoth))
+        XCTAssertFalse(HoverOcclusion.isOccluded(paneFloatIndex: 0, floatingRects: rects, at: onlyA))
+        // 最顶浮动永不被遮挡；无浮动即无遮挡
+        XCTAssertFalse(HoverOcclusion.isOccluded(paneFloatIndex: 1, floatingRects: rects, at: inBoth))
+        XCTAssertFalse(HoverOcclusion.isOccluded(paneFloatIndex: nil, floatingRects: [], at: inBoth))
+    }
+
     @MainActor
     func testFloatingPaneClampAndPersistV3() throws {
         let c = try controller

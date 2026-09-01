@@ -71,3 +71,21 @@ config.toml `[ghostty]` 写 `window-vsync = true` 覆盖即可。
 避免 .zig-cache 中多优化级别档案共存时混装。
 - M5：新增 ScrollingStrip/ScrollingStripView（scrolling 布局）；StripDropDelegate 镜像 TerminalSplitLeaf 私有 SplitDropDelegate 的行为（zone 计算复用 TerminalSplitDropZone）；焦点跟随滚动经 PreferenceKey 上报（悬停焦点天然驱动视口）
 - 焦点修正：SurfaceView.focused 初始值 true→false（原值使新建 pane 未获焦点即亮边框，双激活竞态）；焦点态完全由 become/resignFirstResponder 回调驱动
+
+## NSHostingView 坐标系是 flipped（top-left）
+
+`window.contentView`（NSHostingView）`isFlipped == true`：`content.convert(locationInWindow, from: nil)`
+返回的 y 已是**自顶向下**基准，不是 AppKit 传统 bottom-left。按 bottom-left 假设再翻转会得到
+垂直镜像坐标——曾使 hover 遮挡判定镜像（浮动 pane 拖离垂直中心即错判）、顶栏滚轮切工作区
+实际命中窗口底部 26pt。统一走 `MainWindowController.normalizedContentPoint`（isFlipped 感知），
+回归测试 `testNormalizedContentPointTopLeft` 对真实宿主视图锁定语义。
+
+## hover 遮挡 = 模型几何而非 hitTest（spec v7 修订）
+
+NSTrackingArea 不感知兄弟视图遮挡（`.inVisibleRect` 只裁剪自身祖先链），浮动 pane 叠在平铺
+pane 上时两层都收到 mouseMoved/mouseEntered。hitTest 方案不可行：⌘ 按住时每个 pane 上都有
+铺满的 SurfaceDragSource 浮层（可命中普通 NSView），overlay 滚动条短暂显示时同理——hitTest
+会把毫无遮挡的 pane 误判为被遮挡（⌘ 期间全局 hover 停摆）。现行方案 `HoverOcclusion.isOccluded`
+纯几何判定（更高 z 浮动 rect / 面板遮罩 / Scratchpad），SurfaceView 在遮挡时合成一次
+mouseExited(-1,-1)（否则 core 悬停坐标冻结在遮挡边界，TUI hover 高亮滞留），脱离遮挡的首次
+mouseMoved 补进入状态；拖拽序列（type != .mouseMoved）不走守卫，跨 pane 选中文本不受影响。

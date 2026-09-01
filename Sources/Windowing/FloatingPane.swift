@@ -9,6 +9,14 @@ struct FloatingPane: Codable, Identifiable {
 
     var id: UUID { pane.id }
 
+    /// 浮起默认几何（类 Omarchy togglefloating：固定尺寸 + 居中）：
+    /// 宽 = 默认列宽 × 0.75，高 = 内容区 45%。
+    static func defaultRect(columnFactor: Double) -> CGRect {
+        let w = min(max(columnFactor * 0.75, 0.15), 1.0)
+        let h = 0.45
+        return CGRect(x: (1 - w) / 2, y: (1 - h) / 2, width: w, height: h)
+    }
+
     /// 限制在内容区内且保留最小可用尺寸
     func clamped() -> FloatingPane {
         var next = self

@@ -180,8 +180,9 @@ final class MainWindowController: BaseTerminalController {
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, let window = self.window, event.window === window,
                   let content = window.contentView else { return event }
-            let y = content.convert(event.locationInWindow, from: nil).y
-            if self.model.barVisible, y > content.bounds.maxY - 26 {
+            let p = content.convert(event.locationInWindow, from: nil)
+            let yTop = content.isFlipped ? p.y : content.bounds.height - p.y
+            if self.model.barVisible, yTop < StatusBarView.height {
                 let delta = event.scrollingDeltaY + event.scrollingDeltaX
                 guard abs(delta) > 0.5 else { return nil }
                 let count = self.model.layouts.count
@@ -492,22 +493,42 @@ final class MainWindowController: BaseTerminalController {
             }
             Ghostty.moveFocus(to: fp.pane)
         } else {
-            // 原地浮起：取当前屏幕位置尺寸 → 归一化（SwiftUI top-left 坐标）
-            let rect = normalizedRect(of: focused) ?? CGRect(x: 0.2, y: 0.15, width: 0.55, height: 0.6)
+            // 浮起：类 Omarchy togglefloating——固定尺寸居中
+            // （宽 = 默认列宽 × 0.75，高 = 内容区 45%）
+            let rect = FloatingPane.defaultRect(columnFactor: columnFactor)
             removeFromActiveLayout(focused)
             model.floating.append(FloatingPane(pane: focused, rect: rect).clamped())
             Ghostty.moveFocus(to: focused)
         }
     }
 
-    private func normalizedRect(of pane: Ghostty.SurfaceView) -> CGRect? {
-        guard let content = window?.contentView, pane.window === window else { return nil }
-        let f = pane.convert(pane.bounds, to: content)
-        let W = content.bounds.width, H = content.bounds.height
-        guard W > 0, H > 0, f.width > 10 else { return nil }
-        // AppKit bottom-left → SwiftUI top-left
-        return CGRect(x: f.minX / W, y: 1 - (f.maxY / H),
-                      width: f.width / W, height: f.height / H)
+    /// hover 遮挡判定（SurfaceView mouseEntered/mouseMoved 回调；spec v7 修订）：
+    /// 模型几何——更高 z 的浮动 pane、Scratchpad、面板遮罩构成遮挡。
+    override func surfaceIsOccluded(_ pane: Ghostty.SurfaceView,
+                                    at locationInWindow: NSPoint) -> Bool {
+        if model.activePanel != nil { return true }  // 面板遮罩在最顶层
+        if model.scratchpadVisible { return model.scratchpadSurface !== pane }
+        guard !model.floating.isEmpty,
+              let point = normalizedContentPoint(locationInWindow) else { return false }
+        return HoverOcclusion.isOccluded(
+            paneFloatIndex: model.floating.firstIndex { $0.pane === pane },
+            floatingRects: model.floating.map(\.rect),
+            at: point)
+    }
+
+    /// 窗口坐标 → 内容区归一化 top-left（内容区 = contentView 去掉顶部状态条；
+    /// 与 RootView 浮动层 GeometryReader 的坐标系一致）。
+    /// 注意 contentView 是 NSHostingView（flipped），convert 结果已是 top-left 基准；
+    /// isFlipped 分支为防御（宿主视图更换时不静默镜像）。
+    func normalizedContentPoint(_ locationInWindow: NSPoint) -> CGPoint? {
+        guard let content = window?.contentView else { return nil }
+        let barH: CGFloat = model.barVisible ? StatusBarView.height : 0
+        let W = content.bounds.width
+        let H = content.bounds.height - barH
+        guard W > 0, H > 0 else { return nil }
+        let p = content.convert(locationInWindow, from: nil)
+        let yTop = content.isFlipped ? p.y : content.bounds.height - p.y
+        return CGPoint(x: p.x / W, y: (yTop - barH) / H)
     }
 
     private func floatingIndex(of pane: Ghostty.SurfaceView?) -> Int? {

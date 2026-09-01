@@ -957,6 +957,10 @@ extension Ghostty {
         }
 
         override func mouseEntered(with event: NSEvent) {
+            // QuickTerm：被浮动层/遮罩盖住时不响应 hover（模型几何判定，
+            // 见 HoverOcclusion；进入状态由 mouseMoved 在脱离遮挡时补齐）
+            if let controller = window?.windowController as? BaseTerminalController,
+               controller.surfaceIsOccluded(self, at: event.locationInWindow) { return }
             mouseOverSurface = true
             super.mouseEntered(with: event)
 
@@ -999,6 +1003,29 @@ extension Ghostty {
         }
 
         override func mouseMoved(with event: NSEvent) {
+            // QuickTerm：hover（纯移动）不投递给被浮动层盖住的 surface；
+            // 拖拽序列（mouseDragged 转发进来，type != .mouseMoved）照常，
+            // 否则选中文本拖出 pane 边界会被截断。
+            if event.type == .mouseMoved,
+               let controller = window?.windowController as? BaseTerminalController,
+               controller.surfaceIsOccluded(self, at: event.locationInWindow) {
+                // tracking area 不因兄弟遮挡发 mouseExited——合成一次离开，
+                // 否则 core 的悬停坐标冻结在遮挡边界（TUI hover 高亮滞留）。
+                // mouseLocationInSurface 兜底：拖拽出框松开后 over 已 false
+                // 但 core 坐标仍停在拖拽末点，同样需要清理。
+                if mouseOverSurface || mouseLocationInSurface != nil {
+                    mouseOverSurface = false
+                    mouseLocationInSurface = nil
+                    if NSEvent.pressedMouseButtons == 0 {
+                        surfaceModel?.sendMousePos(.init(
+                            x: -1, y: -1, mods: .init(nsFlags: event.modifierFlags)))
+                    }
+                }
+                return
+            }
+            if event.type == .mouseMoved, !mouseOverSurface {
+                mouseOverSurface = true  // 曾在遮挡下滑入，mouseEntered 被吞——补进入状态
+            }
             let pos = self.convert(event.locationInWindow, from: nil)
             mouseLocationInSurface = pos
 

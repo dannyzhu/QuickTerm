@@ -3,6 +3,9 @@ import SwiftUI
 /// 仿 waybar 顶栏（spec §4.4）：26pt · Monaco 12 · SF Symbols 单色 · 无圆角。
 /// 左 logo+工作区胶囊 / 中时钟 / 右 cpu·网络·音量·电池。
 struct StatusBarView: View {
+    /// 条高（MainWindowController 换算内容区坐标时引用）
+    static let height: CGFloat = 26
+
     @EnvironmentObject var theme: ThemeManager
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var stats: SystemStatsService
@@ -22,7 +25,7 @@ struct StatusBarView: View {
         }
         .font(.custom("Monaco", size: 12))
         .foregroundStyle(theme.foreground)
-        .frame(height: 26)
+        .frame(height: Self.height)
         .padding(.horizontal, 8)
         .background(theme.background.opacity(theme.effectiveChromeOpacity))
         .contentShape(Rectangle())

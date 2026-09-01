@@ -12,6 +12,10 @@ class BaseTerminalController: NSWindowController {
     var commandPaletteIsShowing: Bool { false }
     /// 悬停即焦点（spec §4.2）：M1 的 MainWindowController 覆写为 true
     var focusFollowsMouse: Bool { false }
+    /// hover 遮挡判定（spec v7 修订）：pane 在该窗口坐标处是否被浮动层/遮罩盖住。
+    /// MainWindowController 覆写为模型几何判定；默认无遮挡。
+    func surfaceIsOccluded(_ pane: Ghostty.SurfaceView,
+                           at locationInWindow: NSPoint) -> Bool { false }
     func toggleBackgroundOpacity() {}
     func promptTabTitle() {}
     @objc func changeTabTitle(_ sender: Any?) {}
