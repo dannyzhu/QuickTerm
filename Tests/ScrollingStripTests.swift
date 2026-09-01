@@ -146,3 +146,28 @@ extension ScrollingStripTests {
         XCTAssertEqual(strip.targetOffset(for: a, current: 0, viewport: 1000, gap: 5), 0)
     }
 }
+
+extension ScrollingStripTests {
+    func testVisibleColumnsFactor() {
+        XCTAssertEqual(ScrollingStrip.factor(forVisibleColumns: 2), 0.49, accuracy: 0.001,
+                       "N=2 与 Omarchy column_width 一致")
+        XCTAssertEqual(ScrollingStrip.factor(forVisibleColumns: 3), 0.98 / 3, accuracy: 0.001)
+        XCTAssertEqual(ScrollingStrip.factor(forVisibleColumns: 4), 0.245, accuracy: 0.001)
+        XCTAssertEqual(ScrollingStrip.factor(forVisibleColumns: 0), 0.98, accuracy: 0.001, "clamp 下限")
+    }
+
+    @MainActor
+    func testEqualizedToFactorAppliesAllColumns() throws {
+        let a = try pane(), b = try pane(), c = try pane()
+        var strip = ScrollingStrip(pane: a).insertingColumnRight(of: a, pane: b)
+        strip = strip.insertingColumnRight(of: b, pane: c, widthFactor: 0.7)
+        let f = ScrollingStrip.factor(forVisibleColumns: 3)
+        strip = strip.equalized(to: f)
+        for column in strip.columns {
+            XCTAssertEqual(column.widthFactor, f, accuracy: 0.001)
+        }
+        // 三列 × (0.98/3) 不溢出 → 填充模式：三列填满、间隙等宽
+        let widths = strip.columnWidths(viewport: 1200, gap: 0)
+        XCTAssertEqual(widths.reduce(0, +), 1200, accuracy: 0.1, "3 列恰好填满超宽视口")
+    }
+}

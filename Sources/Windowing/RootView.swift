@@ -56,6 +56,18 @@ final class WorkspaceModel: ObservableObject {
     @Published var scratchpadVisible = false
     @Published var scratchpadSurface: Ghostty.SurfaceView?
 
+    // 每屏可见列数（菜单显示用镜像）
+    @Published var visibleColumnsDisplay: Int =
+        UserDefaults.standard.object(forKey: "quickterm.visibleColumns") as? Int ?? 2
+
+    /// 全部 scrolling 工作区的列因子是否已等于给定值（避免无谓重排）
+    func layoutsMatch(factor: Double) -> Bool {
+        layouts.allSatisfy { layout in
+            guard case .scrolling(let strip) = layout else { return true }
+            return strip.columns.allSatisfy { abs($0.widthFactor - factor) < 0.001 }
+        }
+    }
+
     // Cmd+K 速查数据（打开面板时由控制器按当前生效映射填充）
     @Published var keybindingRows: [(combo: String, action: WMAction)] = []
 

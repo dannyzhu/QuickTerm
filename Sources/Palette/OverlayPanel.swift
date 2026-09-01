@@ -10,7 +10,8 @@ enum OverlayPanel: Equatable {
 
 /// 主菜单条目（spec §4.6 v1 清单）
 enum MenuEntry: Int, CaseIterable {
-    case newTerminal, themes, backgrounds, toggleBar, toggleGaps, toggleOpacity
+    case newTerminal, themes, backgrounds, visibleColumns
+    case toggleBar, toggleGaps, toggleOpacity
     case keybindings, settings, about
 
     var title: String {
@@ -18,6 +19,7 @@ enum MenuEntry: Int, CaseIterable {
         case .newTerminal: "新建终端"
         case .themes: "主题…"
         case .backgrounds: "背景…"
+        case .visibleColumns: "每屏列数"
         case .toggleBar: "顶栏 显示/隐藏"
         case .toggleGaps: "Gaps 开关"
         case .toggleOpacity: "透明度开关"
@@ -32,6 +34,7 @@ enum MenuEntry: Int, CaseIterable {
         case .newTerminal: "plus.rectangle"
         case .themes: "paintpalette"
         case .backgrounds: "photo"
+        case .visibleColumns: "rectangle.split.3x1"
         case .toggleBar: "menubar.rectangle"
         case .toggleGaps: "squareshape.split.2x2"
         case .toggleOpacity: "circle.lefthalf.filled"
@@ -143,7 +146,13 @@ struct OverlayPanelView: View {
             ForEach(MenuEntry.allCases, id: \.rawValue) { entry in
                 HStack(spacing: 12) {
                     Image(systemName: entry.symbol).frame(width: 20)
-                    Text(entry.title)
+                    if entry == .visibleColumns {
+                        Text("每屏列数：\(model.visibleColumnsDisplay)")
+                        Text("（回车循环 2→3→4）")
+                            .font(.custom("Monaco", size: 11)).opacity(0.6)
+                    } else {
+                        Text(entry.title)
+                    }
                     Spacer()
                 }
                 .padding(.vertical, 8)

@@ -27,6 +27,8 @@ enum ConfigStore {
         var workspaces: Int = 5
         /// pane 内终端四边留白（pt，注入引擎 window-padding-x/y；spec v6 默认 14（= Omarchy 官方终端 padding））
         var panePadding: Int = 14
+        /// 每屏可见列数（scrolling；nil = 未设置，走菜单选择/UserDefaults，默认 2）
+        var visibleColumns: Int?
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
         var ghosttyPassthrough: String = ""
@@ -71,6 +73,9 @@ enum ConfigStore {
                 }
                 if key == "pane-padding", let n = Int(value) {
                     settings.panePadding = min(max(n, 0), 32)
+                }
+                if key == "visible-columns", let n = Int(value) {
+                    settings.visibleColumns = min(max(n, 1), 6)
                 }
             case "keybinds":
                 guard let action = WMAction(rawValue: key) else { continue }

@@ -85,3 +85,11 @@ extension ConfigStoreTests {
                       "theme=ghostty 模式仍注入（QuickTerm 自身特性）")
     }
 }
+
+extension ConfigStoreTests {
+    func testVisibleColumnsParsing() {
+        XCTAssertNil(ConfigStore.parse("").visibleColumns, "未设置 = nil（走菜单/UserDefaults）")
+        XCTAssertEqual(ConfigStore.parse("visible-columns = 3").visibleColumns, 3)
+        XCTAssertEqual(ConfigStore.parse("visible-columns = 99").visibleColumns, 6, "clamp")
+    }
+}

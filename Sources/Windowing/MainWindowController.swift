@@ -20,6 +20,11 @@ final class MainWindowController: BaseTerminalController {
     private var lastConfigContent: String?
     private var stripPanSerial = 0
 
+    /// scrolling 每屏可见列数（2 默认；菜单循环 2→3→4；config `visible-columns` 优先）
+    private(set) var visibleColumns =
+        UserDefaults.standard.object(forKey: "quickterm.visibleColumns") as? Int ?? 2
+    var columnFactor: Double { ScrollingStrip.factor(forVisibleColumns: visibleColumns) }
+
     /// 悬停即焦点（spec §4.2，忠实 Hyprland focus_follows_mouse）。
     override var focusFollowsMouse: Bool { true }
 
@@ -185,6 +190,7 @@ final class MainWindowController: BaseTerminalController {
             overrides: settings.overrides,
             unbound: settings.unbound)
         model.setWorkspaceCount(settings.workspaces)
+        if let n = settings.visibleColumns { setVisibleColumns(n, persist: false) }
         themeManager.updateFromConfig(
             passthrough: settings.ghosttyPassthrough,
             followEngine: settings.themeName == "ghostty",
@@ -285,8 +291,9 @@ final class MainWindowController: BaseTerminalController {
             let pane = newSurface(inheritingFrom: focusedSurface)
             switch model.layout {
             case .scrolling(let strip):
-                // 焦点列右侧插入新列（截图 3 语义）
-                model.layout = .scrolling(strip.insertingColumnRight(of: focusedSurface, pane: pane))
+                // 焦点列右侧插入新列（截图 3 语义），宽度按"每屏可见列数"
+                model.layout = .scrolling(strip.insertingColumnRight(
+                    of: focusedSurface, pane: pane, widthFactor: columnFactor))
             case .dwindle(let tree):
                 if tree.isEmpty {
                     model.layout = .dwindle(SplitTree(view: pane))
@@ -337,7 +344,7 @@ final class MainWindowController: BaseTerminalController {
         case .equalize:
             switch model.layout {
             case .dwindle(let tree): model.layout = .dwindle(tree.equalized())
-            case .scrolling(let strip): model.layout = .scrolling(strip.equalized())
+            case .scrolling(let strip): model.layout = .scrolling(strip.equalized(to: columnFactor))
             }
 
         case .resizeLeft: resizeFocused(.left, precise: precise)
@@ -387,6 +394,34 @@ final class MainWindowController: BaseTerminalController {
         case .openSettings:
             openSettingsFile()
         }
+    }
+
+    // MARK: 每屏可见列数（超宽屏支持）
+
+    /// 设置可见列数并把全部 scrolling 工作区统一重排为新因子
+    func setVisibleColumns(_ n: Int, persist: Bool = true) {
+        let clamped = min(max(n, 1), 6)
+        guard clamped != visibleColumns || !model.layoutsMatch(factor: columnFactor) else {
+            visibleColumns = clamped
+            return
+        }
+        visibleColumns = clamped
+        if persist {
+            UserDefaults.standard.set(clamped, forKey: "quickterm.visibleColumns")
+        }
+        model.visibleColumnsDisplay = clamped
+        let factor = columnFactor
+        for i in model.layouts.indices {
+            if case .scrolling(let strip) = model.layouts[i] {
+                model.layouts[i] = .scrolling(strip.equalized(to: factor))
+            }
+        }
+    }
+
+    /// 主菜单循环：2 → 3 → 4 → 2
+    func cycleVisibleColumns() {
+        let next = visibleColumns >= 4 ? 2 : visibleColumns + 1
+        setVisibleColumns(next)
     }
 
     // MARK: Scratchpad（spec §4.1）
@@ -473,6 +508,11 @@ final class MainWindowController: BaseTerminalController {
             themeManager.selectBackground(index)
             model.activePanel = nil
         case .menu:
+            // 每屏列数：循环并保持菜单打开（便于连按）
+            if MenuEntry(rawValue: index) == .visibleColumns {
+                cycleVisibleColumns()
+                return
+            }
             model.activePanel = nil
             switch MenuEntry(rawValue: index) {
             case .newTerminal: perform(.newTerminal)
@@ -484,7 +524,7 @@ final class MainWindowController: BaseTerminalController {
             case .keybindings: perform(.keybindingHelp)
             case .settings: openSettingsFile()
             case .about: NSApp.orderFrontStandardAboutPanel(nil)
-            case nil: break
+            case .visibleColumns, nil: break  // visibleColumns 已在上方处理
             }
         case .keybindings, nil:
             model.activePanel = nil
@@ -529,7 +569,8 @@ final class MainWindowController: BaseTerminalController {
         case .scrolling(let strip):
             newTarget = .scrolling(strip.isEmpty
                 ? ScrollingStrip(pane: focused)
-                : strip.insertingColumnRight(of: strip.paneList.last, pane: focused))
+                : strip.insertingColumnRight(of: strip.paneList.last, pane: focused,
+                                             widthFactor: columnFactor))
         case .dwindle(let tree):
             if tree.isEmpty {
                 newTarget = .dwindle(SplitTree(view: focused))

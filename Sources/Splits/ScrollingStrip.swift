@@ -14,6 +14,11 @@ struct ScrollingStrip: Codable {
     static let widthStep = 0.05
     static let widthRange = 0.25...0.90
 
+    /// "每屏可见 N 列" → 列宽因子（N=2 → 0.49 与 Omarchy 一致，留 2% 露边余量）
+    static func factor(forVisibleColumns n: Int) -> Double {
+        0.98 / Double(min(max(n, 1), 6))
+    }
+
     var columns: [Column] = []
     /// zoom：该 pane 占满内容区（结构性变更时清空）
     var zoomedID: UUID?
@@ -52,11 +57,13 @@ struct ScrollingStrip: Codable {
     // MARK: 结构操作（全部返回新值；结构变更清 zoom）
 
     /// 焦点列右侧插入新列（Cmd+Return 语义，截图 3）
-    func insertingColumnRight(of anchor: Ghostty.SurfaceView?, pane: Ghostty.SurfaceView) -> Self {
+    func insertingColumnRight(of anchor: Ghostty.SurfaceView?, pane: Ghostty.SurfaceView,
+                              widthFactor: Double = ScrollingStrip.defaultWidth) -> Self {
         var next = self
         next.zoomedID = nil
         let insertAt = anchor.flatMap { position(of: $0)?.col.advanced(by: 1) } ?? columns.count
-        next.columns.insert(Column(panes: [pane]), at: min(insertAt, columns.count))
+        next.columns.insert(Column(panes: [pane], widthFactor: widthFactor),
+                            at: min(insertAt, columns.count))
         return next
     }
 
@@ -146,11 +153,11 @@ struct ScrollingStrip: Codable {
         return next
     }
 
-    /// 全列宽重置 0.49（Cmd+Ctrl+=）
-    func equalized() -> Self {
+    /// 全列宽重置为统一因子（Cmd+Ctrl+= / 可见列数切换）
+    func equalized(to factor: Double = ScrollingStrip.defaultWidth) -> Self {
         var next = self
         for i in next.columns.indices {
-            next.columns[i].widthFactor = Self.defaultWidth
+            next.columns[i].widthFactor = factor
         }
         return next
     }
