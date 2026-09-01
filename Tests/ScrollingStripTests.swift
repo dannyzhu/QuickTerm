@@ -118,22 +118,23 @@ extension ScrollingStripTests {
     func testSingleColumnFillsViewport() throws {
         let a = try pane()
         let strip = ScrollingStrip(pane: a)
-        let widths = strip.columnWidths(viewport: 1000)
-        XCTAssertEqual(widths, [1000], "单列升格为占满视口（参照 Omarchy）")
-        XCTAssertEqual(strip.targetOffset(for: a, current: 0, viewport: 1000, gap: 5), 0)
+        XCTAssertEqual(strip.columnWidths(viewport: 1000, gap: 0), [1000],
+                       "单列填满视口（填充模式特例）")
+        XCTAssertEqual(strip.targetOffset(for: a, current: 0, viewport: 1000, gap: 0), 0)
     }
 
     @MainActor
-    func testTwoColumnsCenteredWithEqualEdgeGaps() throws {
+    func testTwoColumnsFillWithEqualGaps() throws {
+        // 填充模式（参照 Hyprland gaps 语义）：不溢出时列宽按比例放大填满，
+        // 间隙固定 → 左中右三个间隔精确相等（间隙本身由 PaneChrome/外圈 padding 构成）
         let a = try pane(), b = try pane()
         let strip = ScrollingStrip(pane: a).insertingColumnRight(of: a, pane: b)
-        let vp: CGFloat = 1000, gap: CGFloat = 5
-        // 总宽 = 490+5+490 = 985 ≤ 1000 → 居中：offset = (985−1000)/2 = −7.5
-        let offset = strip.targetOffset(for: b, current: 0, viewport: vp, gap: gap)
-        XCTAssertEqual(offset, -7.5, accuracy: 0.01, "两列整组居中")
-        let leftGap = -offset                                  // 渲染 x = −offset
-        let rightGap = vp - (strip.totalWidth(viewport: vp, gap: gap) + leftGap)
-        XCTAssertEqual(leftGap, rightGap, accuracy: 0.01, "左右间隙相等（参照 Omarchy）")
+        let vp: CGFloat = 1000, gap: CGFloat = 0
+        let widths = strip.columnWidths(viewport: vp, gap: gap)
+        XCTAssertEqual(widths.reduce(0, +), vp, accuracy: 0.01, "两列放大到恰好填满")
+        XCTAssertEqual(widths[0], widths[1], accuracy: 0.01, "等 factor 等宽")
+        XCTAssertEqual(strip.targetOffset(for: b, current: 0, viewport: vp, gap: gap), 0,
+                       "填满即无偏移（无多余留白可分配）")
     }
 
     @MainActor

@@ -14,10 +14,10 @@ final class ThemeManager: ObservableObject {
     private(set) var followEngineColors = false
     /// config [ghostty] 段（配置链第 4 层，追加在 overlay 最末 = 最终覆盖）
     private(set) var ghosttyPassthrough = ""
-    /// pane 内终端四边留白（config `pane-padding`，spec v6 默认 3）
-    private(set) var panePadding = 3
+    /// pane 内终端四边留白（config `pane-padding`，spec v6 默认 14）
+    private(set) var panePadding = 14
 
-    func updateFromConfig(passthrough: String, followEngine: Bool, panePadding: Int = 3) {
+    func updateFromConfig(passthrough: String, followEngine: Bool, panePadding: Int = 14) {
         guard passthrough != ghosttyPassthrough
                 || followEngine != followEngineColors
                 || panePadding != self.panePadding else { return }

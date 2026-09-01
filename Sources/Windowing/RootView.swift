@@ -96,14 +96,14 @@ struct RootView: View {
                 switch model.layout {
                 case .dwindle(let tree):
                     TerminalSplitTreeView(tree: tree, action: action)
-                        .padding(theme.gapsEnabled ? 10 : 0)
+                        .padding(theme.gapsEnabled ? 5 : 0)
                 case .scrolling(let strip):
                     ScrollingStripView(
                         strip: strip,
                         workspaceIndex: model.activeIndex,
                         pan: model.stripPan,
                         onDrop: onScrollingDrop)
-                        .padding(theme.gapsEnabled ? 10 : 0)
+                        .padding(theme.gapsEnabled ? 5 : 0)
                 }
 
                 if model.scratchpadVisible, let scratch = model.scratchpadSurface {

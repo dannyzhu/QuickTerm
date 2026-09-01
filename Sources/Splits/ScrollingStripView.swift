@@ -12,7 +12,7 @@ struct ScrollingStripView: View {
     @State private var offset: CGFloat = 0
     @State private var lastPanSerial: Int = -1
 
-    private let columnGap: CGFloat = 0  // 列间隙由 PaneChrome 的 2.5pt 内边距相邻合成 5
+    private let columnGap: CGFloat = 0  // 列间隙由 PaneChrome 的 5pt 内边距相邻合成 10（= gaps_in×2）
 
     var body: some View {
         GeometryReader { geo in
@@ -20,7 +20,7 @@ struct ScrollingStripView: View {
                 // zoom：焦点 pane 占满内容区（同 dwindle 语义）
                 ScrollingPaneCell(surfaceView: zoomed, onDrop: onDrop)
             } else {
-                let widths = strip.columnWidths(viewport: geo.size.width)
+                let widths = strip.columnWidths(viewport: geo.size.width, gap: columnGap)
                 HStack(alignment: .top, spacing: columnGap) {
                     ForEach(Array(strip.columns.enumerated()),
                             id: \.element.panes.first!.id) { index, column in
@@ -81,7 +81,7 @@ struct ScrollingStripView: View {
         guard total > viewport else { return }
         let maxOffset = total - viewport
         if pan.ended {
-            let widths = strip.columnWidths(viewport: viewport)
+            let widths = strip.columnWidths(viewport: viewport, gap: columnGap)
             var x: CGFloat = 0
             var best: CGFloat = 0
             for width in widths {

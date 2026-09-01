@@ -4,7 +4,7 @@
 **修订 v2**：字体改 Monaco（UI 图标用 SF Symbols）；工作区固定 `Cmd+数字`、默认 5 个、取消 Ctrl+Tab；确认 `Cmd+方向键` 切换终端；新增 `Cmd+鼠标拖拽` 移动/分裂/调整 pane
 **修订 v3**：快捷键全部可经 config `[keybinds]` 自配置（定义格式与动作清单）；引擎配置优先复用 `~/.config/ghostty/config`（四层配置链）
 **修订 v4**：焦点跟随鼠标（悬停即激活 pane、外框高亮、直接输入）；激活/非激活 pane 动态透明度 0.985/0.96；决策点全部确认
-**修订 v6**（2026-09-01）：`pane-padding` 配置项（pane 内终端四边留白，默认 3pt，0–32，注入引擎 window-padding）；scrolling 几何补全（参照 Omarchy）：**单列升格占满视口**、**内容总宽 ≤ 视口时整组居中**（两列左右间隙相等），仅溢出时进入最小滚动+露边模式
+**修订 v6**（2026-09-01，两轮）：`pane-padding` 配置项（默认 **14pt** = Omarchy 官方终端 padding，0–32，注入引擎 window-padding）；间隙统一为 Hyprland 语义（每 pane 边 5 → 相邻 10，外圈 5+5=10，**左中右等宽 10**）；scrolling 几何补全：**填充模式**——不溢出时列宽按比例放大填满（单列满屏、两列等隙为其自然结果），仅溢出进入最小滚动+露边
 **修订 v5**（2026-09-01，v1.0 交付后用户以真机截图确认）：工作区默认布局改为 **scrolling 无限横向画布**（Omarchy/Hyprland `scrolling` 布局：`column_width = 0.49`，新 pane 插入焦点列右侧、视口跟随焦点列滚动、相邻列在两缘自然露出）；dwindle 保留，`Cmd+L` 按工作区切换（对应 Omarchy `Super+L`）。详见 §4.2-bis
 
 一句话定位：**把 Omarchy 的 Hyprland 平铺桌面装进一个 macOS 原生窗口，里面全是终端。** 纯 Swift（AppKit + SwiftUI 混合），终端引擎为 libghostty（GhosttyKit），界面与快捷键忠实效仿 Omarchy。
@@ -195,7 +195,7 @@ Omarchy 实为双布局体系（源码：`layout = "dwindle"` + `scrolling.colum
 ```toml
 theme      = "tokyo-night"   # 或 "ghostty"：不覆盖配色，完全跟随 ghostty 配置
 workspaces = 5               # 1–10
-pane-padding = 3             # pane 内终端四边留白（pt，0–32）
+pane-padding = 14            # pane 内终端四边留白（pt，0–32；Omarchy 官方值）
 # font 未设置时默认 Monaco；若 ~/.config/ghostty/config 指定了 font-family 则尊重之
 
 [keybinds]                   # WM 级动作全部可改键；值格式 "modifier+key"，"none" = 解绑

@@ -193,15 +193,24 @@ struct ScrollingStrip: Codable {
 
     // MARK: 视口几何（纯函数，可测；渲染与滚动共用同一套有效列宽）
 
-    /// 有效列宽（pt）：**单列升格为占满视口**（参照 Omarchy/Hyprland scrolling 行为），
-    /// 多列按各自 widthFactor；底层 factor 不被改写（回到多列时恢复）。
-    func columnWidths(viewport: CGFloat) -> [CGFloat] {
-        guard columns.count != 1 else { return [viewport] }
-        return columns.map { CGFloat($0.widthFactor) * viewport }
+    /// 有效列宽（pt，参照 Omarchy/Hyprland scrolling）：
+    /// - **填充模式**：名义宽度装得下时，按比例放大到恰好填满（间隙固定）——
+    ///   单列即满屏、两列时左中右间隙精确相等
+    /// - **溢出模式**：按名义 widthFactor（最小滚动 + 露边）
+    /// 底层 factor 不被改写（溢出时恢复名义值）。
+    func columnWidths(viewport: CGFloat, gap: CGFloat) -> [CGFloat] {
+        guard !columns.isEmpty, viewport > 0 else { return [] }
+        let nominal = columns.map { CGFloat($0.widthFactor) * viewport }
+        let gapsTotal = gap * CGFloat(columns.count - 1)
+        let nominalSum = nominal.reduce(0, +)
+        let available = viewport - gapsTotal
+        guard nominalSum < available, nominalSum > 0 else { return nominal }
+        let scale = available / nominalSum
+        return nominal.map { $0 * scale }
     }
 
     func totalWidth(viewport: CGFloat, gap: CGFloat) -> CGFloat {
-        let widths = columnWidths(viewport: viewport)
+        let widths = columnWidths(viewport: viewport, gap: gap)
         guard !widths.isEmpty else { return 0 }
         return widths.reduce(0, +) + gap * CGFloat(widths.count - 1)
     }
@@ -213,7 +222,7 @@ struct ScrollingStrip: Codable {
     func targetOffset(for pane: Ghostty.SurfaceView,
                       current: CGFloat, viewport: CGFloat, gap: CGFloat) -> CGFloat {
         guard viewport > 0, let (c, _) = position(of: pane) else { return current }
-        let widths = columnWidths(viewport: viewport)
+        let widths = columnWidths(viewport: viewport, gap: gap)
         let total = totalWidth(viewport: viewport, gap: gap)
         if total <= viewport {
             return (total - viewport) / 2

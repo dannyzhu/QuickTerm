@@ -67,7 +67,7 @@ final class ConfigStoreTests: XCTestCase {
 
 extension ConfigStoreTests {
     func testPanePaddingParsing() {
-        XCTAssertEqual(ConfigStore.parse("").panePadding, 3, "默认 3（spec v6）")
+        XCTAssertEqual(ConfigStore.parse("").panePadding, 14, "默认 14（Omarchy 官方终端 padding）")
         XCTAssertEqual(ConfigStore.parse("pane-padding = 8").panePadding, 8)
         XCTAssertEqual(ConfigStore.parse("pane-padding = 99").panePadding, 32, "clamp 上限")
         XCTAssertEqual(ConfigStore.parse("pane-padding = -1").panePadding, 0, "clamp 下限")
@@ -76,7 +76,7 @@ extension ConfigStoreTests {
     @MainActor
     func testPanePaddingReachesOverlay() {
         let manager = ThemeManager()
-        XCTAssertTrue(manager.overlayExtra().contains("window-padding-x = 3"), "默认 3")
+        XCTAssertTrue(manager.overlayExtra().contains("window-padding-x = 14"), "默认 14")
         manager.updateFromConfig(passthrough: "", followEngine: false, panePadding: 6)
         XCTAssertTrue(manager.overlayExtra().contains("window-padding-x = 6"))
         XCTAssertTrue(manager.overlayExtra().contains("window-padding-y = 6"))
