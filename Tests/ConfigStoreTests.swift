@@ -54,12 +54,13 @@ final class ConfigStoreTests: XCTestCase {
     func testPersistedStateRoundTrip() throws {
         let c = try XCTUnwrap((NSApp.delegate as? AppDelegate)?.controller)
         let state = MainWindowController.PersistedState(
-            trees: c.model.trees, activeIndex: c.model.activeIndex)
+            layouts: c.model.layouts, activeIndex: c.model.activeIndex)
         let data = try JSONEncoder().encode(state)
         let decoded = try JSONDecoder().decode(MainWindowController.PersistedState.self, from: data)
-        XCTAssertEqual(decoded.trees.count, c.model.trees.count)
+        XCTAssertEqual(decoded.version, 2)
+        XCTAssertEqual(decoded.layouts.count, c.model.layouts.count)
         XCTAssertEqual(decoded.activeIndex, c.model.activeIndex)
-        XCTAssertEqual(decoded.trees[c.model.activeIndex].root?.leaves().count,
-                       c.paneList.count, "树结构（含叶数）应完整往返")
+        XCTAssertEqual(decoded.layouts[c.model.activeIndex].paneList.count,
+                       c.paneList.count, "布局（含 pane 数）应完整往返")
     }
 }

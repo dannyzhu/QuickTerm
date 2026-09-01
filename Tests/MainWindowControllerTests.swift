@@ -25,13 +25,12 @@ final class MainWindowControllerTests: XCTestCase {
 
     func testNewPaneInsertAndClose() throws {
         let c = try controller
+        c.model.switchTo(0)
         let before = c.paneList.count
-        let focused = try XCTUnwrap(c.focusedSurface)
-        let newPane = c.newSurface(inheritingFrom: focused)
-        c.model.tree = try c.model.tree.inserting(
-            view: newPane, at: focused, direction: c.model.tree.dwindleDirection(for: focused))
+        c.perform(.newTerminal)
         XCTAssertEqual(c.paneList.count, before + 1)
+        let newPane = try XCTUnwrap(c.focusedSurface)
         c.closePane(newPane, confirmIfNeeded: false)
-        XCTAssertEqual(c.paneList.count, before, "关闭后兄弟应回收父槽")
+        XCTAssertEqual(c.paneList.count, before, "关闭后应回收（scrolling 删空列）")
     }
 }

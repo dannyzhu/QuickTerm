@@ -33,7 +33,7 @@ struct StatusBarView: View {
                 .foregroundStyle(theme.accent)
                 .accessibilityLabel("QuickTerm")
             HStack(spacing: 3) {
-                ForEach(0..<model.trees.count, id: \.self) { i in
+                ForEach(0..<model.layouts.count, id: \.self) { i in
                     workspacePill(i)
                 }
             }

@@ -2,9 +2,10 @@ import AppKit
 import GhosttyKit
 import SwiftUI
 
-/// QuickTerm 主窗口控制器：SplitTree 状态的唯一拥有者（spec §3）。
+/// QuickTerm 主窗口控制器：工作区布局状态的唯一拥有者（spec §3 + §4.2-bis）。
 /// 继承 GhosttyEmbed 的 BaseTerminalController shim，使嵌入层的
 /// focus-follows-mouse / 分屏判定等路径直接生效。
+/// 每个 WM 动作按活动工作区布局（scrolling 默认 / dwindle）分派。
 final class MainWindowController: BaseTerminalController {
     let model = WorkspaceModel()
     let ghostty: Ghostty.App
@@ -17,18 +18,26 @@ final class MainWindowController: BaseTerminalController {
     private var resizeTarget: Ghostty.SurfaceView?
     private var configWatcher: ConfigWatcher?
     private var lastConfigContent: String?
+    private var stripPanSerial = 0
 
     /// 悬停即焦点（spec §4.2，忠实 Hyprland focus_follows_mouse）。
-    /// 嵌入层 SurfaceView.mouseMoved 会查此标志并调用 Ghostty.moveFocus。
     override var focusFollowsMouse: Bool { true }
 
+    /// 嵌入层要求的树视图（仅 dwindle 布局有意义；scrolling 返回空树）
     override var surfaceTree: SplitTree<Ghostty.SurfaceView> {
-        get { model.tree }
-        set { model.tree = newValue }
+        get {
+            if case .dwindle(let tree) = model.layout { return tree }
+            return SplitTree()
+        }
+        set {
+            if case .dwindle = model.layout { model.layout = .dwindle(newValue) }
+        }
     }
 
-    /// 树中全部 pane（先序叶遍历）
-    var paneList: [Ghostty.SurfaceView] { model.tree.root?.leaves() ?? [] }
+    /// 活动工作区全部 pane
+    var paneList: [Ghostty.SurfaceView] { model.layout.paneList }
+    /// 全部工作区（含 scratchpad）所有 pane
+    var allPanes: [Ghostty.SurfaceView] { model.allPanes }
 
     override var focusedSurface: Ghostty.SurfaceView? {
         paneList.first { $0.focused } ?? paneList.first
@@ -48,6 +57,9 @@ final class MainWindowController: BaseTerminalController {
         window.contentView = NSHostingView(rootView: RootView(
             model: model, ghostty: ghostty, stats: stats,
             action: { [weak self] op in self?.handleSplitOperation(op) },
+            onScrollingDrop: { [weak self] payload, dest, zone in
+                self?.scrollingDrop(payload: payload, destination: dest, zone: zone)
+            },
             onSelectWorkspace: { [weak self] i in self?.switchWorkspace(i) },
             onPanelChoose: { [weak self] i in self?.choosePanelItem(i) })
             .environmentObject(themeManager))
@@ -56,11 +68,9 @@ final class MainWindowController: BaseTerminalController {
         themeManager.onOverlayChanged = { [weak self] in
             guard let self else { return }
             self.ghostty.reloadConfig(soft: false)
-            for tree in self.model.trees {
-                for pane in tree.root?.leaves() ?? [] {
-                    if let surface = pane.surface {
-                        self.ghostty.reloadConfig(surface: surface, soft: false)
-                    }
+            for pane in self.allPanes {
+                if let surface = pane.surface {
+                    self.ghostty.reloadConfig(surface: surface, soft: false)
                 }
             }
             self.applyAppearance()
@@ -76,14 +86,14 @@ final class MainWindowController: BaseTerminalController {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self?.reloadConfigFile() }
         }
 
-        // 状态恢复（spec §4.8）：树布局 + 各 pane cwd + 活动工作区；失败则全新开始
+        // 状态恢复（spec §4.8）：布局 + 各 pane cwd + 活动工作区；失败则全新开始
         if !AppDelegate.isRunningTests, restoreState() {
             if let focused = focusedSurface {
                 window.makeFirstResponder(focused)
             }
         } else {
             let first = newSurface(inheritingFrom: nil)
-            model.tree = SplitTree(view: first)
+            model.layout = .scrolling(ScrollingStrip(pane: first))
             window.makeFirstResponder(first)
         }
         window.center()
@@ -104,7 +114,7 @@ final class MainWindowController: BaseTerminalController {
             return nil
         }
 
-        // ⌘ 状态跟踪（拖拽源浮层）+ ⌘+右键拖拽调整 pane 大小（spec §4.2）
+        // ⌘ 状态跟踪（拖拽源浮层）+ ⌘+右键拖拽调整大小（spec §4.2）
         mouseMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.flagsChanged, .rightMouseDown, .rightMouseDragged, .rightMouseUp]
         ) { [weak self] event in
@@ -132,19 +142,31 @@ final class MainWindowController: BaseTerminalController {
             }
         }
 
-        // 顶栏区域滚轮 → 循环工作区（spec §4.4）
+        // 滚轮：顶栏区域 → 循环工作区（spec §4.4）；
+        // 内容区 + scrolling 布局 + 横向为主 → 平移画布（spec §4.2-bis 附带项）
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self, let window = self.window, event.window === window,
-                  self.model.barVisible, let content = window.contentView else { return event }
-            // 顶栏占内容区最顶部 26pt（fullSizeContentView：内容区 = 整个窗口）
+                  let content = window.contentView else { return event }
             let y = content.convert(event.locationInWindow, from: nil).y
-            guard y > content.bounds.maxY - 26 else { return event }
-            let delta = event.scrollingDeltaY + event.scrollingDeltaX
-            guard abs(delta) > 0.5 else { return nil }
-            let count = self.model.trees.count
-            let next = (self.model.activeIndex + (delta < 0 ? 1 : count - 1)) % count
-            self.switchWorkspace(next)
-            return nil
+            if self.model.barVisible, y > content.bounds.maxY - 26 {
+                let delta = event.scrollingDeltaY + event.scrollingDeltaX
+                guard abs(delta) > 0.5 else { return nil }
+                let count = self.model.layouts.count
+                let next = (self.model.activeIndex + (delta < 0 ? 1 : count - 1)) % count
+                self.switchWorkspace(next)
+                return nil
+            }
+            if case .scrolling = self.model.layout,
+               abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY),
+               abs(event.scrollingDeltaX) > 0.5 || event.phase == .ended || event.momentumPhase == .ended {
+                self.stripPanSerial += 1
+                self.model.stripPan = .init(
+                    delta: event.scrollingDeltaX,
+                    ended: event.phase == .ended || event.momentumPhase == .ended,
+                    serial: self.stripPanSerial)
+                return nil
+            }
+            return event
         }
     }
 
@@ -173,34 +195,34 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    // MARK: 状态恢复（spec §4.8）
+    // MARK: 状态恢复（spec §4.8；v2 起含每工作区布局类型）
 
     private static var stateURL: URL {
         EngineOverlay.url.deletingLastPathComponent().appendingPathComponent("state.json")
     }
 
     struct PersistedState: Codable {
-        var version = 1
-        var trees: [SplitTree<Ghostty.SurfaceView>]
+        var version = 2
+        var layouts: [WorkspaceLayout]
         var activeIndex: Int
     }
 
     func saveState() {
-        let state = PersistedState(trees: model.trees, activeIndex: model.activeIndex)
+        let state = PersistedState(layouts: model.layouts, activeIndex: model.activeIndex)
         if let data = try? JSONEncoder().encode(state) {
             try? data.write(to: Self.stateURL, options: .atomic)
         }
     }
 
-    /// 恢复上次的树布局（每叶按存档 cwd 重开 shell）；成功返回 true
+    /// 恢复上次布局（每 pane 按存档 cwd 重开 shell）；旧版本/损坏存档 → false 全新开始
     private func restoreState() -> Bool {
         guard let data = try? Data(contentsOf: Self.stateURL),
               let state = try? JSONDecoder().decode(PersistedState.self, from: data),
-              state.version == 1,
-              !state.trees.allSatisfy(\.isEmpty) else { return false }
-        model.trees = state.trees
-        model.setWorkspaceCount(max(model.trees.count, 1))
-        model.activeIndex = min(max(state.activeIndex, 0), model.trees.count - 1)
+              state.version == 2,
+              !state.layouts.allSatisfy(\.isEmpty) else { return false }
+        model.layouts = state.layouts
+        model.setWorkspaceCount(max(model.layouts.count, 1))
+        model.activeIndex = min(max(state.activeIndex, 0), model.layouts.count - 1)
         return true
     }
 
@@ -227,14 +249,21 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
+    /// ⌘+右键拖拽：dwindle 调就近分隔条；scrolling 按横向位移调列宽
     private func resizeByDrag(pane: Ghostty.SurfaceView, dx: CGFloat, dy: CGFloat) {
-        guard let node = model.tree.root?.node(view: pane),
-              let bounds = window?.contentLayoutRect else { return }
-        let amount = UInt16(min(max(abs(dx) >= abs(dy) ? abs(dx) : abs(dy), 1), 200))
-        let direction: SplitTree<Ghostty.SurfaceView>.Spatial.Direction =
-            abs(dx) >= abs(dy) ? (dx > 0 ? .right : .left) : (dy > 0 ? .down : .up)
-        model.tree = (try? model.tree.resizing(
-            node: node, by: amount, in: direction, with: bounds)) ?? model.tree
+        switch model.layout {
+        case .dwindle(let tree):
+            guard let node = tree.root?.node(view: pane),
+                  let bounds = window?.contentLayoutRect else { return }
+            let amount = UInt16(min(max(abs(dx) >= abs(dy) ? abs(dx) : abs(dy), 1), 200))
+            let direction: SplitTree<Ghostty.SurfaceView>.Spatial.Direction =
+                abs(dx) >= abs(dy) ? (dx > 0 ? .right : .left) : (dy > 0 ? .down : .up)
+            model.layout = .dwindle((try? tree.resizing(
+                node: node, by: amount, in: direction, with: bounds)) ?? tree)
+        case .scrolling(let strip):
+            let viewport = max(window?.contentLayoutRect.width ?? 1000, 1)
+            model.layout = .scrolling(strip.resizingWidth(of: pane, delta: dx / viewport))
+        }
     }
 
     @available(*, unavailable)
@@ -247,19 +276,25 @@ final class MainWindowController: BaseTerminalController {
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
     }
 
-    // MARK: WM 动作（spec §5.1 全表）
+    // MARK: WM 动作（spec §5.1 + §4.2-bis；按活动布局分派）
 
     func perform(_ action: WMAction, precise: Bool = false) {
         switch action {
         case .newTerminal:
             let pane = newSurface(inheritingFrom: focusedSurface)
-            if model.tree.isEmpty {
-                model.tree = SplitTree(view: pane)
-            } else if let focused = focusedSurface,
-                      let t = try? model.tree.inserting(
-                        view: pane, at: focused,
-                        direction: model.tree.dwindleDirection(for: focused)) {
-                model.tree = t
+            switch model.layout {
+            case .scrolling(let strip):
+                // 焦点列右侧插入新列（截图 3 语义）
+                model.layout = .scrolling(strip.insertingColumnRight(of: focusedSurface, pane: pane))
+            case .dwindle(let tree):
+                if tree.isEmpty {
+                    model.layout = .dwindle(SplitTree(view: pane))
+                } else if let focused = focusedSurface,
+                          let t = try? tree.inserting(
+                            view: pane, at: focused,
+                            direction: tree.dwindleDirection(for: focused)) {
+                    model.layout = .dwindle(t)
+                }
             }
             Ghostty.moveFocus(to: pane)
 
@@ -278,26 +313,44 @@ final class MainWindowController: BaseTerminalController {
 
         case .toggleSplitDirection:
             guard let focused = focusedSurface else { return }
-            model.tree = (try? model.tree.togglingSplitDirection(around: focused)) ?? model.tree
+            switch model.layout {
+            case .dwindle(let tree):
+                model.layout = .dwindle((try? tree.togglingSplitDirection(around: focused)) ?? tree)
+            case .scrolling(let strip):
+                // Cmd+J：併入左列纵栈 ⇄ 拆出独立列（spec §4.2-bis）
+                model.layout = .scrolling(strip.mergingOrSplitting(focused))
+                Ghostty.moveFocus(to: focused)
+            }
 
         case .toggleZoom:
-            guard let focused = focusedSurface,
-                  let node = model.tree.root?.node(view: focused) else { return }
-            // zoom = 只渲染该子树；再按取消（spec §3.2）
-            model.tree = SplitTree(
-                root: model.tree.root,
-                zoomed: model.tree.zoomed == node ? nil : node)
+            guard let focused = focusedSurface else { return }
+            switch model.layout {
+            case .dwindle(let tree):
+                guard let node = tree.root?.node(view: focused) else { return }
+                model.layout = .dwindle(SplitTree(
+                    root: tree.root, zoomed: tree.zoomed == node ? nil : node))
+            case .scrolling(let strip):
+                model.layout = .scrolling(strip.togglingZoom(focused))
+            }
 
         case .equalize:
-            model.tree = model.tree.equalized()
+            switch model.layout {
+            case .dwindle(let tree): model.layout = .dwindle(tree.equalized())
+            case .scrolling(let strip): model.layout = .scrolling(strip.equalized())
+            }
 
         case .resizeLeft: resizeFocused(.left, precise: precise)
         case .resizeRight: resizeFocused(.right, precise: precise)
         case .resizeUp: resizeFocused(.up, precise: precise)
         case .resizeDown: resizeFocused(.down, precise: precise)
 
-        case .cyclePaneNext: cycleFocus(.next)
-        case .cyclePanePrev: cycleFocus(.previous)
+        case .cyclePaneNext: cycleFocus(next: true)
+        case .cyclePanePrev: cycleFocus(next: false)
+
+        case .toggleLayout:
+            // Cmd+L：dwindle ⇄ scrolling，保 pane 保序（spec §4.2-bis）
+            model.layout = model.layout.toggled()
+            if let focused = focusedSurface { Ghostty.moveFocus(to: focused) }
 
         case .gotoWorkspace1, .gotoWorkspace2, .gotoWorkspace3, .gotoWorkspace4, .gotoWorkspace5,
              .gotoWorkspace6, .gotoWorkspace7, .gotoWorkspace8, .gotoWorkspace9, .gotoWorkspace10:
@@ -311,7 +364,6 @@ final class MainWindowController: BaseTerminalController {
         case .themePicker:
             openPanel(.themes, selection: themeManager.themes.firstIndex(of: themeManager.current) ?? 0)
         case .backgroundMenu:
-            // 面板已开 → 直接循环下一张（带回绕）；否则打开背景选择器
             if model.activePanel == .backgrounds {
                 themeManager.nextBackground()
                 model.panelSelection = themeManager.backgroundIndex
@@ -351,7 +403,7 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    // MARK: 非原生全屏（精简版，spec §5.1 Ctrl+Cmd+F；简化决定见 M4 计划）
+    // MARK: 非原生全屏（精简版，spec §5.1 Ctrl+Cmd+F）
 
     private var savedFrame: NSRect?
 
@@ -403,7 +455,7 @@ final class MainWindowController: BaseTerminalController {
             choosePanelItem(model.panelSelection)
             return true
         default:
-            return false  // 其余键（含 WM 组合键）继续走正常链
+            return false
         }
     }
 
@@ -457,60 +509,98 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 把焦点 pane 移到目标工作区并跟随（Cmd+Shift+数字）
+    /// 把焦点 pane 移到目标工作区并跟随（Cmd+Shift+数字）；插入遵循目标工作区布局
     func moveFocusedPane(to index: Int) {
-        guard model.trees.indices.contains(index), index != model.activeIndex,
-              let focused = focusedSurface,
-              let node = model.tree.root?.node(view: focused) else { return }
+        guard model.layouts.indices.contains(index), index != model.activeIndex,
+              let focused = focusedSurface else { return }
 
-        // 先算目标树（失败则不动源树）
-        let newTarget: SplitTree<Ghostty.SurfaceView>
-        if model.trees[index].isEmpty {
-            newTarget = SplitTree(view: focused)
-        } else if let anchor = model.trees[index].root?.leaves().first,
-                  let t = try? model.trees[index].inserting(
-                    view: focused, at: anchor,
-                    direction: model.trees[index].dwindleDirection(for: anchor)) {
-            newTarget = t
-        } else {
-            return
+        // 先算目标（失败不动源）
+        let newTarget: WorkspaceLayout
+        switch model.layouts[index] {
+        case .scrolling(let strip):
+            newTarget = .scrolling(strip.isEmpty
+                ? ScrollingStrip(pane: focused)
+                : strip.insertingColumnRight(of: strip.paneList.last, pane: focused))
+        case .dwindle(let tree):
+            if tree.isEmpty {
+                newTarget = .dwindle(SplitTree(view: focused))
+            } else if let anchor = tree.root?.leaves().first,
+                      let t = try? tree.inserting(
+                        view: focused, at: anchor,
+                        direction: tree.dwindleDirection(for: anchor)) {
+                newTarget = .dwindle(t)
+            } else {
+                return
+            }
         }
 
-        model.tree = model.tree.removing(node)
-        model.trees[index] = newTarget
+        removeFromActiveLayout(focused)
+        model.layouts[index] = newTarget
         model.switchTo(index)
         Ghostty.moveFocus(to: focused)
     }
 
-    private func moveFocus(_ direction: SplitTree<Ghostty.SurfaceView>.Spatial.Direction) {
-        guard let focused = focusedSurface,
-              let node = model.tree.root?.node(view: focused),
-              let target = model.tree.focusTarget(for: .spatial(direction), from: node) else { return }
-        Ghostty.moveFocus(to: target, from: focused)
+    // MARK: 布局分派的焦点/换位/调整
+
+    private func moveFocus(_ direction: ScrollingStrip.Direction) {
+        guard let focused = focusedSurface else { return }
+        let target: Ghostty.SurfaceView?
+        switch model.layout {
+        case .dwindle(let tree):
+            guard let node = tree.root?.node(view: focused) else { return }
+            target = tree.focusTarget(for: .spatial(direction.spatial), from: node)
+        case .scrolling(let strip):
+            target = strip.focusTarget(from: focused, direction: direction)
+        }
+        if let target { Ghostty.moveFocus(to: target, from: focused) }
     }
 
-    private func swapFocused(_ direction: SplitTree<Ghostty.SurfaceView>.Spatial.Direction) {
-        guard let focused = focusedSurface,
-              let node = model.tree.root?.node(view: focused),
-              let target = model.tree.focusTarget(for: .spatial(direction), from: node),
-              let swapped = try? model.tree.swapping(focused, target) else { return }
-        model.tree = swapped
+    private func swapFocused(_ direction: ScrollingStrip.Direction) {
+        guard let focused = focusedSurface else { return }
+        switch model.layout {
+        case .dwindle(let tree):
+            guard let node = tree.root?.node(view: focused),
+                  let target = tree.focusTarget(for: .spatial(direction.spatial), from: node),
+                  let swapped = try? tree.swapping(focused, target) else { return }
+            model.layout = .dwindle(swapped)
+        case .scrolling(let strip):
+            model.layout = .scrolling(strip.swapping(focused, direction: direction))
+        }
         Ghostty.moveFocus(to: focused)
     }
 
-    private func resizeFocused(_ direction: SplitTree<Ghostty.SurfaceView>.Spatial.Direction, precise: Bool) {
-        guard let focused = focusedSurface,
-              let node = model.tree.root?.node(view: focused),
-              let bounds = window?.contentLayoutRect else { return }
-        model.tree = (try? model.tree.resizing(
-            node: node, by: precise ? 10 : 100, in: direction, with: bounds)) ?? model.tree
+    private func resizeFocused(_ direction: ScrollingStrip.Direction, precise: Bool) {
+        guard let focused = focusedSurface else { return }
+        switch model.layout {
+        case .dwindle(let tree):
+            guard let node = tree.root?.node(view: focused),
+                  let bounds = window?.contentLayoutRect else { return }
+            model.layout = .dwindle((try? tree.resizing(
+                node: node, by: precise ? 10 : 100, in: direction.spatial, with: bounds)) ?? tree)
+        case .scrolling(let strip):
+            // 列宽仅横向可调（spec §4.2-bis：↑/↓ 无操作）
+            switch direction {
+            case .left:
+                model.layout = .scrolling(strip.resizingWidth(of: focused, delta: -ScrollingStrip.widthStep))
+            case .right:
+                model.layout = .scrolling(strip.resizingWidth(of: focused, delta: ScrollingStrip.widthStep))
+            case .up, .down:
+                break
+            }
+        }
     }
 
-    private func cycleFocus(_ direction: SplitTree<Ghostty.SurfaceView>.FocusDirection) {
-        guard let focused = focusedSurface,
-              let node = model.tree.root?.node(view: focused),
-              let target = model.tree.focusTarget(for: direction, from: node) else { return }
-        Ghostty.moveFocus(to: target, from: focused)
+    private func cycleFocus(next: Bool) {
+        guard let focused = focusedSurface else { return }
+        let target: Ghostty.SurfaceView?
+        switch model.layout {
+        case .dwindle(let tree):
+            guard let node = tree.root?.node(view: focused) else { return }
+            target = tree.focusTarget(for: next ? .next : .previous, from: node)
+        case .scrolling(let strip):
+            target = strip.linearTarget(from: focused, next: next)
+        }
+        if let target { Ghostty.moveFocus(to: target, from: focused) }
     }
 
     // MARK: Surface 生命周期
@@ -522,7 +612,7 @@ final class MainWindowController: BaseTerminalController {
         return Ghostty.SurfaceView(ghostty.app!, baseConfig: config)
     }
 
-    /// 关闭一个 pane：兄弟回收父槽；最后一个 pane 时关窗口。
+    /// 关闭一个 pane（scrolling 空列删除；dwindle 兄弟回收）；全部工作区皆空才关窗。
     func closePane(_ view: Ghostty.SurfaceView, confirmIfNeeded: Bool = true) {
         guard paneList.contains(view) else { return }
         if confirmIfNeeded, view.needsConfirmQuit {
@@ -537,24 +627,38 @@ final class MainWindowController: BaseTerminalController {
     }
 
     private func removePane(_ view: Ghostty.SurfaceView) {
-        guard let node = model.tree.root?.node(view: view) else { return }
         let wasFocused = view.focused
-        model.tree = model.tree.removing(node)  // 放弃引用 → SurfaceView.deinit 释放 surface
-        if model.tree.isEmpty {
-            // 仅当所有工作区皆空才关窗口；否则停留在空工作区（可 Cmd+Return 重开）。
-            // 测试宿主中不关窗（后续测试仍需窗口）。
-            if model.trees.allSatisfy(\.isEmpty), !AppDelegate.isRunningTests {
+        // scrolling：删除前记下左邻（spec：焦点左移）
+        var successor: Ghostty.SurfaceView?
+        if case .scrolling(let strip) = model.layout {
+            successor = strip.focusTarget(from: view, direction: .left)
+                ?? strip.focusTarget(from: view, direction: .right)
+                ?? strip.focusTarget(from: view, direction: .up)
+                ?? strip.focusTarget(from: view, direction: .down)
+        }
+        removeFromActiveLayout(view)  // 放弃引用 → SurfaceView.deinit 释放 surface
+        if model.layout.isEmpty {
+            if model.allEmpty, !AppDelegate.isRunningTests {
                 window?.close()
             }
-        } else if wasFocused, let next = paneList.first {
+        } else if wasFocused, let next = successor ?? paneList.first {
             Ghostty.moveFocus(to: next)
+        }
+    }
+
+    private func removeFromActiveLayout(_ view: Ghostty.SurfaceView) {
+        switch model.layout {
+        case .dwindle(let tree):
+            guard let node = tree.root?.node(view: view) else { return }
+            model.layout = .dwindle(tree.removing(node))
+        case .scrolling(let strip):
+            model.layout = .scrolling(strip.removing(view))
         }
     }
 
     @objc private func ghosttyDidCloseSurface(_ notification: Foundation.Notification) {
         guard let view = notification.object as? Ghostty.SurfaceView else { return }
         if view === model.scratchpadSurface {
-            // Scratchpad 进程退出：销毁，下次 Cmd+S 重建
             model.scratchpadVisible = false
             model.scratchpadSurface = nil
             return
@@ -564,25 +668,25 @@ final class MainWindowController: BaseTerminalController {
         closePane(view, confirmIfNeeded: processAlive)
     }
 
-    // MARK: SwiftUI 回调（分隔条拖拽 / 拖放）
+    // MARK: SwiftUI 回调（dwindle 分隔条 / 双布局拖放）
 
     func handleSplitOperation(_ op: TerminalSplitOperation) {
+        guard case .dwindle(let tree) = model.layout else { return }
         switch op {
         case .resize(let resize):
-            // 分隔条拖拽：以新 ratio 重建该 split（照 Ghostty splitDidResize）
             let resized = resize.node.resizing(to: resize.ratio)
-            model.tree = (try? model.tree.replacing(node: resize.node, with: resized)) ?? model.tree
+            model.layout = .dwindle((try? tree.replacing(node: resize.node, with: resized)) ?? tree)
         case .drop(let drop):
-            handleDrop(drop)
+            handleDwindleDrop(drop, tree: tree)
         }
     }
 
-    private func handleDrop(_ drop: TerminalSplitOperation.Drop) {
+    private func handleDwindleDrop(_ drop: TerminalSplitOperation.Drop,
+                                   tree: SplitTree<Ghostty.SurfaceView>) {
         guard drop.payload !== drop.destination else { return }
-        // 中心 = 交换位置（spec §4.2）
         if drop.zone == .center {
-            if let swapped = try? model.tree.swapping(drop.payload, drop.destination) {
-                model.tree = swapped
+            if let swapped = try? tree.swapping(drop.payload, drop.destination) {
+                model.layout = .dwindle(swapped)
                 Ghostty.moveFocus(to: drop.payload)
             }
             return
@@ -594,11 +698,32 @@ final class MainWindowController: BaseTerminalController {
         case .right: .right
         case .center: .right  // 已在上方返回；穷尽 switch
         }
-        guard let sourceNode = model.tree.root?.node(view: drop.payload) else { return }
-        let without = model.tree.removing(sourceNode)
-        if let newTree = try? without.inserting(view: drop.payload, at: drop.destination, direction: direction) {
-            model.tree = newTree
+        guard let sourceNode = tree.root?.node(view: drop.payload) else { return }
+        let without = tree.removing(sourceNode)
+        if let newTree = try? without.inserting(
+            view: drop.payload, at: drop.destination, direction: direction) {
+            model.layout = .dwindle(newTree)
             Ghostty.moveFocus(to: drop.payload)
+        }
+    }
+
+    /// scrolling 布局拖放（spec §4.2-bis：左右缘=插新列、上下缘=併栈、中心=交换）
+    func scrollingDrop(payload: Ghostty.SurfaceView,
+                       destination: Ghostty.SurfaceView,
+                       zone: TerminalSplitDropZone) {
+        guard case .scrolling(let strip) = model.layout else { return }
+        model.layout = .scrolling(strip.dropping(payload, on: destination, zone: zone))
+        Ghostty.moveFocus(to: payload)
+    }
+}
+
+private extension ScrollingStrip.Direction {
+    var spatial: SplitTree<Ghostty.SurfaceView>.Spatial.Direction {
+        switch self {
+        case .left: .left
+        case .right: .right
+        case .up: .up
+        case .down: .down
         }
     }
 }

@@ -1,45 +1,51 @@
 import SwiftUI
 
-/// 多工作区状态（spec §5.2：默认 5 个，值语义切换 = 瞬时无动画）。
-/// AppKit 控制器是唯一写入方，SwiftUI 纯读。
+/// 多工作区状态（spec §5.2 + §4.2-bis：默认 5 个、每工作区独立布局，
+/// 新工作区默认 scrolling 无限画布）。AppKit 控制器是唯一写入方，SwiftUI 纯读。
 final class WorkspaceModel: ObservableObject {
     static let workspaceCount = 5
 
-    @Published var trees: [SplitTree<Ghostty.SurfaceView>]
+    @Published var layouts: [WorkspaceLayout]
     @Published var activeIndex: Int = 0
     @Published var barVisible = true
 
     init() {
-        trees = Array(repeating: SplitTree<Ghostty.SurfaceView>(), count: Self.workspaceCount)
+        layouts = (0..<Self.workspaceCount).map { _ in .empty }
     }
 
-    /// 活动工作区的树（M1 全部调用点经此代理，无需改动）
-    var tree: SplitTree<Ghostty.SurfaceView> {
-        get { trees[activeIndex] }
-        set { trees[activeIndex] = newValue }
+    /// 活动工作区布局
+    var layout: WorkspaceLayout {
+        get { layouts[activeIndex] }
+        set { layouts[activeIndex] = newValue }
     }
+
+    /// 全部工作区的所有 pane（主题重载/按 id 反查用）
+    var allPanes: [Ghostty.SurfaceView] {
+        layouts.flatMap(\.paneList) + (scratchpadSurface.map { [$0] } ?? [])
+    }
+
+    var allEmpty: Bool { layouts.allSatisfy(\.isEmpty) }
 
     func switchTo(_ index: Int) {
-        guard trees.indices.contains(index) else { return }
+        guard layouts.indices.contains(index) else { return }
         activeIndex = index
     }
 
     func isEmpty(_ index: Int) -> Bool {
-        trees.indices.contains(index) ? trees[index].isEmpty : true
+        layouts.indices.contains(index) ? layouts[index].isEmpty : true
     }
 
-    /// config workspaces=N（1–10）：扩容补空树；缩容仅当被裁的树全空（否则保留至最后非空）
+    /// config workspaces=N（1–10）：扩容补空；缩容仅当被裁的全空（否则保留至最后非空）
     func setWorkspaceCount(_ n: Int) {
         let target = min(max(n, 1), 10)
-        if target > trees.count {
-            trees.append(contentsOf: Array(
-                repeating: SplitTree<Ghostty.SurfaceView>(), count: target - trees.count))
-        } else if target < trees.count {
-            let lastNonEmpty = trees.lastIndex { !$0.isEmpty }.map { $0 + 1 } ?? 0
+        if target > layouts.count {
+            layouts.append(contentsOf: (layouts.count..<target).map { _ in WorkspaceLayout.empty })
+        } else if target < layouts.count {
+            let lastNonEmpty = layouts.lastIndex { !$0.isEmpty }.map { $0 + 1 } ?? 0
             let safeTarget = max(target, lastNonEmpty)
-            trees.removeLast(trees.count - safeTarget)
+            layouts.removeLast(layouts.count - safeTarget)
         }
-        activeIndex = min(activeIndex, trees.count - 1)
+        activeIndex = min(activeIndex, layouts.count - 1)
     }
 
     // 浮动面板 UI 状态（键盘导航由控制器监视器驱动）
@@ -52,16 +58,23 @@ final class WorkspaceModel: ObservableObject {
 
     // Cmd+K 速查数据（打开面板时由控制器按当前生效映射填充）
     @Published var keybindingRows: [(combo: String, action: WMAction)] = []
+
+    // scrolling 画布的双指横滑（附带项）：控制器滚轮监视器投递，视图消费
+    @Published var stripPan: StripPanEvent?
+    struct StripPanEvent: Equatable {
+        var delta: CGFloat
+        var ended: Bool
+        var serial: Int
+    }
 }
 
-/// SwiftUI 根视图：底色 + 平铺树（gaps_out = 10，spec §1.1）。
-/// M2 在 VStack 顶部加状态栏；M3 底层换连续壁纸。
 struct RootView: View {
     @ObservedObject var model: WorkspaceModel
     @EnvironmentObject var theme: ThemeManager
     let ghostty: Ghostty.App
     let stats: SystemStatsService
     let action: (TerminalSplitOperation) -> Void
+    let onScrollingDrop: (Ghostty.SurfaceView, Ghostty.SurfaceView, TerminalSplitDropZone) -> Void
     let onSelectWorkspace: (Int) -> Void
     let onPanelChoose: (Int) -> Void
 
@@ -79,8 +92,19 @@ struct RootView: View {
                 if let url = theme.currentBackgroundURL {
                     WallpaperThumb(url: url).id(url)
                 }
-                TerminalSplitTreeView(tree: model.tree, action: action)
-                    .padding(theme.gapsEnabled ? 10 : 0)
+
+                switch model.layout {
+                case .dwindle(let tree):
+                    TerminalSplitTreeView(tree: tree, action: action)
+                        .padding(theme.gapsEnabled ? 10 : 0)
+                case .scrolling(let strip):
+                    ScrollingStripView(
+                        strip: strip,
+                        workspaceIndex: model.activeIndex,
+                        pan: model.stripPan,
+                        onDrop: onScrollingDrop)
+                        .padding(theme.gapsEnabled ? 10 : 0)
+                }
 
                 if model.scratchpadVisible, let scratch = model.scratchpadSurface {
                     Color.black.opacity(0.2)

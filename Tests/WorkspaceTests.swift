@@ -14,19 +14,29 @@ final class WorkspaceTests: XCTestCase {
 
     func testDefaultFiveWorkspaces() throws {
         let c = try controller
-        XCTAssertEqual(c.model.trees.count, 5, "默认 5 个工作区（决策点已确认）")
+        XCTAssertEqual(c.model.layouts.count, 5, "默认 5 个工作区（决策点已确认）")
         XCTAssertEqual(WorkspaceModel.workspaceCount, 5)
     }
 
-    func testSwitchKeepsTreesIndependent() throws {
+    func testDefaultLayoutIsScrolling() throws {
+        // spec §4.2-bis v5：新工作区默认 scrolling 无限画布
+        let c = try controller
+        c.switchWorkspace(1)
+        if case .scrolling = c.model.layout {} else {
+            XCTFail("空工作区默认应为 scrolling（实际 \(c.model.layout.name)）")
+        }
+        c.model.switchTo(0)
+    }
+
+    func testSwitchKeepsLayoutsIndependent() throws {
         let c = try controller
         c.model.switchTo(0)
         let ws0Count = c.paneList.count
         c.switchWorkspace(1)
         XCTAssertEqual(c.model.activeIndex, 1)
-        XCTAssertTrue(c.model.tree.isEmpty, "工作区 2 初始为空")
+        XCTAssertTrue(c.model.layout.isEmpty, "工作区 2 初始为空")
         c.switchWorkspace(0)
-        XCTAssertEqual(c.paneList.count, ws0Count, "切回后工作区 1 的树不变")
+        XCTAssertEqual(c.paneList.count, ws0Count, "切回后工作区 1 不变")
     }
 
     func testSwitchOutOfBoundsIsSafe() throws {
@@ -40,25 +50,41 @@ final class WorkspaceTests: XCTestCase {
     func testMoveFocusedPaneToEmptyWorkspaceAndBack() throws {
         let c = try controller
         c.model.switchTo(0)
-        // 在工作区 0 加一个 pane 再移走它
-        let focused = try XCTUnwrap(c.focusedSurface)
-        let extra = c.newSurface(inheritingFrom: focused)
-        c.model.tree = try c.model.tree.inserting(
-            view: extra, at: focused, direction: .right)
+        c.perform(.newTerminal)                       // 焦点列右侧插入
         let ws0Before = c.paneList.count
+        let moved = try XCTUnwrap(c.focusedSurface)
 
-        Ghostty.moveFocus(to: extra)
         c.moveFocusedPane(to: 2)
-
         XCTAssertEqual(c.model.activeIndex, 2, "移动后跟随到目标工作区")
         XCTAssertEqual(c.paneList.count, 1, "目标工作区应含被移动的 pane")
+        XCTAssertTrue(c.paneList.first === moved)
+
         c.switchWorkspace(0)
         XCTAssertEqual(c.paneList.count, ws0Before - 1, "源工作区少一个 pane")
 
-        // 清理：把它移回并关闭
+        // 清理
         c.switchWorkspace(2)
         if let pane = c.paneList.first { c.closePane(pane, confirmIfNeeded: false) }
         c.model.switchTo(0)
+    }
+
+    func testLayoutToggleRoundTripPreservesPanes() throws {
+        // Cmd+L：scrolling ⇄ dwindle 保 pane（spec §4.2-bis）
+        let c = try controller
+        c.model.switchTo(0)
+        c.perform(.newTerminal)
+        let before = c.paneList.count
+        let extra = try XCTUnwrap(c.focusedSurface)
+
+        c.perform(.toggleLayout)
+        if case .dwindle = c.model.layout {} else { XCTFail("应切到 dwindle") }
+        XCTAssertEqual(c.paneList.count, before, "切换保 pane")
+
+        c.perform(.toggleLayout)
+        if case .scrolling = c.model.layout {} else { XCTFail("应切回 scrolling") }
+        XCTAssertEqual(c.paneList.count, before, "往返保 pane")
+
+        c.closePane(extra, confirmIfNeeded: false)
     }
 
     func testWorkspaceKeybindings() {
@@ -67,6 +93,7 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertEqual(map.action(key: "5", modifiers: .command)?.action, .gotoWorkspace5)
         XCTAssertEqual(map.action(key: "3", modifiers: [.command, .shift])?.action, .moveToWorkspace3)
         XCTAssertEqual(map.action(key: "space", modifiers: [.command, .shift])?.action, .toggleBar)
+        XCTAssertEqual(map.action(key: "l", modifiers: .command)?.action, .toggleLayout)
         XCTAssertNil(map.action(key: "6", modifiers: .command), "工作区仅 1–5")
     }
 }

@@ -48,9 +48,12 @@ QuickTerm 自身配置 `~/.config/quickterm/config.toml`（M4 起支持，格式
 
 ## 快捷键（M1）
 
-Cmd+Return 新建 pane · Cmd+W 关闭 · Cmd+方向 焦点 · Cmd+Shift+方向 交换 ·
-Cmd+J 切分裂方向 · Cmd+F 缩放 · Cmd+Ctrl+方向 调大小（+Shift 微调）· Cmd+Ctrl+= 等分 ·
-Alt+Tab / Cmd+[ ] 循环 pane · ⌘+左键拖 移动/分裂 · ⌘+右键拖 调大小
+默认 **scrolling 无限横向画布**（v1.1，忠实 Omarchy：新列插在当前列右侧、列宽 0.49、
+视口跟随焦点、相邻列两缘露出）；`Cmd+L` 按工作区切换 dwindle 平铺。
+Cmd+Return 新建（scrolling=右插新列 / dwindle=分裂）· Cmd+W 关闭 · Cmd+方向 焦点 ·
+Cmd+Shift+方向 换位 · Cmd+J（scrolling=併栈⇄拆列 / dwindle=切分裂方向）· Cmd+F 缩放 ·
+Cmd+Ctrl+←→ 调列宽/大小 · Cmd+Ctrl+= 等分 · Alt+Tab / Cmd+[ ] 循环 ·
+⌘+左键拖 移动/插列/併栈 · ⌘+右键拖 调大小 · 双指横滑 平移画布
 
 ## 配置（M4）
 
