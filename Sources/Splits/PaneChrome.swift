@@ -4,6 +4,9 @@ import SwiftUI
 /// gaps_in=5 语义（每 pane 边 5，相邻合成 10；边缘与外圈 5 合成 10——左中右等宽）、直角、popin 87% 弹入动画。焦点态随悬停即时切换。
 struct PaneChrome: ViewModifier {
     @ObservedObject var surfaceView: Ghostty.SurfaceView
+    /// 浮动层 pane：非激活不垫磨砂 backdrop——它身后是下层平铺 pane 内容
+    /// 而非壁纸，HUD 材质糊上去近乎实心；跳过后与平铺 pane 同为 0.92 透明
+    var floating: Bool = false
     @EnvironmentObject var theme: ThemeManager
     @State private var appeared = false
 
@@ -15,7 +18,7 @@ struct PaneChrome: ViewModifier {
                 if surfaceView.focused {
                     // 激活 = 清玻璃但更实（合成到 active-opacity，默认 0.96）
                     theme.background.opacity(theme.activeUnderlayAlpha)
-                } else if theme.frostedInactive {
+                } else if theme.frostedInactive, !floating {
                     // 非激活 = 磨砂玻璃（backdrop 模糊壁纸，文字锐利）
                     VisualEffectBlur()
                 }

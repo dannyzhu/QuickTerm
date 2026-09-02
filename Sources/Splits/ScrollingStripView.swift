@@ -109,6 +109,8 @@ private struct FocusedStripPaneKey: PreferenceKey {
 struct ScrollingPaneCell: View {
     @ObservedObject var surfaceView: Ghostty.SurfaceView
     let onDrop: (Ghostty.SurfaceView, Ghostty.SurfaceView, TerminalSplitDropZone) -> Void
+    /// 浮动层渲染（RootView）：透传给 PaneChrome 关掉非激活磨砂
+    var floating: Bool = false
 
     @ObservedObject private var modifierState = ModifierState.shared
     @State private var dropZone: TerminalSplitDropZone?
@@ -140,7 +142,7 @@ struct ScrollingPaneCell: View {
                             isHovering: $dragSourceHovering)
                     }
                 }
-                .modifier(PaneChrome(surfaceView: surfaceView))
+                .modifier(PaneChrome(surfaceView: surfaceView, floating: floating))
                 .preference(key: FocusedStripPaneKey.self,
                             value: surfaceView.focused ? surfaceView.id : nil)
         }

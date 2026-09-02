@@ -146,7 +146,8 @@ struct RootView: View {
                 // 浮动层（spec v7）：悬浮于平铺之上；数组序 = z 序
                 GeometryReader { geo in
                     ForEach(model.floating) { fp in
-                        ScrollingPaneCell(surfaceView: fp.pane, onDrop: { _, _, _ in })
+                        ScrollingPaneCell(surfaceView: fp.pane, onDrop: { _, _, _ in },
+                                          floating: true)
                             .frame(width: fp.rect.width * geo.size.width,
                                    height: fp.rect.height * geo.size.height)
                             .position(x: (fp.rect.origin.x + fp.rect.width / 2) * geo.size.width,
