@@ -19,6 +19,22 @@ final class ScrollingStripTests: XCTestCase {
         XCTAssertTrue(strip.columns[2].panes.first === b)
     }
 
+    /// 结构签名：换位/併拆改变签名（驱动视口重对齐）；
+    /// 调宽刻意不改（右键拖拽逐事件调宽，入签名会劫持手动平移的视口）
+    func testLayoutSignatureStructuralOnly() throws {
+        let a = try pane(), b = try pane()
+        var strip = ScrollingStrip(pane: a)
+        strip = strip.insertingColumnRight(of: a, pane: b)   // [a][b]
+        let base = strip.layoutSignature
+        XCTAssertEqual(strip.layoutSignature, base, "同一布局签名稳定")
+        XCTAssertNotEqual(strip.swapping(a, direction: .right).layoutSignature, base,
+                          "换列改变签名——Cmd+Shift+方向 需触发滚动跟随")
+        XCTAssertNotEqual(strip.mergingOrSplitting(b).layoutSignature, base,
+                          "併列改变签名（[a][b] → [a,b]）")
+        XCTAssertEqual(strip.resizingWidth(of: a, delta: 0.05).layoutSignature, base,
+                       "调宽不改签名")
+    }
+
     func testRemoveDeletesEmptyColumn() throws {
         let a = try pane(), b = try pane()
         var strip = ScrollingStrip(pane: a).insertingColumnRight(of: a, pane: b)

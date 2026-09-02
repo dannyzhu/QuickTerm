@@ -39,6 +39,19 @@ struct ScrollingStrip: Codable {
     var isEmpty: Bool { columns.isEmpty }
     var paneList: [Ghostty.SurfaceView] { columns.flatMap(\.panes) }
 
+    /// 结构签名（列序/行序）：变化时视口需按焦点重新对齐——
+    /// 换位/併拆不改焦点 ID 与列数，仅靠它们触发不了滚动跟随。
+    /// 刻意不含 widthFactor：右键拖拽调宽是逐事件写宽度，
+    /// 入签名会把手动平移的视口逐帧劫持回焦点列。
+    var layoutSignature: Int {
+        var hasher = Hasher()
+        for column in columns {
+            hasher.combine(column.panes.count)  // 分组定界：[a][b,c] ≠ [a,b][c]
+            for pane in column.panes { hasher.combine(pane.id) }
+        }
+        return hasher.finalize()
+    }
+
     var zoomedPane: Ghostty.SurfaceView? {
         guard let zoomedID else { return nil }
         return paneList.first { $0.id == zoomedID }

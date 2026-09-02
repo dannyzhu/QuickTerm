@@ -37,8 +37,9 @@ struct ScrollingStripView: View {
                 .onPreferenceChange(FocusedStripPaneKey.self) { focusedID in
                     scrollToFocus(id: focusedID, viewport: geo.size.width)
                 }
-                .onChange(of: strip.columns.count) {
-                    // 结构变化（插/删列）后按当前焦点重新对齐
+                .onChange(of: strip.layoutSignature) {
+                    // 结构变化（插/删列、Cmd+Shift+方向换位、併拆）后
+                    // 按当前焦点重新对齐——被移动的 pane 始终完整可见
                     scrollToFocus(id: currentFocusedID(), viewport: geo.size.width)
                 }
                 .onChange(of: pan) {
