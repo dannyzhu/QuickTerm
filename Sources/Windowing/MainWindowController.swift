@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// QuickTerm 主窗口控制器：工作区布局状态的唯一拥有者（spec §3 + §4.2-bis）。
 /// 继承 GhosttyEmbed 的 BaseTerminalController shim，使嵌入层的
@@ -612,7 +613,7 @@ final class MainWindowController: BaseTerminalController {
     private var panelItemCount: Int {
         switch model.activePanel {
         case .themes: themeManager.themes.count
-        case .backgrounds: themeManager.current.backgroundURLs.count
+        case .backgrounds: themeManager.backgroundChoices.count + 1  // 末位 = 选择图片…
         case .menu: MenuEntry.allCases.count
         case .keybindings, nil: 0
         }
@@ -646,8 +647,12 @@ final class MainWindowController: BaseTerminalController {
             }
             model.activePanel = nil
         case .backgrounds:
-            themeManager.selectBackground(index)
             model.activePanel = nil
+            if index < themeManager.backgroundChoices.count {
+                themeManager.selectBackground(index)
+            } else {
+                pickUserBackground()  // 末位入口：系统文件选择器
+            }
         case .menu:
             // 每屏列数：循环并保持菜单打开（便于连按）
             if MenuEntry(rawValue: index) == .visibleColumns {
@@ -674,6 +679,18 @@ final class MainWindowController: BaseTerminalController {
 
     /// 设置（Cmd+, / 菜单）：打开 QuickTerm config.toml（不存在则先写模板），
     /// 若存在 ~/.config/ghostty/config 一并打开（配置链第 2 层，用户常改）
+    /// 自选背景：NSOpenPanel 选图 → 拷入 ~/.config/quickterm/backgrounds 并选中
+    private func pickUserBackground() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.message = "选择背景图片（将拷入 ~/.config/quickterm/backgrounds）"
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            self?.themeManager.addUserBackground(from: url)
+        }
+    }
+
     private func openSettingsFile() {
         let url = ConfigStore.configURL
         if !FileManager.default.fileExists(atPath: url.path) {

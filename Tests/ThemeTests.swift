@@ -53,4 +53,20 @@ final class ThemeTests: XCTestCase {
         manager.opacityEnabled = true
         XCTAssertFalse(manager.overlayExtra().contains("background-opacity = 1.0"))
     }
+
+    /// 用户背景目录扫描：仅图片、按名排序
+    func testDiscoverBackgroundsFiltersAndSorts() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qt-bg-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        for name in ["b.png", "a.webp", "note.txt", "c.JPG", ".DS_Store"] {
+            FileManager.default.createFile(
+                atPath: dir.appendingPathComponent(name).path, contents: Data([0]))
+        }
+        let found = ThemeManager.discoverBackgrounds(in: dir).map(\.lastPathComponent)
+        XCTAssertEqual(found, ["a.webp", "b.png", "c.JPG"], "过滤非图片并按名排序")
+        XCTAssertEqual(ThemeManager.discoverBackgrounds(
+            in: dir.appendingPathComponent("missing")), [], "目录不存在返回空")
+    }
 }

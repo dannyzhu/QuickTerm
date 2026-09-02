@@ -119,13 +119,11 @@ struct OverlayPanelView: View {
     // MARK: 背景选择器（缩略图网格，spec §4.3）
 
     private var backgroundGrid: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if theme.current.backgroundURLs.isEmpty {
-                Text("当前主题没有背景图（显示纯色）")
-                    .padding(20)
-            } else {
+        let choices = theme.backgroundChoices
+        return VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
-                    ForEach(Array(theme.current.backgroundURLs.enumerated()), id: \.offset) { index, url in
+                    ForEach(Array(choices.enumerated()), id: \.offset) { index, url in
                         WallpaperThumb(url: url)
                             .frame(height: 76)
                             .clipped()
@@ -133,8 +131,28 @@ struct OverlayPanelView: View {
                                 model.panelSelection == index ? theme.accent : .clear, lineWidth: 2))
                             .onTapGesture { onChoose(index) }
                     }
+                    // 自选图片入口（拷入 ~/.config/quickterm/backgrounds，全主题共用）
+                    VStack(spacing: 4) {
+                        Image(systemName: "plus")
+                        Text("选择图片…").font(.custom("Monaco", size: 11))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 76)
+                    .background(theme.foreground.opacity(
+                        model.panelSelection == choices.count ? 0.12 : 0.05))
+                    .overlay(Rectangle().stroke(
+                        model.panelSelection == choices.count ? theme.accent
+                            : theme.foreground.opacity(0.3), lineWidth: 2))
+                    .contentShape(Rectangle())
+                    .onTapGesture { onChoose(choices.count) }
                 }
                 .padding(12)
+            }
+            .frame(maxHeight: 420)
+            if choices.isEmpty {
+                Text("当前主题没有背景图（显示纯色）——可选择自己的图片")
+                    .font(.custom("Monaco", size: 11)).opacity(0.6)
+                    .padding([.horizontal, .bottom], 12)
             }
         }
     }

@@ -63,13 +63,49 @@ final class ThemeManager: ObservableObject {
 
     // MARK: 调色板（UI 层唯一取色入口）
 
+    /// 用户自选背景目录（全主题共用）：~/.config/quickterm/backgrounds/
+    static var userBackgroundsDir: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/quickterm/backgrounds", isDirectory: true)
+    }
+    @Published private(set) var userBackgrounds: [URL] = []
+
+    /// 目录内图片（按文件名排序；跳过非图片）
+    static func discoverBackgrounds(in dir: URL) -> [URL] {
+        let exts: Set<String> = ["png", "jpg", "jpeg", "webp", "heic", "gif", "tiff"]
+        return ((try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil)) ?? [])
+            .filter { exts.contains($0.pathExtension.lowercased()) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// 可选背景 = 当前主题自带 + 用户自选（面板网格与 Cmd+B 循环共用此列表）
+    var backgroundChoices: [URL] { current.backgroundURLs + userBackgrounds }
+
+    /// 导入用户背景：拷入用户目录（重名加时间戳）并立即选中
+    func addUserBackground(from source: URL) {
+        let dir = Self.userBackgroundsDir
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var dest = dir.appendingPathComponent(source.lastPathComponent)
+        if FileManager.default.fileExists(atPath: dest.path) {
+            let stem = dest.deletingPathExtension().lastPathComponent
+            dest = dir.appendingPathComponent(
+                "\(stem)-\(Int(Date().timeIntervalSince1970)).\(dest.pathExtension)")
+        }
+        guard (try? FileManager.default.copyItem(at: source, to: dest)) != nil else { return }
+        userBackgrounds = Self.discoverBackgrounds(in: dir)
+        if let idx = backgroundChoices.firstIndex(of: dest) {
+            selectBackground(idx)
+        }
+    }
+
     var background: Color { current.color("background") ?? Palette.background }
     var foreground: Color { current.color("foreground") ?? Palette.foreground }
     var accent: Color { current.color("accent") ?? Palette.accent }
     var alert: Color { current.color("red") ?? Palette.alert }
     var currentBackgroundURL: URL? {
-        current.backgroundURLs.indices.contains(backgroundIndex)
-            ? current.backgroundURLs[backgroundIndex] : nil
+        backgroundChoices.indices.contains(backgroundIndex)
+            ? backgroundChoices[backgroundIndex] : nil
     }
 
     init() {
@@ -80,8 +116,9 @@ final class ThemeManager: ObservableObject {
             ?? loaded.first { $0.name == "tokyo-night" }
             ?? loaded.first
             ?? Theme(name: "fallback", isLight: false, colors: [:], backgroundURLs: [])
+        userBackgrounds = Self.discoverBackgrounds(in: Self.userBackgroundsDir)
         let savedBg = UserDefaults.standard.integer(forKey: Self.defaultsBgKey)
-        backgroundIndex = current.backgroundURLs.indices.contains(savedBg) ? savedBg : 0
+        backgroundIndex = backgroundChoices.indices.contains(savedBg) ? savedBg : 0
         writeOverlay(notify: false)  // 启动时引擎尚未创建，仅落盘供首次加载
     }
 
@@ -115,12 +152,12 @@ final class ThemeManager: ObservableObject {
 
     /// 下一张背景（回绕，spec §4.3）
     func nextBackground() {
-        guard current.backgroundURLs.count > 1 else { return }
-        selectBackground((backgroundIndex + 1) % current.backgroundURLs.count)
+        guard backgroundChoices.count > 1 else { return }
+        selectBackground((backgroundIndex + 1) % backgroundChoices.count)
     }
 
     func selectBackground(_ index: Int) {
-        guard current.backgroundURLs.indices.contains(index) else { return }
+        guard backgroundChoices.indices.contains(index) else { return }
         backgroundIndex = index
         UserDefaults.standard.set(index, forKey: Self.defaultsBgKey)
         // 壁纸在 QuickTerm 自绘层，不进引擎配置，无需 reload
