@@ -89,3 +89,6 @@ pane 上时两层都收到 mouseMoved/mouseEntered。hitTest 方案不可行：�
 纯几何判定（更高 z 浮动 rect / 面板遮罩 / Scratchpad），SurfaceView 在遮挡时合成一次
 mouseExited(-1,-1)（否则 core 悬停坐标冻结在遮挡边界，TUI hover 高亮滞留），脱离遮挡的首次
 mouseMoved 补进入状态；拖拽序列（type != .mouseMoved）不走守卫，跨 pane 选中文本不受影响。
+点击同理：SurfaceView 的 localEventLeftMouseDown 焦点转移监视器原以
+`hitTest == self` 判定命中（只测自己子树），被浮动 pane 盖住的下层 pane
+会抢走点击焦点——同走 surfaceIsOccluded 守卫。

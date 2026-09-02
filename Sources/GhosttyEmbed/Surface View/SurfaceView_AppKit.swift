@@ -665,6 +665,13 @@ extension Ghostty {
             let location = convert(event.locationInWindow, from: nil)
             guard hitTest(location) == self else { return event }
 
+            // QuickTerm：hitTest 只测自己的子树，不感知浮动兄弟遮挡——
+            // 被浮动 pane 盖住时不得转移焦点（否则下层 pane 抢走浮动 pane 的点击）
+            if let controller = window.windowController as? BaseTerminalController,
+               controller.surfaceIsOccluded(self, at: event.locationInWindow) {
+                return event
+            }
+
             // We always assume that we're resetting our mouse suppression
             // unless we see the specific scenario below to set it.
             suppressNextLeftMouseUp = false
