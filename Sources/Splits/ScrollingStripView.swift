@@ -121,13 +121,17 @@ struct ScrollingPaneCell: View {
         GeometryReader { geo in
             Ghostty.SurfaceWrapper(surfaceView: surfaceView, isSplit: true)
                 .background {
-                    Color.clear.onDrop(
-                        of: [.ghosttySurfaceId],
-                        delegate: StripDropDelegate(
-                            zone: $dropZone,
-                            viewSize: geo.size,
-                            destination: surfaceView,
-                            onDrop: onDrop))
+                    // 浮动 pane 不是拖放目标（塞回平铺走 Cmd+T）：
+                    // 不注册 delegate，避免亮出无效的落区色块
+                    if !floating {
+                        Color.clear.onDrop(
+                            of: [.ghosttySurfaceId],
+                            delegate: StripDropDelegate(
+                                zone: $dropZone,
+                                viewSize: geo.size,
+                                destination: surfaceView,
+                                onDrop: onDrop))
+                    }
                 }
                 .overlay {
                     if let dropZone {
