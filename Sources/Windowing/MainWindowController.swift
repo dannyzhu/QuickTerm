@@ -619,6 +619,11 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
+    /// 上下键步长：背景面板是网格（3 列）——上下按行移动，其余面板按 1
+    private var panelRowStep: Int {
+        model.activePanel == .backgrounds ? OverlayPanelView.backgroundsColumns : 1
+    }
+
     /// 面板键盘导航；返回 true = 已消费
     private func handlePanelKey(_ event: NSEvent) -> Bool {
         switch KeybindingMap.normalizedKey(for: event) {
@@ -626,9 +631,16 @@ final class MainWindowController: BaseTerminalController {
             model.activePanel = nil
             return true
         case "up":
-            model.panelSelection = max(0, model.panelSelection - 1)
+            model.panelSelection = max(0, model.panelSelection - panelRowStep)
             return true
         case "down":
+            model.panelSelection = min(max(0, panelItemCount - 1),
+                                       model.panelSelection + panelRowStep)
+            return true
+        case "left" where model.activePanel == .backgrounds:
+            model.panelSelection = max(0, model.panelSelection - 1)
+            return true
+        case "right" where model.activePanel == .backgrounds:
             model.panelSelection = min(max(0, panelItemCount - 1), model.panelSelection + 1)
             return true
         case "return":

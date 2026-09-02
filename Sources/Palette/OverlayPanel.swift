@@ -48,6 +48,9 @@ enum MenuEntry: Int, CaseIterable {
 /// Walker 风格通用居中面板：Monaco 18、2px accent 边框、直角、0.95 透明背景。
 /// 键盘导航（↑↓/回车/Esc）由 MainWindowController 的监视器驱动 model.panelSelection。
 struct OverlayPanelView: View {
+    /// 背景网格固定列数（键盘行导航步长与布局共用）
+    static let backgroundsColumns = 3
+
     @EnvironmentObject var theme: ThemeManager
     @ObservedObject var model: WorkspaceModel
     let onChoose: (Int) -> Void
@@ -122,7 +125,8 @@ struct OverlayPanelView: View {
         let choices = theme.backgroundChoices
         return VStack(alignment: .leading, spacing: 0) {
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 8) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8),
+                                         count: Self.backgroundsColumns), spacing: 8) {
                     ForEach(Array(choices.enumerated()), id: \.offset) { index, url in
                         WallpaperThumb(url: url)
                             .frame(height: 76)
