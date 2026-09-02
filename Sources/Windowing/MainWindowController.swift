@@ -292,8 +292,11 @@ final class MainWindowController: BaseTerminalController {
             if let s = cur as? Ghostty.SurfaceView { return s }
             v = cur.superview
         }
-        // 命中覆盖层等兄弟视图时按几何位置回退查找
-        return paneList.first {
+        // 命中覆盖层等兄弟视图时按几何位置回退查找——
+        // 必须按 z 序自顶向下：浮动层（数组末位最顶）优先于平铺层，
+        // 否则浮动 pane 叠在平铺上时 ⌘ 拖动/调大小会抓到下层平铺 pane
+        let byZ = model.floating.reversed().map(\.pane) + model.layout.paneList
+        return byZ.first {
             $0.window === window && $0.convert($0.bounds, to: nil).contains(event.locationInWindow)
         }
     }
