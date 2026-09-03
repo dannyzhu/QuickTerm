@@ -70,7 +70,20 @@ extension Ghostty {
             if let path {
                 ghostty_config_load_file(cfg, path)
             } else {
-                ghostty_config_load_default_files(cfg)
+                // QuickTerm 配置链第 ② 层：按 libghostty loadDefaultFiles 的顺序自行加载
+                // 存在且非空的用户配置文件（不调 ghostty_config_load_default_files——
+                // 1.3.1 在无配置时会往 Application Support 写出 0 字节模板，见 GhosttyDefaultConfig）
+                let userFiles = GhosttyDefaultConfig.userConfigFiles()
+                for file in userFiles {
+                    ghostty_config_load_file(cfg, file.path)
+                }
+                // 第 ①½ 层：一个用户文件都没有 → 内置兜底 Resources/ghostty-default.conf
+                // （仍在 overlay 之前，可被 ③④ 覆盖）
+                if userFiles.isEmpty, let fallback = GhosttyDefaultConfig.bundledPath {
+                    ghostty_config_load_file(cfg, fallback)
+                }
+                // 诊断（stderr，与引擎自身日志同路；`QuickTerm.app/Contents/MacOS/QuickTerm 2>&1` 可见）
+                fputs("[quickterm] engine config: user files \(userFiles.map(\.path)), fallback \(userFiles.isEmpty ? "on" : "off")\n", stderr)
             }
 
             // We only load CLI args when not running in Xcode because in Xcode we

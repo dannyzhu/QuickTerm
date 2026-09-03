@@ -123,4 +123,67 @@ extension ConfigStoreTests {
         XCTAssertFalse(manager.frostedInactive, "总开关关闭 = 无磨砂")
         XCTAssertTrue(manager.overlayExtra().contains("background-opacity = 1.0"))
     }
+
+    /// 引擎兜底配置：仅当四个候选路径都不存在时才启用；XDG_CONFIG_HOME 覆盖生效
+    func testGhosttyFallbackOnlyWhenNoUserConfig() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("qt-home-\(UUID().uuidString)")
+        try fm.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: home) }
+        let env: [String: String] = [:]
+        func touch(_ url: URL, empty: Bool = false) throws {
+            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            fm.createFile(atPath: url.path, contents: empty ? Data() : Data("font-size = 12\n".utf8))
+        }
+        XCTAssertFalse(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "空 home：启用兜底")
+
+        let legacy = home.appendingPathComponent(".config/ghostty/config")
+        try touch(legacy)
+        XCTAssertTrue(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "旧名 config 存在 → 让位")
+        try fm.removeItem(at: legacy)
+
+        try touch(home.appendingPathComponent(".config/ghostty/config.ghostty"))
+        XCTAssertTrue(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "新名 config.ghostty 存在 → 让位")
+        try fm.removeItem(at: home.appendingPathComponent(".config/ghostty/config.ghostty"))
+
+        let xdg = home.appendingPathComponent("xdg")
+        try touch(xdg.appendingPathComponent("ghostty/config"))
+        XCTAssertFalse(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "未设 XDG_CONFIG_HOME 不看该目录")
+        XCTAssertTrue(GhosttyDefaultConfig.userConfigExists(home: home, environment: ["XDG_CONFIG_HOME": xdg.path]),
+                      "XDG_CONFIG_HOME 覆盖生效")
+
+        try touch(home.appendingPathComponent("Library/Application Support/com.mitchellh.ghostty/config"))
+        XCTAssertTrue(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "Application Support 路径也算")
+        try fm.removeItem(at: home.appendingPathComponent("Library/Application Support/com.mitchellh.ghostty/config"))
+
+        // libghostty 1.3.1 自动写出的 0 字节模板：引擎按 FileIsEmpty 不加载 → 不算用户配置
+        try touch(home.appendingPathComponent("Library/Application Support/com.mitchellh.ghostty/config.ghostty"),
+                  empty: true)
+        XCTAssertFalse(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "0 字节文件不算")
+        try fm.createDirectory(at: home.appendingPathComponent(".config/ghostty/config"),
+                               withIntermediateDirectories: true)
+        XCTAssertFalse(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "同名目录不算")
+
+        // 加载顺序同 libghostty：XDG 旧名 → XDG 新名 → App Support
+        try fm.removeItem(at: home.appendingPathComponent(".config/ghostty/config"))
+        try touch(home.appendingPathComponent(".config/ghostty/config.ghostty"))
+        try touch(home.appendingPathComponent(".config/ghostty/config"))
+        let order = GhosttyDefaultConfig.userConfigFiles(home: home, environment: env).map(\.lastPathComponent)
+        XCTAssertEqual(order, ["config", "config.ghostty"], "旧名先于新名（后者覆盖前者）")
+    }
+
+    /// 兜底文件已打入 bundle 且内容为用户指定的缺省值
+    func testGhosttyFallbackResourceBundled() throws {
+        let path = try XCTUnwrap(GhosttyDefaultConfig.bundledPath, "bundle 应包含 ghostty-default.conf")
+        let text = try String(contentsOfFile: path, encoding: .utf8)
+        for key in ["font-family = Monaco", "font-size = 15", "theme = Builtin Pastel Dark",
+                    "copy-on-select = clipboard", "scrollback-limit = 100000000"] {
+            XCTAssertTrue(text.contains(key), "缺少 \(key)")
+        }
+        // QuickTerm 语义所需的删减（只看生效行，文件头注释里会提到这些键）：
+        // shell 集成保持 detect；无 tab 键位
+        let active = text.split(separator: "\n").filter { !$0.hasPrefix("#") }.joined(separator: "\n")
+        XCTAssertFalse(active.contains("shell-integration = none"), "会断掉 cwd 继承与免确认关闭")
+        XCTAssertFalse(active.contains("previous_tab"), "QuickTerm 无 tab，且会覆盖引擎行首/行尾")
+    }
 }

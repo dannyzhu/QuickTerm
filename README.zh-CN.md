@@ -186,14 +186,15 @@ macOS 菜单栏的 Shell / Pane 菜单只列了少数动作的固定默认快捷
 
 ### 引擎配置是怎么合成的
 
-Ghostty 的配置按四层合成，后者覆盖前者：
+Ghostty 的配置按五层合成，后者覆盖前者：
 
 1. libghostty 内置默认值
-2. **`~/.config/ghostty/config`** —— 按 Ghostty 原生规则加载，含 `config-file` 递归包含。字体、光标、滚动、shell 集成、终端级 `keybind =` 全部生效。
-3. QuickTerm 覆盖层（`~/Library/Application Support/QuickTerm/engine-overlay.conf`，切主题时重写）：当前主题的配色与 palette、`window-padding-x/y`、`background-opacity`、`unfocused-split-opacity`，以及 `window-vsync = false`（见故障排查）。`theme = "ghostty"` 时只保留 padding。
-4. `config.toml` 的 `[ghostty]` 段，追加在最后。
+2. QuickTerm 内置兜底（`ghostty-default.conf`：Monaco 15、Builtin Pastel Dark 主题、copy-on-select、1 亿行 scrollback、option-as-alt 等）—— **仅当你完全没有 Ghostty 配置文件时**加载；一旦有了自己的配置，这一层整体让位
+3. **`~/.config/ghostty/config`** —— 按 Ghostty 原生规则加载，含 `config-file` 递归包含。字体、光标、滚动、shell 集成、终端级 `keybind =` 全部生效。
+4. QuickTerm 覆盖层（`~/Library/Application Support/QuickTerm/engine-overlay.conf`，切主题时重写）：当前主题的配色与 palette、`window-padding-x/y`、`background-opacity`、`unfocused-split-opacity`，以及 `window-vsync = false`（见故障排查）。`theme = "ghostty"` 时只保留 padding。
+5. `config.toml` 的 `[ghostty]` 段，追加在最后。
 
-Ghostty 加载器有个特点：经 `config-file` 包含进来的文件是在第 3、4 层**之后**才应用的，所以写在包含文件里的配色会压过 QuickTerm 的主题。想让主题生效，配色请放在顶层 `~/.config/ghostty/config`，或干脆交给 QuickTerm。
+Ghostty 加载器有个特点：经 `config-file` 包含进来的文件是在第 4、5 层**之后**才应用的，所以写在包含文件里的配色会压过 QuickTerm 的主题。想让主题生效，配色请放在顶层 `~/.config/ghostty/config`，或干脆交给 QuickTerm。
 
 ### 文件与目录
 

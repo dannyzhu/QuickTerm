@@ -200,6 +200,9 @@ final class ThemeManager: ObservableObject {
         emit("background", "background")
         emit("foreground", "foreground")
         emit("cursor-color", "bright_foreground", fallback: "foreground")
+        // 主题文件（如兜底的 Builtin Pastel Dark）可能自带 cursor-text = #ffffff，overlay 不写
+        // 就会穿透：暗色主题块光标下的字变白底白字。重放在主题之后，此行必胜（1.2+ 支持该值）。
+        lines.append("cursor-text = cell-background")
         emit("selection-background", "selection")
         emit("selection-foreground", "foreground")
         let paletteMap: [(Int, String, String?)] = [

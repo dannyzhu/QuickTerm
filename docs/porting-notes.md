@@ -105,3 +105,13 @@ ghostty 可能崩溃：表现为日志里多一次宿主启动、`sentry: crash 
 不要被 `Executed 0 tests` 误导。根治方向：用例显式 close 创建的 surface，或
 AppDelegate.isRunningTests 下退出时跳过 surface 释放。
 
+## libghostty 1.3.1 `load_default_files` 会写出 0 字节模板
+
+`ghostty_config_load_default_files` → `Config.loadDefaultFiles`：macOS 上四个候选文件
+（XDG `ghostty/config`/`config.ghostty`、Application Support 同名）都不存在时，会调用
+`writeConfigTemplate` 往 `~/Library/Application Support/com.mitchellh.ghostty/config.ghostty`
+写模板；1.3.1 用 Zig 0.15 缓冲 writer 但没有 flush，落盘为 **0 字节**。引擎自己读时按
+`FileIsEmpty` 不加载，但任何"文件存在即有配置"的判断都会被它骗过（QuickTerm 兜底层第一版
+正是这样失效的）。现在 QuickTerm 不调该 API，由 `GhosttyDefaultConfig.userConfigFiles()`
+按同样顺序只加载存在且非空的常规文件；一个都没有才加载内置兜底。
+

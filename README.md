@@ -186,14 +186,15 @@ Modifier names: `cmd`/`command`/`super`, `shift`, `alt`/`option`/`opt`, `ctrl`/`
 
 ### How the engine is configured
 
-Ghostty's configuration is assembled in four layers, later ones override earlier ones:
+Ghostty's configuration is assembled in five layers, later ones override earlier ones:
 
 1. libghostty built-in defaults
-2. **`~/.config/ghostty/config`** — loaded with Ghostty's own rules, including `config-file` includes. Fonts, cursor, scrollback, shell integration and terminal-level `keybind =` lines all apply.
-3. QuickTerm's overlay (`~/Library/Application Support/QuickTerm/engine-overlay.conf`, regenerated on theme change): colours and palette from the active theme, `window-padding-x/y`, `background-opacity`, `unfocused-split-opacity`, and `window-vsync = false` (see Troubleshooting). Set `theme = "ghostty"` to keep only the padding.
-4. The `[ghostty]` section of `config.toml`, appended last.
+2. QuickTerm's bundled fallback (`ghostty-default.conf`: Monaco 15, the Builtin Pastel Dark theme, copy-on-select, 100M scrollback, option-as-alt …) — loaded **only when you have no Ghostty config file at all**; it steps aside entirely as soon as one exists
+3. **`~/.config/ghostty/config`** — loaded with Ghostty's own rules, including `config-file` includes. Fonts, cursor, scrollback, shell integration and terminal-level `keybind =` lines all apply.
+4. QuickTerm's overlay (`~/Library/Application Support/QuickTerm/engine-overlay.conf`, regenerated on theme change): colours and palette from the active theme, `window-padding-x/y`, `background-opacity`, `unfocused-split-opacity`, and `window-vsync = false` (see Troubleshooting). Set `theme = "ghostty"` to keep only the padding.
+5. The `[ghostty]` section of `config.toml`, appended last.
 
-One quirk of Ghostty's loader: files pulled in through `config-file` includes are applied *after* layers 3 and 4, so a colour set in an included file wins over QuickTerm's theme. Keep colours in the top-level `~/.config/ghostty/config` (or let QuickTerm own them) if you want themes to apply.
+One quirk of Ghostty's loader: files pulled in through `config-file` includes are applied *after* layers 4 and 5, so a colour set in an included file wins over QuickTerm's theme. Keep colours in the top-level `~/.config/ghostty/config` (or let QuickTerm own them) if you want themes to apply.
 
 ### Files and directories
 
