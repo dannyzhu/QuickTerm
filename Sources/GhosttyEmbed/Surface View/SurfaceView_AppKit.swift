@@ -402,6 +402,12 @@ extension Ghostty {
             }
             self.surfaceModel = Ghostty.Surface(cSurface: surface)
 
+            // QuickTerm：libghostty 新建 surface 的焦点默认为 true，而本视图的 `focused` 初值为 false
+            // （仅由 become/resignFirstResponder 驱动）。从未获焦的 surface 永远收不到
+            // set_focus(false)，引擎会一直按"有焦点"画实心闪烁光标（状态恢复后 4 个 pane 全闪）。
+            // 这里先对齐为未聚焦；首次 becomeFirstResponder 再置 true。
+            ghostty_surface_set_focus(surface, false)
+
             // Setup our tracking area so we get mouse moved events
             updateTrackingAreas()
 
