@@ -10,13 +10,18 @@ struct ScrollingStrip: Codable {
         var widthFactor: Double = ScrollingStrip.defaultWidth
     }
 
-    static let defaultWidth = 0.49
+    /// 露边（每侧，视口比例）：溢出时焦点列外侧留出邻列的一截**真实内容**。
+    /// Omarchy 原值（0.49 列宽 → 总共 2%）盖不住 gap+边框+终端内边距（≈21pt），
+    /// 露出来的只是空壳；6% 一侧约能看到几列字符，且内部焦点两侧对称。
+    static let peek = 0.06
+    /// 默认列宽 = 每屏 2 列（0.44）
+    static var defaultWidth: Double { factor(forVisibleColumns: 2) }
     static let widthStep = 0.05
     static let widthRange = 0.25...0.90
 
-    /// "每屏可见 N 列" → 列宽因子（N=2 → 0.49 与 Omarchy 一致，留 2% 露边余量）
+    /// "每屏可见 N 列" → 列宽因子 = (1 − 两侧露边) / N（N=2 → 0.44）
     static func factor(forVisibleColumns n: Int) -> Double {
-        0.98 / Double(min(max(n, 1), 6))
+        (1 - 2 * peek) / Double(min(max(n, 1), 6))
     }
 
     var columns: [Column] = []
@@ -226,7 +231,10 @@ struct ScrollingStrip: Codable {
         let available = viewport - gapsTotal
         guard nominalSum < available, nominalSum > 0 else { return nominal }
         let scale = available / nominalSum
-        return nominal.map { $0 * scale }
+        var scaled = nominal.map { $0 * scale }
+        // 浮点余差归入末列：总和精确等于可用宽度（填满即零偏移，无抖动）
+        if let last = scaled.indices.last { scaled[last] += available - scaled.reduce(0, +) }
+        return scaled
     }
 
     func totalWidth(viewport: CGFloat, gap: CGFloat) -> CGFloat {
@@ -249,8 +257,14 @@ struct ScrollingStrip: Codable {
         }
         var x: CGFloat = 0
         for i in 0..<c { x += widths[i] + gap }
-        let minOffset = x + widths[c] - viewport   // 右缘对齐
-        let maxOffset = x                          // 左缘对齐
+        // 焦点列完整可见且外侧留一个露边（邻列露出真实内容；到两端自然贴边）
+        let peek = CGFloat(Self.peek) * viewport
+        var minOffset = x + widths[c] + peek - viewport   // 右缘对齐 + 右露边
+        var maxOffset = x - peek                          // 左缘对齐 + 左露边
+        if minOffset > maxOffset {                        // 列宽到装不下露边：退回贴边
+            minOffset = x + widths[c] - viewport
+            maxOffset = x
+        }
         let desired = min(max(current, minOffset), maxOffset)
         return min(max(desired, 0), total - viewport)
     }

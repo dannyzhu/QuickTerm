@@ -82,11 +82,14 @@ struct ScrollingStripView: View {
         guard total > viewport else { return }
         let maxOffset = total - viewport
         if pan.ended {
+            // 吸附到最近的「列左缘 − 露边」（与焦点滚动的对齐规则一致）
             let widths = strip.columnWidths(viewport: viewport, gap: columnGap)
+            let peek = CGFloat(ScrollingStrip.peek) * viewport
             var x: CGFloat = 0
             var best: CGFloat = 0
             for width in widths {
-                if abs(x - offset) < abs(best - offset) { best = x }
+                let candidate = x - peek
+                if abs(candidate - offset) < abs(best - offset) { best = candidate }
                 x += width + columnGap
             }
             withAnimation(.easeOut(duration: 0.15)) { offset = min(max(best, 0), maxOffset) }
