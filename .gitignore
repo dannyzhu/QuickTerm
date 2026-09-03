@@ -18,3 +18,6 @@ vendor/ghostty/macos/GhosttyKit.xcframework/
 
 # 主题背景图由 scripts/fetch-themes.sh 拉取，不进 git
 Themes/*/backgrounds/
+
+# 覆盖率/性能采样临时文件
+*.profraw
