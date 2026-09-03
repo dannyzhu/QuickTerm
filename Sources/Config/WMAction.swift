@@ -63,7 +63,7 @@ enum WMAction: String, CaseIterable {
     /// 速查表（Cmd+K）展示用中文说明
     var help: String {
         switch self {
-        case .newTerminal: "新建终端（dwindle 分裂，继承当前目录）"
+        case .newTerminal: "新建终端（scrolling 右插新列 / dwindle 分裂，继承当前目录）"
         case .closePane: "关闭焦点 pane"
         case .focusLeft: "焦点左移"
         case .focusRight: "焦点右移"

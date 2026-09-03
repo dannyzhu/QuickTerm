@@ -11,6 +11,11 @@ enum ConfigStore {
     # theme = "tokyo-night"     # 或 "ghostty"：不覆盖配色，完全跟随 ghostty 配置
     # workspaces = 5            # 1–10
     # pane-padding = 14         # pane 内终端四边留白（pt，0–32；Omarchy 官方值 14）
+    # visible-columns = 2       # scrolling 每屏可见列数（1–6；未设置走主菜单选择）
+    # pane-opacity = 0.92       # pane 背景透明度（0.5–1.0；非激活基准，文字不受影响）
+    # active-opacity = 0.98     # 激活 pane 背景等效透明度（0.5–1.0）
+    # bar-opacity = 0.75        # 顶部状态条背景透明度（0–1）
+    # inactive-blur = 2.5       # 非激活 pane 磨砂背景（> 0 开启；0 关闭）
 
     [keybinds]
     # 动作 = "modifier+key"；"none" 解绑。动作清单见 Cmd+K 速查表。

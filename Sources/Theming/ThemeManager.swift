@@ -79,7 +79,7 @@ final class ThemeManager: ObservableObject {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
-    /// 可选背景 = 当前主题自带 + 用户自选（面板网格与 Cmd+B 循环共用此列表）
+    /// 可选背景 = 当前主题自带 + 用户自选（面板网格与 Cmd+Ctrl+Space 循环共用此列表）
     var backgroundChoices: [URL] { current.backgroundURLs + userBackgrounds }
 
     /// 导入用户背景：拷入用户目录（重名加时间戳）并立即选中

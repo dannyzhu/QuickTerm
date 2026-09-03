@@ -16,7 +16,7 @@ struct PaneChrome: ViewModifier {
             // 激活 pane 无 backdrop = 清玻璃（透出清晰壁纸）。
             .background {
                 if surfaceView.focused {
-                    // 激活 = 清玻璃但更实（合成到 active-opacity，默认 0.96）
+                    // 激活 = 清玻璃但更实（合成到 active-opacity，默认 0.98）
                     theme.background.opacity(theme.activeUnderlayAlpha)
                 } else if theme.frostedInactive, !floating {
                     // 非激活 = 磨砂玻璃（backdrop 模糊壁纸，文字锐利）

@@ -117,6 +117,10 @@ final class MainWindowController: BaseTerminalController {
         NotificationCenter.default.addObserver(
             self, selector: #selector(ghosttyDidCloseSurface(_:)),
             name: Ghostty.Notification.ghosttyCloseSurface, object: nil)
+        // dwindle 分隔条双击 → 引擎回发 didEqualizeSplits → 全树等分
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(ghosttyDidEqualizeSplits(_:)),
+            name: Ghostty.Notification.didEqualizeSplits, object: nil)
 
         // WM 级组合键：在事件分发前拦截；未命中一律放行给 surface（终端级键不受影响）。
         // 浮动面板打开时优先接管 ↑↓/回车/Esc 导航。
@@ -887,6 +891,10 @@ final class MainWindowController: BaseTerminalController {
         case .scrolling(let strip):
             model.layout = .scrolling(strip.removing(view))
         }
+    }
+
+    @objc private func ghosttyDidEqualizeSplits(_ note: Foundation.Notification) {
+        perform(.equalize)
     }
 
     @objc private func ghosttyDidCloseSurface(_ notification: Foundation.Notification) {
