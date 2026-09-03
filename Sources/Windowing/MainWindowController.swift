@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import GhosttyKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -15,6 +16,7 @@ final class MainWindowController: BaseTerminalController {
     let themeManager: ThemeManager
     private var keyMonitor: Any?
     private var mouseMonitor: Any?
+    private var cancellables = Set<AnyCancellable>()
     private var scrollMonitor: Any?
     private var resizeTarget: Ghostty.SurfaceView?
     private var floatingMoveIndex: Int?
@@ -68,6 +70,24 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
+    /// 焦点对账：focused 标志必须与窗口 first responder 一致（重挂后的定时兜底）
+    func reconcileFocus() {
+        guard let window else { return }
+        let fr = window.firstResponder as? Ghostty.SurfaceView
+        for pane in model.allPanes where pane.focused && pane !== fr {
+            pane.focusDidChange(false)
+        }
+        if let fr, !fr.focused, model.allPanes.contains(where: { $0 === fr }) {
+            fr.focusDidChange(true)
+        }
+    }
+
+    private func scheduleFocusReconcile() {
+        for delay in [0.15, 0.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.reconcileFocus() }
+        }
+    }
+
     init(ghostty: Ghostty.App, themeManager: ThemeManager) {
         self.ghostty = ghostty
         self.themeManager = themeManager
@@ -78,6 +98,15 @@ final class MainWindowController: BaseTerminalController {
         window.title = "QuickTerm"
         super.init(window: window)
         window.windowController = self
+
+        // 焦点对账兜底：布局/工作区/浮动层任何变化都会让 SwiftUI 重挂 SurfaceView，
+        // 重挂后 focused 标志可能与窗口 FR 脱节（见 SurfaceView.viewWillMove(toWindow:)）
+        for publisher in [model.$layouts.map { _ in () }.eraseToAnyPublisher(),
+                          model.$floatings.map { _ in () }.eraseToAnyPublisher(),
+                          model.$activeIndex.map { _ in () }.eraseToAnyPublisher()] {
+            publisher.dropFirst().sink { [weak self] in self?.scheduleFocusReconcile() }
+                .store(in: &cancellables)
+        }
 
         window.contentView = NSHostingView(rootView: RootView(
             model: model, ghostty: ghostty, stats: stats,
