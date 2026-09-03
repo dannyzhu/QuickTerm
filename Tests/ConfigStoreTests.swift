@@ -118,6 +118,11 @@ extension ConfigStoreTests {
         defer { try? fm.removeItem(at: url) }
         try "theme = \"nord\"\nworkspaces = 8\n\n[keybinds]\nnew-terminal = \"cmd+t\"\n".write(to: url, atomically: true, encoding: .utf8)
         XCTAssertTrue(ConfigStore.ensureTemplateKeys(at: url), "缺键 → 写入")
+        // 文件不存在 → 写完整模板（含目录）
+        let fresh = fm.temporaryDirectory.appendingPathComponent("qt-cfgdir-\(UUID().uuidString)/config.toml")
+        defer { try? fm.removeItem(at: fresh.deletingLastPathComponent()) }
+        XCTAssertTrue(ConfigStore.ensureTemplateKeys(at: fresh), "不存在 → 创建")
+        XCTAssertEqual(try String(contentsOf: fresh, encoding: .utf8), ConfigStore.template)
         let text = try String(contentsOf: url, encoding: .utf8)
         XCTAssertTrue(text.contains("# divider-opacity = 0.2"), "补全 divider-opacity 默认")
         XCTAssertTrue(text.contains("# pane-opacity = 0.92"))

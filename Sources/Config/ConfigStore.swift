@@ -41,12 +41,20 @@ enum ConfigStore {
         }
     }
 
-    /// 已有配置文件补全缺失的顶层键（注释 + 默认值，插在第一个 [section] 之前；幂等）。
-    /// 用户早期模板生成的文件不含后来新增的键，"所有配置项都要写在配置文件里"。
-    /// 返回是否有写入。文件不存在时不做事（首次打开设置会写完整模板）。
+    /// 保证配置文件存在且列全所有顶层键（"所有配置项都要写在配置文件里"）：
+    /// - 文件不存在 → 写完整模板（含目录）；
+    /// - 已存在 → 补全缺失键（注释 + 默认值，插在第一个 [section] 之前），已有设置原样保留。
+    /// 幂等；返回是否有写入。启动与打开设置时调用。
     @discardableResult
     static func ensureTemplateKeys(at url: URL = configURL) -> Bool {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            do {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                        withIntermediateDirectories: true)
+                try template.write(to: url, atomically: true, encoding: .utf8)
+                return true
+            } catch { return false }
+        }
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         func mentions(_ key: String) -> Bool {
             lines.contains { line in
