@@ -814,8 +814,35 @@ extension Ghostty {
 
         override func becomeFirstResponder() -> Bool {
             let result = super.becomeFirstResponder()
-            if result { focusDidChange(true) }
+            if result {
+                focusDidChange(true)
+                // QuickTerm：单焦点不变量——通知控制器清掉其他 pane 残留的 focused
+                (window?.windowController as? BaseTerminalController)?.surfaceDidBecomeFirstResponder(self)
+            }
             return result
+        }
+
+        // QuickTerm：first responder 视图被移出窗口时，AppKit 静默重置 FR 而**不调用**
+        // resignFirstResponder（已用独立探针验证），`focused` 会残留为 true。SwiftUI 重建
+        // 层级（Cmd+L / Cmd+T / 切工作区）时必然发生。记下"脱离时正是 FR"，重新挂载后夺回，
+        // 让标志与真相重新一致。
+        private var reclaimFocusOnAttach = false
+
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            if newWindow == nil, let window, window.firstResponder === self {
+                reclaimFocusOnAttach = true
+            }
+            super.viewWillMove(toWindow: newWindow)
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard reclaimFocusOnAttach, let window else { return }
+            reclaimFocusOnAttach = false
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window === window, window.firstResponder !== self else { return }
+                window.makeFirstResponder(self)
+            }
         }
 
         override func resignFirstResponder() -> Bool {
@@ -1051,7 +1078,7 @@ extension Ghostty {
                let controller = window.windowController as? BaseTerminalController,
                !controller.commandPaletteIsShowing,
                window.isKeyWindow &&
-                    !self.focused &&
+                    window.firstResponder !== self &&   // QuickTerm：以真 FR 为准，不信残留的 focused
                     controller.focusFollowsMouse {
                 Ghostty.moveFocus(to: self)
             }

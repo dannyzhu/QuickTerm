@@ -54,7 +54,18 @@ final class MainWindowController: BaseTerminalController {
     var allPanes: [Ghostty.SurfaceView] { model.allPanes }
 
     override var focusedSurface: Ghostty.SurfaceView? {
-        paneList.first { $0.focused } ?? paneList.first
+        if let fr = window?.firstResponder as? Ghostty.SurfaceView, paneList.contains(where: { $0 === fr }) {
+            return fr   // 真相优先（focused 标志在视图重挂时可能短暂残留）
+        }
+        return paneList.first { $0.focused } ?? paneList.first
+    }
+
+    /// 单焦点不变量：任一 pane 成为 FR 时，清掉其他 pane 残留的 focused
+    /// （AppKit 在 FR 视图脱离窗口时不发 resign，见 SurfaceView.viewWillMove(toWindow:)）
+    override func surfaceDidBecomeFirstResponder(_ pane: Ghostty.SurfaceView) {
+        for other in model.allPanes where other !== pane && other.focused {
+            other.focusDidChange(false)
+        }
     }
 
     init(ghostty: Ghostty.App, themeManager: ThemeManager) {
@@ -101,14 +112,14 @@ final class MainWindowController: BaseTerminalController {
         }
 
         // 状态恢复（spec §4.8）：布局 + 各 pane cwd + 活动工作区；失败则全新开始
+        // 视图尚未被 SwiftUI 挂载：直接 makeFirstResponder 返回 true 却什么都不做（AppKit 报
+        // "different window ((null))"），用 Ghostty.moveFocus（等待挂载后再设）
         if !AppDelegate.isRunningTests, restoreState() {
-            if let focused = focusedSurface {
-                window.makeFirstResponder(focused)
-            }
+            if let focused = focusedSurface { Ghostty.moveFocus(to: focused) }
         } else {
             let first = newSurface(inheritingFrom: nil)
             model.layout = .scrolling(ScrollingStrip(pane: first))
-            window.makeFirstResponder(first)
+            Ghostty.moveFocus(to: first)
         }
         window.center()
         window.makeKeyAndOrderFront(nil)

@@ -115,3 +115,15 @@ AppDelegate.isRunningTests 下退出时跳过 surface 释放。
 正是这样失效的）。现在 QuickTerm 不调该 API，由 `GhosttyDefaultConfig.userConfigFiles()`
 按同样顺序只加载存在且非空的常规文件；一个都没有才加载内置兜底。
 
+## AppKit：first responder 视图脱离窗口时不发 resignFirstResponder
+
+独立探针（scratch 脚本）验证：`makeFirstResponder(A)` 后 `A.removeFromSuperview()`，窗口 FR 被
+静默重置，A **收不到** `resignFirstResponder`；对不在窗口里的视图 `makeFirstResponder` 返回 true
+但不调 `becomeFirstResponder`（什么都不做）。SwiftUI 重建层级（Cmd+L、Cmd+T、切工作区）时
+SurfaceView 会从旧 scroll view 移出再装进新建的 scroll view，恰好命中前者——`focused` 残留为
+true → 多 pane 同时激活边框/闪烁光标，且悬停守卫 `!focused` 让它们再也收不到焦点。
+对策：`viewWillMove(toWindow: nil)` 时若自己是 FR 则记账，`viewDidMoveToWindow` 后夺回；
+`becomeFirstResponder` 通知控制器清掉其他 pane 的残留标志（单焦点不变量）；悬停与
+`focusedSurface` 以窗口 FR 为真相；启动聚焦改用 `Ghostty.moveFocus`（等待挂载）。
+回归测试 `testToggleLayoutKeepsSingleFocus`。
+

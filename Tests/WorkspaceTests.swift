@@ -221,3 +221,39 @@ extension WorkspaceTests {
         XCTAssertNil(decodedV2.floatings, "v2 存档兼容：浮动层缺省")
     }
 }
+
+extension WorkspaceTests {
+    /// 回归：Cmd+L 重建视图层级后不得出现多个 pane 同时 focused（多激活边框 + 悬停失效）
+    @MainActor
+    func testToggleLayoutKeepsSingleFocus() throws {
+        let c = try controller
+        c.model.switchTo(0)
+        let before = Set(c.paneList.map(ObjectIdentifier.init))
+        for _ in 0..<4 { c.perform(.newTerminal) }
+        let created = c.paneList.filter { !before.contains(ObjectIdentifier($0)) }
+        XCTAssertEqual(created.count, 4)
+        defer { for p in created { c.closePane(p, confirmIfNeeded: false) } }
+        let target = try XCTUnwrap(created.last)
+        Ghostty.moveFocus(to: target)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+
+        for _ in 0..<2 {   // scrolling → dwindle → scrolling
+            c.perform(.toggleLayout)
+            // 竞态复现：SwiftUI 尚未重建层级时，另一 pane 成为 FR（模拟悬停 moveFocus 恰好落地），
+            // 随后它在重建中被移出窗口——AppKit 不发 resign，focused 会残留
+            let other = try XCTUnwrap(created.first { $0 !== (c.window?.firstResponder as? Ghostty.SurfaceView) })
+            _ = c.window?.makeFirstResponder(other)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+            // 再模拟一次切换后的悬停
+            let another = try XCTUnwrap(created.first { $0 !== (c.window?.firstResponder as? Ghostty.SurfaceView) })
+            Ghostty.moveFocus(to: another)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+            let focusedPanes = c.paneList.filter(\.focused)
+            XCTAssertLessThanOrEqual(focusedPanes.count, 1,
+                                     "\(c.model.layout.name) 布局下 \(focusedPanes.count) 个 pane 同时 focused")
+            if let fr = c.window?.firstResponder as? Ghostty.SurfaceView {
+                XCTAssertTrue(focusedPanes.first === fr, "focused 标志应与窗口 first responder 一致")
+            }
+        }
+    }
+}

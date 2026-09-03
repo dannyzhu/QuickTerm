@@ -16,6 +16,8 @@ class BaseTerminalController: NSWindowController {
     /// MainWindowController 覆写为模型几何判定；默认无遮挡。
     func surfaceIsOccluded(_ pane: Ghostty.SurfaceView,
                            at locationInWindow: NSPoint) -> Bool { false }
+    /// 某 surface 成为 first responder（单焦点不变量：控制器清掉其他 pane 残留的 focused）
+    func surfaceDidBecomeFirstResponder(_ pane: Ghostty.SurfaceView) {}
     func toggleBackgroundOpacity() {}
     func promptTabTitle() {}
     @objc func changeTabTitle(_ sender: Any?) {}
