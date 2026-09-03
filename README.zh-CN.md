@@ -121,7 +121,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `pane-opacity` | 0.92 | 终端背景透明度（引擎 `background-opacity`） |
 | `active-opacity` | 0.98 | 激活 pane 背后垫主题底色，合成到该值 |
 | `bar-opacity` | 0.75 | 顶栏背景 |
-| `divider-opacity` | 0.5 | dwindle 分隔细线（1pt）的不透明度（1 = 实线，0 = 隐藏） |
+| `divider-opacity` | 0.2 | dwindle 分隔细线（1pt）的不透明度（1 = 实线，0 = 隐藏） |
 | `inactive-blur` | 2.5 | `> 0` 时非激活的平铺 pane 背后垫磨砂（模糊的是壁纸，文字不受影响；浮动 pane 不垫；目前数值只作开关） |
 
 `Cmd+Backspace` 一键全部关掉（pane 与顶栏变不透明）；`Cmd+Shift+Backspace` 开关 gaps。
@@ -172,7 +172,7 @@ macOS 菜单栏的 Shell / Pane 菜单只列了少数动作的固定默认快捷
 # pane-opacity = 0.92       # 0.5–1.0
 # active-opacity = 0.98     # 0.5–1.0
 # bar-opacity = 0.75        # 0–1
-# divider-opacity = 0.5     # 0–1，dwindle 分隔细线
+# divider-opacity = 0.2     # 0–1，dwindle 分隔细线
 # inactive-blur = 2.5       # > 0 开启非激活磨砂
 
 [keybinds]                  # 动作 = "修饰键+键"；"none" 解绑。动作 id 见 Cmd+K

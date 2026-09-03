@@ -106,9 +106,39 @@ extension ConfigStoreTests {
         XCTAssertEqual(ConfigStore.parse("").barOpacity, 0.75, accuracy: 0.001, "顶栏默认 0.75")
         XCTAssertEqual(ConfigStore.parse("bar-opacity = 0.3").barOpacity, 0.3, accuracy: 0.001)
         XCTAssertEqual(ConfigStore.parse("bar-opacity = 1.5").barOpacity, 1.0, accuracy: 0.001, "clamp 上限")
-        XCTAssertEqual(ConfigStore.parse("").dividerOpacity, 0.5, accuracy: 0.001, "dwindle 分隔细线默认 0.5 半透明")
+        XCTAssertEqual(ConfigStore.parse("").dividerOpacity, 0.2, accuracy: 0.001, "dwindle 分隔细线默认 0.2")
         XCTAssertEqual(ConfigStore.parse("divider-opacity = 0.4").dividerOpacity, 0.4, accuracy: 0.001)
         XCTAssertEqual(ConfigStore.parse("divider-opacity = -1").dividerOpacity, 0.0, accuracy: 0.001, "clamp 下限")
+    }
+
+    /// 已有配置文件补全缺失键：注释+默认值插在第一个 section 前；幂等；完整文件不动；活跃设置不被覆盖
+    func testEnsureTemplateKeysAppendsMissingOnce() throws {
+        let fm = FileManager.default
+        let url = fm.temporaryDirectory.appendingPathComponent("qt-config-\(UUID().uuidString).toml")
+        defer { try? fm.removeItem(at: url) }
+        try "theme = \"nord\"\nworkspaces = 8\n\n[keybinds]\nnew-terminal = \"cmd+t\"\n".write(to: url, atomically: true, encoding: .utf8)
+        XCTAssertTrue(ConfigStore.ensureTemplateKeys(at: url), "缺键 → 写入")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(text.contains("# divider-opacity = 0.2"), "补全 divider-opacity 默认")
+        XCTAssertTrue(text.contains("# pane-opacity = 0.92"))
+        XCTAssertFalse(text.contains("# theme = "), "已有的 theme 不重复补")
+        XCTAssertFalse(text.contains("# workspaces = "), "已有的 workspaces 不重复补")
+        let keybindsIdx = try XCTUnwrap(text.range(of: "[keybinds]")).lowerBound
+        let dividerIdx = try XCTUnwrap(text.range(of: "# divider-opacity")).lowerBound
+        XCTAssertLessThan(dividerIdx, keybindsIdx, "补全块插在第一个 section 之前")
+        let parsed = ConfigStore.parse(text)
+        XCTAssertEqual(parsed.themeName, "nord"); XCTAssertEqual(parsed.workspaces, 8)
+        XCTAssertEqual(parsed.overrides[.newTerminal], KeyCombo(key: "t", .command), "活跃设置原样保留")
+        XCTAssertFalse(ConfigStore.ensureTemplateKeys(at: url), "第二次无缺键 → 不写")
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), text, "幂等")
+        // 完整模板本身不需要补全；模板键覆盖所有可解析键
+        try ConfigStore.template.write(to: url, atomically: true, encoding: .utf8)
+        XCTAssertFalse(ConfigStore.ensureTemplateKeys(at: url))
+        let keys = Set(ConfigStore.templateKeyLines.map(\.key))
+        for k in ["theme", "workspaces", "pane-padding", "visible-columns", "pane-opacity",
+                  "active-opacity", "bar-opacity", "divider-opacity", "inactive-blur"] {
+            XCTAssertTrue(keys.contains(k), "模板缺少 \(k)")
+        }
     }
 
     @MainActor

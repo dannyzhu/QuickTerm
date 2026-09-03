@@ -132,6 +132,7 @@ final class MainWindowController: BaseTerminalController {
         applyAppearance()
 
         // 配置链第 4 层：config.toml（键位/工作区数/主题/[ghostty] 透传）+ 热重载
+        ConfigStore.ensureTemplateKeys()  // 已有配置文件补全新增键（注释形式，幂等）
         lastConfigContent = (try? String(contentsOf: ConfigStore.configURL, encoding: .utf8)) ?? ""
         applyConfig(ConfigStore.load())
         configWatcher = ConfigWatcher(
@@ -760,6 +761,7 @@ final class MainWindowController: BaseTerminalController {
 
     private func openSettingsFile() {
         let url = ConfigStore.configURL
+        ConfigStore.ensureTemplateKeys()  // 打开前补全缺失键，用户看到的是完整清单
         if !FileManager.default.fileExists(atPath: url.path) {
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

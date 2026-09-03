@@ -15,6 +15,7 @@ enum ConfigStore {
     # pane-opacity = 0.92       # pane 背景透明度（0.5–1.0；非激活基准，文字不受影响）
     # active-opacity = 0.98     # 激活 pane 背景等效透明度（0.5–1.0）
     # bar-opacity = 0.75        # 顶部状态条背景透明度（0–1）
+    # divider-opacity = 0.2     # dwindle 分隔细线不透明度（0–1；0 隐藏，1 实线）
     # inactive-blur = 2.5       # 非激活 pane 磨砂背景（> 0 开启；0 关闭）
 
     [keybinds]
@@ -26,6 +27,51 @@ enum ConfigStore {
     # 原样透传给引擎（最高优先级），任意 ghostty 选项。
     # cursor-style = block
     """
+
+    /// 模板顶层键的标准行（"# key = 默认  # 说明"），按模板顺序；补全缺失键时复用
+    static var templateKeyLines: [(key: String, line: String)] {
+        template.split(separator: "\n", omittingEmptySubsequences: false).compactMap { raw in
+            let line = String(raw)
+            guard line.hasPrefix("# ") else { return nil }
+            let body = line.dropFirst(2)
+            guard let eq = body.firstIndex(of: "=") else { return nil }
+            let key = body[..<eq].trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty, key.allSatisfy({ $0.isLetter || $0 == "-" }) else { return nil }
+            return (key, line)
+        }
+    }
+
+    /// 已有配置文件补全缺失的顶层键（注释 + 默认值，插在第一个 [section] 之前；幂等）。
+    /// 用户早期模板生成的文件不含后来新增的键，"所有配置项都要写在配置文件里"。
+    /// 返回是否有写入。文件不存在时不做事（首次打开设置会写完整模板）。
+    @discardableResult
+    static func ensureTemplateKeys(at url: URL = configURL) -> Bool {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return false }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        func mentions(_ key: String) -> Bool {
+            lines.contains { line in
+                var s = Substring(line.trimmingCharacters(in: .whitespaces))
+                if s.hasPrefix("#") { s = s.dropFirst().drop(while: { $0 == " " }) }
+                guard s.hasPrefix(key) else { return false }
+                let rest = s.dropFirst(key.count).drop(while: { $0 == " " })
+                return rest.hasPrefix("=")
+            }
+        }
+        let missing = templateKeyLines.filter { !mentions($0.key) }
+        guard !missing.isEmpty else { return false }
+        var out = lines
+        let block = ["# —— QuickTerm 新增配置项（自动补全，注释 = 默认值）——"] + missing.map(\.line) + [""]
+        if let sectionIdx = out.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("[") }) {
+            out.insert(contentsOf: block, at: sectionIdx)
+        } else {
+            if out.last == "" { out.removeLast() }
+            out.append(contentsOf: [""] + block)
+        }
+        do {
+            try out.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+            return true
+        } catch { return false }
+    }
 
     struct Settings: Equatable {
         var themeName: String?
@@ -40,8 +86,8 @@ enum ConfigStore {
         var activeOpacity: Double = 0.98
         /// 顶部状态条背景透明度（0.0–1.0，默认 0.75；受 Cmd+Backspace 总开关控制）
         var barOpacity: Double = 0.75
-        /// dwindle 分隔细线不透明度（0.0–1.0，默认 0.5 = 半透明；0 = 隐藏）
-        var dividerOpacity: Double = 0.5
+        /// dwindle 分隔细线不透明度（0.0–1.0，默认 0.2；0 = 隐藏）
+        var dividerOpacity: Double = 0.2
         /// 非激活 pane 高斯模糊半径（0–10pt，默认 2.5；磨砂感）
         var inactiveBlur: Double = 2.5
         var overrides: [WMAction: KeyCombo] = [:]

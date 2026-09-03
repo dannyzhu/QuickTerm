@@ -121,7 +121,7 @@ All panels are centred, Walker-style: `↑`/`↓` to move, `Return` to choose, `
 | `pane-opacity` | 0.92 | Terminal background opacity (engine `background-opacity`) |
 | `active-opacity` | 0.98 | The focused pane is composited over a theme-coloured underlay up to this value |
 | `bar-opacity` | 0.75 | Status bar background |
-| `divider-opacity` | 0.5 | Opacity of the 1pt divider line between dwindle splits (1 = solid, 0 = hidden) |
+| `divider-opacity` | 0.2 | Opacity of the 1pt divider line between dwindle splits (1 = solid, 0 = hidden) |
 | `inactive-blur` | 2.5 | `> 0` puts a frosted-glass backdrop behind inactive tiled panes (blurs the wallpaper, not the text; floating panes are exempt; the numeric value is currently on/off only) |
 
 `Cmd+Backspace` turns all of it off at once (panes and bar go opaque); `Cmd+Shift+Backspace` toggles the gaps.
@@ -172,7 +172,7 @@ The Shell and Pane menus in the macOS menu bar list fixed default shortcuts for 
 # pane-opacity = 0.92       # 0.5–1.0
 # active-opacity = 0.98     # 0.5–1.0
 # bar-opacity = 0.75        # 0–1
-# divider-opacity = 0.5     # 0–1, dwindle split divider line
+# divider-opacity = 0.2     # 0–1, dwindle split divider line
 # inactive-blur = 2.5       # > 0 enables frosted inactive panes
 
 [keybinds]                  # action = "modifiers+key"; "none" unbinds. Action ids: Cmd+K

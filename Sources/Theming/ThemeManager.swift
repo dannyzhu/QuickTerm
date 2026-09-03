@@ -25,8 +25,8 @@ final class ThemeManager: ObservableObject {
     @Published private(set) var inactiveBlur = 2.5
     /// 顶部状态条背景透明度（config `bar-opacity`，默认 0.75；纯 UI 层）
     @Published private(set) var barOpacity = 0.75
-    /// dwindle 分隔细线不透明度（config `divider-opacity`，默认 0.5 = 半透明；纯 UI 层）
-    @Published private(set) var dividerOpacity = 0.5
+    /// dwindle 分隔细线不透明度（config `divider-opacity`，默认 0.2；纯 UI 层）
+    @Published private(set) var dividerOpacity = 0.2
 
     var frostedInactive: Bool { opacityEnabled && inactiveBlur > 0 }
 
@@ -46,7 +46,7 @@ final class ThemeManager: ObservableObject {
     func updateFromConfig(passthrough: String, followEngine: Bool, panePadding: Int = 14,
                           paneOpacity: Double = 0.92, inactiveBlur: Double = 2.5,
                           activeOpacity: Double = 0.98, barOpacity: Double = 0.75,
-                          dividerOpacity: Double = 0.5) {
+                          dividerOpacity: Double = 0.2) {
         self.activeOpacity = activeOpacity  // 纯 UI 层
         self.inactiveBlur = inactiveBlur  // 纯 UI 层
         self.barOpacity = barOpacity  // 纯 UI 层
