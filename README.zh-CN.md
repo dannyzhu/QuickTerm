@@ -6,6 +6,10 @@ QuickTerm 把 [Omarchy](https://omarchy.org) 的 Hyprland 平铺桌面装进一�
 
 [English](README.md)
 
+![scrolling 画布：左侧整列 btop，右侧一列叠栈（htop 在上、CLI agent 在下），第三列在右缘露边](docs/images/screenshot-01.png)
+
+![向右滚动一列后：激活 pane 带 accent 边框，非激活 pane 磨砂，前一列在左缘露边](docs/images/screenshot-02.png)
+
 ---
 
 ## 亮点
@@ -210,4 +214,4 @@ AppKit 掌管状态与生命周期，SwiftUI 只做渲染。`MainWindowControlle
 
 ## 许可
 
-MIT。Ghostty 与 Omarchy 的资产保留各自的 MIT 许可与版权声明。
+MIT，见 [`LICENSE`](LICENSE)。Ghostty 与 Omarchy 的资产保留各自的 MIT 许可与版权声明。

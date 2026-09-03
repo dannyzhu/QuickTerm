@@ -6,6 +6,10 @@ QuickTerm puts the feel of [Omarchy](https://omarchy.org)'s Hyprland desktop ins
 
 [中文说明](README.zh-CN.md)
 
+![Scrolling canvas: a full-height column on the left, a stacked column (htop over a CLI agent) on the right, and the next column peeking in at the right edge](docs/images/screenshot-01.png)
+
+![Scrolled one column to the right — the focused pane wears the accent border, inactive panes turn frosted, and the previous column peeks in on the left](docs/images/screenshot-02.png)
+
 ---
 
 ## Highlights
@@ -210,4 +214,4 @@ AppKit owns state and lifecycle; SwiftUI only renders. `MainWindowController` is
 
 ## License
 
-MIT. Ghostty and Omarchy assets retain their own MIT licences and copyright notices.
+MIT — see [`LICENSE`](LICENSE). Ghostty and Omarchy assets retain their own MIT licences and copyright notices.
