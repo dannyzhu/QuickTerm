@@ -106,7 +106,7 @@ extension ConfigStoreTests {
         XCTAssertEqual(ConfigStore.parse("").barOpacity, 0.75, accuracy: 0.001, "顶栏默认 0.75")
         XCTAssertEqual(ConfigStore.parse("bar-opacity = 0.3").barOpacity, 0.3, accuracy: 0.001)
         XCTAssertEqual(ConfigStore.parse("bar-opacity = 1.5").barOpacity, 1.0, accuracy: 0.001, "clamp 上限")
-        XCTAssertEqual(ConfigStore.parse("").dividerOpacity, 0.85, accuracy: 0.001, "dwindle 分隔带默认 0.85")
+        XCTAssertEqual(ConfigStore.parse("").dividerOpacity, 0.5, accuracy: 0.001, "dwindle 分隔细线默认 0.5 半透明")
         XCTAssertEqual(ConfigStore.parse("divider-opacity = 0.4").dividerOpacity, 0.4, accuracy: 0.001)
         XCTAssertEqual(ConfigStore.parse("divider-opacity = -1").dividerOpacity, 0.0, accuracy: 0.001, "clamp 下限")
     }
@@ -118,7 +118,7 @@ extension ConfigStoreTests {
         manager.opacityEnabled = true
         XCTAssertEqual(manager.effectiveDividerOpacity, 0.6, accuracy: 0.001)
         manager.opacityEnabled = false
-        XCTAssertEqual(manager.effectiveDividerOpacity, 1.0, accuracy: 0.001, "总开关关闭 = 分隔带完全遮住间隙")
+        XCTAssertEqual(manager.effectiveDividerOpacity, 1.0, accuracy: 0.001, "总开关关闭 = 不透明实线")
     }
 
     @MainActor

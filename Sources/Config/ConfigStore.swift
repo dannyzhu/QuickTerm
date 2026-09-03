@@ -40,8 +40,8 @@ enum ConfigStore {
         var activeOpacity: Double = 0.98
         /// 顶部状态条背景透明度（0.0–1.0，默认 0.75；受 Cmd+Backspace 总开关控制）
         var barOpacity: Double = 0.75
-        /// dwindle 分隔带不透明度（0.0–1.0，默认 0.85 = 间隙壁纸只透 15%；0 = 全透）
-        var dividerOpacity: Double = 0.85
+        /// dwindle 分隔细线不透明度（0.0–1.0，默认 0.5 = 半透明；0 = 隐藏）
+        var dividerOpacity: Double = 0.5
         /// 非激活 pane 高斯模糊半径（0–10pt，默认 2.5；磨砂感）
         var inactiveBlur: Double = 2.5
         var overrides: [WMAction: KeyCombo] = [:]

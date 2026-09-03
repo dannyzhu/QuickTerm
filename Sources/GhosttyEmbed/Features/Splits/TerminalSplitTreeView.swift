@@ -46,7 +46,7 @@ struct TerminalSplitTreeView: View {
 
 private struct TerminalSplitSubtreeView: View {
     @EnvironmentObject var ghostty: Ghostty.App
-    // QuickTerm：分隔带用主题底色按 divider-opacity 盖住间隙（壁纸只透一点点）；gaps 关闭时退回 1pt 线
+    // QuickTerm：1pt 分隔细线按 divider-opacity 半透明（原为全不透明的深色线）
     @EnvironmentObject var theme: ThemeManager
 
     let node: SplitTree<Ghostty.SurfaceView>.Node
@@ -71,8 +71,7 @@ private struct TerminalSplitSubtreeView: View {
                 }, set: {
                     action(.resize(.init(node: node, ratio: $0)))
                 }),
-                dividerColor: theme.background.opacity(theme.effectiveDividerOpacity),
-                dividerFillExtra: theme.gapsEnabled ? 2 * PaneChrome.gapInset : 0,
+                dividerColor: ghostty.config.splitDividerColor.opacity(theme.effectiveDividerOpacity),
                 resizeIncrements: .init(width: 1, height: 1),
                 left: {
                     TerminalSplitSubtreeView(node: split.left, action: action)
