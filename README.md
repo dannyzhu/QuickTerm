@@ -14,7 +14,7 @@ QuickTerm puts the feel of [Omarchy](https://omarchy.org)'s Hyprland desktop ins
 
 ## Highlights
 
-- **Scrolling canvas by default** — each workspace is an endless horizontal strip of columns (Hyprland `scrolling` layout: two columns per screen by default, with 6% of each neighbouring column peeking in at the edges). New terminals open to the right of the focused column; the viewport follows focus with minimal scrolling. Classic **dwindle** tiling is one `Cmd+L` away.
+- **Scrolling canvas by default** — each workspace is an endless horizontal strip of columns (Hyprland `scrolling` layout: two columns per screen by default, with a sliver of each neighbouring column peeking in at the edges). New terminals open to the right of the focused column; the viewport follows focus with minimal scrolling. Classic **dwindle** tiling is one `Cmd+L` away.
 - **Hover to focus** — move the mouse over a pane and it's active. Border turns to the theme accent, keystrokes go straight in.
 - **Floating panes** — `Cmd+T` lifts a pane out of the tiling; `⌘`+drag moves it, `⌘`+right-drag resizes it.
 - **Five workspaces** — `Cmd+1…5` to switch, `Cmd+Shift+1…5` to move a pane along. Scroll the status bar to cycle.

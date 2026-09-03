@@ -269,11 +269,13 @@ final class MainWindowController: BaseTerminalController {
               (2...3).contains(state.version) else { return false }
         let floatings = state.floatings ?? Array(repeating: [], count: state.layouts.count)
         guard !(state.layouts.allSatisfy(\.isEmpty) && floatings.allSatisfy(\.isEmpty)) else { return false }
-        // 旧状态归一：0.49 是「露边 2%」时代的默认列宽，两列 + 两侧 6% 露边装不下，
-        // 归到当前列因子；用户手动调过的宽度（≠0.49）原样保留
+        // 旧状态归一：0.49（露边 2% 时代）/ 0.44（露边 6% 时代）是历史默认列宽，
+        // 归到当前列因子；用户手动调过的宽度原样保留
+        let legacyDefaults = [0.49, 0.44]
         model.layouts = state.layouts.map { layout in
             guard case .scrolling(var strip) = layout else { return layout }
-            for i in strip.columns.indices where abs(strip.columns[i].widthFactor - 0.49) < 0.001 {
+            for i in strip.columns.indices
+            where legacyDefaults.contains(where: { abs(strip.columns[i].widthFactor - $0) < 0.001 }) {
                 strip.columns[i].widthFactor = columnFactor
             }
             return .scrolling(strip)

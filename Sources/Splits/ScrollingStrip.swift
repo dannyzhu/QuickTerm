@@ -10,16 +10,16 @@ struct ScrollingStrip: Codable {
         var widthFactor: Double = ScrollingStrip.defaultWidth
     }
 
-    /// 露边（每侧，视口比例）：溢出时焦点列外侧留出邻列的一截**真实内容**。
-    /// Omarchy 原值（0.49 列宽 → 总共 2%）盖不住 gap+边框+终端内边距（≈21pt），
-    /// 露出来的只是空壳；6% 一侧约能看到几列字符，且内部焦点两侧对称。
-    static let peek = 0.06
-    /// 默认列宽 = 每屏 2 列（0.44）
+    /// 露边（每侧，视口比例）：溢出时焦点列外侧露出邻列的一条边（gap+边框+一点底色，
+    /// ≈15pt @1000pt 视口），提示"那边还有"；内部焦点两侧对称。
+    /// 6% 用户反馈太宽（2026-09-03），收到其 1/4。
+    static let peek = 0.015
+    /// 默认列宽 = 每屏 2 列（0.485）
     static var defaultWidth: Double { factor(forVisibleColumns: 2) }
     static let widthStep = 0.05
     static let widthRange = 0.25...0.90
 
-    /// "每屏可见 N 列" → 列宽因子 = (1 − 两侧露边) / N（N=2 → 0.44）
+    /// "每屏可见 N 列" → 列宽因子 = (1 − 两侧露边) / N（N=2 → 0.485）
     static func factor(forVisibleColumns n: Int) -> Double {
         (1 - 2 * peek) / Double(min(max(n, 1), 6))
     }

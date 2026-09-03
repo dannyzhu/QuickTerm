@@ -86,25 +86,25 @@ final class ScrollingStripTests: XCTestCase {
         XCTAssertEqual(strip.columns[0].widthFactor, 0.90, accuracy: 0.001, "上限 90%")
         strip = strip.equalized()
         XCTAssertEqual(strip.columns[0].widthFactor, ScrollingStrip.defaultWidth, accuracy: 0.001)
-        XCTAssertEqual(ScrollingStrip.defaultWidth, 0.44, accuracy: 0.001, "两列 = (1−2×6%)/2")
+        XCTAssertEqual(ScrollingStrip.defaultWidth, 0.485, accuracy: 0.001, "两列 = (1−2×1.5%)/2")
     }
 
     func testTargetOffsetMinimalScroll() throws {
         let a = try pane(), b = try pane(), c = try pane()
         var strip = ScrollingStrip(pane: a)
         strip = strip.insertingColumnRight(of: a, pane: b)
-        strip = strip.insertingColumnRight(of: b, pane: c)   // [a][b][c] 各 0.44，总宽 1330
+        strip = strip.insertingColumnRight(of: b, pane: c)   // [a][b][c] 各 0.485，总宽 1465（含 2 个 gap）
         let vp: CGFloat = 1000, gap: CGFloat = 5
         // 焦点在 a：offset 0 不动
         XCTAssertEqual(strip.targetOffset(for: a, current: 0, viewport: vp, gap: gap), 0)
-        // 焦点在 b：[445,885] 完整可见且右侧仍有露边 → 最小滚动 = 不动
+        // 焦点在 b：[490,975] 完整可见且右侧仍有露边 → 最小滚动 = 不动
         XCTAssertEqual(strip.targetOffset(for: b, current: 0, viewport: vp, gap: gap), 0)
-        // 焦点在 c（末列）：x=890，右缘对齐+露边 = 390，但被总宽钳到 1330-1000 = 330（末列贴边）
-        XCTAssertEqual(strip.targetOffset(for: c, current: 0, viewport: vp, gap: gap), 330, accuracy: 0.5)
+        // 焦点在 c（末列）：x=980，右缘对齐+露边 = 480，但被总宽钳到 1465-1000 = 465（末列贴边）
+        XCTAssertEqual(strip.targetOffset(for: c, current: 0, viewport: vp, gap: gap), 465, accuracy: 0.5)
         // 从右往左回焦 a：左缘对齐+露边 → 负值钳到 0
-        XCTAssertEqual(strip.targetOffset(for: a, current: 330, viewport: vp, gap: gap), 0)
-        // 焦点 b、当前 330：b 完整可见（左侧 a 露边 115）→ 不动
-        XCTAssertEqual(strip.targetOffset(for: b, current: 330, viewport: vp, gap: gap), 330)
+        XCTAssertEqual(strip.targetOffset(for: a, current: 465, viewport: vp, gap: gap), 0)
+        // 焦点 b、当前 465：b 完整可见（左侧 a 露 20）→ 不动
+        XCTAssertEqual(strip.targetOffset(for: b, current: 465, viewport: vp, gap: gap), 465)
     }
 
     /// 4 列、焦点在内部：中间两列全显，左右两列各露出一个露边（对称）——
@@ -114,11 +114,11 @@ final class ScrollingStripTests: XCTestCase {
         var strip = ScrollingStrip(pane: a).insertingColumnRight(of: a, pane: b)
         strip = strip.insertingColumnRight(of: b, pane: c).insertingColumnRight(of: c, pane: d)
         let vp: CGFloat = 1000, gap: CGFloat = 0
-        let w = ScrollingStrip.factor(forVisibleColumns: 2) * 1000   // 440
-        let peek = ScrollingStrip.peek * 1000                         // 60
+        let w = ScrollingStrip.factor(forVisibleColumns: 2) * 1000   // 485
+        let peek = ScrollingStrip.peek * 1000                         // 15
         let offset = strip.targetOffset(for: c, current: 0, viewport: vp, gap: gap)
-        XCTAssertEqual(offset, 2 * w + w + peek - vp, accuracy: 0.5, "c 右缘对齐并留右露边 → 380")
-        // 可见区 [380,1380)：a 露 60、b 全、c 全、d 露 60
+        XCTAssertEqual(offset, 2 * w + w + peek - vp, accuracy: 0.5, "c 右缘对齐并留右露边 → 470")
+        // 可见区 [470,1470)：a 露 15、b 全、c 全、d 露 15
         XCTAssertEqual(w - offset, peek, accuracy: 0.5, "左邻 a 露出一个露边")
         XCTAssertEqual(offset + vp - 3 * w, peek, accuracy: 0.5, "右邻 d 露出一个露边")
         XCTAssertGreaterThanOrEqual(w - offset, 0); XCTAssertLessThanOrEqual(3 * w - offset, vp)
@@ -222,11 +222,11 @@ extension ScrollingStripTests {
 
 extension ScrollingStripTests {
     func testVisibleColumnsFactor() {
-        XCTAssertEqual(ScrollingStrip.factor(forVisibleColumns: 2), 0.44, accuracy: 0.001,
-                       "N=2 → (1−2×6%)/2 = 0.44")
-        XCTAssertEqual(ScrollingStrip.factor(forVisibleColumns: 3), 0.88 / 3, accuracy: 0.001)
-        XCTAssertEqual(ScrollingStrip.factor(forVisibleColumns: 4), 0.22, accuracy: 0.001)
-        XCTAssertEqual(ScrollingStrip.factor(forVisibleColumns: 0), 0.88, accuracy: 0.001, "clamp 下限（N=1 = 1−2×6%）")
+        XCTAssertEqual(ScrollingStrip.factor(forVisibleColumns: 2), 0.485, accuracy: 0.001,
+                       "N=2 → (1−2×1.5%)/2 = 0.485")
+        XCTAssertEqual(ScrollingStrip.factor(forVisibleColumns: 3), 0.97 / 3, accuracy: 0.001)
+        XCTAssertEqual(ScrollingStrip.factor(forVisibleColumns: 4), 0.2425, accuracy: 0.001)
+        XCTAssertEqual(ScrollingStrip.factor(forVisibleColumns: 0), 0.97, accuracy: 0.001, "clamp 下限（N=1 = 1−2×1.5%）")
     }
 
     @MainActor
