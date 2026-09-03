@@ -272,7 +272,8 @@ final class MainWindowController: BaseTerminalController {
             paneOpacity: settings.paneOpacity,
             inactiveBlur: settings.inactiveBlur,
             activeOpacity: settings.activeOpacity,
-            barOpacity: settings.barOpacity)
+            barOpacity: settings.barOpacity,
+            dividerOpacity: settings.dividerOpacity)
         if let name = settings.themeName, name != "ghostty",
            let theme = themeManager.themes.first(where: { $0.name == name }),
            theme != themeManager.current {

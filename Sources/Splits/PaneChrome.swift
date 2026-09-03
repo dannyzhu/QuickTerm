@@ -3,6 +3,9 @@ import SwiftUI
 /// Omarchy 视觉（spec §1.1/§4.2）：2px 边框（焦点 = accent #7aa2f7 / 非焦点 = 灰 0x59@67%）、
 /// gaps_in=5 语义（每 pane 边 5，相邻合成 10；边缘与外圈 5 合成 10——左中右等宽）、直角、popin 87% 弹入动画。焦点态随悬停即时切换。
 struct PaneChrome: ViewModifier {
+    /// gaps_in 语义：每 pane 每边 5pt（相邻合成 10）；dwindle 分隔条填充据此覆盖间隙
+    static let gapInset: CGFloat = 5
+
     @ObservedObject var surfaceView: Ghostty.SurfaceView
     /// 浮动层 pane：非激活不垫磨砂 backdrop——它身后是下层平铺 pane 内容
     /// 而非壁纸，HUD 材质糊上去近乎实心；跳过后与平铺 pane 同为 0.92 透明
@@ -24,7 +27,7 @@ struct PaneChrome: ViewModifier {
                 }
             }
             .border(surfaceView.focused ? theme.accent : Palette.inactiveBorder, width: 2)
-            .padding(theme.gapsEnabled ? 5 : 0)
+            .padding(theme.gapsEnabled ? Self.gapInset : 0)
             .scaleEffect(appeared ? 1 : 0.87)
             .opacity(appeared ? 1 : 0)
             .onAppear {

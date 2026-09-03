@@ -12,6 +12,10 @@ struct SplitView<L: View, R: View>: View {
     /// Divider color
     let dividerColor: Color
 
+    /// QuickTerm：分隔条视觉填充在可视线宽之外额外覆盖的宽度（盖住两侧 pane 的 gap 内边距，
+    /// 让间隙透出的壁纸只剩"一点点"）；不影响布局与命中区。
+    let dividerFillExtra: CGFloat
+
     /// Minimum increment (in points) that this split can be resized by, in
     /// each direction. Both `height` and `width` should be whole numbers
     /// greater than or equal to 1.0
@@ -55,6 +59,7 @@ struct SplitView<L: View, R: View>: View {
                 Divider(direction: direction,
                         visibleSize: splitterVisibleSize,
                         invisibleSize: splitterInvisibleSize,
+                        fillSize: splitterVisibleSize + dividerFillExtra,
                         color: dividerColor,
                         split: $split)
                     .position(splitterPoint)
@@ -73,6 +78,7 @@ struct SplitView<L: View, R: View>: View {
         _ direction: SplitViewDirection,
         _ split: Binding<CGFloat>,
         dividerColor: Color,
+        dividerFillExtra: CGFloat = 0,
         resizeIncrements: NSSize = .init(width: 1, height: 1),
         @ViewBuilder left: (() -> L),
         @ViewBuilder right: (() -> R),
@@ -81,6 +87,7 @@ struct SplitView<L: View, R: View>: View {
         self.direction = direction
         self._split = split
         self.dividerColor = dividerColor
+        self.dividerFillExtra = dividerFillExtra
         self.resizeIncrements = resizeIncrements
         self.left = left()
         self.right = right()

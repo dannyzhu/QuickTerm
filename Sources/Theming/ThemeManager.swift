@@ -25,12 +25,17 @@ final class ThemeManager: ObservableObject {
     @Published private(set) var inactiveBlur = 2.5
     /// 顶部状态条背景透明度（config `bar-opacity`，默认 0.75；纯 UI 层）
     @Published private(set) var barOpacity = 0.75
+    /// dwindle 分隔带不透明度（config `divider-opacity`，默认 0.85：间隙壁纸只透 15%；纯 UI 层）
+    @Published private(set) var dividerOpacity = 0.85
 
     var frostedInactive: Bool { opacityEnabled && inactiveBlur > 0 }
 
     /// 顶部状态条等 chrome 的背景透明度（bar-opacity 数值，
     /// 受 Cmd+Backspace 总开关控制；关闭 = 不透明）
     var effectiveChromeOpacity: Double { opacityEnabled ? barOpacity : 1.0 }
+
+    /// dwindle 分隔带实际不透明度（总开关关闭 = 完全遮住间隙）
+    var effectiveDividerOpacity: Double { opacityEnabled ? dividerOpacity : 1.0 }
 
     /// 激活 pane 垫层 alpha：使 paneOpacity 与垫层合成后 = activeOpacity
     var activeUnderlayAlpha: Double {
@@ -40,10 +45,12 @@ final class ThemeManager: ObservableObject {
 
     func updateFromConfig(passthrough: String, followEngine: Bool, panePadding: Int = 14,
                           paneOpacity: Double = 0.92, inactiveBlur: Double = 2.5,
-                          activeOpacity: Double = 0.98, barOpacity: Double = 0.75) {
+                          activeOpacity: Double = 0.98, barOpacity: Double = 0.75,
+                          dividerOpacity: Double = 0.85) {
         self.activeOpacity = activeOpacity  // 纯 UI 层
         self.inactiveBlur = inactiveBlur  // 纯 UI 层
         self.barOpacity = barOpacity  // 纯 UI 层
+        self.dividerOpacity = dividerOpacity  // 纯 UI 层
         guard passthrough != ghosttyPassthrough
                 || followEngine != followEngineColors
                 || panePadding != self.panePadding

@@ -6,13 +6,15 @@ extension SplitView {
         let direction: SplitViewDirection
         let visibleSize: CGFloat
         let invisibleSize: CGFloat
+        /// QuickTerm：视觉填充宽度（可大于 visibleSize，溢出到两侧 gap 内边距上；布局仍按 visibleSize）
+        let fillSize: CGFloat
         let color: Color
         @Binding var split: CGFloat
 
         private var visibleWidth: CGFloat? {
             switch direction {
             case .horizontal:
-                return visibleSize
+                return fillSize
             case .vertical:
                 return nil
             }
@@ -23,7 +25,7 @@ extension SplitView {
             case .horizontal:
                 return nil
             case .vertical:
-                return visibleSize
+                return fillSize
             }
         }
 

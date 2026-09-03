@@ -210,6 +210,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 | 激活 pane | `active-opacity` | 0.98 | 纯 UI：激活 pane 背后垫主题底色，alpha = `(active − pane) / (1 − pane)`，零引擎 reload |
 | 非激活压暗 | —（硬编码） | 0.96 | 引擎 `unfocused-split-opacity` |
 | 顶栏 | `bar-opacity` | 0.75 | 纯 UI |
+| dwindle 分隔带 | `divider-opacity` | 0.85 | 纯 UI；SplitView divider 视觉填充覆盖 5+1+5 间隙，主题底色按此不透明度压暗壁纸（只透 15%），gaps 关闭退回 1pt 线，受总开关 |
 | 非激活磨砂 | `inactive-blur` | 2.5 | `NSVisualEffectView(.hudWindow, .withinWindow)` backdrop——模糊的是壁纸，文字锐利。**数值目前只作开关（> 0 开启）**，未作为半径生效 |
 
 `Cmd+Backspace` 总开关：pane → 引擎 1.0 / 1.0、顶栏不透明、关磨砂。`Cmd+Shift+Backspace` gaps 开关（纯 UI）。边框 2px（accent / 灰）、直角、`pane-padding` 14pt（0–32，注入 `window-padding-x/y`）。
@@ -226,6 +227,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 # pane-opacity = 0.92       # 0.5–1.0
 # active-opacity = 0.98     # 0.5–1.0
 # bar-opacity = 0.75        # 0–1
+# divider-opacity = 0.85    # 0–1，dwindle 间隙分隔带
 # inactive-blur = 2.5       # > 0 开启磨砂
 
 [keybinds]                  # 值 "modifier+key"；"none" 解绑；动作清单 = Cmd+K 速查表
