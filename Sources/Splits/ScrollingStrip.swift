@@ -257,8 +257,11 @@ struct ScrollingStrip: Codable {
 
     // MARK: 与 dwindle 互转（Cmd+L；保 pane 保序）
 
-    static func from(tree: SplitTree<Ghostty.SurfaceView>) -> Self {
-        ScrollingStrip(columns: tree.root?.leaves().map { Column(panes: [$0]) } ?? [])
+    static func from(tree: SplitTree<Ghostty.SurfaceView>,
+                     widthFactor: Double = ScrollingStrip.defaultWidth) -> Self {
+        ScrollingStrip(columns: tree.root?.leaves().map {
+            Column(panes: [$0], widthFactor: widthFactor)
+        } ?? [])
     }
 
     func toTree() -> SplitTree<Ghostty.SurfaceView> {

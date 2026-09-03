@@ -8,6 +8,8 @@ final class WorkspaceModel: ObservableObject {
     @Published var layouts: [WorkspaceLayout]
     /// 每工作区的浮动层（与 layouts 平行索引；spec v7）
     @Published var floatings: [[FloatingPane]]
+    /// 每工作区上一次离开的布局（Cmd+L 往返恢复用；不持久化）
+    private var alternates: [WorkspaceLayout?] = []
     @Published var activeIndex: Int = 0
     @Published var barVisible = true
 
@@ -47,6 +49,25 @@ final class WorkspaceModel: ObservableObject {
     func isEmpty(_ index: Int) -> Bool {
         guard layouts.indices.contains(index) else { return true }
         return layouts[index].isEmpty && floatings[index].isEmpty
+    }
+
+    /// Cmd+L：优先恢复该工作区上次离开的另一种布局——只要 pane 集合没变，
+    /// 列栈/列宽/顺序原样回来（转换是有损的：dwindle→scrolling 会把叠栈摊成独立列，
+    /// 5 个 pane 变 5 列就溢出视口）；pane 有增减时才退回保 pane 保序的转换。
+    func toggleLayout(columnFactor: Double = ScrollingStrip.defaultWidth) {
+        if alternates.count != layouts.count {  // 状态恢复/扩缩容后对齐
+            alternates = (0..<layouts.count).map { alternates.indices.contains($0) ? alternates[$0] : nil }
+        }
+        let current = layout
+        let remembered = alternates[activeIndex]
+        let next: WorkspaceLayout
+        if let remembered, remembered.name != current.name, remembered.hasSamePanes(as: current) {
+            next = remembered
+        } else {
+            next = current.toggled(columnFactor: columnFactor)
+        }
+        alternates[activeIndex] = current
+        layout = next
     }
 
     /// config workspaces=N（1–10）：扩容补空；缩容仅当被裁的全空（否则保留至最后非空）

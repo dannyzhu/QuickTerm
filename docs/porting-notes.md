@@ -92,3 +92,16 @@ mouseMoved 补进入状态；拖拽序列（type != .mouseMoved）不走守卫�
 点击同理：SurfaceView 的 localEventLeftMouseDown 焦点转移监视器原以
 `hitTest == self` 判定命中（只测自己子树），被浮动 pane 盖住的下层 pane
 会抢走点击焦点——同走 surfaceIsOccluded 守卫。
+
+## 测试宿主退出时的 ghostty 崩溃（既有、与用例逻辑无关）
+
+`xcodebuild test` 结束后宿主 app 退出时，若某用例刚创建过 `Ghostty.SurfaceView`
+（`ghostty_surface_new` 在 init 里即执行并异步起 shell）而用例结束即释放，退出阶段
+ghostty 可能崩溃：表现为日志里多一次宿主启动、`sentry: crash report written`（由下一次
+启动的进程补报上一进程的崩溃）、两行 `Executed 0 tests`，crash 文件落在
+`~/.local/state/ghostty/crash/`。`-only-testing` 单跑任一创建 surface 的用例必现
+（2026-09-03 在 main 上用改动前代码验证），全套运行偶发。**不影响测试判定**
+（XCTest 结果已在崩溃前汇总，仍报 TEST SUCCEEDED）；断言失败要看 `.swift:N: error:` 行，
+不要被 `Executed 0 tests` 误导。根治方向：用例显式 close 创建的 surface，或
+AppDelegate.isRunningTests 下退出时跳过 surface 释放。
+

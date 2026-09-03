@@ -406,8 +406,8 @@ final class MainWindowController: BaseTerminalController {
         case .cyclePanePrev: cycleFocus(next: false)
 
         case .toggleLayout:
-            // Cmd+L：dwindle ⇄ scrolling，保 pane 保序（spec §4.2-bis）
-            model.layout = model.layout.toggled()
+            // Cmd+L：dwindle ⇄ scrolling——pane 集合未变时恢复上次布局，否则保 pane 保序转换
+            model.toggleLayout(columnFactor: columnFactor)
             if let focused = focusedSurface { Ghostty.moveFocus(to: focused) }
 
         case .gotoWorkspace1, .gotoWorkspace2, .gotoWorkspace3, .gotoWorkspace4, .gotoWorkspace5,

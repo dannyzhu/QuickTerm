@@ -118,6 +118,42 @@ final class ScrollingStripTests: XCTestCase {
         XCTAssertTrue(back.paneList[0] === a)
     }
 
+    /// Cmd+L 往返：pane 集合没变时恢复原 scrolling 排布（列栈与列宽），而非摊成 N 个单列
+    func testToggleLayoutRestoresRememberedArrangement() throws {
+        let a = try pane(), b = try pane(), c = try pane(), d = try pane(), e = try pane()
+        var strip = ScrollingStrip(pane: a)
+        strip = strip.insertingColumnRight(of: a, pane: b)                                   // [a][b]
+        strip = strip.insertingColumnRight(of: b, pane: c).dropping(c, on: b, zone: .bottom)  // [a][b/c]
+        strip = strip.insertingColumnRight(of: c, pane: d)                                   // [a][b/c][d]
+        strip = strip.insertingColumnRight(of: d, pane: e).dropping(e, on: d, zone: .bottom)  // [a][b/c][d/e]
+        strip = strip.equalized(to: 0.327)
+        XCTAssertEqual(strip.columns.count, 3)
+        XCTAssertEqual(strip.paneList.count, 5)
+
+        let model = WorkspaceModel()
+        model.layout = .scrolling(strip)
+        model.toggleLayout(columnFactor: 0.327)
+        guard case .dwindle(let tree) = model.layout else { return XCTFail("应切到 dwindle") }
+        XCTAssertEqual(tree.root?.leaves().count, 5, "dwindle 保 5 个 pane")
+
+        model.toggleLayout(columnFactor: 0.327)
+        guard case .scrolling(let back) = model.layout else { return XCTFail("应切回 scrolling") }
+        XCTAssertEqual(back.columns.count, 3, "恢复 3 列排布，而非 5 个单列（否则溢出视口只见 3 个）")
+        XCTAssertTrue(back.columns[1].panes.count == 2 && back.columns[1].panes[0] === b
+                      && back.columns[1].panes[1] === c, "列栈原样恢复")
+        XCTAssertEqual(back.columns[0].widthFactor, 0.327, accuracy: 0.001, "列宽原样恢复")
+
+        // pane 集合变了（dwindle 里关掉 e）→ 退回转换：4 个单列，列宽遵循每屏列数设置
+        model.toggleLayout(columnFactor: 0.327)
+        guard case .dwindle(let tree2) = model.layout else { return XCTFail() }
+        model.layout = .dwindle(tree2.removing(.leaf(view: e)))
+        model.toggleLayout(columnFactor: 0.327)
+        guard case .scrolling(let converted) = model.layout else { return XCTFail() }
+        XCTAssertEqual(converted.columns.count, 4, "集合变化后按保 pane 保序转换")
+        XCTAssertEqual(converted.columns[0].widthFactor, 0.327, accuracy: 0.001,
+                       "转换列宽遵循当前每屏列数（原来固定 0.49）")
+    }
+
     func testCodableRoundTrip() throws {
         let a = try pane(), b = try pane()
         let strip = ScrollingStrip(pane: a).insertingColumnRight(of: a, pane: b)
