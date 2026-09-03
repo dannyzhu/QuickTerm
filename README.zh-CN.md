@@ -25,7 +25,24 @@ QuickTerm 把 [Omarchy](https://omarchy.org) 的 Hyprland 平铺桌面装进一�
 - **全部可改键** —— 每个窗口管理动作都是 `config.toml` 里的一个键；`Cmd+K` 随时查实时速查表。
 - **状态恢复** —— 布局、浮动 pane、活动工作区、每个 pane 的工作目录，下次启动原样回来。
 
-## 环境要求
+## 安装
+
+预构建的 DMG 在 [Releases](https://github.com/dannyzhu/QuickTerm/releases) 页面（Apple Silicon，macOS 15+）。
+
+1. 打开 DMG，把 **QuickTerm** 拖进 **应用程序**。
+2. 应用是 ad-hoc 签名、未经 Apple 公证，首次打开会被 macOS 拦下。先双击一次，关掉"Apple 无法验证……"的对话框，然后二选一：
+   - 打开 **系统设置 → 隐私与安全性**，拉到底部找到 QuickTerm 的条目，点 **仍要打开**；或
+   - 在终端清除隔离标记（之后不再弹窗）：
+     ```bash
+     xattr -dr com.apple.quarantine /Applications/QuickTerm.app
+     ```
+3. 再次启动即可，首个窗口会在你的主目录打开一个 shell。
+
+可选：把 DMG 和 Release 附带的 `.sha256` 文件放在同一目录，运行 `shasum -a 256 -c QuickTerm-<版本>.dmg.sha256` 校验下载。想自己从源码打 DMG，先按[构建](#构建)一节准备好环境，再运行 `scripts/make-release.sh`。
+
+## 构建环境要求
+
+仅从源码构建时需要。Releases 里的 DMG 在任何 Apple Silicon Mac（macOS 15+）上直接运行，不需要以下任何东西。
 
 - macOS 15+（开发验证于 macOS 26 / Xcode 26.6，Apple Silicon）
 - Xcode 26+，并已安装 Metal Toolchain：`xcodebuild -downloadComponent MetalToolchain`

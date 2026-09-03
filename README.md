@@ -25,7 +25,24 @@ QuickTerm puts the feel of [Omarchy](https://omarchy.org)'s Hyprland desktop ins
 - **Everything rebindable** — every window-manager action is a key in `config.toml`; `Cmd+K` shows the live cheat sheet.
 - **State restore** — layouts, floating panes, active workspace and each pane's working directory come back on launch.
 
-## Requirements
+## Install
+
+Pre-built DMGs are on the [Releases](https://github.com/dannyzhu/QuickTerm/releases) page (Apple Silicon, macOS 15+).
+
+1. Open the DMG and drag **QuickTerm** into **Applications**.
+2. The app is ad-hoc signed and not notarized, so macOS blocks the first launch. Double-click it once and dismiss the "Apple could not verify…" dialog, then either:
+   - open **System Settings → Privacy & Security**, scroll down to the QuickTerm entry and click **Open Anyway**, or
+   - clear the quarantine flag from a terminal (no more dialogs after this):
+     ```bash
+     xattr -dr com.apple.quarantine /Applications/QuickTerm.app
+     ```
+3. Launch it again. The first window opens a shell in your home directory.
+
+Optional: with the DMG and its `.sha256` file in the same folder, run `shasum -a 256 -c QuickTerm-<version>.dmg.sha256` to verify the download. To build your own DMG from source, follow [Build](#build) and then run `scripts/make-release.sh`.
+
+## Build requirements
+
+Only needed to build from source. The DMG from Releases runs on any Apple Silicon Mac with macOS 15+ and needs none of this.
 
 - macOS 15 or later (developed on macOS 26 / Xcode 26.6, Apple Silicon)
 - Xcode 26+ with the Metal Toolchain: `xcodebuild -downloadComponent MetalToolchain`
