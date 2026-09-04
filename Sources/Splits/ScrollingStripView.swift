@@ -11,10 +11,11 @@ struct ScrollingStripView: View {
     /// 正在淡出的 pane（渐隐；到点后控制器移除、列条带重排）
     var closingPanes: Set<UUID> = []
 
+    @EnvironmentObject var theme: ThemeManager   // pane-gap（露边下限随之变化）
     @State private var offset: CGFloat = 0
     @State private var lastPanSerial: Int = -1
 
-    private let columnGap: CGFloat = 0  // 列间隙由 PaneChrome 的 5pt 内边距相邻合成 10（= gaps_in×2）
+    private let columnGap: CGFloat = 0  // 列间隙由 PaneChrome 的 pane-gap 内边距相邻合成 2×gap（= gaps_in×2）
 
     var body: some View {
         GeometryReader { geo in
@@ -70,7 +71,8 @@ struct ScrollingStripView: View {
             // 不溢出：无条件居中（单列=全宽 offset 0；两列=左右等隙），与焦点无关
             target = (total - viewport) / 2
         } else if let id, let pane = strip.paneList.first(where: { $0.id == id }) {
-            target = strip.targetOffset(for: pane, current: offset, viewport: viewport, gap: columnGap)
+            target = strip.targetOffset(for: pane, current: offset, viewport: viewport, gap: columnGap,
+                                        paneGap: theme.paneGap)
         } else {
             return
         }
@@ -89,7 +91,7 @@ struct ScrollingStripView: View {
         if pan.ended {
             // 吸附到最近的「列左缘 − 露边」（与焦点滚动的对齐规则一致）
             let widths = strip.columnWidths(viewport: viewport, gap: columnGap)
-            let peek = CGFloat(ScrollingStrip.peek) * viewport
+            let peek = ScrollingStrip.peekPoints(viewport: viewport, paneGap: theme.paneGap)
             var x: CGFloat = 0
             var best: CGFloat = 0
             for width in widths {

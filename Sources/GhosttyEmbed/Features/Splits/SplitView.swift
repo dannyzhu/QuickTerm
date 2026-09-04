@@ -36,7 +36,11 @@ struct SplitView<L: View, R: View>: View {
 
     /// The visible size of the splitter, in points. The invisible size is a transparent hitbox that can still
     /// be used for getting a resize handle. The total width/height of the splitter is the sum of both.
-    private let splitterVisibleSize: CGFloat = 1
+    /// QuickTerm：分隔线**不占布局**（SplitViewMetrics.splitterLayoutSize = 0）——两侧 pane 的 gap 内边距
+    /// 相邻合成的 2×pane-gap 就是全部间距，与 scrolling 完全一致；1pt 细线画在边界上（跨两侧留白各 0.5pt），
+    /// 命中区仍为 6pt。
+    private let splitterVisibleSize: CGFloat
+    private let splitterLineSize: CGFloat = 1
     private let splitterInvisibleSize: CGFloat = 6
 
     var body: some View {
@@ -59,7 +63,7 @@ struct SplitView<L: View, R: View>: View {
                 Divider(direction: direction,
                         visibleSize: splitterVisibleSize,
                         invisibleSize: splitterInvisibleSize,
-                        fillSize: splitterVisibleSize + dividerFillExtra,
+                        fillSize: splitterLineSize + dividerFillExtra,
                         color: dividerColor,
                         split: $split)
                     .position(splitterPoint)
@@ -79,6 +83,7 @@ struct SplitView<L: View, R: View>: View {
         _ split: Binding<CGFloat>,
         dividerColor: Color,
         dividerFillExtra: CGFloat = 0,
+        dividerLayoutSize: CGFloat = SplitViewMetrics.splitterLayoutSize,
         resizeIncrements: NSSize = .init(width: 1, height: 1),
         @ViewBuilder left: (() -> L),
         @ViewBuilder right: (() -> R),
@@ -88,6 +93,7 @@ struct SplitView<L: View, R: View>: View {
         self._split = split
         self.dividerColor = dividerColor
         self.dividerFillExtra = dividerFillExtra
+        self.splitterVisibleSize = dividerLayoutSize
         self.resizeIncrements = resizeIncrements
         self.left = left()
         self.right = right()
@@ -192,4 +198,16 @@ struct SplitView<L: View, R: View>: View {
 
 enum SplitViewDirection: Codable {
     case horizontal, vertical
+}
+
+/// QuickTerm：SplitView 布局常量（SplitBranchView 的钉住尺寸计算与之共用同一算法）
+enum SplitViewMetrics {
+    /// 分隔线在布局里占用的尺寸（gaps 开启时）：0 = 不占，间距全部来自两侧 pane 留白
+    static let splitterLayoutSize: CGFloat = 0
+    /// gaps 关闭（Cmd+Shift+Backspace）时恢复 1pt 占位：否则细线压在两侧贴边的边框上
+    static let splitterLayoutSizeWithoutGaps: CGFloat = 1
+
+    static func splitterLayoutSize(gapsEnabled: Bool) -> CGFloat {
+        gapsEnabled ? splitterLayoutSize : splitterLayoutSizeWithoutGaps
+    }
 }

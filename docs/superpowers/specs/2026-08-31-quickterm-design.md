@@ -210,7 +210,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 | 激活 pane | `active-opacity` | 0.98 | 纯 UI：激活 pane 背后垫主题底色，alpha = `(active − pane) / (1 − pane)`，零引擎 reload |
 | 非激活压暗 | —（硬编码） | 0.96 | 引擎 `unfocused-split-opacity` |
 | 顶栏 | `bar-opacity` | 0.75 | 纯 UI |
-| dwindle 留白 | `dwindle-gap` | 3 | 纯 UI；dwindle 每 pane 每边留白 pt（相邻 2×gap+1 分隔线 = 7pt ≈ 原 11 的 64%，用户要求）；外圈同值；scrolling 固定 5 |
+| pane 留白 | `pane-gap` | 5 | 纯 UI；每 pane 每边留白 pt，scrolling / dwindle / 浮动一致（相邻 = 2×gap = 10pt；dwindle 1pt 分隔线画在边界上不占布局）；外圈同值；旧键 `dwindle-gap` 作别名 |
 | dwindle 分隔线 | `divider-opacity` | 0.2 | 纯 UI；SplitView 的 1pt 分隔细线（色 = 引擎 split-divider-color）按此不透明度半透明，受总开关（关闭 = 实线） |
 | 非激活磨砂 | `inactive-blur` | 2.5 | `NSVisualEffectView(.hudWindow, .withinWindow)` backdrop——模糊的是壁纸，文字锐利。**数值目前只作开关（> 0 开启）**，未作为半径生效 |
 
@@ -229,7 +229,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 # active-opacity = 0.98     # 0.5–1.0
 # bar-opacity = 0.75        # 0–1
 # divider-opacity = 0.2     # 0–1，dwindle 分隔细线
-# dwindle-gap = 3           # 0–20 pt，dwindle 每 pane 每边留白
+# pane-gap = 5              # 0–20 pt，每 pane 每边留白（scrolling / dwindle 一致）
 # inactive-blur = 2.5       # > 0 开启磨砂
 
 [keybinds]                  # 值 "modifier+key"；"none" 解绑；动作清单 = Cmd+K 速查表

@@ -214,6 +214,21 @@ final class ScrollingStripTests: XCTestCase {
         XCTAssertEqual(decoded.columns.map(\.id), strip.columns.map(\.id), "列稳定 id 随存档往返")
     }
 
+    /// 露边随 pane-gap 取下限：gap 大时 1.5% 视口会全是透明留白，露边至少 gap + 边框 2 + 4
+    @MainActor
+    func testPeekGrowsWithLargePaneGap() throws {
+        let a = try pane(), b = try pane(), c = try pane(), d = try pane()
+        let strip = ScrollingStrip(pane: a).insertingColumnRight(of: a, pane: b)
+            .insertingColumnRight(of: b, pane: c).insertingColumnRight(of: c, pane: d)
+        XCTAssertGreaterThan(strip.totalWidth(viewport: 1000, gap: 0), 1000, "四列溢出")
+        let x = strip.columnWidths(viewport: 1000, gap: 0)[0]   // 焦点列 b 的左缘
+        let normal = strip.targetOffset(for: b, current: 1500, viewport: 1000, gap: 0)
+        XCTAssertEqual(x - normal, 15, accuracy: 0.5, "默认露边 = 1.5% 视口")
+        let wide = strip.targetOffset(for: b, current: 1500, viewport: 1000, gap: 0, paneGap: 20)
+        XCTAssertEqual(x - wide, 26, accuracy: 0.5, "pane-gap 20 → 露边 26，邻列边框仍露出")
+        XCTAssertEqual(ScrollingStrip.peekPoints(viewport: 1000, paneGap: 5), 15, accuracy: 0.01)
+    }
+
     /// 旧存档的列没有 id / widthFactor：解码补新 id 与默认宽
     func testColumnDecodesLegacyArchiveWithoutId() throws {
         let legacy = try JSONDecoder().decode(ScrollingStrip.Column.self,

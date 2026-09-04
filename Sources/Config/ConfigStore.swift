@@ -16,7 +16,7 @@ enum ConfigStore {
     # active-opacity = 0.98     # 激活 pane 背景等效透明度（0.5–1.0）
     # bar-opacity = 0.75        # 顶部状态条背景透明度（0–1）
     # divider-opacity = 0.2     # dwindle 分隔细线不透明度（0–1；0 隐藏，1 实线）
-    # dwindle-gap = 3           # dwindle 每 pane 每边留白 pt（0–20；相邻 = 2×gap + 1pt 分隔线；scrolling 固定 5）
+    # pane-gap = 5              # 每 pane 每边留白 pt（0–20；相邻间距 = 2×gap；scrolling / dwindle 一致）
     # inactive-blur = 2.5       # 非激活 pane 磨砂背景（> 0 开启；0 关闭）
 
     [keybinds]
@@ -31,7 +31,10 @@ enum ConfigStore {
 
     /// 模板顶层键的标准行（"# key = 默认  # 说明"），按模板顺序；补全缺失键时复用
     static var templateKeyLines: [(key: String, line: String)] {
-        template.split(separator: "\n", omittingEmptySubsequences: false).compactMap { raw in
+        // 只扫第一个 [section] 之前的顶层键：[keybinds]/[ghostty] 里的示例行不是顶层配置项
+        template.split(separator: "\n", omittingEmptySubsequences: false)
+            .prefix { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("[") }
+            .compactMap { raw in
             let line = String(raw)
             guard line.hasPrefix("# ") else { return nil }
             let body = line.dropFirst(2)
@@ -97,8 +100,8 @@ enum ConfigStore {
         var barOpacity: Double = 0.75
         /// dwindle 分隔细线不透明度（0.0–1.0，默认 0.2；0 = 隐藏）
         var dividerOpacity: Double = 0.2
-        /// dwindle 每 pane 每边留白（pt，0–20，默认 3：相邻间距 3+1+3 = 7 ≈ 原 11 的 64%；scrolling 固定 5）
-        var dwindleGap: Int = 3
+        /// 每 pane 每边留白（pt，0–20，默认 5 = 原 scrolling 值：相邻间距 10；scrolling / dwindle / 浮动一致）
+        var paneGap: Int = 5
         /// 非激活 pane 高斯模糊半径（0–10pt，默认 2.5；磨砂感）
         var inactiveBlur: Double = 2.5
         var overrides: [WMAction: KeyCombo] = [:]
@@ -115,6 +118,7 @@ enum ConfigStore {
 
     static func parse(_ toml: String) -> Settings {
         var settings = Settings()
+        var sawPaneGap = false   // pane-gap 优先于旧键 dwindle-gap（与出现顺序无关）
         var section = ""
         var passthrough: [String] = []
         for rawLine in toml.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -161,8 +165,13 @@ enum ConfigStore {
                 if key == "divider-opacity", let v = Double(value) {
                     settings.dividerOpacity = min(max(v, 0.0), 1.0)
                 }
-                if key == "dwindle-gap", let v = Int(value) {
-                    settings.dwindleGap = min(max(v, 0), 20)
+                if key == "pane-gap", let v = Int(value) {
+                    settings.paneGap = min(max(v, 0), 20)
+                    sawPaneGap = true
+                }
+                if key == "dwindle-gap", let v = Int(value), !sawPaneGap {
+                    // 旧键（曾只作用于 dwindle）：pane-gap 未出现时沿用其值，两种布局一致
+                    settings.paneGap = min(max(v, 0), 20)
                 }
                 if key == "inactive-blur", let v = Double(value) {
                     settings.inactiveBlur = min(max(v, 0), 10)

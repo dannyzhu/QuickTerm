@@ -123,7 +123,7 @@ All panels are centred, Walker-style: `↑`/`↓` to move, `Return` to choose, `
 | `active-opacity` | 0.98 | The focused pane is composited over a theme-coloured underlay up to this value |
 | `bar-opacity` | 0.75 | Status bar background |
 | `divider-opacity` | 0.2 | Opacity of the 1pt divider line between dwindle splits (1 = solid, 0 = hidden) |
-| `dwindle-gap` | 3 | Padding around each dwindle pane in pt (neighbours are 2×gap + 1pt divider apart; scrolling keeps 5) |
+| `pane-gap` | 5 | Padding around each pane in pt, same in scrolling and dwindle (neighbours are 2×gap apart; the dwindle divider line takes no space). `dwindle-gap` is still read as a legacy alias |
 | `inactive-blur` | 2.5 | `> 0` puts a frosted-glass backdrop behind inactive tiled panes (blurs the wallpaper, not the text; floating panes are exempt; the numeric value is currently on/off only) |
 
 `Cmd+Backspace` turns all of it off at once (panes and bar go opaque); `Cmd+Shift+Backspace` toggles the gaps.
@@ -175,7 +175,7 @@ The Shell and Pane menus in the macOS menu bar list fixed default shortcuts for 
 # active-opacity = 0.98     # 0.5–1.0
 # bar-opacity = 0.75        # 0–1
 # divider-opacity = 0.2     # 0–1, dwindle split divider line
-# dwindle-gap = 3           # 0–20 pt, padding around each dwindle pane
+# pane-gap = 5              # 0–20 pt, padding around each pane (scrolling and dwindle alike)
 # inactive-blur = 2.5       # > 0 enables frosted inactive panes
 
 [keybinds]                  # action = "modifiers+key"; "none" unbinds. Action ids: Cmd+K

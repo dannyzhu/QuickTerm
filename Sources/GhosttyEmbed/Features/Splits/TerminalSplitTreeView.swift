@@ -180,6 +180,7 @@ private struct SplitBranchView: View {
                         action(.resize(.init(node: node, ratio: $0)))
                     }),
                     dividerColor: ghostty.config.splitDividerColor.opacity(theme.effectiveDividerOpacity),
+                    dividerLayoutSize: splitterLayoutSize,
                     resizeIncrements: .init(width: 1, height: 1),
                     left: {
                         // 关闭右/下孩子：左/上孩子是幸存者，钉在最终尺寸（占满本节点）、左上对齐，
@@ -268,36 +269,44 @@ private struct SplitBranchView: View {
         }
     }
 
-    /// 新 pane（右/下孩子）的最终尺寸——与 SplitView.rightRect 同算法（可视线宽 1、增量 1）
+    /// 分隔线的布局占位（与传给 SplitView 的一致；gaps 关闭时 1pt）
+    private var splitterLayoutSize: CGFloat {
+        SplitViewMetrics.splitterLayoutSize(gapsEnabled: theme.gapsEnabled)
+    }
+
+    /// 新 pane（右/下孩子）的最终尺寸——与 SplitView.rightRect 同算法
+    /// （分隔线布局尺寸 SplitViewMetrics.splitterLayoutSize 居中于边界、增量 1）
     private func finalRightSize(total: CGSize, split: SplitTree<Ghostty.SurfaceView>.Node.Split) -> CGSize {
         let ratio = CGFloat(split.ratio)
+        let half = splitterLayoutSize / 2
         switch split.direction {
         case .horizontal:
-            var lw = total.width * ratio - 0.5
+            var lw = total.width * ratio - half
             lw -= lw.truncatingRemainder(dividingBy: 1)
-            return CGSize(width: max(total.width - (lw + 0.5), 1), height: total.height)
+            return CGSize(width: max(total.width - (lw + half), 1), height: total.height)
         case .vertical:
-            var lh = total.height * ratio - 0.5
+            var lh = total.height * ratio - half
             lh -= lh.truncatingRemainder(dividingBy: 1)
-            return CGSize(width: total.width, height: max(total.height - (lh + 0.5), 1))
+            return CGSize(width: total.width, height: max(total.height - (lh + half), 1))
         }
     }
 
     /// 某一侧孩子当前（按 ratio）的尺寸——与 SplitView.leftRect/rightRect 同算法
-    /// （分隔线 1pt 居中于边界：左/上取整后即其尺寸，右/下 = 总量 − (左 + 0.5)），
-    /// 钉住时才不会比现有槽位差 0.5pt 触发一次无谓的 PTY 重排
+    /// （左/上取整后即其尺寸，右/下 = 总量 − 左 − 分隔线布局尺寸），
+    /// 钉住时才不会比现有槽位差零点几 pt 触发一次无谓的 PTY 重排
     private func childSize(_ side: ClosingSide, total: CGSize,
                            split: SplitTree<Ghostty.SurfaceView>.Node.Split) -> CGSize {
         let ratio = CGFloat(split.ratio)
+        let half = splitterLayoutSize / 2
         switch (side, split.direction) {
         case (.right, _):
             return finalRightSize(total: total, split: split)
         case (.left, .horizontal):
-            var lw = total.width * ratio - 0.5
+            var lw = total.width * ratio - half
             lw -= lw.truncatingRemainder(dividingBy: 1)
             return CGSize(width: max(lw, 1), height: total.height)
         case (.left, .vertical):
-            var lh = total.height * ratio - 0.5
+            var lh = total.height * ratio - half
             lh -= lh.truncatingRemainder(dividingBy: 1)
             return CGSize(width: total.width, height: max(lh, 1))
         }
@@ -305,7 +314,7 @@ private struct SplitBranchView: View {
 }
 
 private struct TerminalSplitLeaf: View {
-    @EnvironmentObject var theme: ThemeManager   // QuickTerm：dwindle 留白（dwindle-gap）
+    @EnvironmentObject var theme: ThemeManager   // QuickTerm：pane 留白（pane-gap）
     let surfaceView: Ghostty.SurfaceView
     let isSplit: Bool
     let action: (TerminalSplitOperation) -> Void
@@ -367,7 +376,7 @@ private struct TerminalSplitLeaf: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Terminal pane")
             // QuickTerm：pane 视觉（焦点边框 / gaps_in / 弹入动画），见 PaneChrome.swift
-            .modifier(PaneChrome(surfaceView: surfaceView, inset: theme.dwindleGap))
+            .modifier(PaneChrome(surfaceView: surfaceView))
             // 关闭动效：渐隐（几何收拢由父 SplitBranchView 负责；根单叶只渐隐）
             .opacity(faded ? 0 : 1)
             .allowsHitTesting(!closing)

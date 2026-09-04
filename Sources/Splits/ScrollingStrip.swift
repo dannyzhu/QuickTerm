@@ -31,6 +31,12 @@ struct ScrollingStrip: Codable {
     /// ≈15pt @1000pt 视口），提示"那边还有"；内部焦点两侧对称。
     /// 6% 用户反馈太宽（2026-09-03），收到其 1/4。
     static let peek = 0.015
+
+    /// 露边的实际宽度（pt）：视口比例与"邻列留白 + 2pt 边框 + 4pt 底色"取大——
+    /// pane-gap 调大（如 15+）时 1.5% 视口会全是透明留白，邻列边框露不出来，提示就没了
+    static func peekPoints(viewport: CGFloat, paneGap: CGFloat) -> CGFloat {
+        max(CGFloat(peek) * viewport, paneGap + 2 + 4)
+    }
     /// 默认列宽 = 每屏 2 列（0.485）
     static var defaultWidth: Double { factor(forVisibleColumns: 2) }
     static let widthStep = 0.05
@@ -268,7 +274,8 @@ struct ScrollingStrip: Codable {
     /// - 溢出：最小滚动量让锚 pane 所在列完全可见（露边行为，截图 1/2）
     /// 偏移为内容坐标向右为正；居中时可为负（负值 = 左侧留白）。
     func targetOffset(for pane: Ghostty.SurfaceView,
-                      current: CGFloat, viewport: CGFloat, gap: CGFloat) -> CGFloat {
+                      current: CGFloat, viewport: CGFloat, gap: CGFloat,
+                      paneGap: CGFloat = 5) -> CGFloat {
         guard viewport > 0, let (c, _) = position(of: pane) else { return current }
         let widths = columnWidths(viewport: viewport, gap: gap)
         let total = totalWidth(viewport: viewport, gap: gap)
@@ -278,7 +285,7 @@ struct ScrollingStrip: Codable {
         var x: CGFloat = 0
         for i in 0..<c { x += widths[i] + gap }
         // 焦点列完整可见且外侧留一个露边（邻列露出真实内容；到两端自然贴边）
-        let peek = CGFloat(Self.peek) * viewport
+        let peek = Self.peekPoints(viewport: viewport, paneGap: paneGap)
         var minOffset = x + widths[c] + peek - viewport   // 右缘对齐 + 右露边
         var maxOffset = x - peek                          // 左缘对齐 + 左露边
         if minOffset > maxOffset {                        // 列宽到装不下露边：退回贴边

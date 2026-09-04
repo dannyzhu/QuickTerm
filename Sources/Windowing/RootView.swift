@@ -162,7 +162,7 @@ struct RootView: View {
                 case .dwindle(let tree):
                     TerminalSplitTreeView(tree: tree, action: action, appearingPane: model.appearingPane,
                                           closingPanes: model.closingPanes)
-                        .padding(theme.gapsEnabled ? theme.dwindleGap : 0)   // 外圈与 pane 留白同值
+                        .padding(theme.gapsEnabled ? theme.paneGap : 0)   // 外圈与 pane 留白同值
                 case .scrolling(let strip):
                     ScrollingStripView(
                         strip: strip,
@@ -170,7 +170,7 @@ struct RootView: View {
                         pan: model.stripPan,
                         onDrop: onScrollingDrop,
                         closingPanes: model.closingPanes)
-                        .padding(theme.gapsEnabled ? 5 : 0)
+                        .padding(theme.gapsEnabled ? theme.paneGap : 0)   // 外圈与 pane 留白同值
                 }
 
                 // 空工作区：最后一个 pane 关掉后窗口保留，提示怎么开新终端

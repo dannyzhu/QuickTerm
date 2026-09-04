@@ -423,6 +423,47 @@ extension WorkspaceTests {
         XCTAssertTrue(c.model.layouts[ws].isEmpty, "后台工作区的 pane 应被移除")
     }
 
+    /// pane 间隔在两种布局下一致：相邻 SurfaceView 的窗口矩形间距 = 2×pane-gap（dwindle 分隔线不占布局），
+    /// dwindle 左缘到内容区边 = 外圈 + 留白 = 2×pane-gap
+    @MainActor
+    func testPaneGapConsistentAcrossLayouts() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty)
+        let gap = c.themeManager.paneGap
+        XCTAssertEqual(gap, 5, "默认 = 原 scrolling 每边留白")
+        func spawn() throws -> Ghostty.SurfaceView {
+            let before = Set(c.paneList.map(ObjectIdentifier.init))
+            c.perform(.newTerminal)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+            return try XCTUnwrap(c.paneList.first { !before.contains(ObjectIdentifier($0)) })
+        }
+        func rect(_ v: Ghostty.SurfaceView) -> NSRect { v.convert(v.bounds, to: nil) }
+
+        // dwindle：A | B
+        c.model.layout = .dwindle(SplitTree())
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        let a = try spawn(), b = try spawn()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        let ra = rect(a), rb = rect(b)
+        XCTAssertEqual(rb.minX - ra.maxX, 2 * gap, accuracy: 0.6, "dwindle 相邻间距 A=\(ra) B=\(rb)")
+        XCTAssertEqual(ra.minX, 2 * gap, accuracy: 0.6, "dwindle 左缘 = 外圈 + 留白")
+        for p in [a, b] { c.closePane(p, confirmIfNeeded: false, animated: false) }
+
+        // scrolling：两列（不溢出居中），相邻间距同值
+        c.model.layout = .empty
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        let x = try spawn(), y = try spawn()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        let rx = rect(x), ry = rect(y)
+        let (left, right) = rx.minX < ry.minX ? (rx, ry) : (ry, rx)
+        XCTAssertEqual(right.minX - left.maxX, 2 * gap, accuracy: 0.6, "scrolling 相邻间距 \(left) \(right)")
+        for p in [x, y] { c.closePane(p, confirmIfNeeded: false, animated: false) }
+        c.model.layout = .empty
+    }
+
     /// 新建 pane 后焦点必须落在新 pane（dwindle：原 pane 在 leaf→split 重挂时会"夺回"焦点，需让位）
     @MainActor
     func testNewTerminalFocusesNewPaneInDwindle() throws {
