@@ -36,6 +36,9 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSPrincipalClass: NSApplication
         NSHumanReadableCopyright: "MIT"
+        # 浏览器 pane：允许 http:// 明文页面（本地开发服务器 / 内网）
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoadsInWebContent: true
     settings:
       base:
         # 版本号唯一来源（scripts/make-release.sh 从构建产物的 Info.plist 读取）

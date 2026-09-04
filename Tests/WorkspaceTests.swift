@@ -210,7 +210,7 @@ extension WorkspaceTests {
             layouts: c.model.layouts, floatings: c.model.floatings, activeIndex: 0)
         let data = try JSONEncoder().encode(state)
         let decoded = try JSONDecoder().decode(MainWindowController.PersistedState.self, from: data)
-        XCTAssertEqual(decoded.version, 3)
+        XCTAssertEqual(decoded.version, 4)
         XCTAssertEqual(decoded.floatings?.count, c.model.floatings.count)
 
         var v2 = try JSONSerialization.jsonObject(with: data) as! [String: Any]
@@ -662,6 +662,71 @@ extension WorkspaceTests {
         XCTAssertEqual(factors(), [f, f], "拆出的列不能用两列默认宽")
         _ = try spawn()
         XCTAssertEqual(factors(), [f, f, f])
+    }
+
+    /// 浏览器 pane：Cmd+B 新建并聚焦（FR 是内部 WKWebView，pane 视为持有焦点）、布局切换后仍在且保持焦点、
+    /// 存档带 kind=browser、关闭不弹确认、焦点回到终端
+    @MainActor
+    func testBrowserPaneLifecycle() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        let ws = c.model.layouts.count - 1
+        c.model.switchTo(ws)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty)
+        let prevSettings = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = prevSettings }
+        BrowserPaneView.settings.home = "about:blank"   // 不依赖网络
+        c.perform(.newTerminal)
+        let a = try XCTUnwrap(c.paneList.first)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        c.perform(.newBrowser)
+        let b = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView } as? BrowserPaneView)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        XCTAssertTrue(b.holdsFirstResponder(of: try XCTUnwrap(c.window)), "FR 应是浏览器 pane 内部的 WKWebView")
+        XCTAssertTrue(c.focusedPane === b)
+        XCTAssertTrue(b.focused)
+        XCTAssertFalse(a.focused, "单焦点不变量")
+
+        // 存档：叶子 kind=browser + url
+        let state = MainWindowController.PersistedState(layouts: c.model.layouts, floatings: c.model.floatings, activeIndex: ws)
+        let json = String(decoding: try JSONEncoder().encode(state), as: UTF8.self)
+        XCTAssertTrue(json.contains("\"kind\":\"browser\""))
+        XCTAssertTrue(json.contains("about:blank"))
+
+        // 新 pane 插入会让邻居的 tracking area 重建、AppKit 合成 mouseMoved：鼠标停在旧 pane 上时
+        // 悬停不得把刚交给新 pane 的焦点抢回去（控制器有待聚焦意图）
+        c.perform(.newBrowser)
+        let b2 = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView && $0 !== b } as? BrowserPaneView)
+        a.hoverFocusIfNeeded()                    // 模拟合成的 mouseMoved 命中旧 pane
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        XCTAssertTrue(c.focusedPane === b2, "悬停不能抢走刚交给新 pane 的焦点")
+        c.closePane(b2, confirmIfNeeded: false, animated: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        XCTAssertTrue(c.focusedPane === b, "关闭后焦点回到相邻的浏览器 pane")
+
+        // 地址栏编辑中：字段编辑器是 pane 的后代，pane 仍持焦（边框亮、Cmd+W 会交接焦点）
+        b.focusAddressBar()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertTrue(b.holdsFirstResponder(of: try XCTUnwrap(c.window)))
+        XCTAssertTrue(b.focused, "地址栏编辑中 focused 标志不能掉")
+        XCTAssertTrue(c.focusedPane === b)
+        _ = c.window?.makeFirstResponder(b.webView)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+
+        // 布局切换后浏览器 pane 仍在且保持焦点（重挂后夺回）
+        c.perform(.toggleLayout)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        XCTAssertTrue(c.paneList.contains { $0 === b })
+        XCTAssertTrue(c.focusedPane === b, "布局切换后焦点仍在浏览器 pane")
+
+        // 关闭：不弹进程确认，焦点回终端
+        c.closePane(b, confirmIfNeeded: true, animated: false)
+        XCTAssertFalse(c.paneList.contains { $0 === b })
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertTrue(c.focusedPane === a)
+        c.closePane(a, confirmIfNeeded: false, animated: false)
+        c.model.layout = .empty
     }
 
     /// 新建 pane 后焦点必须落在新 pane（dwindle：原 pane 在 leaf→split 重挂时会"夺回"焦点，需让位）

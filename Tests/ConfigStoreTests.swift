@@ -57,7 +57,7 @@ final class ConfigStoreTests: XCTestCase {
             layouts: c.model.layouts, activeIndex: c.model.activeIndex)
         let data = try JSONEncoder().encode(state)
         let decoded = try JSONDecoder().decode(MainWindowController.PersistedState.self, from: data)
-        XCTAssertEqual(decoded.version, 3)
+        XCTAssertEqual(decoded.version, 4)
         if !c.model.allPanes.isEmpty {
             XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("\"kind\":\"terminal\""), "v4 叶子带 kind")
         }
@@ -123,6 +123,13 @@ extension ConfigStoreTests {
         XCTAssertEqual(ConfigStore.parse("file-manager-command = \"lf\"").fileManagerCommand, "lf")
         XCTAssertEqual(ConfigStore.parse("file-manager-command = /opt/homebrew/bin/yazi").fileManagerCommand, "/opt/homebrew/bin/yazi")
         XCTAssertEqual(ConfigStore.parse("file-manager-command = \"\"").fileManagerCommand, "yazi", "空值不覆盖默认")
+        let b = ConfigStore.parse("browser-home = \"https://x.y\"\nbrowser-search = \"https://s/?q=%s\"\nbrowser-user-agent = webkit\nbrowser-inspectable = true")
+        XCTAssertEqual(b.browserHome, "https://x.y")
+        XCTAssertEqual(b.browserSearch, "https://s/?q=%s")
+        XCTAssertEqual(b.browserUserAgent, "webkit")
+        XCTAssertTrue(b.browserInspectable)
+        XCTAssertEqual(ConfigStore.parse("").browserUserAgent, "safari", "默认伪装 Safari")
+        XCTAssertFalse(ConfigStore.parse("").browserInspectable)
     }
 
     /// 已有配置文件补全缺失键：注释+默认值插在第一个 section 前；幂等；完整文件不动；活跃设置不被覆盖
@@ -156,7 +163,8 @@ extension ConfigStoreTests {
         let keys = Set(ConfigStore.templateKeyLines.map(\.key))
         for k in ["theme", "workspaces", "pane-padding", "visible-columns", "pane-opacity",
                   "active-opacity", "bar-opacity", "divider-opacity", "pane-gap", "inactive-blur",
-                  "file-manager-command"] {
+                  "file-manager-command", "browser-home", "browser-search", "browser-user-agent",
+                  "browser-inspectable"] {
             XCTAssertTrue(keys.contains(k), "模板缺少 \(k)")
         }
         for k in ["new-terminal", "cursor-style", "动作"] {

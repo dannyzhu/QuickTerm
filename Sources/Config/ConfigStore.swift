@@ -19,11 +19,16 @@ enum ConfigStore {
     # pane-gap = 5              # 每 pane 每边留白 pt（0–20；相邻间距 = 2×gap；scrolling / dwindle 一致）
     # inactive-blur = 2.5       # 非激活 pane 磨砂背景（> 0 开启；0 关闭）
     # file-manager-command = "yazi"   # 文件管理器程序（Cmd+Shift+B 在新 pane 里运行；名字或绝对路径，lf/ranger 亦可）
+    # browser-home = "https://www.google.com"   # 浏览器 pane（Cmd+B）打开的首页
+    # browser-search = "https://www.google.com/search?q=%s"   # 地址栏输入非网址时的搜索模板（%s = 关键词）
+    # browser-user-agent = "safari"   # 伪装成 Safari（Google 登录页拒绝嵌入式浏览器）；"webkit" = 不伪装；或填自定义 UA
+    # browser-inspectable = false     # 浏览器 pane 的 Web Inspector（右键"检查元素"）
 
     [keybinds]
     # 动作 = "modifier+key"；"none" 解绑。动作清单见 Cmd+K 速查表。
     # new-terminal = "cmd+return"
     # file-manager = "cmd+shift+b"
+    # new-browser = "cmd+b"
     # goto-workspace-1 = "cmd+1"
 
     [ghostty]
@@ -108,6 +113,11 @@ enum ConfigStore {
         var inactiveBlur: Double = 2.5
         /// 文件管理器程序（`file-manager` 动作在新 pane 里运行；名字按 PATH + 常见安装目录查找，或绝对路径）
         var fileManagerCommand: String = FileManagerLaunch.defaultProgram
+        /// 浏览器 pane：首页 / 搜索模板 / UA（"safari" 伪装、"webkit" 不伪装、或自定义）/ Web Inspector
+        var browserHome: String = "https://www.google.com"
+        var browserSearch: String = "https://www.google.com/search?q=%s"
+        var browserUserAgent: String = "safari"
+        var browserInspectable: Bool = false
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
         var ghosttyPassthrough: String = ""
@@ -183,6 +193,10 @@ enum ConfigStore {
                 if key == "file-manager-command", !value.isEmpty {
                     settings.fileManagerCommand = value
                 }
+                if key == "browser-home", !value.isEmpty { settings.browserHome = value }
+                if key == "browser-search", !value.isEmpty { settings.browserSearch = value }
+                if key == "browser-user-agent", !value.isEmpty { settings.browserUserAgent = value }
+                if key == "browser-inspectable" { settings.browserInspectable = (value.lowercased() == "true") }
             case "keybinds":
                 guard let action = WMAction(rawValue: key) else { continue }
                 if value.lowercased() == "none" {

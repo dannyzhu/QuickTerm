@@ -23,6 +23,8 @@ class BaseTerminalController: NSWindowController {
     func paneDidBecomeFirstResponder(_ pane: PaneView) {}
     /// 脱离窗口后重挂的 pane 是否可以夺回焦点（控制器有明确的待聚焦目标时不允许别人夺回）
     func paneMayReclaimFocus(_ pane: PaneView) -> Bool { true }
+    /// 打开一个浏览器 pane（target=_blank / window.open 也走这里）
+    func openBrowserPane(url: URL, from: PaneView?) {}
     func toggleBackgroundOpacity() {}
     func promptTabTitle() {}
     @objc func changeTabTitle(_ sender: Any?) {}

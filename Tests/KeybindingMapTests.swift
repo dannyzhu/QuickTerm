@@ -10,6 +10,8 @@ final class KeybindingMapTests: XCTestCase {
         let table: [(String, NSEvent.ModifierFlags, WMAction)] = [
             ("return", .command, .newTerminal),
             ("b", [.command, .shift], .fileManager),
+            ("b", .command, .newBrowser),
+            ("r", .command, .webReload), ("l", [.command, .shift], .webFocusAddress),
             ("w", .command, .closePane),
             ("left", .command, .focusLeft), ("right", .command, .focusRight),
             ("up", .command, .focusUp), ("down", .command, .focusDown),
@@ -29,6 +31,18 @@ final class KeybindingMapTests: XCTestCase {
         }
     }
 
+    /// 浏览器专属动作只在焦点是浏览器 pane 时消费；终端聚焦时 Cmd+R / Cmd+= 放行
+    @MainActor
+    func testBrowserOnlyActionsConsumedOnlyForBrowserPane() {
+        XCTAssertTrue(WMAction.webReload.browserOnly)
+        XCTAssertFalse(WMAction.newBrowser.browserOnly)
+        let browser = BrowserPaneView(url: nil)
+        XCTAssertTrue(MainWindowController.consumes(.webReload, focusedPane: browser))
+        XCTAssertFalse(MainWindowController.consumes(.webReload, focusedPane: nil))
+        XCTAssertTrue(MainWindowController.consumes(.newBrowser, focusedPane: nil))
+        XCTAssertTrue(MainWindowController.consumes(.closePane, focusedPane: browser))
+    }
+
     func testResizeWithShiftIsPrecise() {
         let hit = map.action(key: "left", modifiers: [.command, .control, .shift])
         XCTAssertEqual(hit?.action, .resizeLeft)
@@ -39,7 +53,10 @@ final class KeybindingMapTests: XCTestCase {
         // 绝不拦截终端级键（spec §5.4）
         XCTAssertNil(map.action(key: "c", modifiers: .command), "Cmd+C 必须放行")
         XCTAssertNil(map.action(key: "v", modifiers: .command), "Cmd+V 必须放行")
-        XCTAssertNil(map.action(key: "-", modifiers: .command), "Cmd+- 字号必须放行")
+        // Cmd+- / Cmd+= / Cmd+0 现在是浏览器专属动作：表里有绑定，但焦点在终端时监视器不消费（放行给引擎调字号）
+        let minus = map.action(key: "-", modifiers: .command)
+        XCTAssertEqual(minus?.action, .webZoomOut)
+        XCTAssertFalse(MainWindowController.consumes(.webZoomOut, focusedPane: nil), "Cmd+- 字号必须放行给终端")
         XCTAssertEqual(map.action(key: "escape", modifiers: .command)?.action, .exitFullscreen,
                        "Cmd+Esc = 退出全屏（裸 Esc 不受影响）")
         XCTAssertNil(map.action(key: "escape", modifiers: []), "裸 Esc 必须放行给终端")
@@ -49,6 +66,34 @@ final class KeybindingMapTests: XCTestCase {
                        "Cmd+K = 速查表（忠实 Omarchy，偏移说明 2）")
         XCTAssertNil(map.action(key: "q", modifiers: .command), "Cmd+Q 系统行为")
         XCTAssertNil(map.action(key: "w", modifiers: [.command, .shift]), "未定义组合放行")
+    }
+
+    /// 真实按键（CGEvent 背书）：Cmd+Shift+[ 的 charactersIgnoringModifiers 是 "{"，
+    /// 归一化必须给出基础键 "["；既有的 Cmd+Shift+1 同理（原先是死键）
+    func testShiftedSymbolKeysNormalizeToBaseKey() throws {
+        func real(_ keyCode: CGKeyCode, _ flags: CGEventFlags) throws -> NSEvent {
+            let cg = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true))
+            cg.flags = flags
+            return try XCTUnwrap(NSEvent(cgEvent: cg))
+        }
+        let bracket = try real(33, [.maskCommand, .maskShift])   // US 布局 "["
+        XCTAssertEqual(KeybindingMap.normalizedKey(for: bracket), "[")
+        XCTAssertEqual(map.action(for: bracket)?.action, .webBack)
+        let one = try real(18, [.maskCommand, .maskShift])       // "1"
+        XCTAssertEqual(KeybindingMap.normalizedKey(for: one), "1")
+        XCTAssertEqual(map.action(for: one)?.action, .moveToWorkspace1)
+        let letter = try real(11, [.maskCommand, .maskShift])    // "b"
+        XCTAssertEqual(map.action(for: letter)?.action, .fileManager)
+    }
+
+    /// Edit 菜单键等价匹配：大写 keyEquivalent 隐含 Shift
+    func testEditMenuKeyEquivalentMatching() {
+        let redo = NSMenuItem(title: "重做", action: nil, keyEquivalent: "Z")
+        let copy = NSMenuItem(title: "拷贝", action: nil, keyEquivalent: "c")
+        XCTAssertTrue(EditMenuDelegate.matches(redo, key: "z", flags: [.command, .shift]))
+        XCTAssertFalse(EditMenuDelegate.matches(redo, key: "z", flags: [.command]))
+        XCTAssertTrue(EditMenuDelegate.matches(copy, key: "c", flags: [.command]))
+        XCTAssertFalse(EditMenuDelegate.matches(copy, key: "c", flags: [.command, .shift]))
     }
 
     func testNSEventNormalization() throws {

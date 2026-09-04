@@ -125,6 +125,12 @@ All panels are centred, Walker-style: `↑`/`↓` to move, `Return` to choose, `
 | `divider-opacity` | 0.2 | Opacity of the 1pt divider line between dwindle splits (1 = solid, 0 = hidden) |
 | `pane-gap` | 5 | Padding around each pane in pt, same in scrolling and dwindle (neighbours are 2×gap apart; the dwindle divider line takes no space). `dwindle-gap` is still read as a legacy alias |
 | `file-manager-command` | yazi | Program run by the `file-manager` action (a name looked up in PATH plus the usual Homebrew/cargo dirs, or an absolute path; `lf` and `ranger` work too). Install with `brew install yazi` |
+| `browser-home` | https://www.google.com | Page a new browser pane opens |
+| `browser-search` | https://www.google.com/search?q=%s | Search template used when the address bar input is not a URL (`%s` = query) |
+| `browser-user-agent` | safari | `safari` masquerades as Safari (Google sign-in rejects embedded browsers), `webkit` sends the stock WebKit UA, or any custom string |
+| `browser-inspectable` | false | Enable Web Inspector in browser panes |
+
+Browser pane limits: no Widevine DRM (Netflix/Spotify web), no system password autofill or passkeys, and `window.open` popups open as a new pane without `window.opener` (popup-based logins: use `Cmd+Shift+O` to finish in the system browser).
 | `inactive-blur` | 2.5 | `> 0` puts a frosted-glass backdrop behind inactive tiled panes (blurs the wallpaper, not the text; floating panes are exempt; the numeric value is currently on/off only) |
 
 `Cmd+Backspace` turns all of it off at once (panes and bar go opaque); `Cmd+Shift+Backspace` toggles the gaps.
@@ -148,6 +154,11 @@ Every action below can be rebound in `config.toml` (see [Configuration](#configu
 | `Cmd+T` | `toggle-float` | Float ⇄ tile |
 | `Cmd+S` | `scratchpad` | Scratchpad terminal |
 | `Cmd+Shift+B` | `file-manager` | File manager ([yazi](https://github.com/sxyazi/yazi)) in a new pane, starting in the focused pane's directory; quitting in another directory opens a terminal there |
+| `Cmd+B` | `new-browser` | Browser pane (WebKit) opening `browser-home` |
+| `Cmd+Shift+L` / `Cmd+R` | `web-focus-address` / `web-reload` | Browser pane only: address bar / reload (other panes pass these keys through) |
+| `Cmd+Shift+[` / `Cmd+Shift+]` | `web-back` / `web-forward` | Browser pane only: history navigation |
+| `Cmd+=` / `Cmd+-` / `Cmd+0` | `web-zoom-in` / `web-zoom-out` / `web-zoom-reset` | Browser pane only: page zoom (terminal font size keys are untouched) |
+| `Cmd+Shift+O` | `web-open-external` | Browser pane only: open the current page in the system browser |
 | `Cmd+1…5` | `goto-workspace-N` | Switch workspace (`Cmd+6…9,0` when `workspaces > 5`) |
 | `Cmd+Shift+1…5` | `move-to-workspace-N` | Move pane to workspace and follow |
 | `Cmd+Shift+Space` | `toggle-bar` | Show/hide status bar |
@@ -179,12 +190,17 @@ The Shell and Pane menus in the macOS menu bar list fixed default shortcuts for 
 # divider-opacity = 0.2     # 0–1, dwindle split divider line
 # pane-gap = 5              # 0–20 pt, padding around each pane (scrolling and dwindle alike)
 # file-manager-command = "yazi"   # program for the file-manager action (Cmd+Shift+B)
+# browser-home = "https://www.google.com"
+# browser-search = "https://www.google.com/search?q=%s"
+# browser-user-agent = "safari"   # safari | webkit | custom UA string
+# browser-inspectable = false
 # inactive-blur = 2.5       # > 0 enables frosted inactive panes
 
 [keybinds]                  # action = "modifiers+key"; "none" unbinds. Action ids: Cmd+K
 # new-terminal = "cmd+return"
 # toggle-float = "cmd+shift+t"
 # file-manager = "cmd+shift+b"
+# new-browser = "cmd+b"
 
 [ghostty]                   # any Ghostty option, passed through verbatim, highest priority
 # cursor-style = block

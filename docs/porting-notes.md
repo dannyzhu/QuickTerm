@@ -174,3 +174,24 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
 其它：`ScrollingStrip.Column` 加了稳定 `id`（原用列首 pane id 做 ForEach 身份，列首关掉整列重建，列内
 其余 pane 脱离/重挂窗口）。
 
+## 浏览器 pane / PaneView 抽象（2026-09-04）
+
+- **SplitTree 叶子多态解码**：基类 `init(from:)` 造不出子类，所以约束改为 `PaneCodable`，叶子经
+  `decodePane(from: superDecoder)` 按 `kind` 分发（v3 存档无 kind = 终端）；JSON 形状与原来一致。
+- **焦点真相 = FR 是 pane 或其后代**：浏览器 pane 的 FR 是内部 WKWebView（`focusTarget`），地址栏编辑时
+  FR 是字段编辑器（`NSTextView > _NSKeyboardFocusClipView > NSTextField > pane`）。托管视图要把
+  become/resign 回报给 pane；控制器判"是否持焦"用 `holdsFirstResponder`，不能只看 `focused` 标志。
+- **不能手动对 WKWebView 调 resignFirstResponder**：WebKit 内部 `_newFirstResponderAfterResigning` 只允许在
+  makeFirstResponder 流程内调用，否则 NSInternalInconsistencyException。`PaneView.moveFocus` 只对
+  "自己就是 FR"的 pane 手动 resign。
+- **新 pane 插入会合成 mouseMoved**：邻居 tracking area 因尺寸变化重建时 AppKit 合成一次 mouseMoved，鼠标
+  停在旧 pane 上就会把刚交出去的焦点抢回。悬停即焦点必须尊重控制器的待聚焦意图（`paneMayReclaimFocus`）。
+- **键名归一化**：`charactersIgnoringModifiers` 对符号/数字键保留 Shift（Cmd+Shift+[ → "{"），
+  要用 `characters(byApplyingModifiers: [])` 取基础键；合成 NSEvent 没有 CGEvent 背书时回退。
+- **Edit 菜单会吞终端的 Cmd+X/Z/A**：`menuHasKeyEquivalent` 返回 false 挡不住 AppKit 继续枚举菜单项
+  （禁用项照样消费 + beep）；焦点在终端时要返回 true 并给出 target/action 把按键转交终端 keyDown。
+- **libghostty 对带 command 的 surface 强制 wait-after-command**（文件管理器 pane）：退出只发
+  SHOW_CHILD_EXITED，不 close；macOS 上以 `login … bash -c "exec -l <cmd>"` 启动，命令必须是单个 exec 目标。
+- **WKWebView 错误页**：`loadHTMLString(baseURL:)` 不进历史（后退失效），用 `loadSimulatedRequest`；
+  `drawsBackground` 是私有 KVC，先 `responds(to: _setDrawsBackground:)`。
+

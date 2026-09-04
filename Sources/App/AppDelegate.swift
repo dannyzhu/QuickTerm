@@ -20,6 +20,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let undoManager = UndoManager()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // CLI / 冒烟：`open -a QuickTerm --args --open-browser [url]` 启动后开一个浏览器 pane
+        if let i = CommandLine.arguments.firstIndex(of: "--open-browser") {
+            let raw = CommandLine.arguments.dropFirst(i + 1).first
+            // 延后解析：此时控制器已建、config.toml 的 browser-home/search 已写进 settings；
+            // 裸域名 / 搜索词按地址栏规则解析
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                guard let controller = self?.controller else { return }
+                let url = raw.flatMap { BrowserPaneView.settings.url(forInput: $0) } ?? BrowserPaneView.settings.homeURL
+                controller.openBrowserPane(url: url, from: controller.focusedPane)
+            }
+        }
         NSApp.setActivationPolicy(.regular)
 
         // 配置链第 3 层：ThemeManager 在 init 中写入 overlay（主题配色 + 透明度），

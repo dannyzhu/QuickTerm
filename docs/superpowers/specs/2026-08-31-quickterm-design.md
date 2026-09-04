@@ -211,6 +211,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 | 非激活压暗 | —（硬编码） | 0.96 | 引擎 `unfocused-split-opacity` |
 | 顶栏 | `bar-opacity` | 0.75 | 纯 UI |
 | pane 留白 | `pane-gap` | 5 | 纯 UI；每 pane 每边留白 pt，scrolling / dwindle / 浮动一致（相邻 = 2×gap = 10pt；dwindle 1pt 分隔线画在边界上不占布局）；外圈同值；旧键 `dwindle-gap` 作别名 |
+| 浏览器首页 / 搜索 / UA / Inspector | `browser-home` / `browser-search` / `browser-user-agent` / `browser-inspectable` | google / google search / safari / false | 浏览器 pane 行为；UA 为 `safari`（伪装）/ `webkit`（不伪装）/ 自定义 |
 | 文件管理器程序 | `file-manager-command` | yazi | `file-manager` 动作运行的程序：名字按 PATH + Homebrew/cargo 常见目录查找，或绝对路径；yazi/lf/ranger 退出写最后目录（--cwd-file / -last-dir-path / --choosedir） |
 | dwindle 分隔线 | `divider-opacity` | 0.2 | 纯 UI；SplitView 的 1pt 分隔细线（色 = 引擎 split-divider-color）按此不透明度半透明，受总开关（关闭 = 实线） |
 | 非激活磨砂 | `inactive-blur` | 2.5 | `NSVisualEffectView(.hudWindow, .withinWindow)` backdrop——模糊的是壁纸，文字锐利。**数值目前只作开关（> 0 开启）**，未作为半径生效 |
@@ -232,6 +233,10 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 # divider-opacity = 0.2     # 0–1，dwindle 分隔细线
 # pane-gap = 5              # 0–20 pt，每 pane 每边留白（scrolling / dwindle 一致）
 # file-manager-command = "yazi"   # file-manager 动作运行的程序
+# browser-home = "https://www.google.com"
+# browser-search = "https://www.google.com/search?q=%s"
+# browser-user-agent = "safari"
+# browser-inspectable = false
 # inactive-blur = 2.5       # > 0 开启磨砂
 
 [keybinds]                  # 值 "modifier+key"；"none" 解绑；动作清单 = Cmd+K 速查表
@@ -277,6 +282,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 | Super+F | `Cmd+F` | `toggle-zoom` | pane zoom |
 | Super+L | `Cmd+L` | `toggle-layout` | scrolling ⇄ dwindle |
 | Super+T | `Cmd+T` | `toggle-float` | 浮动 ⇄ 平铺 |
+| Super+B | `Cmd+B` | `new-browser` | 浏览器 pane：WKWebView + 薄工具条（后退/前进/刷新、地址栏、进度），一 pane 一页；键盘焦点在 WKWebView（PaneView.focusTarget），FR 为其后代即视为 pane 持焦；WM 级 Cmd 键仍先被监视器拦截；`web-*` 动作（后退 Cmd+Shift+[、前进 Cmd+Shift+]、重载 Cmd+R、地址栏 Cmd+Shift+L、缩放 Cmd+= / - / 0、外部打开 Cmd+Shift+O）只在焦点是浏览器 pane 时消费，否则放行给终端。登录态在 WebKit 默认数据存储（跨 pane、跨重启）；默认伪装 Safari UA（Google 登录）。边界：无 Widevine、无系统密码填充、通行密钥不可用 |
 | Super+Shift+F | `Cmd+Shift+B` | `file-manager` | 新 pane 运行 TUI 文件管理器（默认 yazi，`file-manager-command` 可改；以焦点 pane 目录启动；退出时目录已变则原位开终端，即 yazi `y` 包装函数语义；关闭不弹进程确认；程序缺失开提示 pane）。Cmd+F 已是 toggle-zoom，故用 Cmd+Shift+B |
 | Super+‑/= | `Cmd+Ctrl+←→↑↓` | `resize-*` | 调整大小（+Shift 微调）※偏移 1 |
 | — | `Cmd+Ctrl+=` | `equalize` | 全部等分 / 列宽重置 |

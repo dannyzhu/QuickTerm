@@ -62,6 +62,11 @@ final class MainWindowController: BaseTerminalController {
     var paneList: [PaneView] {
         model.layout.paneList + model.floating.map(\.pane)
     }
+    /// WM 键是否由本控制器消费：浏览器专属动作只在焦点是浏览器 pane 时消费
+    static func consumes(_ action: WMAction, focusedPane: PaneView?) -> Bool {
+        !action.browserOnly || focusedPane is BrowserPaneView
+    }
+
     /// 焦点 pane 是否在浮动层
     var focusedIsFloating: Bool {
         guard let f = focusedPane else { return false }
@@ -101,7 +106,7 @@ final class MainWindowController: BaseTerminalController {
         PaneView.moveFocus(to: pane, from: from)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self, weak pane] in
             guard let self, let pane, self.pendingFocusTarget === pane else { return }
-            if pane.window != nil, self.window?.firstResponder !== pane {
+            if pane.window != nil, let window = self.window, !pane.holdsFirstResponder(of: window) {
                 PaneView.moveFocus(to: pane)   // 被重挂/动效期间的事件挤掉了，再交一次
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self, weak pane] in
@@ -165,6 +170,8 @@ final class MainWindowController: BaseTerminalController {
             for pane in self.allPanes {
                 if let surface = (pane as? Ghostty.SurfaceView)?.surface {
                     self.ghostty.reloadConfig(surface: surface, soft: false)
+                } else if let browser = pane as? BrowserPaneView {
+                    self.applyBrowserTheme(browser)
                 }
             }
             self.applyAppearance()
@@ -185,6 +192,7 @@ final class MainWindowController: BaseTerminalController {
         // 视图尚未被 SwiftUI 挂载：直接 makeFirstResponder 返回 true 却什么都不做（AppKit 报
         // "different window ((null))"），用 Ghostty.moveFocus（等待挂载后再设）
         if !AppDelegate.isRunningTests, restoreState() {
+            for case let browser as BrowserPaneView in allPanes { applyBrowserTheme(browser) }   // 恢复的浏览器 pane 也套主题
             if let focused = focusedPane { requestFocus(to: focused) }
         } else {
             let first = newSurface(inheritingFrom: nil)
@@ -213,6 +221,8 @@ final class MainWindowController: BaseTerminalController {
             guard let self, let window = self.window, event.window === window else { return event }
             if self.model.activePanel != nil, self.handlePanelKey(event) { return nil }
             guard let hit = self.keybindings.action(for: event) else { return event }
+            // 浏览器专属动作：焦点不在浏览器 pane 时不消费（Cmd+R / Cmd+= 等仍归终端）
+            guard Self.consumes(hit.action, focusedPane: self.focusedPane) else { return event }
             self.perform(hit.action, precise: hit.precise)
             return nil
         }
@@ -315,6 +325,9 @@ final class MainWindowController: BaseTerminalController {
         model.newTerminalCombo = keybindings.displayBindings()
             .first { $0.action == .newTerminal }?.combo ?? "Cmd+Return"
         fileManagerCommand = settings.fileManagerCommand
+        BrowserPaneView.settings = .init(home: settings.browserHome, search: settings.browserSearch,
+                                         userAgent: settings.browserUserAgent, inspectable: settings.browserInspectable)
+        for case let browser as BrowserPaneView in allPanes { browser.applySettings() }   // UA / Inspector 热重载
         model.setWorkspaceCount(settings.workspaces)
         if let n = settings.visibleColumns { setVisibleColumns(n, persist: false) }
         themeManager.updateFromConfig(
@@ -341,7 +354,7 @@ final class MainWindowController: BaseTerminalController {
     }
 
     struct PersistedState: Codable {
-        var version = 3   // 叶子带 kind（缺省终端，旧版本可读）；出现浏览器 pane 后升 4
+        var version = 4   // v4：叶子带 kind（terminal/browser）；v2/v3 无 kind = 终端
         var layouts: [WorkspaceLayout]
         /// v3 起；v2 存档缺省为空浮动层
         var floatings: [[FloatingPane]]?
@@ -442,7 +455,7 @@ final class MainWindowController: BaseTerminalController {
 
     func perform(_ action: WMAction, precise: Bool = false) {
         flushPendingCloses()   // 布局操作先在真实布局上做（淡出中的 pane 立即移除）
-        if action != .newTerminal, action != .fileManager { model.appearingPane = nil }  // 非插入类变更不重播进场动效
+        if ![.newTerminal, .fileManager, .newBrowser].contains(action) { model.appearingPane = nil }  // 非插入类变更不重播进场动效
         switch action {
         case .newTerminal:
             insertNewPane(newSurface(inheritingFrom: focusedPane))
@@ -462,6 +475,17 @@ final class MainWindowController: BaseTerminalController {
             } else {
                 FileManagerLaunch.cleanup(launch.session)
             }
+
+        case .newBrowser:
+            openBrowserPane(url: BrowserPaneView.settings.homeURL, from: focusedPane)
+        case .webBack: browserPane?.goBack()
+        case .webForward: browserPane?.goForward()
+        case .webReload: browserPane?.reload()
+        case .webFocusAddress: browserPane?.focusAddressBar()
+        case .webOpenExternal: browserPane?.openExternally()
+        case .webZoomIn: browserPane?.zoom(by: 1.1)
+        case .webZoomOut: browserPane?.zoom(by: 1 / 1.1)
+        case .webZoomReset: browserPane?.resetZoom()
 
         case .closePane:
             if let focused = focusedPane { closePane(focused) }
@@ -796,6 +820,7 @@ final class MainWindowController: BaseTerminalController {
             switch MenuEntry(rawValue: index) {
             case .newTerminal: perform(.newTerminal)
             case .fileManager: perform(.fileManager)
+            case .browser: perform(.newBrowser)
             case .themes: perform(.themePicker)
             case .backgrounds: perform(.backgroundMenu)
             case .toggleBar: perform(.toggleBar)
@@ -964,6 +989,20 @@ final class MainWindowController: BaseTerminalController {
         newSurface(workingDirectory: source?.workingDirectory)
     }
 
+    /// 焦点是浏览器 pane 时的快捷引用（web-* 动作）
+    private var browserPane: BrowserPaneView? { focusedPane as? BrowserPaneView }
+
+    /// 新建浏览器 pane：插进活动布局并聚焦（页面里 target=_blank / window.open 也走这里）
+    override func openBrowserPane(url: URL, from: PaneView?) {
+        let pane = BrowserPaneView(url: url)
+        applyBrowserTheme(pane)
+        insertNewPane(pane, anchor: from)
+    }
+
+    private func applyBrowserTheme(_ pane: BrowserPaneView) {
+        pane.applyTheme(background: NSColor(themeManager.background), foreground: NSColor(themeManager.foreground))
+    }
+
     /// 指定目录（与可选命令 / 额外环境）新建 surface。带 command 时引擎强制 wait-after-command，
     /// 调用方需自行处理退出（见 SurfaceView.closesOnChildExit）
     func newSurface(workingDirectory: String?, command: String? = nil,
@@ -1088,7 +1127,7 @@ final class MainWindowController: BaseTerminalController {
         let successor = explicit ?? closeSuccessor(of: view)
         // 焦点交接是异步的：同一轮里前一个关闭刚把焦点意图指向本 pane（pendingFocusTarget）
         // 时 focused 还是 false，也要把焦点接着往下传，别让意图落在一个淡出中的 pane 上
-        if view.focused || pendingFocusTarget === view, let next = successor ?? firstLivePane(excluding: view) {
+        if paneHoldsFocus(view) || pendingFocusTarget === view, let next = successor ?? firstLivePane(excluding: view) {
             requestFocus(to: next, from: view)
         }
         pendingCloses[ObjectIdentifier(view)] = PendingClose(view: view, successor: successor)
@@ -1104,13 +1143,18 @@ final class MainWindowController: BaseTerminalController {
         guard let pending = pendingCloses.removeValue(forKey: ObjectIdentifier(view)) else { return }
         model.closingPanes.remove(view.id)
         guard paneList.contains(view) else { return }   // 已被别的路径移除
-        let wasFocused = view.focused
+        let wasFocused = paneHoldsFocus(view)
         removeFromActiveLayout(view)  // 放弃引用 → SurfaceView.deinit 释放 surface
         // 焦点通常在 beginClose 已交出；仍在关闭方（如接班人期间被关掉）时再兜一次
         if wasFocused, let next = pending.successor.flatMap({ paneList.contains($0) ? $0 : nil })
             ?? firstLivePane(excluding: view) {
             requestFocus(to: next)
         }
+    }
+
+    /// pane 是否持有焦点：标志或真相（地址栏字段编辑器是 FR 时标志可能落后于真相）
+    private func paneHoldsFocus(_ view: PaneView) -> Bool {
+        view.focused || (window.map { view.holdsFirstResponder(of: $0) } ?? false)
     }
 
     /// 兜底焦点：第一个不在淡出中的 pane
@@ -1144,7 +1188,7 @@ final class MainWindowController: BaseTerminalController {
 
     /// 同步移除（无动效路径）
     private func removePane(_ view: PaneView, successor explicit: PaneView? = nil) {
-        let wasFocused = view.focused
+        let wasFocused = paneHoldsFocus(view)
         let successor = explicit ?? closeSuccessor(of: view)   // 删除前算：删完兄弟关系就没了
         removeFromActiveLayout(view)  // 放弃引用 → SurfaceView.deinit 释放 surface
         // 最后一个 pane 关闭后窗口保留（RootView 显示"新建终端"提示），不退出程序；

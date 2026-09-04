@@ -129,7 +129,10 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
               !controller.commandPaletteIsShowing,
               window.isKeyWindow,
               controller.focusFollowsMouse,
-              !holdsFirstResponder(of: window) else { return }   // 以真 FR 为准，不信残留的 focused
+              !holdsFirstResponder(of: window),          // 以真 FR 为准，不信残留的 focused
+              controller.paneMayReclaimFocus(self) else { return }
+        // 最后一条：新 pane 插入会让邻居的 tracking area 重建，AppKit 会合成一次 mouseMoved——
+        // 鼠标恰好停在旧 pane 上时，悬停会把刚交给新 pane 的焦点抢回来；控制器有待聚焦意图时不抢
         PaneView.moveFocus(to: self)
     }
 
@@ -146,8 +149,11 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
             }
             // 有意与 Ghostty.moveFocus 不同：from === to（cycle 回绕到自己）时不 resign——否则
             // makeFirstResponder 被 AppKit 短路不再回调 become，pane 仍是 FR 却 focused=false
-            if let from, from !== to {
-                _ = from.focusTarget.resignFirstResponder()
+            // 只对"自己就是 FR"的 pane（终端）手动 resign；托管视图（WKWebView）不能在
+            // makeFirstResponder 流程之外调 resignFirstResponder（WebKit 内部断言），交给下面的
+            // makeFirstResponder 正常流程让出
+            if let from, from !== to, from.focusTarget === from {
+                _ = from.resignFirstResponder()
             }
             window.makeFirstResponder(to.focusTarget)
         }

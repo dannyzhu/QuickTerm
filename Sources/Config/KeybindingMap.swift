@@ -52,6 +52,15 @@ struct KeybindingMap {
     static let defaults: [KeyCombo: WMAction] = [
         KeyCombo(key: "return", .command): .newTerminal,
         KeyCombo(key: "b", [.command, .shift]): .fileManager,   // Omarchy Super+Shift+F；Cmd+F 已是 toggle-zoom
+        KeyCombo(key: "b", .command): .newBrowser,              // Omarchy Super+B
+        KeyCombo(key: "[", [.command, .shift]): .webBack,
+        KeyCombo(key: "]", [.command, .shift]): .webForward,
+        KeyCombo(key: "r", .command): .webReload,
+        KeyCombo(key: "l", [.command, .shift]): .webFocusAddress,
+        KeyCombo(key: "o", [.command, .shift]): .webOpenExternal,
+        KeyCombo(key: "=", .command): .webZoomIn,
+        KeyCombo(key: "-", .command): .webZoomOut,
+        KeyCombo(key: "0", .command): .webZoomReset,
         KeyCombo(key: "w", .command): .closePane,
         KeyCombo(key: "left", .command): .focusLeft,
         KeyCombo(key: "right", .command): .focusRight,
@@ -150,7 +159,12 @@ struct KeybindingMap {
         case 51: return "backspace"
         case 53: return "escape"
         default:
-            guard let chars = event.charactersIgnoringModifiers, !chars.isEmpty else { return nil }
+            // Cmd 组合里的 Shift 不能进键名：charactersIgnoringModifiers 对符号/数字键保留 Shift 转换
+            // （Cmd+Shift+[ → "{"、Cmd+Shift+1 → "!"），而表里登记的是基础键。取无修饰字符；
+            // 合成事件（无 CGEvent 背书）拿不到时退回 charactersIgnoringModifiers
+            let base = event.characters(byApplyingModifiers: []).flatMap { $0.isEmpty ? nil : $0 }
+                ?? event.charactersIgnoringModifiers
+            guard let chars = base, !chars.isEmpty else { return nil }
             return chars.lowercased()
         }
     }
