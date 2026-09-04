@@ -393,6 +393,9 @@ extension Ghostty {
 
             // Setup our surface. This will also initialize all the terminal IO.
             let surface_cfg = baseConfig ?? SurfaceConfiguration()
+            // QuickTerm：先登记存活再建 surface——ghostty_surface_new 内部就会同步回调
+            // （set_cell_size 等），守卫查表时视图必须已在册，否则首个回调被当悬垂丢掉。
+            Ghostty.App.registerLive(self)
             let surface = surface_cfg.withCValue(view: self) { surface_cfg_c in
                 ghostty_surface_new(app, &surface_cfg_c)
             }
@@ -420,6 +423,7 @@ extension Ghostty {
         }
 
         deinit {
+            Ghostty.App.unregisterLive(self)   // 先注销：之后任何引擎回调都不得再取回本视图
             // Remove all of our notificationcenter subscriptions
             let center = NotificationCenter.default
             center.removeObserver(self)

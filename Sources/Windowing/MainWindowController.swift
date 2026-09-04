@@ -950,12 +950,21 @@ final class MainWindowController: BaseTerminalController {
     func closePane(_ view: Ghostty.SurfaceView, confirmIfNeeded: Bool = true) {
         guard paneList.contains(view) else { return }
         if confirmIfNeeded, view.needsConfirmQuit {
-            let alert = NSAlert()
-            alert.messageText = "关闭这个终端？"
-            alert.informativeText = "其中仍有进程在运行。"
-            alert.addButton(withTitle: "关闭")
-            alert.addButton(withTitle: "取消")
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            // 确认对话框异步弹出：本方法可能正处在引擎 close_surface 回调栈内（键绑定 → Zig keyCallback），
+            // 模态嵌套 run loop 期间若子进程退出会二次回调并同步释放 surface，返回后引擎栈仍触碰它（UAF）。
+            // 先让引擎栈退出，再进模态；弹出时 pane 可能已被别的路径关掉，重新校验。
+            DispatchQueue.main.async { [weak self, weak view] in
+                guard let self, let view, self.paneList.contains(view) else { return }
+                let alert = NSAlert()
+                alert.messageText = "关闭这个终端？"
+                alert.informativeText = "其中仍有进程在运行。"
+                alert.addButton(withTitle: "关闭")
+                alert.addButton(withTitle: "取消")
+                guard alert.runModal() == .alertFirstButtonReturn else { return }
+                guard self.paneList.contains(view) else { return }
+                self.removePane(view)
+            }
+            return
         }
         removePane(view)
     }
@@ -964,16 +973,21 @@ final class MainWindowController: BaseTerminalController {
         let wasFocused = view.focused
         // scrolling：删除前记下左邻（spec：焦点左移）
         var successor: Ghostty.SurfaceView?
-        if case .scrolling(let strip) = model.layout {
+        switch model.layout {
+        case .scrolling(let strip):
             successor = strip.focusTarget(from: view, direction: .left)
                 ?? strip.focusTarget(from: view, direction: .right)
                 ?? strip.focusTarget(from: view, direction: .up)
                 ?? strip.focusTarget(from: view, direction: .down)
+        case .dwindle(let tree):
+            // Hyprland dwindle 语义：焦点交给接管空间的兄弟子树中最近的 pane（下一个，否则上一个）
+            successor = tree.closeSuccessor(of: view)
         }
         removeFromActiveLayout(view)  // 放弃引用 → SurfaceView.deinit 释放 surface
         // 最后一个 pane 关闭后窗口保留（RootView 显示"新建终端"提示），不退出程序；
         // 退出只由 Cmd+Q / 菜单触发（AppDelegate.applicationShouldTerminate 决定是否确认）
-        if !model.layout.isEmpty, wasFocused, let next = successor ?? paneList.first {
+        // paneList 含浮动层：平铺层清空但还有浮动 pane 时，焦点也要有去处
+        if !paneList.isEmpty, wasFocused, let next = successor ?? paneList.first {
             requestFocus(to: next)
         }
     }

@@ -144,3 +144,16 @@ FR 仍是窗口/nil 时**（脱离导致的静默重置），期间若别的 res
 `focusedSurface` 以窗口 FR 为真相；启动聚焦改用 `Ghostty.moveFocus`（等待挂载）。
 回归测试 `testToggleLayoutKeepsSingleFocus`。
 
+## 引擎回调的 userdata 可能悬垂（Ghostty.Surface 异步 free）
+
+上游 `Ghostty.Surface.deinit` 用 `Task.detached { @MainActor in ghostty_surface_free }` 异步释放。SurfaceView 释放后、
+surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `wakeup → ghostty_app_tick → drainMailbox → handleMessage`
+仍会为该 surface 触发动作回调（`hasSurface` 为真），`surfaceView(from:)` 用 `Unmanaged.takeUnretainedValue()`
+取回已释放的视图 → `objc_retain` EXC_BAD_ACCESS（系统 .ips 栈：scrollbar 动作）。测试全套里表现为"用例挂起/宿主
+崩溃重启"。对策：① deinit 在主线程时同步 free（窗口归零）；② `Ghostty.App` 维护存活 SurfaceView 登记表
+（init 登记、deinit 首行注销），`surfaceView(from:)` 先查表，悬垂则记 stderr 并返回 nil。修 ① 前全套一次运行守卫
+命中 135 次（确定性），说明并非偶发。
+
+**登记时机的坑**：存活登记表必须在调用 `ghostty_surface_new` **之前**登记视图——它在返回前就会同步回调
+（`set_cell_size` 等）。登记若放在 `surfaceModel = …` 之后，守卫会把创建期的首个回调当悬垂丢弃
+（全套 70 用例稳定出现 78 次"假悬垂"，栈顶是 `SurfaceView.init → withCValue → performAction → setCellSize`）。

@@ -189,6 +189,20 @@ final class ScrollingStripTests: XCTestCase {
         XCTAssertEqual(tree.dwindleDirection(for: b, in: bounds), .right, "右上 500×300 宽 > 高 → 右侧")
     }
 
+    /// dwindle 关闭后的焦点去向：接管空间的兄弟子树里最近的叶（左孩子→兄弟首叶；右孩子→兄弟末叶）
+    func testDwindleCloseSuccessorGoesToSibling() throws {
+        let a = try pane(), b = try pane(), c = try pane(), d = try pane()
+        var tree = SplitTree(view: a)
+        XCTAssertNil(tree.closeSuccessor(of: a), "单叶无后继")
+        tree = try tree.inserting(view: b, at: a, direction: .right)   // [a | b]
+        tree = try tree.inserting(view: c, at: b, direction: .down)    // [a | (b / c)]
+        tree = try tree.inserting(view: d, at: c, direction: .down)    // [a | (b / (c / d))]
+        XCTAssertTrue(tree.closeSuccessor(of: a) === b, "关 a：兄弟子树 (b/(c/d)) 的第一个叶 b")
+        XCTAssertTrue(tree.closeSuccessor(of: b) === c, "关 b（左/上孩子）：兄弟 (c/d) 的首叶 c（下一个）")
+        XCTAssertTrue(tree.closeSuccessor(of: d) === c, "关 d（右/下孩子）：兄弟 c（上一个）")
+        XCTAssertTrue(tree.closeSuccessor(of: c) === d, "关 c（左/上孩子）：兄弟 d（下一个）")
+    }
+
     func testCodableRoundTrip() throws {
         let a = try pane(), b = try pane()
         let strip = ScrollingStrip(pane: a).insertingColumnRight(of: a, pane: b)

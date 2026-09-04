@@ -317,7 +317,7 @@ extension Ghostty {
         // MARK: Ghostty Callbacks (macOS)
 
         static func closeSurface(_ userdata: UnsafeMutableRawPointer?, processAlive: Bool) {
-            let surface = self.surfaceUserdata(from: userdata)
+            guard let surface = self.surfaceUserdata(from: userdata) else { return }
             NotificationCenter.default.post(name: Notification.ghosttyCloseSurface, object: surface, userInfo: [
                 "process_alive": processAlive,
             ])
@@ -328,7 +328,7 @@ extension Ghostty {
             location: ghostty_clipboard_e,
             state: UnsafeMutableRawPointer?
         ) -> Bool {
-            let surfaceView = self.surfaceUserdata(from: userdata)
+            guard let surfaceView = self.surfaceUserdata(from: userdata) else { return false }
             guard let surface = surfaceView.surface else { return false }
 
             // Get our pasteboard
@@ -348,7 +348,7 @@ extension Ghostty {
             state: UnsafeMutableRawPointer?,
             request: ghostty_clipboard_request_e
         ) {
-            let surface = self.surfaceUserdata(from: userdata)
+            guard let surface = self.surfaceUserdata(from: userdata) else { return }
             guard let valueStr = String(cString: string!, encoding: .utf8) else { return }
             guard let request = Ghostty.ClipboardRequest.from(request: request) else { return }
             NotificationCenter.default.post(
@@ -380,7 +380,7 @@ extension Ghostty {
             len: Int,
             confirm: Bool
         ) {
-            let surface = self.surfaceUserdata(from: userdata)
+            guard let surface = self.surfaceUserdata(from: userdata) else { return }
             guard let pasteboard = NSPasteboard.ghostty(location) else { return }
             guard let content = content, len > 0 else { return }
 
@@ -460,13 +460,45 @@ extension Ghostty {
             return Unmanaged<App>.fromOpaque(app_ud).takeUnretainedValue()
         }
 
+        // QuickTerm：存活 SurfaceView 登记表。引擎回调用 surface 的 userdata（裸指针）取回视图，
+        // 若视图已释放而 surface 仍在引擎表中（生命周期脱节），takeUnretainedValue 会在 objc_retain
+        // 上崩溃（实测：scrollbar 动作回调）。init 登记、deinit 注销，取回前先查表。
+        private static let liveSurfaceViewsLock = NSLock()
+        private static var liveSurfaceViews = Set<UnsafeMutableRawPointer>()
+
+        static func registerLive(_ view: SurfaceView) {
+            liveSurfaceViewsLock.lock(); defer { liveSurfaceViewsLock.unlock() }
+            liveSurfaceViews.insert(Unmanaged.passUnretained(view).toOpaque())
+        }
+
+        static func unregisterLive(_ view: SurfaceView) {
+            liveSurfaceViewsLock.lock(); defer { liveSurfaceViewsLock.unlock() }
+            liveSurfaceViews.remove(Unmanaged.passUnretained(view).toOpaque())
+        }
+
+        private static func isLive(_ ptr: UnsafeMutableRawPointer) -> Bool {
+            liveSurfaceViewsLock.lock(); defer { liveSurfaceViewsLock.unlock() }
+            return liveSurfaceViews.contains(ptr)
+        }
+
         /// Returns the surface view from the userdata.
-        static private func surfaceUserdata(from userdata: UnsafeMutableRawPointer?) -> SurfaceView {
-            return Unmanaged<SurfaceView>.fromOpaque(userdata!).takeUnretainedValue()
+        /// QuickTerm：userdata 不在存活登记表（视图已释放而 C surface 仍在，见 surfaceView(from:)）时返回 nil，
+        /// 调用方直接放弃该回调，而不是对悬垂指针 takeUnretainedValue 触发 objc_retain 崩溃。
+        static private func surfaceUserdata(from userdata: UnsafeMutableRawPointer?) -> SurfaceView? {
+            guard let userdata else { return nil }
+            guard isLive(userdata) else {
+                fputs("[quickterm] dangling surface userdata ignored (SurfaceView already freed)\n", stderr)
+                return nil
+            }
+            return Unmanaged<SurfaceView>.fromOpaque(userdata).takeUnretainedValue()
         }
 
         static private func surfaceView(from surface: ghostty_surface_t) -> SurfaceView? {
             guard let surface_ud = ghostty_surface_userdata(surface) else { return nil }
+            guard isLive(surface_ud) else {
+                fputs("[quickterm] dangling surface userdata ignored (SurfaceView already freed)\n", stderr)
+                return nil
+            }
             return Unmanaged<SurfaceView>.fromOpaque(surface_ud).takeUnretainedValue()
         }
 

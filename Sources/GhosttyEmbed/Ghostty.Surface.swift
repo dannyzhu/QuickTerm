@@ -1,3 +1,4 @@
+import Foundation
 import GhosttyKit
 
 extension Ghostty {
@@ -30,8 +31,15 @@ extension Ghostty {
             // We can't wait for the task to succeed so this will happen sometime
             // but that's okay.
             let surface = self.surface
-            Task.detached { @MainActor in
+            // QuickTerm：在主线程时改为**同步**释放。异步跳转会留下一个窗口：SurfaceView 已释放而 surface
+            // 仍在引擎表中，此时 ghostty_app_tick 处理邮箱消息会用悬垂的 userdata 回调（实测
+            // objc_retain 崩溃于 scrollbar 动作）。非主线程才保留 Task.detached 跳转。
+            if Thread.isMainThread {
                 ghostty_surface_free(surface)
+            } else {
+                Task.detached { @MainActor in
+                    ghostty_surface_free(surface)
+                }
             }
         }
 

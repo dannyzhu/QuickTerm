@@ -16,6 +16,23 @@ extension SplitTree {
         return f.width > f.height ? .right : .down
     }
 
+    /// 关闭某叶后应聚焦的 pane（Hyprland dwindle 语义）：接管其空间的**兄弟子树**中最近的叶子——
+    /// 自己是左/上孩子 → 兄弟的第一个叶（"下一个"）；是右/下孩子 → 兄弟的最后一个叶（"上一个"）。
+    /// 根为单叶时返回 nil。
+    func closeSuccessor(of view: ViewType) -> ViewType? {
+        guard let root, let found = Self.parentSplit(of: .leaf(view: view), in: root) else { return nil }
+        let sibling = found.isLeft ? found.split.right : found.split.left
+        let leaves = sibling.leaves()
+        return found.isLeft ? leaves.first : leaves.last
+    }
+
+    private static func parentSplit(of target: Node, in node: Node) -> (split: Node.Split, isLeft: Bool)? {
+        guard case .split(let s) = node else { return nil }
+        if s.left == target { return (s, true) }
+        if s.right == target { return (s, false) }
+        return parentSplit(of: target, in: s.left) ?? parentSplit(of: target, in: s.right)
+    }
+
     /// 交换两个叶子的位置（Cmd+Shift+方向 / 拖拽到目标中心）。树形结构不变，仅叶互换。
     func swapping(_ a: ViewType, _ b: ViewType) throws -> Self {
         guard let root,
