@@ -55,8 +55,8 @@ struct ScrollingStrip: Codable {
 
     init() {}
 
-    init(pane: Ghostty.SurfaceView) {
-        columns = [Column(panes: [pane])]
+    init(pane: Ghostty.SurfaceView, widthFactor: Double = ScrollingStrip.defaultWidth) {
+        columns = [Column(panes: [pane], widthFactor: widthFactor)]
     }
 
     init(columns: [Column], zoomedID: UUID? = nil) {
@@ -178,8 +178,9 @@ struct ScrollingStrip: Codable {
             next.columns[c - 1].panes.append(pane)
             next.columns.remove(at: c)
         } else {
+            // 拆出的新列沿用原列宽度（不能用两列默认值 0.485：每屏 3 列时会比别的列宽一半）
             next.columns[c].panes.remove(at: r)
-            next.columns.insert(Column(panes: [pane]), at: c + 1)
+            next.columns.insert(Column(panes: [pane], widthFactor: columns[c].widthFactor), at: c + 1)
         }
         return next
     }
@@ -216,16 +217,17 @@ struct ScrollingStrip: Codable {
         guard payload !== destination,
               let (pc, _) = position(of: payload) else { return self }
         // 载荷原本独占一列 → 沿用那一列（稳定 id / 列宽）：SwiftUI 视作移动而非删列+建列，
-        // 否则 pane 会脱离/重挂窗口
+        // 否则 pane 会脱离/重挂窗口；从叠栈列拖出 → 新列沿用原列宽度
         let carried: Column? = columns[pc].panes.count == 1 ? columns[pc] : nil
+        let sourceWidth = columns[pc].widthFactor
         var next = removing(payload)
         guard let (dc, dr) = next.position(of: destination) else { return self }
         next.zoomedID = nil
         switch zone {
         case .left:
-            next.columns.insert(carried ?? Column(panes: [payload]), at: dc)
+            next.columns.insert(carried ?? Column(panes: [payload], widthFactor: sourceWidth), at: dc)
         case .right:
-            next.columns.insert(carried ?? Column(panes: [payload]), at: dc + 1)
+            next.columns.insert(carried ?? Column(panes: [payload], widthFactor: sourceWidth), at: dc + 1)
         case .top:
             next.columns[dc].panes.insert(payload, at: dr)
         case .bottom:

@@ -187,7 +187,7 @@ final class MainWindowController: BaseTerminalController {
             if let focused = focusedSurface { requestFocus(to: focused) }
         } else {
             let first = newSurface(inheritingFrom: nil)
-            model.layout = .scrolling(ScrollingStrip(pane: first))
+            model.layout = .scrolling(ScrollingStrip(pane: first, widthFactor: columnFactor))
             requestFocus(to: first)
         }
         window.center()
@@ -871,7 +871,7 @@ final class MainWindowController: BaseTerminalController {
         switch model.layouts[index] {
         case .scrolling(let strip):
             newTarget = .scrolling(strip.isEmpty
-                ? ScrollingStrip(pane: focused)
+                ? ScrollingStrip(pane: focused, widthFactor: columnFactor)
                 : strip.insertingColumnRight(of: strip.paneList.last, pane: focused,
                                              widthFactor: columnFactor))
         case .dwindle(let tree):

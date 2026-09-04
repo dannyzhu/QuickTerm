@@ -625,6 +625,45 @@ extension WorkspaceTests {
         XCTAssertFalse(FileManager.default.fileExists(atPath: cwdFile))
     }
 
+    /// 每屏 3 列时：新建、Cmd+J 併入再拆出、再新建，所有列宽因子都等于当前因子（截图 bug：拆出列变 0.485）
+    @MainActor
+    func testScrollingColumnsStayEqualAfterMergeSplitWithThreeVisible() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty)
+        let prevVisible = c.visibleColumns
+        c.setVisibleColumns(3, persist: false)
+        defer { c.setVisibleColumns(prevVisible, persist: false) }
+        let f = c.columnFactor
+        XCTAssertEqual(f, ScrollingStrip.factor(forVisibleColumns: 3), accuracy: 1e-9)
+        var created: [Ghostty.SurfaceView] = []
+        defer { for p in created { c.closePane(p, confirmIfNeeded: false, animated: false) } }
+        func spawn() throws -> Ghostty.SurfaceView {
+            let before = Set(c.paneList.map(ObjectIdentifier.init))
+            c.perform(.newTerminal)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+            let p = try XCTUnwrap(c.paneList.first { !before.contains(ObjectIdentifier($0)) })
+            created.append(p)
+            return p
+        }
+        func factors() -> [Double] {
+            if case .scrolling(let strip) = c.model.layout { return strip.columns.map(\.widthFactor) }
+            return []
+        }
+        _ = try spawn()
+        let b = try spawn()
+        XCTAssertEqual(factors(), [f, f])
+        _ = c.window?.makeFirstResponder(b)
+        c.perform(.toggleSplitDirection)   // b 併入左列
+        XCTAssertEqual(factors(), [f])
+        c.perform(.toggleSplitDirection)   // b 拆出
+        XCTAssertEqual(factors(), [f, f], "拆出的列不能用两列默认宽")
+        _ = try spawn()
+        XCTAssertEqual(factors(), [f, f, f])
+    }
+
     /// 新建 pane 后焦点必须落在新 pane（dwindle：原 pane 在 leaf→split 重挂时会"夺回"焦点，需让位）
     @MainActor
     func testNewTerminalFocusesNewPaneInDwindle() throws {

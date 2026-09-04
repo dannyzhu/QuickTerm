@@ -229,6 +229,23 @@ final class ScrollingStripTests: XCTestCase {
         XCTAssertEqual(ScrollingStrip.peekPoints(viewport: 1000, paneGap: 5), 15, accuracy: 0.01)
     }
 
+    /// 新建列必须沿用当前列宽因子：拆出叠栈列（Cmd+J）、从叠栈列拖出、首列初始化——
+    /// 否则每屏 3 列（0.323）时这些列拿到两列默认 0.485，水平不等分（用户截图）
+    @MainActor
+    func testNewColumnsInheritPrevailingWidthFactor() throws {
+        let f = ScrollingStrip.factor(forVisibleColumns: 3)
+        let a = try pane(), b = try pane(), c = try pane()
+        var strip = ScrollingStrip(pane: a, widthFactor: f).insertingColumnRight(of: a, pane: b, widthFactor: f)
+        XCTAssertEqual(strip.columns.map(\.widthFactor), [f, f])
+        strip = strip.mergingOrSplitting(b)            // [a/b]
+        strip = strip.mergingOrSplitting(b)            // 拆出 [a][b]
+        XCTAssertEqual(strip.columns.map(\.widthFactor), [f, f], "拆出的列沿用原列宽度")
+        strip = strip.insertingColumnRight(of: b, pane: c, widthFactor: f).mergingOrSplitting(c)   // [a][b/c]
+        let dropped = strip.dropping(c, on: a, zone: .left)   // 从叠栈列拖出到最左
+        XCTAssertEqual(dropped.columns.map(\.widthFactor), [f, f, f], "从叠栈列拖出的列沿用原列宽度")
+        XCTAssertEqual(ScrollingStrip(pane: a).columns[0].widthFactor, ScrollingStrip.defaultWidth, "未指定时仍是默认")
+    }
+
     /// 旧存档的列没有 id / widthFactor：解码补新 id 与默认宽
     func testColumnDecodesLegacyArchiveWithoutId() throws {
         let legacy = try JSONDecoder().decode(ScrollingStrip.Column.self,
