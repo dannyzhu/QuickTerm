@@ -83,6 +83,8 @@ final class BrowserPaneView: PaneView {
     /// 容器自己不接受焦点：键盘焦点在 WKWebView
     override var acceptsFirstResponder: Bool { false }
     override var focusTarget: NSView { webView }
+    /// 悬停即焦点由容器的 tracking area 驱动（WKWebView 的 mouseMoved 覆写收不到事件）
+    override var installsHoverTracking: Bool { true }
 
     // MARK: - 创建
 
@@ -292,12 +294,6 @@ final class BrowserPaneView: PaneView {
     private func updateNavigationButtons() {
         backButton.isEnabled = webView.canGoBack
         forwardButton.isEnabled = webView.canGoForward
-    }
-
-    /// 悬停即焦点（由 BrowserWebView.mouseMoved 转入；先过浮动层遮挡判定）
-    fileprivate func hoverFocus(_ event: NSEvent) {
-        if let controller, controller.surfaceIsOccluded(self, at: event.locationInWindow) { return }
-        hoverFocusIfNeeded()
     }
 
     // MARK: - 存档
@@ -529,7 +525,9 @@ final class BrowserAddressField: NSTextField {
     }
 }
 
-/// WKWebView 子类：first responder 变化回报给所属 pane（焦点真相 = FR 是 pane 的后代），悬停即焦点
+/// WKWebView 子类：first responder 变化回报给所属 pane（焦点真相 = FR 是 pane 的后代）。
+/// 悬停即焦点不在这里：WKWebView 的 tracking area 由内部观察者持有，覆写 mouseMoved 收不到事件，
+/// 由 PaneView 容器自己的 tracking area 处理（installsHoverTracking）。
 final class BrowserWebView: WKWebView {
     weak var pane: BrowserPaneView?
 
@@ -543,10 +541,5 @@ final class BrowserWebView: WKWebView {
         let result = super.resignFirstResponder()
         if result { pane?.paneDidResignFirstResponder() }
         return result
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        super.mouseMoved(with: event)
-        pane?.hoverFocus(event)
     }
 }

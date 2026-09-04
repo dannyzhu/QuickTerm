@@ -123,6 +123,32 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
         }
     }
 
+    /// 非终端 pane 的悬停跟踪：容器自己装 tracking area。WKWebView 自己的 tracking area 由内部观察者
+    /// 对象持有，mouseMoved 投给观察者而不是视图，子类覆写收不到；而 tracking area 按矩形投递给 owner，
+    /// 与子视图命中无关。终端 pane（SurfaceView）自己管 tracking area，不开这个。
+    var installsHoverTracking: Bool { false }
+    private var hoverTrackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        guard installsHoverTracking else { return }
+        if let old = hoverTrackingArea { removeTrackingArea(old) }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .inVisibleRect, .activeAlways],
+            owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        guard installsHoverTracking else { return }
+        // 被浮动层 / 遮罩盖住时不响应 hover（与 SurfaceView 一致）
+        if let controller, controller.surfaceIsOccluded(self, at: event.locationInWindow) { return }
+        hoverFocusIfNeeded()
+    }
+
     /// 悬停即焦点（spec §4.2）：子类在 mouseMoved 里（过了遮挡判定后）调用
     func hoverFocusIfNeeded() {
         guard let window, let controller,

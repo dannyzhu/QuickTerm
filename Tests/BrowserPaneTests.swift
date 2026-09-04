@@ -30,6 +30,25 @@ final class BrowserPaneTests: XCTestCase {
         XCTAssertEqual(s.homeURL.host, "www.google.com")
     }
 
+    /// 悬停即焦点靠容器自己的 tracking area（owner = pane，含 .mouseMoved）：WKWebView 的 mouseMoved
+    /// 覆写收不到事件（其 tracking area 由内部观察者持有）
+    @MainActor
+    func testBrowserPaneInstallsHoverTrackingArea() {
+        let pane = BrowserPaneView(url: nil)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        pane.frame = window.contentView!.bounds
+        window.contentView?.addSubview(pane)
+        pane.updateTrackingAreas()
+        let area = pane.trackingAreas.first { $0.owner === pane }
+        XCTAssertNotNil(area, "容器必须有自己的 tracking area")
+        XCTAssertTrue(area?.options.contains(.mouseMoved) ?? false)
+        XCTAssertTrue(area?.options.contains(.activeAlways) ?? false)
+        XCTAssertTrue(pane.installsHoverTracking)
+        XCTAssertFalse(Ghostty.SurfaceView.self == type(of: pane), "终端 pane 自己管 tracking area")
+        pane.removeFromSuperview()
+    }
+
     @MainActor
     func testBrowserPaneEncodesKindAndURL() throws {
         let pane = BrowserPaneView(url: URL(string: "about:blank"))
