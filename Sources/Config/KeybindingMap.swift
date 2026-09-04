@@ -61,6 +61,9 @@ struct KeybindingMap {
         KeyCombo(key: "=", .command): .webZoomIn,
         KeyCombo(key: "-", .command): .webZoomOut,
         KeyCombo(key: "0", .command): .webZoomReset,
+        KeyCombo(key: "n", .command): .webNewTab,               // Cmd+T 已是浮动开关
+        KeyCombo(key: "tab", .control): .webNextTab,
+        KeyCombo(key: "tab", [.control, .shift]): .webPrevTab,
         KeyCombo(key: "w", .command): .closePane,
         KeyCombo(key: "left", .command): .focusLeft,
         KeyCombo(key: "right", .command): .focusRight,

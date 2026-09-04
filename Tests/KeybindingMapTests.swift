@@ -12,6 +12,7 @@ final class KeybindingMapTests: XCTestCase {
             ("b", [.command, .shift], .fileManager),
             ("b", .command, .newBrowser),
             ("r", .command, .webReload), ("l", [.command, .shift], .webFocusAddress),
+            ("n", .command, .webNewTab), ("tab", .control, .webNextTab), ("tab", [.control, .shift], .webPrevTab),
             ("w", .command, .closePane),
             ("left", .command, .focusLeft), ("right", .command, .focusRight),
             ("up", .command, .focusUp), ("down", .command, .focusDown),

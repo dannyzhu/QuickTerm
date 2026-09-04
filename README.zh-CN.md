@@ -129,8 +129,9 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `browser-search` | https://www.google.com/search?q=%s | 地址栏输入非网址时的搜索模板（`%s` = 关键词） |
 | `browser-user-agent` | safari | `safari` 伪装成 Safari（Google 登录页拒绝嵌入式浏览器）、`webkit` 用原生 WebKit UA、或任意自定义字符串 |
 | `browser-inspectable` | false | 浏览器 pane 开启 Web Inspector |
+| `browser-tab-bar` | auto | `auto` 单标签时隐藏标签条；`always` 始终显示 |
 
-浏览器 pane 的边界：没有 Widevine DRM（Netflix/Spotify 网页版不可用）、没有系统密码自动填充和通行密钥、`window.open` 弹窗会作为新 pane 打开但没有 `window.opener`（依赖弹窗回传的登录流程请用 `Cmd+Shift+O` 到系统浏览器完成）。
+浏览器 pane 的边界：没有 Widevine DRM（Netflix/Spotify 网页版不可用）、没有系统密码自动填充和通行密钥（这类流程请用 `Cmd+Shift+O` 到系统浏览器完成）。
 | `inactive-blur` | 2.5 | `> 0` 时非激活的平铺 pane 背后垫磨砂（模糊的是壁纸，文字不受影响；浮动 pane 不垫；目前数值只作开关） |
 
 `Cmd+Backspace` 一键全部关掉（pane 与顶栏变不透明）；`Cmd+Shift+Backspace` 开关 gaps。
@@ -159,6 +160,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `Cmd+Shift+[` / `Cmd+Shift+]` | `web-back` / `web-forward` | 仅浏览器 pane：后退 / 前进 |
 | `Cmd+=` / `Cmd+-` / `Cmd+0` | `web-zoom-in` / `web-zoom-out` / `web-zoom-reset` | 仅浏览器 pane：页面缩放（终端字号键不受影响） |
 | `Cmd+Shift+O` | `web-open-external` | 仅浏览器 pane：用系统默认浏览器打开当前页 |
+| `Cmd+N` / `Ctrl+Tab` / `Ctrl+Shift+Tab` | `web-new-tab` / `web-next-tab` / `web-prev-tab` | 仅浏览器 pane：标签页。`Cmd+W` 关当前标签（最后一个标签关 pane）；⌘+点击链接后台新标签；`window.open` 开新标签 |
 | `Cmd+1…5` | `goto-workspace-N` | 切换工作区（`workspaces > 5` 时补 `Cmd+6…9,0`） |
 | `Cmd+Shift+1…5` | `move-to-workspace-N` | 把 pane 移到工作区并跟随 |
 | `Cmd+Shift+Space` | `toggle-bar` | 顶栏显示/隐藏 |
@@ -194,6 +196,7 @@ macOS 菜单栏的 Shell / Pane 菜单只列了少数动作的固定默认快捷
 # browser-search = "https://www.google.com/search?q=%s"
 # browser-user-agent = "safari"   # safari | webkit | 自定义 UA
 # browser-inspectable = false
+# browser-tab-bar = "auto"        # auto | always
 # inactive-blur = 2.5       # > 0 开启非激活磨砂
 
 [keybinds]                  # 动作 = "修饰键+键"；"none" 解绑。动作 id 见 Cmd+K

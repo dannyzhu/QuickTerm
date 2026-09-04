@@ -129,8 +129,9 @@ All panels are centred, Walker-style: `↑`/`↓` to move, `Return` to choose, `
 | `browser-search` | https://www.google.com/search?q=%s | Search template used when the address bar input is not a URL (`%s` = query) |
 | `browser-user-agent` | safari | `safari` masquerades as Safari (Google sign-in rejects embedded browsers), `webkit` sends the stock WebKit UA, or any custom string |
 | `browser-inspectable` | false | Enable Web Inspector in browser panes |
+| `browser-tab-bar` | auto | `auto` hides the tab bar while a pane has a single tab; `always` keeps it |
 
-Browser pane limits: no Widevine DRM (Netflix/Spotify web), no system password autofill or passkeys, and `window.open` popups open as a new pane without `window.opener` (popup-based logins: use `Cmd+Shift+O` to finish in the system browser).
+Browser pane limits: no Widevine DRM (Netflix/Spotify web) and no system password autofill or passkeys (use `Cmd+Shift+O` to finish such flows in the system browser).
 | `inactive-blur` | 2.5 | `> 0` puts a frosted-glass backdrop behind inactive tiled panes (blurs the wallpaper, not the text; floating panes are exempt; the numeric value is currently on/off only) |
 
 `Cmd+Backspace` turns all of it off at once (panes and bar go opaque); `Cmd+Shift+Backspace` toggles the gaps.
@@ -159,6 +160,7 @@ Every action below can be rebound in `config.toml` (see [Configuration](#configu
 | `Cmd+Shift+[` / `Cmd+Shift+]` | `web-back` / `web-forward` | Browser pane only: history navigation |
 | `Cmd+=` / `Cmd+-` / `Cmd+0` | `web-zoom-in` / `web-zoom-out` / `web-zoom-reset` | Browser pane only: page zoom (terminal font size keys are untouched) |
 | `Cmd+Shift+O` | `web-open-external` | Browser pane only: open the current page in the system browser |
+| `Cmd+N` / `Ctrl+Tab` / `Ctrl+Shift+Tab` | `web-new-tab` / `web-next-tab` / `web-prev-tab` | Browser pane only: tabs. `Cmd+W` closes the current tab (the last tab closes the pane); ⌘-click a link for a background tab; `window.open` opens a tab |
 | `Cmd+1…5` | `goto-workspace-N` | Switch workspace (`Cmd+6…9,0` when `workspaces > 5`) |
 | `Cmd+Shift+1…5` | `move-to-workspace-N` | Move pane to workspace and follow |
 | `Cmd+Shift+Space` | `toggle-bar` | Show/hide status bar |
@@ -194,6 +196,7 @@ The Shell and Pane menus in the macOS menu bar list fixed default shortcuts for 
 # browser-search = "https://www.google.com/search?q=%s"
 # browser-user-agent = "safari"   # safari | webkit | custom UA string
 # browser-inspectable = false
+# browser-tab-bar = "auto"        # auto | always
 # inactive-blur = 2.5       # > 0 enables frosted inactive panes
 
 [keybinds]                  # action = "modifiers+key"; "none" unbinds. Action ids: Cmd+K

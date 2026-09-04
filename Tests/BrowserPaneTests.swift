@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import QuickTerm
 
 final class BrowserPaneTests: XCTestCase {
@@ -92,6 +93,95 @@ final class BrowserPaneTests: XCTestCase {
         // 站点可能立即跳转（baidu.com → www.baidu.com），只断言主机
         XCTAssertTrue(b.lastRequestedURL?.host?.hasSuffix("baidu.com") ?? false, "回车后应请求 baidu，实际 \(String(describing: b.lastRequestedURL))")
         XCTAssertTrue(window.firstResponder === b.webView, "回车后焦点回到页面")
+    }
+
+    /// 多标签：新建激活、相对切换回绕、关闭后选邻居、最后一个标签不在 pane 内关；标签条 auto/always
+    @MainActor
+    func testTabsLifecycle() throws {
+        let prev = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = prev }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        XCTAssertEqual(pane.tabs.count, 1)
+        XCTAssertFalse(pane.tabBarVisible, "单标签 auto 隐藏")
+        pane.newTab()
+        pane.newTab()
+        XCTAssertEqual(pane.tabs.count, 3)
+        XCTAssertEqual(pane.activeTabIndex, 2, "新标签激活")
+        XCTAssertTrue(pane.tabBarVisible)
+        XCTAssertTrue(pane.focusTarget === pane.tabs[2].webView, "焦点目标 = 当前标签")
+        XCTAssertTrue(pane.tabs[0].webView.isHidden && !pane.tabs[2].webView.isHidden)
+        pane.selectTab(offset: 1)
+        XCTAssertEqual(pane.activeTabIndex, 0, "首尾回绕")
+        pane.selectTab(offset: -1)
+        XCTAssertEqual(pane.activeTabIndex, 2)
+        pane.selectTab(at: 1)
+        XCTAssertTrue(pane.closeActiveTab())
+        XCTAssertEqual(pane.tabs.count, 2)
+        XCTAssertEqual(pane.activeTabIndex, 1, "关掉中间标签后选后面那个")
+        XCTAssertTrue(pane.closeActiveTab())
+        XCTAssertEqual(pane.activeTabIndex, 0, "关掉末尾标签后选前一个")
+        XCTAssertFalse(pane.closeActiveTab(), "最后一个标签不在 pane 内关")
+        XCTAssertEqual(pane.tabs.count, 1)
+        BrowserPaneView.settings.tabBar = "always"
+        pane.applySettings()
+        XCTAssertTrue(pane.tabBarVisible, "always：单标签也显示标签条")
+    }
+
+    /// 标签条不能改变 pane 自身宽度（SwiftUI 托管的 pane 没有外部宽度约束，必需的项宽上限会把 pane 挤成 N×200）；
+    /// 标签项 ≤ 200 且彼此等宽
+    @MainActor
+    func testTabBarDoesNotResizePane() throws {
+        let prev = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = prev }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let hosting = NSHostingView(rootView: PaneHostView(pane: pane).frame(width: 900, height: 600))
+        window.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertEqual(pane.frame.width, 900, accuracy: 1)
+        pane.newTab()
+        pane.newTab()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        hosting.layoutSubtreeIfNeeded()
+        XCTAssertEqual(pane.frame.width, 900, accuracy: 1, "两个标签后 pane 宽度不能变")
+        let items = pane.tabItemWidthsForTesting
+        XCTAssertEqual(items.count, 3)
+        for w in items { XCTAssertLessThanOrEqual(w, 200.5); XCTAssertGreaterThan(w, 40) }
+        XCTAssertEqual(items.max()! - items.min()!, 0, accuracy: 1, "标签等宽")
+        pane.closeActiveTab(); pane.closeActiveTab()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        hosting.layoutSubtreeIfNeeded()
+        XCTAssertEqual(pane.frame.width, 900, accuracy: 1)
+        window.contentView = nil
+    }
+
+    /// 多标签存档往返（tabs + activeTab），旧单页存档仍可读
+    @MainActor
+    func testTabsPersistence() throws {
+        let prev = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = prev }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        pane.newTab(url: URL(string: "https://example.com/a"))
+        pane.newTab(url: URL(string: "https://example.com/b"))
+        pane.selectTab(at: 1)
+        let data = try JSONEncoder().encode(PaneBox(pane: pane))
+        let json = String(decoding: data, as: UTF8.self)
+        XCTAssertTrue(json.contains("\"tabs\""), json)
+        XCTAssertTrue(json.contains("example.com\\/b") || json.contains("example.com/b"), "JSONEncoder 会转义斜杠")
+        let decoded = try XCTUnwrap(try JSONDecoder().decode(PaneBox.self, from: data).pane as? BrowserPaneView)
+        XCTAssertEqual(decoded.tabs.count, 3)
+        XCTAssertEqual(decoded.activeTabIndex, 1)
+        XCTAssertEqual(decoded.tabs[2].lastRequestedURL?.absoluteString, "https://example.com/b")
+        // 旧格式：只有 url
+        let legacy = Data(#"{"pane":{"kind":"browser","uuid":"6E1F7C0E-1234-4C1D-9C6B-000000000001","url":"https://example.com/x","title":"x"}}"#.utf8)
+        let old = try XCTUnwrap(try JSONDecoder().decode(PaneBox.self, from: legacy).pane as? BrowserPaneView)
+        XCTAssertEqual(old.tabs.count, 1)
+        XCTAssertEqual(old.lastRequestedURL?.absoluteString, "https://example.com/x")
     }
 
     @MainActor

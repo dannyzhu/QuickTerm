@@ -1,9 +1,9 @@
 import AppKit
 import WebKit
 
-/// 浏览器 pane：WKWebView + 顶部薄工具条（后退 / 前进 / 刷新、地址栏、进度）。
-/// 一个 pane 一个页面（Omarchy `--app` 窗口语义，无标签页）。
-/// 键盘焦点落在 WKWebView（focusTarget）；WM 级 Cmd 键由控制器的事件监视器先行拦截，
+/// 浏览器 pane：多标签（每标签一个 WKWebView，共享进程池与登录态）+ 标签条 + 顶部薄工具条
+/// （后退 / 前进 / 刷新、地址栏、进度）。工具条、地址栏、进度都绑定当前标签。
+/// 键盘焦点落在当前标签的 WKWebView（focusTarget）；WM 级 Cmd 键由控制器的事件监视器先行拦截，
 /// 其余 Cmd 键先交给页面（WebKit 语义）。
 final class BrowserPaneView: PaneView {
     override class var kind: PaneKind { .browser }
@@ -18,6 +18,8 @@ final class BrowserPaneView: PaneView {
         var userAgent = "safari"
         /// Web Inspector（右键"检查元素"）
         var inspectable = false
+        /// 标签条：auto = 只有一个标签时隐藏；always = 始终显示
+        var tabBar = "auto"
 
         static let safariUserAgent =
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15"
@@ -29,6 +31,8 @@ final class BrowserPaneView: PaneView {
             default: userAgent
             }
         }
+
+        var tabBarAlwaysVisible: Bool { tabBar.lowercased() == "always" }
 
         var homeURL: URL {
             // URL(string:) 对含空格等的字符串也会返回非 nil（自动百分号编码）：按 scheme/host 校验
@@ -56,31 +60,65 @@ final class BrowserPaneView: PaneView {
 
     static var settings = Settings()
 
-    /// 所有浏览器 pane 共享的进程池 + 持久化数据存储（登录态跨 pane、跨重启保留）
+    /// 所有浏览器 pane 共享的进程池 + 持久化数据存储（登录态跨标签、跨 pane、跨重启保留）
     private static let processPool = WKProcessPool()
 
-    let webView: BrowserWebView
+    /// 一个标签：自己的 WKWebView 与导航状态
+    final class Tab {
+        let id = UUID()
+        let webView: BrowserWebView
+        var title = ""
+        /// 最近一次请求的真实 URL：错误页 / about:blank 不能覆盖它（存档、地址栏、重载、外部打开都用它）
+        var lastRequestedURL: URL?
+        var showingErrorPage = false
+        /// 错误页自身的加载也会回调 decidePolicyFor：记下它，别把它当成新的导航
+        var pendingErrorPageURL: URL?
+        var lastProcessTerminationAt: Date?
+        var observations: [NSKeyValueObservation] = []
+
+        init(webView: BrowserWebView) { self.webView = webView }
+
+        /// 对外可见的"当前网址"：错误页 / 空白页时回退到最近请求的真实 URL
+        var effectiveURL: URL? {
+            if let url = webView.url, url.scheme != "about", !showingErrorPage { return url }
+            return lastRequestedURL ?? webView.url
+        }
+
+        var displayTitle: String {
+            if !title.isEmpty { return title }
+            return effectiveURL?.host ?? "新标签页"
+        }
+    }
+
+    private(set) var tabs: [Tab] = []
+    private(set) var activeTabIndex = 0
+    var activeTab: Tab? { tabs.indices.contains(activeTabIndex) ? tabs[activeTabIndex] : nil }
+    /// 当前标签的 WKWebView（无标签时是占位，不会发生：pane 至少一个标签）
+    var webView: BrowserWebView { activeTab?.webView ?? placeholderWebView }
+    private lazy var placeholderWebView = BrowserWebView(frame: .zero, configuration: Self.makeConfiguration())
+
+    private let tabBar = NSStackView()
+    private var tabBarHeight: NSLayoutConstraint!
     private let toolbar = NSView()
     private let backButton = NSButton()
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
     let addressField = BrowserAddressField()   // 测试需访问
     private let progressBar = NSProgressIndicator()
-
-    /// 页面标题 / 当前 URL（状态条、存档）
-    @Published private(set) var pageTitle = ""
-    @Published private(set) var currentURL: URL?
-    /// 最近一次请求的真实 URL：错误页 / about:blank 不能覆盖它（存档、地址栏、重载、外部打开都用它）
-    private(set) var lastRequestedURL: URL?
-    private var showingErrorPage = false
-    /// 错误页自身的加载也会回调 decidePolicyFor：记下它，别把它当成新的导航
-    private var pendingErrorPageURL: URL?
-    private var lastProcessTerminationAt: Date?
-    private var observations: [NSKeyValueObservation] = []
+    private let webArea = NSView()
     private var editingAddress = false
+    /// window.close() 时 pane 不在窗口里：挂回窗口后补发关闭请求
+    private var pendingCloseRequest = false
+    private var themeBackground: NSColor = .black
+    private var themeForeground: NSColor = .white
 
-    override var paneTitle: String { pageTitle.isEmpty ? (currentURL?.host ?? "浏览器") : pageTitle }
-    /// 容器自己不接受焦点：键盘焦点在 WKWebView
+    /// 页面标题 / 当前 URL（状态条、存档；当前标签的）
+    var pageTitle: String { activeTab?.title ?? "" }
+    var currentURL: URL? { activeTab?.effectiveURL }
+    var lastRequestedURL: URL? { activeTab?.lastRequestedURL }
+
+    override var paneTitle: String { activeTab?.displayTitle ?? "浏览器" }
+    /// 容器自己不接受焦点：键盘焦点在当前标签的 WKWebView
     override var acceptsFirstResponder: Bool { false }
     override var focusTarget: NSView { webView }
     /// 悬停即焦点由容器的 tracking area 驱动（WKWebView 的 mouseMoved 覆写收不到事件）
@@ -89,46 +127,140 @@ final class BrowserPaneView: PaneView {
     // MARK: - 创建
 
     init(id: UUID = UUID(), url: URL?) {
+        super.init(id: id, frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        buildChrome()
+        _ = addTab(url: url ?? Self.settings.homeURL, activate: true)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if pendingCloseRequest, let controller {
+            pendingCloseRequest = false
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                controller.requestClosePane(self)
+            }
+        }
+    }
+
+    deinit {
+        for tab in tabs { tearDown(tab) }
+    }
+
+    private static func makeConfiguration() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
-        config.processPool = Self.processPool
+        config.processPool = processPool
         config.websiteDataStore = .default()
         config.preferences.isElementFullscreenEnabled = true
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
-        webView = BrowserWebView(frame: .zero, configuration: config)
-        super.init(id: id, frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        return config
+    }
+
+    // MARK: - 标签管理
+
+    /// 新标签（url 为 nil = 首页）。webView 参数：window.open 时 WebKit 要求用它给的 configuration 创建
+    @discardableResult
+    func addTab(url: URL?, activate: Bool, webView given: BrowserWebView? = nil) -> Tab {
+        let webView = given ?? BrowserWebView(frame: .zero, configuration: Self.makeConfiguration())
+        let tab = Tab(webView: webView)
         webView.pane = self
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        webView.customUserAgent = Self.settings.effectiveUserAgent
         webView.allowsBackForwardNavigationGestures = true
-        applySettings()
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        applySettings(to: webView)
         // 透明背景：透出 QuickTerm 的壁纸 / 磨砂层（页面自己画背景的地方不受影响）。
         // drawsBackground 走私有 setter（_setDrawsBackground:）：先探测，避免将来被移除时 KVC 抛异常崩在创建/恢复
         if webView.responds(to: Selector(("_setDrawsBackground:"))) {
             webView.setValue(false, forKey: "drawsBackground")
         }
         webView.underPageBackgroundColor = .clear
-        buildChrome()
-        observe()
-        if let url { load(url) }
+        observe(tab)
+        webArea.addSubview(webView)
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: webArea.topAnchor),
+            webView.leadingAnchor.constraint(equalTo: webArea.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: webArea.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: webArea.bottomAnchor),
+        ])
+        webView.isHidden = true
+        tabs.append(tab)
+        if let url, given == nil {
+            load(url, in: tab)
+        }
+        if activate { selectTab(at: tabs.count - 1) } else { rebuildTabBar() }
+        return tab
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    func newTab(url: URL? = nil) { addTab(url: url ?? Self.settings.homeURL, activate: true) }
 
-    deinit {
-        observations.removeAll()
-        webView.navigationDelegate = nil
-        webView.uiDelegate = nil
+    /// 切换到第 index 个标签：只显示它、工具条绑定它、焦点（若本 pane 持焦，或调用方要求）交给它
+    func selectTab(at index: Int, forceFocus: Bool = false) {
+        guard tabs.indices.contains(index) else { return }
+        let hadFocus = forceFocus || (window.map { holdsFirstResponder(of: $0) } ?? false)
+        activeTabIndex = index
+        for (i, tab) in tabs.enumerated() { tab.webView.isHidden = i != index }
+        rebuildTabBar()
+        syncChromeToActiveTab()
+        if hadFocus { window?.makeFirstResponder(webView) }
+        objectWillChange.send()
     }
+
+    /// 相对切换（Ctrl+Tab / Ctrl+Shift+Tab），首尾回绕
+    func selectTab(offset: Int) {
+        guard tabs.count > 1 else { return }
+        selectTab(at: ((activeTabIndex + offset) % tabs.count + tabs.count) % tabs.count)
+    }
+
+    /// 关闭第 index 个标签；最后一个标签不在这里关（由控制器关 pane）。返回是否关掉了标签
+    @discardableResult
+    func closeTab(at index: Int) -> Bool {
+        guard tabs.count > 1, tabs.indices.contains(index) else { return false }
+        // 先记焦点：被关标签的 webView 脱离窗口时 AppKit 会静默把 FR 重置为窗口（不发 resign），
+        // 之后再看 holdsFirstResponder 就是 false，幸存标签拿不到焦点
+        let hadFocus = window.map { holdsFirstResponder(of: $0) } ?? false
+        let tab = tabs.remove(at: index)
+        tearDown(tab)
+        tab.webView.removeFromSuperview()
+        let next = index < activeTabIndex ? activeTabIndex - 1 : min(activeTabIndex, tabs.count - 1)
+        selectTab(at: next, forceFocus: hadFocus)
+        return true
+    }
+
+    @discardableResult
+    func closeActiveTab() -> Bool { closeTab(at: activeTabIndex) }
+
+    private func closeTab(_ tab: Tab) {
+        if let i = tabs.firstIndex(where: { $0 === tab }) { closeTab(at: i) }
+    }
+
+    private func tab(for webView: WKWebView) -> Tab? {
+        tabs.first { $0.webView === webView }
+    }
+
+    private func tearDown(_ tab: Tab) {
+        tab.observations.removeAll()
+        tab.webView.navigationDelegate = nil
+        tab.webView.uiDelegate = nil
+        tab.webView.pane = nil
+    }
+
+    // MARK: - 界面
 
     private func buildChrome() {
         wantsLayer = true
-        toolbar.translatesAutoresizingMaskIntoConstraints = false
-        webView.translatesAutoresizingMaskIntoConstraints = false
-        progressBar.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(toolbar)
-        addSubview(webView)
-        addSubview(progressBar)
+        for v in [tabBar, toolbar, progressBar, webArea] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(v)
+        }
+        tabBar.orientation = .horizontal
+        tabBar.distribution = .gravityAreas   // 靠左紧排；宽度由各项的非必需约束决定
+        tabBar.spacing = 2
+        tabBar.alignment = .centerY
+        tabBar.wantsLayer = true
+        tabBarHeight = tabBar.heightAnchor.constraint(equalToConstant: 0)
 
         for (button, symbol, tip, action) in [
             (backButton, "chevron.left", "后退", #selector(goBack)),
@@ -166,7 +298,11 @@ final class BrowserPaneView: PaneView {
         progressBar.isHidden = true
 
         NSLayoutConstraint.activate([
-            toolbar.topAnchor.constraint(equalTo: topAnchor),
+            tabBar.topAnchor.constraint(equalTo: topAnchor),
+            tabBar.leadingAnchor.constraint(equalTo: leadingAnchor),
+            tabBar.trailingAnchor.constraint(equalTo: trailingAnchor),
+            tabBarHeight,
+            toolbar.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
             toolbar.leadingAnchor.constraint(equalTo: leadingAnchor),
             toolbar.trailingAnchor.constraint(equalTo: trailingAnchor),
             toolbar.heightAnchor.constraint(equalToConstant: 30),
@@ -187,45 +323,131 @@ final class BrowserPaneView: PaneView {
             progressBar.leadingAnchor.constraint(equalTo: leadingAnchor),
             progressBar.trailingAnchor.constraint(equalTo: trailingAnchor),
             progressBar.heightAnchor.constraint(equalToConstant: 3),
-            webView.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
-            webView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            webView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            webView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            webArea.topAnchor.constraint(equalTo: toolbar.bottomAnchor),
+            webArea.leadingAnchor.constraint(equalTo: leadingAnchor),
+            webArea.trailingAnchor.constraint(equalTo: trailingAnchor),
+            webArea.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
-        updateNavigationButtons()
     }
 
-    private func observe() {
-        observations = [
-            webView.observe(\.url, options: [.new]) { [weak self] _, _ in self?.urlDidChange() },
-            webView.observe(\.title, options: [.new]) { [weak self] _, _ in self?.titleDidChange() },
-            webView.observe(\.estimatedProgress, options: [.new]) { [weak self] _, _ in self?.progressDidChange() },
-            webView.observe(\.isLoading, options: [.new]) { [weak self] _, _ in self?.progressDidChange() },
-            webView.observe(\.canGoBack, options: [.new]) { [weak self] _, _ in self?.updateNavigationButtons() },
-            webView.observe(\.canGoForward, options: [.new]) { [weak self] _, _ in self?.updateNavigationButtons() },
+    /// 测试用：标签项当前宽度
+    var tabItemWidthsForTesting: [CGFloat] {
+        tabBar.layoutSubtreeIfNeeded()
+        return tabBar.arrangedSubviews.map { $0.frame.width }
+    }
+
+    /// 标签条是否显示：always 或多于一个标签
+    var tabBarVisible: Bool { Self.settings.tabBarAlwaysVisible || tabs.count > 1 }
+
+    /// 重建标签条：每个标签一个按钮（标题 + 当前标签带关闭）
+    private func rebuildTabBar() {
+        for v in tabBar.arrangedSubviews { tabBar.removeArrangedSubview(v); v.removeFromSuperview() }
+        let visible = tabBarVisible
+        tabBar.isHidden = !visible
+        tabBarHeight.constant = visible ? 26 : 0
+        // 空 NSStackView 的隐含最小高度 = 上下 edgeInsets 之和：隐藏时连内边距一起清零，否则与高度 0 冲突
+        tabBar.edgeInsets = visible ? NSEdgeInsets(top: 3, left: 6, bottom: 3, right: 6) : NSEdgeInsets()
+        guard visible else { return }
+        // 宽度：首选 200、上限 200、彼此等宽，全部非必需——必需的上限会让 Auto Layout 反过来把
+        // 整个 pane 的宽度解成 N×200（pane 由 SwiftUI 托管、没有外部宽度约束）；空间不够时等比缩窄
+        var first: BrowserTabItemView?
+        for (i, tab) in tabs.enumerated() {
+            let item = BrowserTabItemView(title: tab.displayTitle, active: i == activeTabIndex,
+                                          foreground: themeForeground, background: themeBackground)
+            item.onSelect = { [weak self] in self?.selectTab(at: i) }
+            item.onClose = { [weak self] in self?.closeTab(at: i) }
+            tabBar.addArrangedSubview(item)
+            let preferred = item.widthAnchor.constraint(equalToConstant: 200)
+            preferred.priority = .defaultLow
+            let cap = item.widthAnchor.constraint(lessThanOrEqualToConstant: 200)
+            cap.priority = .defaultHigh
+            let floor = item.widthAnchor.constraint(greaterThanOrEqualToConstant: 40)
+            floor.priority = .defaultHigh
+            var constraints = [preferred, cap, floor]
+            if let first {
+                let equal = item.widthAnchor.constraint(equalTo: first.widthAnchor)
+                equal.priority = .defaultHigh
+                constraints.append(equal)
+            } else {
+                first = item
+            }
+            NSLayoutConstraint.activate(constraints)
+        }
+    }
+
+    private func observe(_ tab: Tab) {
+        let webView = tab.webView
+        tab.observations = [
+            webView.observe(\.url, options: [.new]) { [weak self, weak tab] _, _ in
+                guard let self, let tab else { return }
+                if tab === self.activeTab { self.urlDidChange() }
+            },
+            webView.observe(\.title, options: [.new]) { [weak self, weak tab] wv, _ in
+                guard let self, let tab else { return }
+                tab.title = wv.title ?? ""
+                self.rebuildTabBar()
+                self.objectWillChange.send()
+            },
+            webView.observe(\.estimatedProgress, options: [.new]) { [weak self, weak tab] _, _ in
+                guard let self, let tab, tab === self.activeTab else { return }
+                self.progressDidChange()
+            },
+            webView.observe(\.isLoading, options: [.new]) { [weak self, weak tab] _, _ in
+                guard let self, let tab, tab === self.activeTab else { return }
+                self.progressDidChange()
+            },
+            webView.observe(\.canGoBack, options: [.new]) { [weak self, weak tab] _, _ in
+                guard let self, let tab, tab === self.activeTab else { return }
+                self.updateNavigationButtons()
+            },
+            webView.observe(\.canGoForward, options: [.new]) { [weak self, weak tab] _, _ in
+                guard let self, let tab, tab === self.activeTab else { return }
+                self.updateNavigationButtons()
+            },
         ]
     }
 
-    /// 配置热重载：UA / Inspector（config.toml 保存即生效，含已打开的 pane）
+    /// 工具条 / 地址栏 / 进度 / 前进后退全部绑到当前标签
+    private func syncChromeToActiveTab() {
+        urlDidChange()
+        progressDidChange()
+        updateNavigationButtons()
+    }
+
+    /// 配置热重载：UA / Inspector / 标签条（config.toml 保存即生效，含已打开的 pane 与标签）
     func applySettings() {
+        for tab in tabs { applySettings(to: tab.webView) }
+        rebuildTabBar()
+    }
+
+    private func applySettings(to webView: WKWebView) {
         webView.customUserAgent = Self.settings.effectiveUserAgent
         webView.isInspectable = Self.settings.inspectable
     }
 
-    /// 外观：工具条随主题（背景 / 前景色由控制器主题热切换时调用）
+    /// 外观：工具条 / 标签条随主题（背景 / 前景色由控制器主题热切换时调用）
     func applyTheme(background: NSColor, foreground: NSColor) {
+        themeBackground = background
+        themeForeground = foreground
         toolbar.wantsLayer = true
         toolbar.layer?.backgroundColor = background.withAlphaComponent(0.6).cgColor
+        tabBar.layer?.backgroundColor = background.withAlphaComponent(0.75).cgColor
         addressField.textColor = foreground
         for b in [backButton, forwardButton, reloadButton] { b.contentTintColor = foreground.withAlphaComponent(0.85) }
+        rebuildTabBar()
     }
 
-    // MARK: - 导航
+    // MARK: - 导航（作用于当前标签）
 
     func load(_ url: URL) {
-        lastRequestedURL = url
-        showingErrorPage = false
-        webView.load(URLRequest(url: url))
+        guard let tab = activeTab else { return }
+        load(url, in: tab)
+    }
+
+    private func load(_ url: URL, in tab: Tab) {
+        tab.lastRequestedURL = url
+        tab.showingErrorPage = false
+        tab.webView.load(URLRequest(url: url))
     }
 
     /// 地址栏文本（URL 或搜索词）
@@ -241,7 +463,8 @@ final class BrowserPaneView: PaneView {
     }
     /// 错误页状态下重载的是原网址，不是错误页本身
     func reload() {
-        if showingErrorPage, let url = lastRequestedURL { load(url) } else { webView.reload() }
+        guard let tab = activeTab else { return }
+        if tab.showingErrorPage, let url = tab.lastRequestedURL { load(url, in: tab) } else { tab.webView.reload() }
     }
 
     /// 焦点进地址栏并全选（Cmd+Shift+L）
@@ -257,11 +480,7 @@ final class BrowserPaneView: PaneView {
         NSWorkspace.shared.open(url)
     }
 
-    /// 对外可见的"当前网址"：错误页 / 空白页时回退到最近请求的真实 URL
-    var effectiveURL: URL? {
-        if let url = webView.url, url.scheme != "about", !showingErrorPage { return url }
-        return lastRequestedURL ?? webView.url
-    }
+    var effectiveURL: URL? { activeTab?.effectiveURL }
 
     func zoom(by factor: CGFloat) {
         webView.pageZoom = min(max(webView.pageZoom * factor, 0.5), 3.0)
@@ -274,13 +493,7 @@ final class BrowserPaneView: PaneView {
     }
 
     private func urlDidChange() {
-        currentURL = effectiveURL
         if !editingAddress { addressField.stringValue = effectiveURL?.absoluteString ?? "" }
-        objectWillChange.send()
-    }
-
-    private func titleDidChange() {
-        pageTitle = webView.title ?? ""
         objectWillChange.send()
     }
 
@@ -299,22 +512,43 @@ final class BrowserPaneView: PaneView {
 
     // MARK: - 存档
 
-    private enum CodingKeys: String, CodingKey { case uuid, url, title }
+    private enum CodingKeys: String, CodingKey { case uuid, url, title, tabs, activeTab }
+    private struct TabSnapshot: Codable {
+        var url: String?
+        var title: String?
+    }
 
     static func decode(from decoder: Decoder) throws -> BrowserPaneView {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let id = try c.decodeIfPresent(String.self, forKey: .uuid).flatMap(UUID.init(uuidString:)) ?? UUID()
-        let url = try c.decodeIfPresent(String.self, forKey: .url).flatMap(URL.init(string:))
-        let pane = BrowserPaneView(id: id, url: url ?? settings.homeURL)
-        if let title = try c.decodeIfPresent(String.self, forKey: .title) { pane.pageTitle = title }
+        let snapshots = try c.decodeIfPresent([TabSnapshot].self, forKey: .tabs) ?? []
+        if snapshots.isEmpty {
+            // 单页存档（多标签之前的格式）
+            let url = try c.decodeIfPresent(String.self, forKey: .url).flatMap(URL.init(string:))
+            let pane = BrowserPaneView(id: id, url: url ?? settings.homeURL)
+            if let title = try c.decodeIfPresent(String.self, forKey: .title) { pane.activeTab?.title = title }
+            return pane
+        }
+        let first = snapshots[0]
+        let pane = BrowserPaneView(id: id, url: first.url.flatMap(URL.init(string:)) ?? settings.homeURL)
+        pane.activeTab?.title = first.title ?? ""
+        for snap in snapshots.dropFirst() {
+            let tab = pane.addTab(url: snap.url.flatMap(URL.init(string:)) ?? settings.homeURL, activate: false)
+            tab.title = snap.title ?? ""
+        }
+        let active = try c.decodeIfPresent(Int.self, forKey: .activeTab) ?? 0
+        pane.selectTab(at: min(max(active, 0), pane.tabs.count - 1))
         return pane
     }
 
     override func encodePayload(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id.uuidString, forKey: .uuid)
+        // 兼容旧格式：url / title 仍写当前标签
         try c.encodeIfPresent(effectiveURL?.absoluteString, forKey: .url)
         try c.encode(pageTitle, forKey: .title)
+        try c.encode(tabs.map { TabSnapshot(url: $0.effectiveURL?.absoluteString, title: $0.title) }, forKey: .tabs)
+        try c.encode(activeTabIndex, forKey: .activeTab)
     }
 }
 
@@ -347,16 +581,25 @@ extension BrowserPaneView: NSTextFieldDelegate {
 extension BrowserPaneView: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let tab = tab(for: webView) else { decisionHandler(.allow); return }
+        // ⌘+点击链接 → 后台新标签打开（Chrome 习惯），本页不动
+        if navigationAction.navigationType == .linkActivated,
+           navigationAction.modifierFlags.contains(.command),
+           let url = navigationAction.request.url {
+            addTab(url: url, activate: false)
+            decisionHandler(.cancel)
+            return
+        }
         // 记住主帧的真实请求（链接点击 / 重定向），错误页不能覆盖它。
-        // targetFrame == nil 是 target=_blank（走 createWebViewWith 开新 pane），不算本 pane 的导航；
+        // targetFrame == nil 是 target=_blank（走 createWebViewWith 开新标签），不算本标签的导航；
         // 错误页自身的模拟加载也会回调到这里，跳过
         if navigationAction.targetFrame?.isMainFrame == true,
            let url = navigationAction.request.url, url.scheme != "about" {
-            if url == pendingErrorPageURL {
-                pendingErrorPageURL = nil
+            if url == tab.pendingErrorPageURL {
+                tab.pendingErrorPageURL = nil
             } else {
-                lastRequestedURL = url
-                showingErrorPage = false
+                tab.lastRequestedURL = url
+                tab.showingErrorPage = false
             }
         }
         decisionHandler(.allow)
@@ -377,31 +620,32 @@ extension BrowserPaneView: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        showError(error)
+        if let tab = tab(for: webView) { showError(error, in: tab) }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        showError(error)
+        if let tab = tab(for: webView) { showError(error, in: tab) }
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard let tab = tab(for: webView) else { return }
         // WebContent 进程崩溃：首次自动重载；10s 内再崩就停下来提示，避免"崩溃→重载→再崩"死循环
         let now = Date()
-        if let last = lastProcessTerminationAt, now.timeIntervalSince(last) < 10 {
+        if let last = tab.lastProcessTerminationAt, now.timeIntervalSince(last) < 10 {
             showError(NSError(domain: "QuickTerm.Browser", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "页面进程反复崩溃，已停止自动重载。按 Cmd+R 重试。"]))
+                NSLocalizedDescriptionKey: "页面进程反复崩溃，已停止自动重载。按 Cmd+R 重试。"]), in: tab)
             return
         }
-        lastProcessTerminationAt = now
-        reload()
+        tab.lastProcessTerminationAt = now
+        if tab.showingErrorPage, let url = tab.lastRequestedURL { load(url, in: tab) } else { tab.webView.reload() }
     }
 
-    private func showError(_ error: Error) {
+    private func showError(_ error: Error, in tab: Tab) {
         let ns = error as NSError
         // 取消 / 被下载策略接管 / 帧加载中断都不是错误
         if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return }
         if ns.domain == "WebKitErrorDomain" && (ns.code == 102 || ns.code == 204) { return }
-        let failing = (ns.userInfo[NSURLErrorFailingURLErrorKey] as? URL) ?? lastRequestedURL
+        let failing = (ns.userInfo[NSURLErrorFailingURLErrorKey] as? URL) ?? tab.lastRequestedURL
         let url = failing?.absoluteString ?? ""
         let html = """
         <html><head><meta name="color-scheme" content="dark light"><style>
@@ -412,12 +656,12 @@ extension BrowserPaneView: WKNavigationDelegate {
         """
         // 以失败的网址"模拟响应"展示错误页：webView.url 保持为它（地址栏 / 存档 / Cmd+R 不变成 about:blank），
         // 且进历史（后退能回到上一页）；loadHTMLString(baseURL:) 不建历史条目
-        showingErrorPage = true
+        tab.showingErrorPage = true
         if let failing {
-            pendingErrorPageURL = failing
-            webView.loadSimulatedRequest(URLRequest(url: failing), responseHTML: html)
+            tab.pendingErrorPageURL = failing
+            tab.webView.loadSimulatedRequest(URLRequest(url: failing), responseHTML: html)
         } else {
-            webView.loadHTMLString(html, baseURL: nil)
+            tab.webView.loadHTMLString(html, baseURL: nil)
         }
     }
 
@@ -450,7 +694,7 @@ extension BrowserPaneView: WKDownloadDelegate {
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {}
 }
 
-// MARK: - UI 代理（JS 对话框 / 新窗口 / 文件选择）
+// MARK: - UI 代理（JS 对话框 / 新窗口 → 新标签 / 文件选择）
 
 extension BrowserPaneView: WKUIDelegate {
     /// JS 对话框宿主：本 pane 的窗口，否则主窗口；都没有（pane 未挂载且 app 不在前台）时同步 runModal——
@@ -494,14 +738,27 @@ extension BrowserPaneView: WKUIDelegate {
         present(alert) { completionHandler($0 == .alertFirstButtonReturn ? field.stringValue : nil) }
     }
 
-    /// target=_blank / window.open → 新的浏览器 pane
+    /// target=_blank / window.open → 同 pane 新标签。必须用 WebKit 给的 configuration 创建并返回该 webView：
+    /// 页面拿到真实的 window 对象（window.opener / postMessage 可用，弹窗登录能回传）
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        // window.open('') / 空 URL（页面稍后再赋 location 的模式）不开空白 pane；返回 nil 即"弹窗被拦截"
-        if let url = navigationAction.request.url, url.scheme != "about", !url.absoluteString.isEmpty {
-            controller?.openBrowserPane(url: url, from: self)
+        let popup = BrowserWebView(frame: .zero, configuration: configuration)
+        // 来源是当前标签才前台打开；后台标签（定时 window.open 等）的弹窗在后台开，不打断用户输入
+        addTab(url: nil, activate: tab(for: webView) === activeTab, webView: popup)
+        return popup
+    }
+
+    /// 页面自己调用 window.close() → 关掉那个标签；最后一个标签 → 请求控制器关 pane。
+    /// pane 在非活动工作区（未挂窗口、controller 为 nil）时先记下，挂回窗口再补发（WebKit 只回调一次）
+    func webViewDidClose(_ webView: WKWebView) {
+        guard let tab = tab(for: webView) else { return }
+        if tabs.count > 1 {
+            closeTab(tab)
+        } else if let controller {
+            controller.requestClosePane(self)
+        } else {
+            pendingCloseRequest = true
         }
-        return nil
     }
 
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
@@ -516,6 +773,63 @@ extension BrowserPaneView: WKUIDelegate {
             completionHandler(panel.runModal() == .OK ? panel.urls : nil)
         }
     }
+}
+
+/// 标签条上的一个标签：标题 + 关闭按钮（当前标签高亮）
+final class BrowserTabItemView: NSView {
+    var onSelect: (() -> Void)?
+    var onClose: (() -> Void)?
+    private let label = NSTextField(labelWithString: "")
+    private let closeButton = NSButton()
+    private let active: Bool
+
+    init(title: String, active: Bool, foreground: NSColor, background: NSColor) {
+        self.active = active
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 5
+        layer?.backgroundColor = active ? foreground.withAlphaComponent(0.16).cgColor : NSColor.clear.cgColor
+        translatesAutoresizingMaskIntoConstraints = false
+        label.stringValue = title
+        label.font = .systemFont(ofSize: 11, weight: active ? .semibold : .regular)
+        label.textColor = active ? foreground : foreground.withAlphaComponent(0.6)
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        closeButton.bezelStyle = .accessoryBarAction
+        closeButton.isBordered = false
+        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "关闭标签")
+        closeButton.contentTintColor = foreground.withAlphaComponent(0.7)
+        closeButton.controlSize = .mini
+        closeButton.target = self
+        closeButton.action = #selector(closeTapped)
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.isHidden = !active
+        addSubview(label)
+        addSubview(closeButton)
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 20),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            closeButton.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 4),
+            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            closeButton.widthAnchor.constraint(equalToConstant: 14),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func mouseDown(with event: NSEvent) {
+        onSelect?()
+    }
+
+    /// 中键点击关闭（浏览器习惯）
+    override func otherMouseDown(with event: NSEvent) {
+        if event.buttonNumber == 2 { onClose?() } else { super.otherMouseDown(with: event) }
+    }
+
+    @objc private func closeTapped() { onClose?() }
 }
 
 /// 地址栏：成为 first responder 时回报给 pane——随后接管的字段编辑器是 pane 的后代，

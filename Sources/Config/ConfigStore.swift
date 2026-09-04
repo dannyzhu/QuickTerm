@@ -23,6 +23,7 @@ enum ConfigStore {
     # browser-search = "https://www.google.com/search?q=%s"   # 地址栏输入非网址时的搜索模板（%s = 关键词）
     # browser-user-agent = "safari"   # 伪装成 Safari（Google 登录页拒绝嵌入式浏览器）；"webkit" = 不伪装；或填自定义 UA
     # browser-inspectable = false     # 浏览器 pane 的 Web Inspector（右键"检查元素"）
+    # browser-tab-bar = "auto"        # 标签条：auto = 只有一个标签时隐藏；always = 始终显示
 
     [keybinds]
     # 动作 = "modifier+key"；"none" 解绑。动作清单见 Cmd+K 速查表。
@@ -118,6 +119,7 @@ enum ConfigStore {
         var browserSearch: String = "https://www.google.com/search?q=%s"
         var browserUserAgent: String = "safari"
         var browserInspectable: Bool = false
+        var browserTabBar: String = "auto"
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
         var ghosttyPassthrough: String = ""
@@ -197,6 +199,7 @@ enum ConfigStore {
                 if key == "browser-search", !value.isEmpty { settings.browserSearch = value }
                 if key == "browser-user-agent", !value.isEmpty { settings.browserUserAgent = value }
                 if key == "browser-inspectable" { settings.browserInspectable = (value.lowercased() == "true") }
+                if key == "browser-tab-bar", !value.isEmpty { settings.browserTabBar = value }
             case "keybinds":
                 guard let action = WMAction(rawValue: key) else { continue }
                 if value.lowercased() == "none" {

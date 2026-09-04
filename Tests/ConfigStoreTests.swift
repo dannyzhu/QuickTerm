@@ -130,6 +130,8 @@ extension ConfigStoreTests {
         XCTAssertTrue(b.browserInspectable)
         XCTAssertEqual(ConfigStore.parse("").browserUserAgent, "safari", "默认伪装 Safari")
         XCTAssertFalse(ConfigStore.parse("").browserInspectable)
+        XCTAssertEqual(ConfigStore.parse("").browserTabBar, "auto")
+        XCTAssertEqual(ConfigStore.parse("browser-tab-bar = always").browserTabBar, "always")
     }
 
     /// 已有配置文件补全缺失键：注释+默认值插在第一个 section 前；幂等；完整文件不动；活跃设置不被覆盖
@@ -164,7 +166,7 @@ extension ConfigStoreTests {
         for k in ["theme", "workspaces", "pane-padding", "visible-columns", "pane-opacity",
                   "active-opacity", "bar-opacity", "divider-opacity", "pane-gap", "inactive-blur",
                   "file-manager-command", "browser-home", "browser-search", "browser-user-agent",
-                  "browser-inspectable"] {
+                  "browser-inspectable", "browser-tab-bar"] {
             XCTAssertTrue(keys.contains(k), "模板缺少 \(k)")
         }
         for k in ["new-terminal", "cursor-style", "动作"] {

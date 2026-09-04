@@ -25,6 +25,8 @@ class BaseTerminalController: NSWindowController {
     func paneMayReclaimFocus(_ pane: PaneView) -> Bool { true }
     /// 打开一个浏览器 pane（target=_blank / window.open 也走这里）
     func openBrowserPane(url: URL, from: PaneView?) {}
+    /// pane 自己请求关闭（页面 window.close() 关掉最后一个标签）
+    func requestClosePane(_ pane: PaneView) {}
     func toggleBackgroundOpacity() {}
     func promptTabTitle() {}
     @objc func changeTabTitle(_ sender: Any?) {}

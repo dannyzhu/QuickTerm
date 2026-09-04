@@ -720,6 +720,15 @@ extension WorkspaceTests {
         XCTAssertTrue(c.paneList.contains { $0 === b })
         XCTAssertTrue(c.focusedPane === b, "布局切换后焦点仍在浏览器 pane")
 
+        // 多标签时 Cmd+W 关当前标签而不是 pane；最后一个标签才关 pane
+        b.newTab()
+        XCTAssertEqual(b.tabs.count, 2)
+        c.perform(.closePane)
+        XCTAssertEqual(b.tabs.count, 1, "Cmd+W 关掉的是标签")
+        XCTAssertTrue(c.paneList.contains { $0 === b }, "pane 还在")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertTrue(c.window?.firstResponder === b.webView, "关标签后键盘焦点必须落在幸存标签的页面上")
+
         // 关闭：不弹进程确认，焦点回终端
         c.closePane(b, confirmIfNeeded: true, animated: false)
         XCTAssertFalse(c.paneList.contains { $0 === b })

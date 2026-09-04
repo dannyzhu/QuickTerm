@@ -362,7 +362,8 @@ final class MainWindowController: BaseTerminalController {
             .first { $0.action == .newTerminal }?.combo ?? "Cmd+Return"
         fileManagerCommand = settings.fileManagerCommand
         BrowserPaneView.settings = .init(home: settings.browserHome, search: settings.browserSearch,
-                                         userAgent: settings.browserUserAgent, inspectable: settings.browserInspectable)
+                                         userAgent: settings.browserUserAgent, inspectable: settings.browserInspectable,
+                                         tabBar: settings.browserTabBar)
         for case let browser as BrowserPaneView in allPanes { browser.applySettings() }   // UA / Inspector 热重载
         model.setWorkspaceCount(settings.workspaces)
         if let n = settings.visibleColumns { setVisibleColumns(n, persist: false) }
@@ -522,9 +523,17 @@ final class MainWindowController: BaseTerminalController {
         case .webZoomIn: browserPane?.zoom(by: 1.1)
         case .webZoomOut: browserPane?.zoom(by: 1 / 1.1)
         case .webZoomReset: browserPane?.resetZoom()
+        case .webNewTab: browserPane?.newTab()
+        case .webNextTab: browserPane?.selectTab(offset: 1)
+        case .webPrevTab: browserPane?.selectTab(offset: -1)
 
         case .closePane:
-            if let focused = focusedPane { closePane(focused) }
+            // 浏览器 pane 多标签时 Cmd+W 关当前标签，最后一个标签才关 pane（Chrome 语义）
+            if let browser = browserPane, browser.tabs.count > 1 {
+                browser.closeActiveTab()
+            } else if let focused = focusedPane {
+                closePane(focused)
+            }
 
         case .focusLeft: moveFocus(.left)
         case .focusRight: moveFocus(.right)
@@ -1096,6 +1105,10 @@ final class MainWindowController: BaseTerminalController {
         let pane = BrowserPaneView(url: url)
         applyBrowserTheme(pane)
         insertNewPane(pane, anchor: from)
+    }
+
+    override func requestClosePane(_ pane: PaneView) {
+        closePane(pane, confirmIfNeeded: false)
     }
 
     private func applyBrowserTheme(_ pane: BrowserPaneView) {
