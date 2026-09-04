@@ -135,7 +135,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 
 ### 4.1 快速创建终端
 
-- `Cmd+Return`：scrolling = 焦点列**右侧插入新列**；dwindle = 按规则分裂（宽>高向右，否则向下）。**继承焦点 pane 的 cwd**。
+- `Cmd+Return`：scrolling = 焦点列**右侧插入新列**；dwindle = 按规则分裂（宽>高向右，否则向下——几何取自 SplitTree 在内容区尺寸内的空间布局，不依赖视图 frame）。**继承焦点 pane 的 cwd**。dwindle 新分裂只做局部动效：原 pane 从占满收缩到 ratio、新 pane 渐显（0.28s），树视图不再整树重建（叶子按 surface id 定身份，弹入动画仅 pane 首次出现时播放）。
 - 新 pane 弹入动画：0.87 缩放淡入，0.2s easeOut；新 pane 初始 `focused = false`，由 first responder 回调驱动（避免双激活边框）。
 - `Cmd+S`：Scratchpad（§4.4）。主菜单亦可新建。
 

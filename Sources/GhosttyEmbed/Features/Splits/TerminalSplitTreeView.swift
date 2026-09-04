@@ -28,62 +28,146 @@ enum TerminalSplitOperation {
 struct TerminalSplitTreeView: View {
     let tree: SplitTree<Ghostty.SurfaceView>
     let action: (TerminalSplitOperation) -> Void
+    /// QuickTerm：刚分裂出的新 pane（其所在的新分裂节点播放局部收缩/渐显动效）
+    var appearingPane: UUID? = nil
 
     var body: some View {
         if let node = tree.zoomed ?? tree.root {
             TerminalSplitSubtreeView(
                 node: node,
                 isRoot: node == tree.root,
-                action: action)
-            // This is necessary because we can't rely on SwiftUI's implicit
-            // structural identity to detect changes to this view. Due to
-            // the tree structure of splits it could result in bad behaviors.
-            // See: https://github.com/ghostty-org/ghostty/issues/7546
-            .id(node.structuralIdentity)
+                action: action,
+                appearingPane: appearingPane)
+            // QuickTerm：不再对整棵树做 .id(structuralIdentity)——那会让任何结构变化重建
+            // 全部 pane（全应用闪屏、每个 pane 重播弹入、FR 视图脱离窗口）。上游 issue 7546
+            // 担心的"同一位置换了 surface 却复用视图"由叶子的 .id(surface.id) 解决，
+            // 结构变化只重建受影响的子树。
         }
     }
 }
 
 private struct TerminalSplitSubtreeView: View {
-    @EnvironmentObject var ghostty: Ghostty.App
-    // QuickTerm：1pt 分隔细线按 divider-opacity 半透明（原为全不透明的深色线）
-    @EnvironmentObject var theme: ThemeManager
-
     let node: SplitTree<Ghostty.SurfaceView>.Node
     var isRoot: Bool = false
     let action: (TerminalSplitOperation) -> Void
+    /// QuickTerm：刚分裂出的新 pane id（传给分裂分支视图决定是否播放进场动效）
+    var appearingPane: UUID? = nil
 
     var body: some View {
         switch node {
         case .leaf(let leafView):
             TerminalSplitLeaf(surfaceView: leafView, isSplit: !isRoot, action: action)
+                .id(leafView.id)   // 同一位置换了 surface 时重建视图（见上游 issue 7546）
 
-        case .split(let split):
+        case .split:
+            // 分裂分支放在独立视图里：叶子原位变成分裂时它是全新 SwiftUI 身份，
+            // 进场动效的 State(initialValue:) 才会生效（放在本视图上会沿用叶子时期的旧状态）
+            SplitBranchView(node: node, action: action, appearingPane: appearingPane)
+        }
+    }
+}
+
+/// QuickTerm：分裂节点渲染 + 新分裂的局部进场动效。
+/// 动效：原 pane 从占满收缩到 ratio（真实几何，随槽位缩小），新 pane 内容按**最终尺寸**布局、
+/// 随槽位扩大被"揭开"并渐显（不经历中间宽度 → 新 shell 不会以 1 列 PTY 启动）。
+/// `animating` 在首次创建时锁存，之后模型清除 appearingPane 不会打断在途动画。
+private struct SplitBranchView: View {
+    @EnvironmentObject var ghostty: Ghostty.App
+    // 1pt 分隔细线按 divider-opacity 半透明
+    @EnvironmentObject var theme: ThemeManager
+
+    let node: SplitTree<Ghostty.SurfaceView>.Node
+    let action: (TerminalSplitOperation) -> Void
+    let appearingPane: UUID?
+
+    @State private var animating: Bool       // 锁存：本节点是否播放进场动效
+    @State private var progress: CGFloat     // 0 = 原 pane 占满、新 pane 不可见；1 = 到位
+    @State private var settled: Bool         // 动画结束：解除新 pane 的尺寸钉住
+
+    init(node: SplitTree<Ghostty.SurfaceView>.Node,
+         action: @escaping (TerminalSplitOperation) -> Void,
+         appearingPane: UUID?) {
+        self.node = node
+        self.action = action
+        self.appearingPane = appearingPane
+        let anim = Self.isAppearingSplit(node, appearingPane)
+        _animating = State(initialValue: anim)
+        _progress = State(initialValue: anim ? 0 : 1)
+        _settled = State(initialValue: !anim)
+    }
+
+    private static func isAppearingSplit(_ node: SplitTree<Ghostty.SurfaceView>.Node, _ id: UUID?) -> Bool {
+        guard let id, case .split(let split) = node, case .leaf(let v) = split.right else { return false }
+        return v.id == id
+    }
+
+    var body: some View {
+        if case .split(let split) = node {
             let splitViewDirection: SplitViewDirection = switch split.direction {
             case .horizontal: .horizontal
             case .vertical: .vertical
             }
-
-            SplitView(
-                splitViewDirection,
-                .init(get: {
-                    CGFloat(split.ratio)
-                }, set: {
-                    action(.resize(.init(node: node, ratio: $0)))
-                }),
-                dividerColor: ghostty.config.splitDividerColor.opacity(theme.effectiveDividerOpacity),
-                resizeIncrements: .init(width: 1, height: 1),
-                left: {
-                    TerminalSplitSubtreeView(node: split.left, action: action)
-                },
-                right: {
-                    TerminalSplitSubtreeView(node: split.right, action: action)
-                },
-                onEqualize: {
-                    guard let surface = node.leftmostLeaf().surface else { return }
-                    ghostty.splitEqualize(surface: surface)
+            GeometryReader { geo in
+                SplitView(
+                    splitViewDirection,
+                    .init(get: {
+                        let ratio = CGFloat(split.ratio)
+                        // 动效期：从"原 pane 占满"(1) 收缩到 ratio
+                        return animating ? ratio * progress + (1 - progress) : ratio
+                    }, set: {
+                        action(.resize(.init(node: node, ratio: $0)))
+                    }),
+                    dividerColor: ghostty.config.splitDividerColor.opacity(theme.effectiveDividerOpacity),
+                    resizeIncrements: .init(width: 1, height: 1),
+                    left: {
+                        TerminalSplitSubtreeView(node: split.left, action: action, appearingPane: appearingPane)
+                    },
+                    right: {
+                        // 动效期把新 pane 钉在最终尺寸（左上对齐、按槽位裁剪）= 揭开效果；结束后解除钉住。
+                        // 修饰链保持同型（frame(nil) = 不约束），避免切换时重建子视图。
+                        let pin = animating && !settled
+                        let final = finalRightSize(total: geo.size, split: split)
+                        TerminalSplitSubtreeView(node: split.right, action: action, appearingPane: appearingPane)
+                            .frame(width: pin ? final.width : nil, height: pin ? final.height : nil,
+                                   alignment: .topLeading)
+                            // min+max 同给：frame 无条件采用槽位提议尺寸，clipped 才裁到槽位、
+                            // topLeading 才生效（只给 max 时子视图大于提议会撑开并居中溢出）
+                            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
+                                   alignment: .topLeading)
+                            .clipped()
+                            .opacity(animating ? progress : 1)
+                    },
+                    onEqualize: {
+                        guard let surface = node.leftmostLeaf().surface else { return }
+                        ghostty.splitEqualize(surface: surface)
+                    }
+                )
+            }
+            .onAppear {
+                guard animating, progress < 1 else { return }
+                DispatchQueue.main.async {
+                    withAnimation(.easeOut(duration: 0.28), completionCriteria: .logicallyComplete) {
+                        progress = 1
+                    } completion: {
+                        settled = true
+                    }
                 }
-            )
+            }
+        }
+    }
+
+    /// 新 pane（右/下孩子）的最终尺寸——与 SplitView.rightRect 同算法（可视线宽 1、增量 1）
+    private func finalRightSize(total: CGSize, split: SplitTree<Ghostty.SurfaceView>.Node.Split) -> CGSize {
+        let ratio = CGFloat(split.ratio)
+        switch split.direction {
+        case .horizontal:
+            var lw = total.width * ratio - 0.5
+            lw -= lw.truncatingRemainder(dividingBy: 1)
+            return CGSize(width: max(total.width - (lw + 0.5), 1), height: total.height)
+        case .vertical:
+            var lh = total.height * ratio - 0.5
+            lh -= lh.truncatingRemainder(dividingBy: 1)
+            return CGSize(width: total.width, height: max(total.height - (lh + 0.5), 1))
         }
     }
 }

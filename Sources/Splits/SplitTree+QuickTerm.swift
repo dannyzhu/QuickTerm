@@ -5,8 +5,13 @@ import AppKit
 
 extension SplitTree {
     /// Omarchy dwindle（force_split=2）语义：焦点 pane 宽 > 高 → 新 pane 分裂到右侧，
-    /// 否则分裂到下方。
-    func dwindleDirection(for view: ViewType) -> NewDirection {
+    /// 否则分裂到下方。几何优先取自树在 bounds 内的空间布局（按 ratio 计算），
+    /// 不依赖视图 frame——重挂载期间 frame 可能过期或为零，会选错方向。
+    func dwindleDirection(for view: ViewType, in bounds: CGSize? = nil) -> NewDirection {
+        if let bounds, bounds.width > 0, bounds.height > 0, let root,
+           let slot = root.spatial(within: bounds).slots.first(where: { $0.node == .leaf(view: view) }) {
+            return slot.bounds.width > slot.bounds.height ? .right : .down
+        }
         let f = view.frame
         return f.width > f.height ? .right : .down
     }

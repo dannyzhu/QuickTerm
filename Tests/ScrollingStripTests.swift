@@ -175,6 +175,20 @@ final class ScrollingStripTests: XCTestCase {
                        "转换列宽遵循当前每屏列数（原来固定 0.49）")
     }
 
+    /// dwindle 分裂方向由树的空间几何决定：宽 > 高 → 右，否则 → 下（不依赖视图 frame）
+    func testDwindleDirectionFollowsSpatialAspect() throws {
+        let a = try pane(), b = try pane()
+        let bounds = CGSize(width: 1000, height: 600)
+        var tree = SplitTree(view: a)
+        XCTAssertEqual(tree.dwindleDirection(for: a, in: bounds), .right, "整屏宽 > 高 → 右侧")
+        tree = try tree.inserting(view: b, at: a, direction: .right)      // a 占左半 500×600
+        XCTAssertEqual(tree.dwindleDirection(for: a, in: bounds), .down, "左半列高 > 宽 → 下方")
+        XCTAssertEqual(tree.dwindleDirection(for: b, in: bounds), .down)
+        let c = try pane()
+        tree = try tree.inserting(view: c, at: b, direction: .down)      // b 占右上 500×300
+        XCTAssertEqual(tree.dwindleDirection(for: b, in: bounds), .right, "右上 500×300 宽 > 高 → 右侧")
+    }
+
     func testCodableRoundTrip() throws {
         let a = try pane(), b = try pane()
         let strip = ScrollingStrip(pane: a).insertingColumnRight(of: a, pane: b)

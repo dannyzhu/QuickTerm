@@ -17,6 +17,7 @@ final class MainWindowController: BaseTerminalController {
     private var keyMonitor: Any?
     private var mouseMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
+    private var lastSplitAnimationAt: Date?
     private var scrollMonitor: Any?
     private var resizeTarget: Ghostty.SurfaceView?
     private var floatingMoveIndex: Int?
@@ -391,6 +392,7 @@ final class MainWindowController: BaseTerminalController {
     // MARK: WM 动作（spec §5.1 + §4.2-bis；按活动布局分派）
 
     func perform(_ action: WMAction, precise: Bool = false) {
+        if action != .newTerminal { model.appearingPane = nil }  // 非插入类变更不重播进场动效
         switch action {
         case .newTerminal:
             let pane = newSurface(inheritingFrom: focusedSurface)
@@ -405,8 +407,18 @@ final class MainWindowController: BaseTerminalController {
                 } else if let focused = focusedSurface,
                           let t = try? tree.inserting(
                             view: pane, at: focused,
-                            direction: tree.dwindleDirection(for: focused)) {
+                            direction: tree.dwindleDirection(for: focused, in: dwindleLayoutSize)) {
+                    // 局部动效（TerminalSplitTreeView 读 appearingPane）：原 pane 从占满收缩到
+                    // ratio、新 pane 渐显；不整树重建。连按（<0.35s）第二次不播——父级在途动画
+                    // 会因子树换身份被丢弃而跳变。动画结束后清标记。
+                    let now = Date()
+                    let animate = lastSplitAnimationAt.map { now.timeIntervalSince($0) > 0.35 } ?? true
+                    model.appearingPane = animate ? pane.id : nil
+                    if animate { lastSplitAnimationAt = now }
                     model.layout = .dwindle(t)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                        if self?.model.appearingPane == pane.id { self?.model.appearingPane = nil }
+                    }
                 }
             }
             Ghostty.moveFocus(to: pane, from: focusedSurface)
@@ -551,7 +563,7 @@ final class MainWindowController: BaseTerminalController {
                 } else if let anchor = tree.root?.leaves().first,
                           let t = try? tree.inserting(
                             view: fp.pane, at: anchor,
-                            direction: tree.dwindleDirection(for: anchor)) {
+                            direction: tree.dwindleDirection(for: anchor, in: dwindleLayoutSize)) {
                     model.layout = .dwindle(t)
                 }
             }
@@ -564,6 +576,13 @@ final class MainWindowController: BaseTerminalController {
             model.floating.append(FloatingPane(pane: focused, rect: rect).clamped())
             Ghostty.moveFocus(to: focused)
         }
+    }
+
+    /// dwindle 布局区尺寸（contentView 去掉顶部状态条；决定分裂方向的宽高比）
+    private var dwindleLayoutSize: CGSize? {
+        guard let content = window?.contentView else { return nil }
+        let barH: CGFloat = model.barVisible ? StatusBarView.height : 0
+        return CGSize(width: content.bounds.width, height: content.bounds.height - barH)
     }
 
     /// hover 遮挡判定（SurfaceView mouseEntered/mouseMoved 回调；spec v7 修订）：
@@ -781,6 +800,7 @@ final class MainWindowController: BaseTerminalController {
     // MARK: 工作区（spec §5.2）
 
     func switchWorkspace(_ index: Int) {
+        model.appearingPane = nil
         guard index != model.activeIndex else { return }
         model.switchTo(index)  // 值语义切换：瞬时、无动画（忠实 Omarchy）
         if let focused = focusedSurface {
@@ -816,7 +836,7 @@ final class MainWindowController: BaseTerminalController {
             } else if let anchor = tree.root?.leaves().first,
                       let t = try? tree.inserting(
                         view: focused, at: anchor,
-                        direction: tree.dwindleDirection(for: anchor)) {
+                        direction: tree.dwindleDirection(for: anchor, in: dwindleLayoutSize)) {
                 newTarget = .dwindle(t)
             } else {
                 return

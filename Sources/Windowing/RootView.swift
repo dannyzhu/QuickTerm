@@ -95,6 +95,8 @@ final class WorkspaceModel: ObservableObject {
 
     /// 新建终端的当前绑定（空工作区提示用；控制器在键位表构建后写入）
     @Published var newTerminalCombo: String = "Cmd+Return"
+    /// dwindle 刚分裂出的新 pane（局部动效：原 pane 收缩到 ratio、新 pane 渐显；动画结束后清空）
+    @Published var appearingPane: UUID?
 
     // 每屏可见列数（菜单显示用镜像）
     @Published var visibleColumnsDisplay: Int =
@@ -156,7 +158,7 @@ struct RootView: View {
             ZStack {
                 switch model.layout {
                 case .dwindle(let tree):
-                    TerminalSplitTreeView(tree: tree, action: action)
+                    TerminalSplitTreeView(tree: tree, action: action, appearingPane: model.appearingPane)
                         .padding(theme.gapsEnabled ? 5 : 0)
                 case .scrolling(let strip):
                     ScrollingStripView(

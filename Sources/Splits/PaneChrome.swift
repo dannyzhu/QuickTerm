@@ -11,7 +11,16 @@ struct PaneChrome: ViewModifier {
     /// 而非壁纸，HUD 材质糊上去近乎实心；跳过后与平铺 pane 同为 0.92 透明
     var floating: Bool = false
     @EnvironmentObject var theme: ThemeManager
-    @State private var appeared = false
+    @State private var appeared: Bool
+
+    /// 已播过弹入的 surface：视图因布局变化重挂载时不再重播（否则整屏一起"闪"）
+    private static var popped = Set<UUID>()
+
+    init(surfaceView: Ghostty.SurfaceView, floating: Bool = false) {
+        self.surfaceView = surfaceView
+        self.floating = floating
+        _appeared = State(initialValue: Self.popped.contains(surfaceView.id))
+    }
 
     func body(content: Content) -> some View {
         content
@@ -31,6 +40,8 @@ struct PaneChrome: ViewModifier {
             .scaleEffect(appeared ? 1 : 0.87)
             .opacity(appeared ? 1 : 0)
             .onAppear {
+                guard !appeared else { return }
+                Self.popped.insert(surfaceView.id)
                 withAnimation(.easeOut(duration: 0.2)) { appeared = true }
             }
     }
