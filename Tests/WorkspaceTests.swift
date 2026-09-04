@@ -432,8 +432,8 @@ extension WorkspaceTests {
         c.model.switchTo(c.model.layouts.count - 1)
         defer { c.model.switchTo(home) }
         XCTAssertTrue(c.model.layout.isEmpty)
-        let gap = c.themeManager.paneGap
-        XCTAssertEqual(gap, 5, "默认 = 原 scrolling 每边留白")
+        let gap = c.themeManager.paneGap   // 测试宿主读真实配置：不假设具体值（默认 5 由 ConfigStoreTests 覆盖）
+        XCTAssertGreaterThan(gap, 0)
         func spawn() throws -> Ghostty.SurfaceView {
             let before = Set(c.paneList.map(ObjectIdentifier.init))
             c.perform(.newTerminal)
@@ -462,6 +462,167 @@ extension WorkspaceTests {
         XCTAssertEqual(right.minX - left.maxX, 2 * gap, accuracy: 0.6, "scrolling 相邻间距 \(left) \(right)")
         for p in [x, y] { c.closePane(p, confirmIfNeeded: false, animated: false) }
         c.model.layout = .empty
+    }
+
+    /// file-manager 动作：新 pane 以指定程序启动并获得焦点（用 vim 代替 yazi：接受目录参数且常驻）
+    @MainActor
+    func testFileManagerActionOpensFocusedPane() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty)
+        let prevCmd = c.fileManagerCommand
+        defer { c.fileManagerCommand = prevCmd }
+        c.fileManagerCommand = "/usr/bin/vim"
+        c.perform(.fileManager)
+        XCTAssertEqual(c.paneList.count, 1)
+        let pane = try XCTUnwrap(c.paneList.first)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertTrue(c.window?.firstResponder === pane, "文件管理器 pane 应获焦点")
+        XCTAssertTrue(c.paneList.contains(pane), "程序常驻，pane 不应自行关闭")
+        c.closePane(pane, confirmIfNeeded: true, animated: false)   // 文件管理器 pane 不弹确认，直接关
+        XCTAssertTrue(c.paneList.isEmpty, "关闭不应被进程确认拦住")
+    }
+
+    /// 程序缺失：pane 仍然打开（提示安装并进入登录 shell），不是静默失败
+    @MainActor
+    func testFileManagerMissingProgramOpensHintPane() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        let prevCmd = c.fileManagerCommand
+        defer { c.fileManagerCommand = prevCmd }
+        c.fileManagerCommand = "quickterm-no-such-file-manager-xyz"
+        c.perform(.fileManager)
+        XCTAssertEqual(c.paneList.count, 1)
+        RunLoop.main.run(until: Date().addingTimeInterval(1.2))
+        XCTAssertEqual(c.paneList.count, 1, "提示 pane 应常驻（exec 交互登录 shell）")
+        for p in c.paneList { c.closePane(p, confirmIfNeeded: false, animated: false) }
+    }
+
+    /// 文件管理器退出且目录已变：旁边开终端并关掉本 pane（新 pane 顶上、获焦点），临时 cwd 文件清理
+    @MainActor
+    func testFileManagerExitOpensTerminalAtChangedDirectory() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        let prevCmd = c.fileManagerCommand
+        defer { c.fileManagerCommand = prevCmd }
+        c.fileManagerCommand = "/usr/bin/vim"
+        c.perform(.fileManager)
+        let fm = try XCTUnwrap(c.paneList.first)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        let cwdFile = NSTemporaryDirectory() + "quickterm-test-cwd-" + UUID().uuidString
+        try "/usr\n".write(toFile: cwdFile, atomically: true, encoding: .utf8)
+        c.registerFileManagerSession(fm, .init(startDirectory: "/tmp", cwdFile: cwdFile))
+        NotificationCenter.default.post(name: Ghostty.Notification.ghosttyCloseSurface, object: fm,
+                                        userInfo: ["process_alive": true])
+        RunLoop.main.run(until: Date().addingTimeInterval(0.7))   // 关闭动效到点
+        XCTAssertEqual(c.paneList.count, 1, "旧 pane 关闭、新终端顶上")
+        let replacement = try XCTUnwrap(c.paneList.first)
+        XCTAssertFalse(replacement === fm)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cwdFile), "临时 cwd 文件已清理")
+        XCTAssertTrue(c.window?.firstResponder === replacement, "焦点在新终端")
+        c.closePane(replacement, confirmIfNeeded: false, animated: false)
+    }
+
+    /// 可执行的假文件管理器脚本（忽略参数），body 为脚本正文
+    private func fakeFileManager(_ body: String) throws -> (dir: String, path: String) {
+        let dir = NSTemporaryDirectory() + "quickterm-fake-fm-" + UUID().uuidString
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = dir + "/yazi"
+        try ("#!/bin/sh\n" + body + "\n").write(toFile: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+        return (dir, path)
+    }
+
+    /// 真实退出路径：引擎对带 command 的 surface 不自行 close，只发 SHOW_CHILD_EXITED；
+    /// 程序正常退出（运行时长 > 250ms）pane 就该自动关闭，而不是显示 "Process exited. Press any key"
+    @MainActor
+    func testFileManagerProcessExitAutoClosesPane() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        let prevCmd = c.fileManagerCommand
+        defer { c.fileManagerCommand = prevCmd }
+        let fake = try fakeFileManager("sleep 0.5")   // 正常运行后退出、不写 cwd 文件
+        defer { try? FileManager.default.removeItem(atPath: fake.dir) }
+        c.fileManagerCommand = fake.path
+        c.perform(.fileManager)
+        XCTAssertEqual(c.paneList.count, 1)
+        RunLoop.main.run(until: Date().addingTimeInterval(2.5))
+        XCTAssertTrue(c.paneList.isEmpty, "子进程退出后 pane 应自动关闭")
+    }
+
+    /// 启动即失败（≤250ms 退出，如 yazi 配置坏了）：不抑制引擎的诊断，pane 保留等待按键
+    @MainActor
+    func testFileManagerAbnormalFastExitKeepsPaneForDiagnostics() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        let prevCmd = c.fileManagerCommand
+        defer { c.fileManagerCommand = prevCmd }
+        c.fileManagerCommand = "/usr/bin/false"
+        c.perform(.fileManager)
+        RunLoop.main.run(until: Date().addingTimeInterval(1.5))
+        XCTAssertEqual(c.paneList.count, 1, "异常退出的 pane 应保留（引擎显示 failed to launch）")
+        for p in c.paneList { c.closePane(p, confirmIfNeeded: false, animated: false) }
+    }
+
+    /// 真实 cd-here 路径：假 yazi 把 --cwd-file 写成别的目录后退出 → 原位开终端并聚焦它
+    /// （scrolling 下左侧已有 pane A：焦点必须落在新终端而不是 A）
+    @MainActor
+    func testFileManagerRealExitOpensTerminalAtWrittenDirectoryAndFocusesIt() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        let prevCmd = c.fileManagerCommand
+        defer { c.fileManagerCommand = prevCmd }
+        // 假 yazi：正常运行一会儿，把 --cwd-file=<path> 里的 path 写成 /usr 然后退出
+        let fake = try fakeFileManager("sleep 0.4\nprintf '/usr\\n' > \"${1#--cwd-file=}\"")
+        defer { try? FileManager.default.removeItem(atPath: fake.dir) }
+        c.fileManagerCommand = fake.path
+        c.perform(.newTerminal)                  // 左侧已有 pane A
+        let a = try XCTUnwrap(c.paneList.first)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        c.perform(.fileManager)
+        let fm = try XCTUnwrap(c.paneList.first { $0 !== a })
+        RunLoop.main.run(until: Date().addingTimeInterval(3.0))
+        XCTAssertEqual(c.paneList.count, 2, "文件管理器 pane 已关、新终端顶上")
+        XCTAssertFalse(c.paneList.contains(fm))
+        let replacement = try XCTUnwrap(c.paneList.first { $0 !== a })
+        XCTAssertTrue(c.window?.firstResponder === replacement, "焦点在新终端而不是左邻 A")
+        XCTAssertEqual(replacement.pwd, "/usr", "新终端目录 = yazi 写的目录")
+        for p in c.paneList { c.closePane(p, confirmIfNeeded: false, animated: false) }
+    }
+
+    /// 退出但目录未变（或 Q 不写文件）：只关 pane
+    @MainActor
+    func testFileManagerExitWithoutDirectoryChangeJustCloses() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        let prevCmd = c.fileManagerCommand
+        defer { c.fileManagerCommand = prevCmd }
+        c.fileManagerCommand = "/usr/bin/vim"
+        c.perform(.fileManager)
+        let fm = try XCTUnwrap(c.paneList.first)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        let cwdFile = NSTemporaryDirectory() + "quickterm-test-cwd-" + UUID().uuidString
+        try "/tmp\n".write(toFile: cwdFile, atomically: true, encoding: .utf8)
+        c.registerFileManagerSession(fm, .init(startDirectory: "/tmp", cwdFile: cwdFile))
+        NotificationCenter.default.post(name: Ghostty.Notification.ghosttyCloseSurface, object: fm,
+                                        userInfo: ["process_alive": false])
+        RunLoop.main.run(until: Date().addingTimeInterval(0.7))
+        XCTAssertTrue(c.paneList.isEmpty, "目录未变：只关 pane")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cwdFile))
     }
 
     /// 新建 pane 后焦点必须落在新 pane（dwindle：原 pane 在 leaf→split 重挂时会"夺回"焦点，需让位）

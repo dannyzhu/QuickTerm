@@ -116,6 +116,10 @@ extension ConfigStoreTests {
         XCTAssertEqual(ConfigStore.parse("dwindle-gap = 4").paneGap, 4, "旧键 dwindle-gap 作为别名")
         XCTAssertEqual(ConfigStore.parse("dwindle-gap = 4\npane-gap = 7").paneGap, 7, "新键优先")
         XCTAssertEqual(ConfigStore.parse("pane-gap = 7\ndwindle-gap = 4").paneGap, 7, "新键优先（与顺序无关）")
+        XCTAssertEqual(ConfigStore.parse("").fileManagerCommand, "yazi", "文件管理器默认 yazi")
+        XCTAssertEqual(ConfigStore.parse("file-manager-command = \"lf\"").fileManagerCommand, "lf")
+        XCTAssertEqual(ConfigStore.parse("file-manager-command = /opt/homebrew/bin/yazi").fileManagerCommand, "/opt/homebrew/bin/yazi")
+        XCTAssertEqual(ConfigStore.parse("file-manager-command = \"\"").fileManagerCommand, "yazi", "空值不覆盖默认")
     }
 
     /// 已有配置文件补全缺失键：注释+默认值插在第一个 section 前；幂等；完整文件不动；活跃设置不被覆盖
@@ -148,7 +152,8 @@ extension ConfigStoreTests {
         XCTAssertFalse(ConfigStore.ensureTemplateKeys(at: url))
         let keys = Set(ConfigStore.templateKeyLines.map(\.key))
         for k in ["theme", "workspaces", "pane-padding", "visible-columns", "pane-opacity",
-                  "active-opacity", "bar-opacity", "divider-opacity", "pane-gap", "inactive-blur"] {
+                  "active-opacity", "bar-opacity", "divider-opacity", "pane-gap", "inactive-blur",
+                  "file-manager-command"] {
             XCTAssertTrue(keys.contains(k), "模板缺少 \(k)")
         }
         for k in ["new-terminal", "cursor-style", "动作"] {

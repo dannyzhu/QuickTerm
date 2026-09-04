@@ -3,6 +3,7 @@ import Foundation
 /// WM 级动作全集（spec §5.1）。速查表与 config `[keybinds]`（M4）都以此为动作清单。
 enum WMAction: String, CaseIterable {
     case newTerminal = "new-terminal"
+    case fileManager = "file-manager"
     case closePane = "close-pane"
     case focusLeft = "focus-left", focusRight = "focus-right"
     case focusUp = "focus-up", focusDown = "focus-down"
@@ -64,6 +65,7 @@ enum WMAction: String, CaseIterable {
     var help: String {
         switch self {
         case .newTerminal: "新建终端（scrolling 右插新列 / dwindle 分裂，继承当前目录）"
+        case .fileManager: "文件管理器（新 pane 运行 yazi，继承当前目录；退出时目录已变则原位开终端）"
         case .closePane: "关闭焦点 pane"
         case .focusLeft: "焦点左移"
         case .focusRight: "焦点右移"

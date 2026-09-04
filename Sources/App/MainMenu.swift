@@ -20,6 +20,7 @@ enum MainMenu {
         let shellItem = main.addItem(withTitle: "Shell", action: nil, keyEquivalent: "")
         let shellMenu = NSMenu(title: "Shell")
         shellMenu.addItem(wm(.newTerminal, title: "新建终端", key: "\r", delegate: delegate))
+        shellMenu.addItem(wm(.fileManager, title: "文件管理器", key: "b", modifiers: [.command, .shift], delegate: delegate))
         shellMenu.addItem(wm(.closePane, title: "关闭 Pane", key: "w", delegate: delegate))
         main.setSubmenu(shellMenu, for: shellItem)
 

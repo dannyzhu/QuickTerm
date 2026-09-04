@@ -9,6 +9,7 @@ final class KeybindingMapTests: XCTestCase {
         // spec §5.1 逐条（键名, 修饰键, 期望动作）
         let table: [(String, NSEvent.ModifierFlags, WMAction)] = [
             ("return", .command, .newTerminal),
+            ("b", [.command, .shift], .fileManager),
             ("w", .command, .closePane),
             ("left", .command, .focusLeft), ("right", .command, .focusRight),
             ("up", .command, .focusUp), ("down", .command, .focusDown),

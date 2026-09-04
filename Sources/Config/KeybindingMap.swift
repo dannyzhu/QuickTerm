@@ -51,6 +51,7 @@ struct KeybindingMap {
 
     static let defaults: [KeyCombo: WMAction] = [
         KeyCombo(key: "return", .command): .newTerminal,
+        KeyCombo(key: "b", [.command, .shift]): .fileManager,   // Omarchy Super+Shift+F；Cmd+F 已是 toggle-zoom
         KeyCombo(key: "w", .command): .closePane,
         KeyCombo(key: "left", .command): .focusLeft,
         KeyCombo(key: "right", .command): .focusRight,

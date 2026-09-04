@@ -124,6 +124,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `bar-opacity` | 0.75 | 顶栏背景 |
 | `divider-opacity` | 0.2 | dwindle 分隔细线（1pt）的不透明度（1 = 实线，0 = 隐藏） |
 | `pane-gap` | 5 | 每 pane 每边留白 pt，scrolling / dwindle 一致（相邻间距 = 2×gap；dwindle 分隔线不占空间）。旧键 `dwindle-gap` 仍可读作别名 |
+| `file-manager-command` | yazi | `file-manager` 动作运行的程序（名字按 PATH 与常见 Homebrew/cargo 目录查找，或绝对路径；`lf`、`ranger` 亦可）。安装：`brew install yazi` |
 | `inactive-blur` | 2.5 | `> 0` 时非激活的平铺 pane 背后垫磨砂（模糊的是壁纸，文字不受影响；浮动 pane 不垫；目前数值只作开关） |
 
 `Cmd+Backspace` 一键全部关掉（pane 与顶栏变不透明）；`Cmd+Shift+Backspace` 开关 gaps。
@@ -146,6 +147,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `Cmd+L` | `toggle-layout` | scrolling ⇄ dwindle |
 | `Cmd+T` | `toggle-float` | 浮动 ⇄ 平铺 |
 | `Cmd+S` | `scratchpad` | Scratchpad 终端 |
+| `Cmd+Shift+B` | `file-manager` | 文件管理器（[yazi](https://github.com/sxyazi/yazi)）在新 pane 里以焦点 pane 的目录启动；在别的目录退出则原位开终端 |
 | `Cmd+1…5` | `goto-workspace-N` | 切换工作区（`workspaces > 5` 时补 `Cmd+6…9,0`） |
 | `Cmd+Shift+1…5` | `move-to-workspace-N` | 把 pane 移到工作区并跟随 |
 | `Cmd+Shift+Space` | `toggle-bar` | 顶栏显示/隐藏 |
@@ -176,11 +178,13 @@ macOS 菜单栏的 Shell / Pane 菜单只列了少数动作的固定默认快捷
 # bar-opacity = 0.75        # 0–1
 # divider-opacity = 0.2     # 0–1，dwindle 分隔细线
 # pane-gap = 5              # 0–20 pt，每 pane 每边留白（scrolling / dwindle 一致）
+# file-manager-command = "yazi"   # file-manager 动作（Cmd+Shift+B）运行的程序
 # inactive-blur = 2.5       # > 0 开启非激活磨砂
 
 [keybinds]                  # 动作 = "修饰键+键"；"none" 解绑。动作 id 见 Cmd+K
 # new-terminal = "cmd+return"
 # toggle-float = "cmd+shift+t"
+# file-manager = "cmd+shift+b"
 
 [ghostty]                   # 任意 Ghostty 选项，原样透传，最高优先级
 # cursor-style = block

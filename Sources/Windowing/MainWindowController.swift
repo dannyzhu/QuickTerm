@@ -24,6 +24,10 @@ final class MainWindowController: BaseTerminalController {
     var closeAnimationEnabled: Bool = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     /// 淡出中的 pane 及其预先算好的焦点接班人（关闭开始时树还完整，接班关系才算得出）
     private var pendingCloses: [ObjectIdentifier: PendingClose] = [:]
+    /// 文件管理器程序（config `file-manager-command`，默认 yazi）
+    var fileManagerCommand = FileManagerLaunch.defaultProgram
+    /// 运行中的文件管理器 pane → 会话（退出时读 cwd 文件决定是否原位开终端；关闭不弹进程确认）
+    private var fileManagerSessions: [ObjectIdentifier: FileManagerLaunch.Session] = [:]
     private struct PendingClose {
         let view: Ghostty.SurfaceView
         let successor: Ghostty.SurfaceView?
@@ -193,6 +197,10 @@ final class MainWindowController: BaseTerminalController {
         NotificationCenter.default.addObserver(
             self, selector: #selector(ghosttyDidCloseSurface(_:)),
             name: Ghostty.Notification.ghosttyCloseSurface, object: nil)
+        // 文件管理器 pane 子进程退出（引擎不会自行 close）→ 原位开终端 / 关 pane
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(ghosttyChildExited(_:)),
+            name: Ghostty.Notification.ghosttyChildExited, object: nil)
         // dwindle 分隔条双击 → 引擎回发 didEqualizeSplits → 全树等分
         NotificationCenter.default.addObserver(
             self, selector: #selector(ghosttyDidEqualizeSplits(_:)),
@@ -305,6 +313,7 @@ final class MainWindowController: BaseTerminalController {
         // 空工作区提示用当前实际绑定
         model.newTerminalCombo = keybindings.displayBindings()
             .first { $0.action == .newTerminal }?.combo ?? "Cmd+Return"
+        fileManagerCommand = settings.fileManagerCommand
         model.setWorkspaceCount(settings.workspaces)
         if let n = settings.visibleColumns { setVisibleColumns(n, persist: false) }
         themeManager.updateFromConfig(
@@ -432,36 +441,26 @@ final class MainWindowController: BaseTerminalController {
 
     func perform(_ action: WMAction, precise: Bool = false) {
         flushPendingCloses()   // 布局操作先在真实布局上做（淡出中的 pane 立即移除）
-        if action != .newTerminal { model.appearingPane = nil }  // 非插入类变更不重播进场动效
+        if action != .newTerminal, action != .fileManager { model.appearingPane = nil }  // 非插入类变更不重播进场动效
         switch action {
         case .newTerminal:
-            let pane = newSurface(inheritingFrom: focusedSurface)
-            switch model.layout {
-            case .scrolling(let strip):
-                // 焦点列右侧插入新列（截图 3 语义），宽度按"每屏可见列数"
-                model.layout = .scrolling(strip.insertingColumnRight(
-                    of: focusedSurface, pane: pane, widthFactor: columnFactor))
-            case .dwindle(let tree):
-                if tree.isEmpty {
-                    model.layout = .dwindle(SplitTree(view: pane))
-                } else if let focused = focusedSurface,
-                          let t = try? tree.inserting(
-                            view: pane, at: focused,
-                            direction: tree.dwindleDirection(for: focused, in: dwindleLayoutSize)) {
-                    // 局部动效（TerminalSplitTreeView 读 appearingPane）：原 pane 从占满收缩到
-                    // ratio、新 pane 渐显；不整树重建。连按（<0.35s）第二次不播——父级在途动画
-                    // 会因子树换身份被丢弃而跳变。动画结束后清标记。
-                    let now = Date()
-                    let animate = lastSplitAnimationAt.map { now.timeIntervalSince($0) > 0.35 } ?? true
-                    model.appearingPane = animate ? pane.id : nil
-                    if animate { lastSplitAnimationAt = now }
-                    model.layout = .dwindle(t)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                        if self?.model.appearingPane == pane.id { self?.model.appearingPane = nil }
-                    }
-                }
+            insertNewPane(newSurface(inheritingFrom: focusedSurface))
+
+        case .fileManager:
+            // Omarchy Super+Shift+F：新 pane 里以焦点 pane 的目录启动 TUI 文件管理器
+            let start = focusedSurface?.pwd ?? FileManager.default.homeDirectoryForCurrentUser.path
+            let cwdFile = NSTemporaryDirectory() + "quickterm-fm-" + UUID().uuidString
+            let launch = FileManagerLaunch.plan(program: fileManagerCommand, startDirectory: start, cwdFile: cwdFile)
+            let pane = newSurface(workingDirectory: start, command: launch.command, environment: launch.environment)
+            pane.pwd = start               // yazi 不发 OSC 7：种入起始目录，Cmd+Return / 再开文件管理器都能继承
+            pane.closesOnChildExit = true  // 退出即关（引擎对带 command 的 surface 不自行 close）
+            // 只有真的跑起文件管理器才登记会话（免关闭确认 + 退出读目录）；
+            // 程序缺失开出的提示 pane 是普通交互 shell，按普通 pane 处理
+            if insertNewPane(pane), launch.found {
+                fileManagerSessions[ObjectIdentifier(pane)] = launch.session
+            } else {
+                FileManagerLaunch.cleanup(launch.session)
             }
-            requestFocus(to: pane, from: focusedSurface)
 
         case .closePane:
             if let focused = focusedSurface { closePane(focused) }
@@ -795,6 +794,7 @@ final class MainWindowController: BaseTerminalController {
             model.activePanel = nil
             switch MenuEntry(rawValue: index) {
             case .newTerminal: perform(.newTerminal)
+            case .fileManager: perform(.fileManager)
             case .themes: perform(.themePicker)
             case .backgrounds: perform(.backgroundMenu)
             case .toggleBar: perform(.toggleBar)
@@ -960,15 +960,104 @@ final class MainWindowController: BaseTerminalController {
 
     /// 新建 surface；继承来源 pane 的当前目录（spec §4.1）
     func newSurface(inheritingFrom source: Ghostty.SurfaceView?) -> Ghostty.SurfaceView {
+        newSurface(workingDirectory: source?.pwd)
+    }
+
+    /// 指定目录（与可选命令 / 额外环境）新建 surface。带 command 时引擎强制 wait-after-command，
+    /// 调用方需自行处理退出（见 SurfaceView.closesOnChildExit）
+    func newSurface(workingDirectory: String?, command: String? = nil,
+                    environment: [String: String] = [:]) -> Ghostty.SurfaceView {
         var config = Ghostty.SurfaceConfiguration()
-        config.workingDirectory = source?.pwd
+        config.workingDirectory = workingDirectory
+        config.command = command
+        config.environmentVariables = environment
         return Ghostty.SurfaceView(ghostty.app!, baseConfig: config)
     }
 
+    /// 把新 pane 插进活动布局（scrolling：锚点右侧新列；dwindle：按锚点空间几何分裂 + 局部进场动效）并聚焦。
+    /// 锚点默认为焦点 pane；文件管理器退出"原位开终端"时锚点是即将关闭的那个 pane。
+    /// 返回是否真的插进了布局（dwindle 树非空却找不到可用锚点时为 false，调用方不得再引用该 pane）
+    @discardableResult
+    private func insertNewPane(_ pane: Ghostty.SurfaceView, anchor: Ghostty.SurfaceView? = nil) -> Bool {
+        let anchor = anchor ?? focusedSurface ?? paneList.first
+        switch model.layout {
+        case .scrolling(let strip):
+            // 焦点列右侧插入新列（截图 3 语义），宽度按"每屏可见列数"
+            model.layout = .scrolling(strip.insertingColumnRight(
+                of: anchor, pane: pane, widthFactor: columnFactor))
+        case .dwindle(let tree):
+            // 锚点不在树里（如焦点是浮动 pane）→ 退回树的首叶
+            let target = anchor.flatMap { tree.root?.node(view: $0) != nil ? $0 : nil } ?? tree.root?.leaves().first
+            if tree.isEmpty {
+                model.layout = .dwindle(SplitTree(view: pane))
+            } else if let focused = target,
+                      let t = try? tree.inserting(
+                        view: pane, at: focused,
+                        direction: tree.dwindleDirection(for: focused, in: dwindleLayoutSize)) {
+                // 局部动效（TerminalSplitTreeView 读 appearingPane）：原 pane 从占满收缩到
+                // ratio、新 pane 渐显；不整树重建。连按（<0.35s）第二次不播——父级在途动画
+                // 会因子树换身份被丢弃而跳变。动画结束后清标记。
+                let now = Date()
+                let animate = lastSplitAnimationAt.map { now.timeIntervalSince($0) > 0.35 } ?? true
+                model.appearingPane = animate ? pane.id : nil
+                if animate { lastSplitAnimationAt = now }
+                model.layout = .dwindle(t)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    if self?.model.appearingPane == pane.id { self?.model.appearingPane = nil }
+                }
+            } else {
+                return false
+            }
+        }
+        requestFocus(to: pane, from: anchor)
+        return true
+    }
+
+    /// 文件管理器 pane 结束（子进程退出或引擎 close）：目录有变 → 先在旁边开终端并作为焦点接班人，
+    /// 再关本 pane（关闭动效把空间交给新终端）。未登记的 pane 返回 false。
+    private func finishFileManager(_ view: Ghostty.SurfaceView) -> Bool {
+        guard let session = fileManagerSessions.removeValue(forKey: ObjectIdentifier(view)) else { return false }
+        var replacement: Ghostty.SurfaceView?
+        if paneList.contains(view), let dir = FileManagerLaunch.nextDirectory(session: session) {
+            let pane = newSurface(workingDirectory: dir)
+            pane.pwd = dir
+            if insertNewPane(pane, anchor: view) { replacement = pane }
+        }
+        FileManagerLaunch.cleanup(session)
+        closePane(view, confirmIfNeeded: false, successor: replacement)
+        return true
+    }
+
+    @objc private func ghosttyChildExited(_ notification: Foundation.Notification) {
+        guard let view = notification.object as? Ghostty.SurfaceView else { return }
+        guard paneList.contains(view) else {
+            // 非活动工作区里退出（切走后 pkill / 崩溃）：直接从所在工作区移除（本通知已在引擎回调栈外）
+            removeFromAnyWorkspace(view)   // 内部清会话与临时文件
+            return
+        }
+        if !finishFileManager(view) {
+            closePane(view, confirmIfNeeded: false)
+        }
+    }
+
+    /// 测试/扩展用：登记一个文件管理器会话（退出时按会话决定是否原位开终端）
+    func registerFileManagerSession(_ view: Ghostty.SurfaceView, _ session: FileManagerLaunch.Session) {
+        fileManagerSessions[ObjectIdentifier(view)] = session
+    }
+
+    private func forgetFileManagerSession(_ view: Ghostty.SurfaceView) {
+        if let session = fileManagerSessions.removeValue(forKey: ObjectIdentifier(view)) {
+            FileManagerLaunch.cleanup(session)
+        }
+    }
+
     /// 关闭一个 pane（scrolling 空列删除；dwindle 兄弟回收）；全部工作区皆空才关窗。
-    func closePane(_ view: Ghostty.SurfaceView, confirmIfNeeded: Bool = true, animated: Bool = true) {
+    /// successor：调用方指定的焦点接班人（如"原位开终端"的新 pane），nil 则按布局规则算
+    func closePane(_ view: Ghostty.SurfaceView, confirmIfNeeded: Bool = true, animated: Bool = true,
+                   successor: Ghostty.SurfaceView? = nil) {
         guard paneList.contains(view), !model.closingPanes.contains(view.id) else { return }
-        if confirmIfNeeded, view.needsConfirmQuit {
+        // 文件管理器 pane 只是个查看器：有子进程也不弹"仍有进程在运行"的确认
+        if confirmIfNeeded, view.needsConfirmQuit, fileManagerSessions[ObjectIdentifier(view)] == nil {
             // 确认对话框异步弹出：本方法可能正处在引擎 close_surface 回调栈内（键绑定 → Zig keyCallback），
             // 模态嵌套 run loop 期间若子进程退出会二次回调并同步释放 surface，返回后引擎栈仍触碰它（UAF）。
             // 先让引擎栈退出，再进模态；弹出时 pane 可能已被别的路径关掉，重新校验。
@@ -981,21 +1070,21 @@ final class MainWindowController: BaseTerminalController {
                 alert.addButton(withTitle: "取消")
                 guard alert.runModal() == .alertFirstButtonReturn else { return }
                 guard self.paneList.contains(view), !self.model.closingPanes.contains(view.id) else { return }
-                self.beginClose(view, animated: animated)
+                self.beginClose(view, animated: animated, successor: successor)
             }
             return
         }
-        beginClose(view, animated: animated)
+        beginClose(view, animated: animated, successor: successor)
     }
 
     /// 关闭分两段（与创建动效对称）：先把焦点交给接班人并标记淡出——视图层播放收拢/渐隐——
     /// 动效到点后 finishClose 才真正移除并释放 surface。窗口不可见或动效关闭时直接移除。
-    private func beginClose(_ view: Ghostty.SurfaceView, animated: Bool) {
+    private func beginClose(_ view: Ghostty.SurfaceView, animated: Bool, successor explicit: Ghostty.SurfaceView? = nil) {
         guard animated, closeAnimationEnabled, window?.isVisible == true else {
-            removePane(view)
+            removePane(view, successor: explicit)
             return
         }
-        let successor = closeSuccessor(of: view)
+        let successor = explicit ?? closeSuccessor(of: view)
         // 焦点交接是异步的：同一轮里前一个关闭刚把焦点意图指向本 pane（pendingFocusTarget）
         // 时 focused 还是 false，也要把焦点接着往下传，别让意图落在一个淡出中的 pane 上
         if view.focused || pendingFocusTarget === view, let next = successor ?? firstLivePane(excluding: view) {
@@ -1053,9 +1142,9 @@ final class MainWindowController: BaseTerminalController {
     }
 
     /// 同步移除（无动效路径）
-    private func removePane(_ view: Ghostty.SurfaceView) {
+    private func removePane(_ view: Ghostty.SurfaceView, successor explicit: Ghostty.SurfaceView? = nil) {
         let wasFocused = view.focused
-        let successor = closeSuccessor(of: view)   // 删除前算：删完兄弟关系就没了
+        let successor = explicit ?? closeSuccessor(of: view)   // 删除前算：删完兄弟关系就没了
         removeFromActiveLayout(view)  // 放弃引用 → SurfaceView.deinit 释放 surface
         // 最后一个 pane 关闭后窗口保留（RootView 显示"新建终端"提示），不退出程序；
         // 退出只由 Cmd+Q / 菜单触发（AppDelegate.applicationShouldTerminate 决定是否确认）
@@ -1067,6 +1156,7 @@ final class MainWindowController: BaseTerminalController {
 
     /// 在任一工作区里找到并移除（活动工作区用 removeFromActiveLayout，那条路径还管焦点）
     private func removeFromAnyWorkspace(_ view: Ghostty.SurfaceView) {
+        forgetFileManagerSession(view)
         for i in model.layouts.indices {
             if let idx = model.floatings[i].firstIndex(where: { $0.pane === view }) {
                 model.floatings[i].remove(at: idx)
@@ -1088,6 +1178,7 @@ final class MainWindowController: BaseTerminalController {
     }
 
     private func removeFromActiveLayout(_ view: Ghostty.SurfaceView) {
+        forgetFileManagerSession(view)
         if let idx = model.floating.firstIndex(where: { $0.pane === view }) {
             model.floating.remove(at: idx)
             floatingMoveIndex = nil   // 索引已失效（拖动途中被到点移除时不能再用）
@@ -1122,6 +1213,7 @@ final class MainWindowController: BaseTerminalController {
             return
         }
         let processAlive = (notification.userInfo?["process_alive"] as? Bool) ?? false
+        if finishFileManager(view) { return }   // 文件管理器：按键触发的引擎 close 路径同样处理
         closePane(view, confirmIfNeeded: processAlive)
     }
 

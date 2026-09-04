@@ -692,10 +692,10 @@ extension Ghostty {
             case GHOSTTY_ACTION_SIZE_LIMIT:
                 fallthrough
             case GHOSTTY_ACTION_QUIT_TIMER:
-                fallthrough
-            case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
                 Ghostty.logger.info("known but unimplemented action action=\(action.tag.rawValue)")
                 return false
+            case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
+                return showChildExited(app, target: target, v: action.action.child_exited)
             case GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD:
                 return copyTitleToClipboard(app, target: target)
             default:
@@ -1660,6 +1660,32 @@ extension Ghostty {
 
             default:
                 assertionFailure()
+                return false
+            }
+        }
+
+        /// QuickTerm：子进程退出。引擎对带 `command` 的 surface 强制 wait-after-command（apprt/embedded.zig），
+        /// 退出后只发本动作、不会自行 close。标记 closesOnChildExit 的 pane（文件管理器）由控制器接管：
+        /// 返回 true 抑制 "Process exited. Press any key" 提示，并在引擎回调栈之外通知控制器
+        /// （读 cwd 文件、原位开终端、关 pane）。
+        /// 启动即失败（运行时长 ≤ 引擎 abnormal-command-exit-runtime 250ms）时返回 false：让引擎打印
+        /// "failed to launch…/Press any key" 诊断并等待按键，否则 yazi 配置坏了只会看到 pane 一闪而没；
+        /// 按键后走 close_surface → 控制器同样收尾。
+        private static func showChildExited(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            v: ghostty_surface_message_childexited_s) -> Bool {
+            switch target.tag {
+            case GHOSTTY_TARGET_SURFACE:
+                guard let surface = target.target.surface,
+                      let surfaceView = self.surfaceView(from: surface),
+                      surfaceView.closesOnChildExit,
+                      v.timetime_ms > 250 else { return false }
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: Notification.ghosttyChildExited, object: surfaceView)
+                }
+                return true
+            default:
                 return false
             }
         }

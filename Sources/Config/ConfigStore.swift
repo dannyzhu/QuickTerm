@@ -18,10 +18,12 @@ enum ConfigStore {
     # divider-opacity = 0.2     # dwindle 分隔细线不透明度（0–1；0 隐藏，1 实线）
     # pane-gap = 5              # 每 pane 每边留白 pt（0–20；相邻间距 = 2×gap；scrolling / dwindle 一致）
     # inactive-blur = 2.5       # 非激活 pane 磨砂背景（> 0 开启；0 关闭）
+    # file-manager-command = "yazi"   # 文件管理器程序（Cmd+Shift+B 在新 pane 里运行；名字或绝对路径，lf/ranger 亦可）
 
     [keybinds]
     # 动作 = "modifier+key"；"none" 解绑。动作清单见 Cmd+K 速查表。
     # new-terminal = "cmd+return"
+    # file-manager = "cmd+shift+b"
     # goto-workspace-1 = "cmd+1"
 
     [ghostty]
@@ -104,6 +106,8 @@ enum ConfigStore {
         var paneGap: Int = 5
         /// 非激活 pane 高斯模糊半径（0–10pt，默认 2.5；磨砂感）
         var inactiveBlur: Double = 2.5
+        /// 文件管理器程序（`file-manager` 动作在新 pane 里运行；名字按 PATH + 常见安装目录查找，或绝对路径）
+        var fileManagerCommand: String = FileManagerLaunch.defaultProgram
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
         var ghosttyPassthrough: String = ""
@@ -175,6 +179,9 @@ enum ConfigStore {
                 }
                 if key == "inactive-blur", let v = Double(value) {
                     settings.inactiveBlur = min(max(v, 0), 10)
+                }
+                if key == "file-manager-command", !value.isEmpty {
+                    settings.fileManagerCommand = value
                 }
             case "keybinds":
                 guard let action = WMAction(rawValue: key) else { continue }

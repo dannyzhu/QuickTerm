@@ -10,13 +10,14 @@ enum OverlayPanel: Equatable {
 
 /// 主菜单条目（spec §4.6 v1 清单）
 enum MenuEntry: Int, CaseIterable {
-    case newTerminal, themes, backgrounds, visibleColumns
+    case newTerminal, fileManager, themes, backgrounds, visibleColumns
     case toggleBar, toggleGaps, toggleOpacity
     case keybindings, settings, about
 
     var title: String {
         switch self {
         case .newTerminal: "新建终端"
+        case .fileManager: "文件管理器"
         case .themes: "主题…"
         case .backgrounds: "背景…"
         case .visibleColumns: "每屏列数"
@@ -32,6 +33,7 @@ enum MenuEntry: Int, CaseIterable {
     var symbol: String {
         switch self {
         case .newTerminal: "plus.rectangle"
+        case .fileManager: "folder"
         case .themes: "paintpalette"
         case .backgrounds: "photo"
         case .visibleColumns: "rectangle.split.3x1"

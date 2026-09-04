@@ -124,6 +124,7 @@ All panels are centred, Walker-style: `↑`/`↓` to move, `Return` to choose, `
 | `bar-opacity` | 0.75 | Status bar background |
 | `divider-opacity` | 0.2 | Opacity of the 1pt divider line between dwindle splits (1 = solid, 0 = hidden) |
 | `pane-gap` | 5 | Padding around each pane in pt, same in scrolling and dwindle (neighbours are 2×gap apart; the dwindle divider line takes no space). `dwindle-gap` is still read as a legacy alias |
+| `file-manager-command` | yazi | Program run by the `file-manager` action (a name looked up in PATH plus the usual Homebrew/cargo dirs, or an absolute path; `lf` and `ranger` work too). Install with `brew install yazi` |
 | `inactive-blur` | 2.5 | `> 0` puts a frosted-glass backdrop behind inactive tiled panes (blurs the wallpaper, not the text; floating panes are exempt; the numeric value is currently on/off only) |
 
 `Cmd+Backspace` turns all of it off at once (panes and bar go opaque); `Cmd+Shift+Backspace` toggles the gaps.
@@ -146,6 +147,7 @@ Every action below can be rebound in `config.toml` (see [Configuration](#configu
 | `Cmd+L` | `toggle-layout` | Scrolling ⇄ dwindle |
 | `Cmd+T` | `toggle-float` | Float ⇄ tile |
 | `Cmd+S` | `scratchpad` | Scratchpad terminal |
+| `Cmd+Shift+B` | `file-manager` | File manager ([yazi](https://github.com/sxyazi/yazi)) in a new pane, starting in the focused pane's directory; quitting in another directory opens a terminal there |
 | `Cmd+1…5` | `goto-workspace-N` | Switch workspace (`Cmd+6…9,0` when `workspaces > 5`) |
 | `Cmd+Shift+1…5` | `move-to-workspace-N` | Move pane to workspace and follow |
 | `Cmd+Shift+Space` | `toggle-bar` | Show/hide status bar |
@@ -176,11 +178,13 @@ The Shell and Pane menus in the macOS menu bar list fixed default shortcuts for 
 # bar-opacity = 0.75        # 0–1
 # divider-opacity = 0.2     # 0–1, dwindle split divider line
 # pane-gap = 5              # 0–20 pt, padding around each pane (scrolling and dwindle alike)
+# file-manager-command = "yazi"   # program for the file-manager action (Cmd+Shift+B)
 # inactive-blur = 2.5       # > 0 enables frosted inactive panes
 
 [keybinds]                  # action = "modifiers+key"; "none" unbinds. Action ids: Cmd+K
 # new-terminal = "cmd+return"
 # toggle-float = "cmd+shift+t"
+# file-manager = "cmd+shift+b"
 
 [ghostty]                   # any Ghostty option, passed through verbatim, highest priority
 # cursor-style = block

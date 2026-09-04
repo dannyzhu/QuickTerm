@@ -169,6 +169,10 @@ extension Ghostty {
             }
         }
 
+        /// QuickTerm：子进程退出即由控制器关闭（文件管理器 pane）。引擎对带 command 的 surface
+        /// 强制 wait-after-command，退出后只发 SHOW_CHILD_EXITED 动作，见 Ghostty.App.showChildExited。
+        var closesOnChildExit = false
+
         // Returns true if quit confirmation is required for this surface to
         // exit safely.
         var needsConfirmQuit: Bool {
