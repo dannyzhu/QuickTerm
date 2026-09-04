@@ -49,6 +49,49 @@ final class BrowserPaneTests: XCTestCase {
         pane.removeFromSuperview()
     }
 
+    /// 完整事件链：点击地址栏 → 输入 baidu.com → 回车 → 请求 https://baidu.com
+    @MainActor
+    func testTypingInAddressBarNavigates() throws {
+        let c = try XCTUnwrap((NSApp.delegate as? AppDelegate)?.controller)
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        let prev = BrowserPaneView.settings
+        BrowserPaneView.settings.home = "about:blank"
+        c.perform(.newBrowser)
+        let b = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView } as? BrowserPaneView)
+        defer {
+            // 显式收尾并等 SwiftUI 重挂原工作区：紧随其后的 EngineSmokeTests 同步检查视图链
+            c.closePane(b, confirmIfNeeded: false, animated: false)
+            BrowserPaneView.settings = prev
+            c.model.switchTo(home)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        let window = try XCTUnwrap(c.window)
+        let field = b.addressField
+        let center = field.convert(NSPoint(x: field.bounds.midX, y: field.bounds.midY), to: nil)
+        func mouse(_ type: NSEvent.EventType) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: center, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+        }
+        // NSCell 的鼠标跟踪会循环取 nextEvent 直到 mouseUp：先把 mouseUp 排进队列再发 mouseDown，否则卡死
+        NSApp.postEvent(mouse(.leftMouseUp), atStart: false)
+        NSApp.sendEvent(mouse(.leftMouseDown))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        XCTAssertNotNil(field.currentEditor(), "点击后地址栏应进入编辑；FR=\(String(describing: window.firstResponder))")
+        XCTAssertTrue(b.focused, "编辑地址栏时 pane 持焦")
+        field.currentEditor()?.selectAll(nil)
+        field.currentEditor()?.insertText("baidu.com")
+        let ret = NSEvent.keyEvent(with: .keyDown, location: center, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                   windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+                                   isARepeat: false, keyCode: 36)!
+        NSApp.sendEvent(ret)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        // 站点可能立即跳转（baidu.com → www.baidu.com），只断言主机
+        XCTAssertTrue(b.lastRequestedURL?.host?.hasSuffix("baidu.com") ?? false, "回车后应请求 baidu，实际 \(String(describing: b.lastRequestedURL))")
+        XCTAssertTrue(window.firstResponder === b.webView, "回车后焦点回到页面")
+    }
+
     @MainActor
     func testBrowserPaneEncodesKindAndURL() throws {
         let pane = BrowserPaneView(url: URL(string: "about:blank"))

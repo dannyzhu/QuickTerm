@@ -64,7 +64,7 @@ final class BrowserPaneView: PaneView {
     private let backButton = NSButton()
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
-    private let addressField = BrowserAddressField()
+    let addressField = BrowserAddressField()   // 测试需访问
     private let progressBar = NSProgressIndicator()
 
     /// 页面标题 / 当前 URL（状态条、存档）
@@ -323,6 +323,10 @@ extension BrowserPaneView: NSTextFieldDelegate {
     func controlTextDidBeginEditing(_ obj: Notification) { editingAddress = true }
     func controlTextDidEndEditing(_ obj: Notification) {
         editingAddress = false
+        // 回车：NSTextField 先发本通知、后发 action，这里若把文本重置成当前网址，action 读到的就是
+        // 当前网址而不是用户输入（"输入什么都回到原页面"）。只有失焦 / 取消才把文本恢复成当前网址
+        let movement = (obj.userInfo?["NSTextMovement"] as? Int).flatMap(NSTextMovement.init(rawValue:))
+        if movement == .return { return }
         addressField.stringValue = effectiveURL?.absoluteString ?? ""
     }
 
