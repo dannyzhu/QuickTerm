@@ -80,8 +80,10 @@ final class BrowserPaneTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
         XCTAssertNotNil(field.currentEditor(), "点击后地址栏应进入编辑；FR=\(String(describing: window.firstResponder))")
         XCTAssertTrue(b.focused, "编辑地址栏时 pane 持焦")
-        field.currentEditor()?.selectAll(nil)
-        field.currentEditor()?.insertText("baidu.com")
+        // 首次点击默认全选：⌘C 直接复制、直接输入即替换
+        XCTAssertEqual(field.currentEditor()?.selectedRange, NSRange(location: 0, length: field.stringValue.count),
+                       "点击地址栏应全选")
+        field.currentEditor()?.insertText("baidu.com")   // 直接输入替换全选内容
         let ret = NSEvent.keyEvent(with: .keyDown, location: center, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                    windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
                                    isARepeat: false, keyCode: 36)!

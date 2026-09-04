@@ -248,6 +248,7 @@ final class BrowserPaneView: PaneView {
     func focusAddressBar() {
         window?.makeFirstResponder(addressField)
         addressField.currentEditor()?.selectAll(nil)
+        addressField.didFocusProgrammatically()
     }
 
     /// 当前页面交给系统默认浏览器（Widevine / 通行密钥等 WebKit 嵌入做不到的场景）
@@ -521,11 +522,32 @@ extension BrowserPaneView: WKUIDelegate {
 /// pane 视为仍持有焦点（边框亮着、Cmd+W 会把焦点交给接班人）
 final class BrowserAddressField: NSTextField {
     weak var pane: BrowserPaneView?
+    /// 成为 first responder 后尚未交互：接下来的第一次 mouseDown 全选。
+    /// AppKit 在把 mouseDown 交给视图之前就先 makeFirstResponder，所以点击进入时这里先置位、
+    /// 随后 mouseDown 消费；键盘 / Cmd+Shift+L 进入的由 focusAddressBar 自己全选并清掉标记
+    private var selectAllOnFirstClick = false
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
-        if result { pane?.paneDidBecomeFirstResponder() }
+        if result {
+            pane?.paneDidBecomeFirstResponder()
+            selectAllOnFirstClick = true
+        }
         return result
+    }
+
+    /// 程序化聚焦（Cmd+Shift+L）后调用：随后的点击按普通编辑处理
+    func didFocusProgrammatically() { selectAllOnFirstClick = false }
+
+    /// 首次点击全选——⌘C 直接复制网址、直接输入即替换（Safari / Chrome 习惯）；
+    /// 已在编辑中再点击：正常定位光标 / 双击选词 / 拖选
+    override func mouseDown(with event: NSEvent) {
+        let firstClick = selectAllOnFirstClick
+        selectAllOnFirstClick = false
+        super.mouseDown(with: event)   // 安装 / 使用字段编辑器并同步跟踪到 mouseUp
+        if firstClick, let editor = currentEditor(), editor.selectedRange.length == 0 {
+            editor.selectAll(nil)      // 纯点击 → 全选；拖选 → 保留拖出的选区
+        }
     }
 }
 
