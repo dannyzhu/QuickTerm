@@ -74,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 // 拖放按 UUID 反查 surface（SurfaceView+Transferable 的 find(uuid:) 依赖此协议）
 extension AppDelegate: Ghostty.Delegate {
-    func ghosttySurface(id: UUID) -> Ghostty.SurfaceView? {
+    func ghosttySurface(id: UUID) -> PaneView? {
         controller?.paneList.first { $0.id == id }
     }
 }

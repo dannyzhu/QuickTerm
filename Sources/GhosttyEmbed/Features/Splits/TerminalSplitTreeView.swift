@@ -7,18 +7,20 @@ import SwiftUI
 enum TerminalSplitOperation {
     case resize(Resize)
     case drop(Drop)
+    /// QuickTerm：分隔条双击 → 全树等分（控制器 perform(.equalize)）
+    case equalize
 
     struct Resize {
-        let node: SplitTree<Ghostty.SurfaceView>.Node
+        let node: SplitTree<PaneView>.Node
         let ratio: Double
     }
 
     struct Drop {
         /// The surface being dragged.
-        let payload: Ghostty.SurfaceView
+        let payload: PaneView
 
         /// The surface it was dragged onto
-        let destination: Ghostty.SurfaceView
+        let destination: PaneView
 
         /// The zone it was dropped to determine how to split the destination.
         let zone: TerminalSplitDropZone
@@ -26,7 +28,7 @@ enum TerminalSplitOperation {
 }
 
 struct TerminalSplitTreeView: View {
-    let tree: SplitTree<Ghostty.SurfaceView>
+    let tree: SplitTree<PaneView>
     let action: (TerminalSplitOperation) -> Void
     /// QuickTerm：刚分裂出的新 pane（其所在的新分裂节点播放局部收缩/渐显动效）
     var appearingPane: UUID? = nil
@@ -50,7 +52,7 @@ struct TerminalSplitTreeView: View {
 }
 
 private struct TerminalSplitSubtreeView: View {
-    let node: SplitTree<Ghostty.SurfaceView>.Node
+    let node: SplitTree<PaneView>.Node
     var isRoot: Bool = false
     let action: (TerminalSplitOperation) -> Void
     /// QuickTerm：刚分裂出的新 pane id（传给分裂分支视图决定是否播放进场动效）
@@ -85,7 +87,7 @@ private struct SplitBranchView: View {
     // 1pt 分隔细线按 divider-opacity 半透明
     @EnvironmentObject var theme: ThemeManager
 
-    let node: SplitTree<Ghostty.SurfaceView>.Node
+    let node: SplitTree<PaneView>.Node
     let action: (TerminalSplitOperation) -> Void
     let appearingPane: UUID?
     let closingPanes: Set<UUID>
@@ -111,7 +113,7 @@ private struct SplitBranchView: View {
         let rightLeaf: UUID?
         let closing: Set<UUID>
 
-        init(node: SplitTree<Ghostty.SurfaceView>.Node, closing: Set<UUID>) {
+        init(node: SplitTree<PaneView>.Node, closing: Set<UUID>) {
             if case .split(let split) = node {
                 leftLeaf = { if case .leaf(let v) = split.left { return v.id } else { return nil } }()
                 rightLeaf = { if case .leaf(let v) = split.right { return v.id } else { return nil } }()
@@ -132,7 +134,7 @@ private struct SplitBranchView: View {
         func isDirectChild(_ leaf: UUID) -> Bool { leaf == leftLeaf || leaf == rightLeaf }
     }
 
-    init(node: SplitTree<Ghostty.SurfaceView>.Node,
+    init(node: SplitTree<PaneView>.Node,
          action: @escaping (TerminalSplitOperation) -> Void,
          appearingPane: UUID?,
          closingPanes: Set<UUID> = []) {
@@ -146,7 +148,7 @@ private struct SplitBranchView: View {
         _settled = State(initialValue: !anim)
     }
 
-    private static func isAppearingSplit(_ node: SplitTree<Ghostty.SurfaceView>.Node, _ id: UUID?) -> Bool {
+    private static func isAppearingSplit(_ node: SplitTree<PaneView>.Node, _ id: UUID?) -> Bool {
         guard let id, case .split(let split) = node, case .leaf(let v) = split.right else { return false }
         return v.id == id
     }
@@ -226,8 +228,7 @@ private struct SplitBranchView: View {
                             .allowsHitTesting(side == nil)
                     },
                     onEqualize: {
-                        guard let surface = node.leftmostLeaf().surface else { return }
-                        ghostty.splitEqualize(surface: surface)
+                        action(.equalize)   // QuickTerm：不再经引擎（叶子可能不是终端）
                     }
                 )
                 .onChange(of: key, initial: true) { _, key in
@@ -276,7 +277,7 @@ private struct SplitBranchView: View {
 
     /// 新 pane（右/下孩子）的最终尺寸——与 SplitView.rightRect 同算法
     /// （分隔线布局尺寸 SplitViewMetrics.splitterLayoutSize 居中于边界、增量 1）
-    private func finalRightSize(total: CGSize, split: SplitTree<Ghostty.SurfaceView>.Node.Split) -> CGSize {
+    private func finalRightSize(total: CGSize, split: SplitTree<PaneView>.Node.Split) -> CGSize {
         let ratio = CGFloat(split.ratio)
         let half = splitterLayoutSize / 2
         switch split.direction {
@@ -295,7 +296,7 @@ private struct SplitBranchView: View {
     /// （左/上取整后即其尺寸，右/下 = 总量 − 左 − 分隔线布局尺寸），
     /// 钉住时才不会比现有槽位差零点几 pt 触发一次无谓的 PTY 重排
     private func childSize(_ side: ClosingSide, total: CGSize,
-                           split: SplitTree<Ghostty.SurfaceView>.Node.Split) -> CGSize {
+                           split: SplitTree<PaneView>.Node.Split) -> CGSize {
         let ratio = CGFloat(split.ratio)
         let half = splitterLayoutSize / 2
         switch (side, split.direction) {
@@ -315,7 +316,7 @@ private struct SplitBranchView: View {
 
 private struct TerminalSplitLeaf: View {
     @EnvironmentObject var theme: ThemeManager   // QuickTerm：pane 留白（pane-gap）
-    let surfaceView: Ghostty.SurfaceView
+    let surfaceView: PaneView
     let isSplit: Bool
     let action: (TerminalSplitOperation) -> Void
     /// QuickTerm：关闭中 → 渐隐并停止响应鼠标（悬停不再夺焦点）
@@ -334,9 +335,7 @@ private struct TerminalSplitLeaf: View {
     var body: some View {
         GeometryReader { geometry in
             // QuickTerm 裁剪：InspectableSurface（inspector 分屏包装）→ 纯 SurfaceWrapper
-            Ghostty.SurfaceWrapper(
-                surfaceView: surfaceView,
-                isSplit: isSplit)
+            PaneContentView(pane: surfaceView, isSplit: isSplit)   // QuickTerm：按 pane 种类分发内容
             .background {
                 // If we're dragging ourself, we hide the entire drop zone. This makes
                 // it so that a released drop animates back to its source properly
@@ -396,7 +395,7 @@ private struct TerminalSplitLeaf: View {
     private struct SplitDropDelegate: DropDelegate {
         @Binding var dropState: DropState
         let viewSize: CGSize
-        let destinationSurface: Ghostty.SurfaceView
+        let destinationSurface: PaneView
         let action: (TerminalSplitOperation) -> Void
 
         func validateDrop(info: DropInfo) -> Bool {
@@ -429,7 +428,7 @@ private struct TerminalSplitLeaf: View {
             guard let provider = providers.first else { return false }
 
             // Capture action before the async closure
-            _ = provider.loadTransferable(type: Ghostty.SurfaceView.self) { [weak destinationSurface] result in
+            _ = provider.loadTransferable(type: PaneView.self) { [weak destinationSurface] result in
                 switch result {
                 case .success(let sourceSurface):
                     DispatchQueue.main.async {

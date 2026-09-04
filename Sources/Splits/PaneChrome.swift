@@ -4,7 +4,7 @@ import SwiftUI
 /// gaps_in 语义（每 pane 每边 pane-gap，默认 5：相邻合成 10；边缘与外圈同值合成 10——左中右等宽，
 /// scrolling / dwindle / 浮动一致）、直角、popin 87% 弹入动画。焦点态随悬停即时切换。
 struct PaneChrome: ViewModifier {
-    @ObservedObject var surfaceView: Ghostty.SurfaceView
+    @ObservedObject var surfaceView: PaneView
     /// 浮动层 pane：非激活不垫磨砂 backdrop——它身后是下层平铺 pane 内容
     /// 而非壁纸，HUD 材质糊上去近乎实心；跳过后与平铺 pane 同为 0.92 透明
     var floating: Bool = false
@@ -14,7 +14,7 @@ struct PaneChrome: ViewModifier {
     /// 已播过弹入的 surface：视图因布局变化重挂载时不再重播（否则整屏一起"闪"）
     private static var popped = Set<UUID>()
 
-    init(surfaceView: Ghostty.SurfaceView, floating: Bool = false) {
+    init(surfaceView: PaneView, floating: Bool = false) {
         self.surfaceView = surfaceView
         self.floating = floating
         _appeared = State(initialValue: Self.popped.contains(surfaceView.id))

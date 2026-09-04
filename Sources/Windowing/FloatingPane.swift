@@ -4,10 +4,29 @@ import AppKit
 /// rect 为归一化坐标（0–1，SwiftUI top-left 坐标系）——窗口缩放时按比例跟随。
 /// 数组序即 z 序（末位最顶）。
 struct FloatingPane: Codable, Identifiable {
-    var pane: Ghostty.SurfaceView
+    var pane: PaneView
     var rect: CGRect
 
     var id: UUID { pane.id }
+
+    init(pane: PaneView, rect: CGRect) {
+        self.pane = pane
+        self.rect = rect
+    }
+
+    private enum CodingKeys: String, CodingKey { case pane, rect }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        pane = try PaneView.decodePane(from: c.superDecoder(forKey: .pane))
+        rect = try c.decode(CGRect.self, forKey: .rect)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try pane.encodePane(to: c.superEncoder(forKey: .pane))
+        try c.encode(rect, forKey: .rect)
+    }
 
     /// 浮起默认几何（类 Omarchy togglefloating：固定尺寸 + 居中）：
     /// 宽 = 默认列宽 × 0.75，高 = 内容区 45%。

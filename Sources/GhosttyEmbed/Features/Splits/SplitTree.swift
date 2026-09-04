@@ -2,7 +2,7 @@ import AppKit
 import Combine
 
 /// SplitTree represents a tree of views that can be divided.
-struct SplitTree<ViewType: NSView & Codable & Identifiable> {
+struct SplitTree<ViewType: NSView & Identifiable & PaneCodable> {   // QuickTerm：叶子多态编解码（PaneCodable）
     /// The root of the tree. This can be nil to indicate the tree is empty.
     let root: Node?
 
@@ -1135,7 +1135,7 @@ extension SplitTree.Node {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
         if container.contains(.view) {
-            let view = try container.decode(ViewType.self, forKey: .view)
+            let view = try ViewType.decodePane(from: container.superDecoder(forKey: .view))   // QuickTerm：按 kind 分发
             self = .leaf(view: view)
         } else if container.contains(.split) {
             let split = try container.decode(Split.self, forKey: .split)
@@ -1155,7 +1155,7 @@ extension SplitTree.Node {
 
         switch self {
         case .leaf(let view):
-            try container.encode(view, forKey: .view)
+            try view.encodePane(to: container.superEncoder(forKey: .view))   // QuickTerm
 
         case .split(let split):
             try container.encode(split, forKey: .split)

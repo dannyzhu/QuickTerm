@@ -7,7 +7,7 @@ struct ScrollingStripView: View {
     let strip: ScrollingStrip
     let workspaceIndex: Int
     let pan: WorkspaceModel.StripPanEvent?
-    let onDrop: (Ghostty.SurfaceView, Ghostty.SurfaceView, TerminalSplitDropZone) -> Void
+    let onDrop: (PaneView, PaneView, TerminalSplitDropZone) -> Void
     /// 正在淡出的 pane（渐隐；到点后控制器移除、列条带重排）
     var closingPanes: Set<UUID> = []
 
@@ -117,8 +117,8 @@ private struct FocusedStripPaneKey: PreferenceKey {
 /// scrolling 布局的 pane 单元：SurfaceWrapper + 视觉 + 拖放目标 + ⌘拖拽源
 /// （行为对齐 dwindle 的 TerminalSplitLeaf，见 porting-notes）
 struct ScrollingPaneCell: View {
-    @ObservedObject var surfaceView: Ghostty.SurfaceView
-    let onDrop: (Ghostty.SurfaceView, Ghostty.SurfaceView, TerminalSplitDropZone) -> Void
+    @ObservedObject var surfaceView: PaneView
+    let onDrop: (PaneView, PaneView, TerminalSplitDropZone) -> Void
     /// 浮动层渲染（RootView）：透传给 PaneChrome 关掉非激活磨砂
     var floating: Bool = false
     /// 关闭中 → 渐隐并停止响应鼠标（悬停不再夺焦点）
@@ -133,7 +133,7 @@ struct ScrollingPaneCell: View {
 
     var body: some View {
         GeometryReader { geo in
-            Ghostty.SurfaceWrapper(surfaceView: surfaceView, isSplit: true)
+            PaneContentView(pane: surfaceView, isSplit: true)   // 按 pane 种类分发内容
                 .background {
                     // 浮动 pane 不是拖放目标（塞回平铺走 Cmd+T）：
                     // 不注册 delegate，避免亮出无效的落区色块
@@ -178,8 +178,8 @@ struct ScrollingPaneCell: View {
 private struct StripDropDelegate: DropDelegate {
     @Binding var zone: TerminalSplitDropZone?
     let viewSize: CGSize
-    let destination: Ghostty.SurfaceView
-    let onDrop: (Ghostty.SurfaceView, Ghostty.SurfaceView, TerminalSplitDropZone) -> Void
+    let destination: PaneView
+    let onDrop: (PaneView, PaneView, TerminalSplitDropZone) -> Void
 
     func validateDrop(info: DropInfo) -> Bool {
         info.hasItemsConforming(to: [.ghosttySurfaceId])
@@ -201,7 +201,7 @@ private struct StripDropDelegate: DropDelegate {
         let dropZone = TerminalSplitDropZone.calculate(at: info.location, in: viewSize)
         zone = nil
         guard let provider = info.itemProviders(for: [.ghosttySurfaceId]).first else { return false }
-        _ = provider.loadTransferable(type: Ghostty.SurfaceView.self) { [weak destination] result in
+        _ = provider.loadTransferable(type: PaneView.self) { [weak destination] result in
             if case .success(let source) = result {
                 DispatchQueue.main.async {
                     guard let destination, source !== destination else { return }

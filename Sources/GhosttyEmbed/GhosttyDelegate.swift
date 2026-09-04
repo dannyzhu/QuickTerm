@@ -5,6 +5,6 @@ extension Ghostty {
     /// to perform app-global operations.
     protocol Delegate {
         /// Look up a surface within the application by ID.
-        func ghosttySurface(id: UUID) -> SurfaceView?
+        func ghosttySurface(id: UUID) -> PaneView?   // QuickTerm：任意 pane 类型
     }
 }

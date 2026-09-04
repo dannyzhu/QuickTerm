@@ -5,9 +5,9 @@ extension Ghostty {
     /// A preference key that propagates the ID of the SurfaceView currently being dragged,
     /// or nil if no surface is being dragged.
     struct DraggingSurfaceKey: PreferenceKey {
-        static var defaultValue: SurfaceView.ID?
+        static var defaultValue: PaneView.ID?
 
-        static func reduce(value: inout SurfaceView.ID?, nextValue: () -> SurfaceView.ID?) {
+        static func reduce(value: inout PaneView.ID?, nextValue: () -> PaneView.ID?) {
             value = nextValue() ?? value
         }
     }
@@ -23,7 +23,7 @@ extension Ghostty {
     /// enabling parent views to react to ongoing drag operations.
     struct SurfaceDragSource: View {
         /// The surface view that will be dragged.
-        let surfaceView: SurfaceView
+        let surfaceView: PaneView
 
         /// Binding that reflects whether a drag session is currently active.
         @Binding var isDragging: Bool
@@ -43,7 +43,7 @@ extension Ghostty {
     /// An NSViewRepresentable that provides AppKit-based drag source functionality.
     /// This gives us control over the drag lifecycle, particularly detecting drag start.
     fileprivate struct SurfaceDragSourceViewRepresentable: NSViewRepresentable {
-        let surfaceView: SurfaceView
+        let surfaceView: PaneView
         @Binding var isDragging: Bool
         @Binding var isHovering: Bool
 
@@ -85,7 +85,7 @@ extension Ghostty {
 
         /// The surface view that will be dragged. Its UUID is encoded into the
         /// pasteboard for drop targets to identify which surface is being moved.
-        var surfaceView: SurfaceView?
+        var surfaceView: PaneView?
 
         /// Callback invoked when the drag state changes. Called with `true` when
         /// a drag session begins, and `false` when it ends (completed or cancelled).

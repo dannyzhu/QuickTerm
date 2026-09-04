@@ -295,12 +295,12 @@ extension WorkspaceTests {
 
     /// dwindle 三 pane 夹具：split(A, split(B, C))，焦点 C（末位空工作区，动效开）
     @MainActor
-    private func dwindleTriple(_ c: MainWindowController) throws -> (a: Ghostty.SurfaceView, b: Ghostty.SurfaceView, cc: Ghostty.SurfaceView) {
+    private func dwindleTriple(_ c: MainWindowController) throws -> (a: PaneView, b: PaneView, cc: PaneView) {
         XCTAssertTrue(c.model.layout.isEmpty, "末位工作区应为空")
         c.model.layout = .dwindle(SplitTree())
         c.closeAnimationEnabled = true
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
-        func spawn() throws -> Ghostty.SurfaceView {
+        func spawn() throws -> PaneView {
             let before = Set(c.paneList.map(ObjectIdentifier.init))
             c.perform(.newTerminal)
             RunLoop.main.run(until: Date().addingTimeInterval(0.5))
@@ -320,7 +320,7 @@ extension WorkspaceTests {
     private struct FixtureShapeError: Error {}
 
     /// 窗口坐标里的 pane 矩形
-    private func windowRect(_ v: Ghostty.SurfaceView) -> NSRect { v.convert(v.bounds, to: nil) }
+    private func windowRect(_ v: PaneView) -> NSRect { v.convert(v.bounds, to: nil) }
 
     /// 关闭的 pane 其兄弟是子树时，兄弟子树会顶到父分裂视图的位置被 SwiftUI 复用（连同锁存的关闭态）；
     /// 派生几何必须立刻回到正常——否则幸存子树的一个孩子被压成 0 宽、内容钉在旧尺寸盖住另一个
@@ -434,13 +434,13 @@ extension WorkspaceTests {
         XCTAssertTrue(c.model.layout.isEmpty)
         let gap = c.themeManager.paneGap   // 测试宿主读真实配置：不假设具体值（默认 5 由 ConfigStoreTests 覆盖）
         XCTAssertGreaterThan(gap, 0)
-        func spawn() throws -> Ghostty.SurfaceView {
+        func spawn() throws -> PaneView {
             let before = Set(c.paneList.map(ObjectIdentifier.init))
             c.perform(.newTerminal)
             RunLoop.main.run(until: Date().addingTimeInterval(0.5))
             return try XCTUnwrap(c.paneList.first { !before.contains(ObjectIdentifier($0)) })
         }
-        func rect(_ v: Ghostty.SurfaceView) -> NSRect { v.convert(v.bounds, to: nil) }
+        func rect(_ v: PaneView) -> NSRect { v.convert(v.bounds, to: nil) }
 
         // dwindle：A | B
         c.model.layout = .dwindle(SplitTree())
@@ -598,7 +598,7 @@ extension WorkspaceTests {
         XCTAssertFalse(c.paneList.contains(fm))
         let replacement = try XCTUnwrap(c.paneList.first { $0 !== a })
         XCTAssertTrue(c.window?.firstResponder === replacement, "焦点在新终端而不是左邻 A")
-        XCTAssertEqual(replacement.pwd, "/usr", "新终端目录 = yazi 写的目录")
+        XCTAssertEqual(replacement.workingDirectory, "/usr", "新终端目录 = yazi 写的目录")
         for p in c.paneList { c.closePane(p, confirmIfNeeded: false, animated: false) }
     }
 
@@ -638,9 +638,9 @@ extension WorkspaceTests {
         defer { c.setVisibleColumns(prevVisible, persist: false) }
         let f = c.columnFactor
         XCTAssertEqual(f, ScrollingStrip.factor(forVisibleColumns: 3), accuracy: 1e-9)
-        var created: [Ghostty.SurfaceView] = []
+        var created: [PaneView] = []
         defer { for p in created { c.closePane(p, confirmIfNeeded: false, animated: false) } }
-        func spawn() throws -> Ghostty.SurfaceView {
+        func spawn() throws -> PaneView {
             let before = Set(c.paneList.map(ObjectIdentifier.init))
             c.perform(.newTerminal)
             RunLoop.main.run(until: Date().addingTimeInterval(0.3))
@@ -675,10 +675,10 @@ extension WorkspaceTests {
         XCTAssertTrue(c.model.layout.isEmpty)
         c.model.layout = .dwindle(SplitTree())
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
-        var created: [Ghostty.SurfaceView] = []
+        var created: [PaneView] = []
         defer { for p in created { c.closePane(p, confirmIfNeeded: false, animated: false) } }
         func frDesc() -> String {
-            if let s = c.window?.firstResponder as? Ghostty.SurfaceView { return "Surface(\(s.id.uuidString.prefix(4)))" }
+            if let s = c.window?.firstResponder as? PaneView { return "Surface(\(s.id.uuidString.prefix(4)))" }
             return c.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
         }
         for round in 0..<3 {   // 根叶 → 分裂 → 再分裂
@@ -705,24 +705,24 @@ extension WorkspaceTests {
         XCTAssertEqual(created.count, 4)
         defer { for p in created { c.closePane(p, confirmIfNeeded: false, animated: false) } }
         let target = try XCTUnwrap(created.last)
-        Ghostty.moveFocus(to: target)
+        PaneView.moveFocus(to: target)
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
 
         for _ in 0..<2 {   // scrolling → dwindle → scrolling
             c.perform(.toggleLayout)
             // 竞态复现：SwiftUI 尚未重建层级时，另一 pane 成为 FR（模拟悬停 moveFocus 恰好落地），
             // 随后它在重建中被移出窗口——AppKit 不发 resign，focused 会残留
-            let other = try XCTUnwrap(created.first { $0 !== (c.window?.firstResponder as? Ghostty.SurfaceView) })
+            let other = try XCTUnwrap(created.first { $0 !== (c.window?.firstResponder as? PaneView) })
             _ = c.window?.makeFirstResponder(other)
             RunLoop.main.run(until: Date().addingTimeInterval(0.6))
             // 再模拟一次切换后的悬停
-            let another = try XCTUnwrap(created.first { $0 !== (c.window?.firstResponder as? Ghostty.SurfaceView) })
-            Ghostty.moveFocus(to: another)
+            let another = try XCTUnwrap(created.first { $0 !== (c.window?.firstResponder as? PaneView) })
+            PaneView.moveFocus(to: another)
             RunLoop.main.run(until: Date().addingTimeInterval(0.3))
             let focusedPanes = c.paneList.filter(\.focused)
             XCTAssertLessThanOrEqual(focusedPanes.count, 1,
                                      "\(c.model.layout.name) 布局下 \(focusedPanes.count) 个 pane 同时 focused")
-            if let fr = c.window?.firstResponder as? Ghostty.SurfaceView {
+            if let fr = c.window?.firstResponder as? PaneView {
                 XCTAssertTrue(focusedPanes.first === fr, "focused 标志应与窗口 first responder 一致")
             }
         }

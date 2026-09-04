@@ -9,10 +9,10 @@ struct ScrollingStrip: Codable {
         /// 稳定身份（SwiftUI ForEach 用）：列首 pane 关掉时整列不再重建——否则列内其余 pane 的
         /// SurfaceView 会脱离/重挂窗口（闪一帧、FR 被静默重置）。旧存档无此字段时新建。
         var id = UUID()
-        var panes: [Ghostty.SurfaceView]
+        var panes: [PaneView]
         var widthFactor: Double = ScrollingStrip.defaultWidth
 
-        init(panes: [Ghostty.SurfaceView], widthFactor: Double = ScrollingStrip.defaultWidth) {
+        init(panes: [PaneView], widthFactor: Double = ScrollingStrip.defaultWidth) {
             self.panes = panes
             self.widthFactor = widthFactor
         }
@@ -22,8 +22,19 @@ struct ScrollingStrip: Codable {
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
-            panes = try c.decode([Ghostty.SurfaceView].self, forKey: .panes)
+            var list = try c.nestedUnkeyedContainer(forKey: .panes)
+            var decoded: [PaneView] = []
+            while !list.isAtEnd { decoded.append(try PaneView.decodePane(from: list.superDecoder())) }
+            panes = decoded
             widthFactor = try c.decodeIfPresent(Double.self, forKey: .widthFactor) ?? ScrollingStrip.defaultWidth
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(id, forKey: .id)
+            var list = c.nestedUnkeyedContainer(forKey: .panes)
+            for pane in panes { try pane.encodePane(to: list.superEncoder()) }
+            try c.encode(widthFactor, forKey: .widthFactor)
         }
     }
 
@@ -55,7 +66,7 @@ struct ScrollingStrip: Codable {
 
     init() {}
 
-    init(pane: Ghostty.SurfaceView, widthFactor: Double = ScrollingStrip.defaultWidth) {
+    init(pane: PaneView, widthFactor: Double = ScrollingStrip.defaultWidth) {
         columns = [Column(panes: [pane], widthFactor: widthFactor)]
     }
 
@@ -65,7 +76,7 @@ struct ScrollingStrip: Codable {
     }
 
     var isEmpty: Bool { columns.isEmpty }
-    var paneList: [Ghostty.SurfaceView] { columns.flatMap(\.panes) }
+    var paneList: [PaneView] { columns.flatMap(\.panes) }
 
     /// 结构签名（列序/行序）：变化时视口需按焦点重新对齐——
     /// 换位/併拆不改焦点 ID 与列数，仅靠它们触发不了滚动跟随。
@@ -80,13 +91,13 @@ struct ScrollingStrip: Codable {
         return hasher.finalize()
     }
 
-    var zoomedPane: Ghostty.SurfaceView? {
+    var zoomedPane: PaneView? {
         guard let zoomedID else { return nil }
         return paneList.first { $0.id == zoomedID }
     }
 
     /// pane → (列, 行)
-    func position(of pane: Ghostty.SurfaceView) -> (col: Int, row: Int)? {
+    func position(of pane: PaneView) -> (col: Int, row: Int)? {
         for (c, column) in columns.enumerated() {
             if let r = column.panes.firstIndex(where: { $0 === pane }) {
                 return (c, r)
@@ -98,7 +109,7 @@ struct ScrollingStrip: Codable {
     // MARK: 结构操作（全部返回新值；结构变更清 zoom）
 
     /// 焦点列右侧插入新列（Cmd+Return 语义，截图 3）
-    func insertingColumnRight(of anchor: Ghostty.SurfaceView?, pane: Ghostty.SurfaceView,
+    func insertingColumnRight(of anchor: PaneView?, pane: PaneView,
                               widthFactor: Double = ScrollingStrip.defaultWidth) -> Self {
         var next = self
         next.zoomedID = nil
@@ -109,7 +120,7 @@ struct ScrollingStrip: Codable {
     }
 
     /// 关 pane：空列删除（spec：焦点左移由控制器处理）
-    func removing(_ pane: Ghostty.SurfaceView) -> Self {
+    func removing(_ pane: PaneView) -> Self {
         guard let (c, r) = position(of: pane) else { return self }
         var next = self
         next.zoomedID = nil
@@ -121,7 +132,7 @@ struct ScrollingStrip: Codable {
     }
 
     /// 方向焦点目标（左右跨列取同高度就近行；上下列内移动；不回绕）
-    func focusTarget(from pane: Ghostty.SurfaceView, direction: Direction) -> Ghostty.SurfaceView? {
+    func focusTarget(from pane: PaneView, direction: Direction) -> PaneView? {
         guard let (c, r) = position(of: pane) else { return nil }
         switch direction {
         case .left:
@@ -142,14 +153,14 @@ struct ScrollingStrip: Codable {
     }
 
     /// 线性循环（Alt+Tab / Cmd+[]）：列序×行序，回绕
-    func linearTarget(from pane: Ghostty.SurfaceView, next: Bool) -> Ghostty.SurfaceView? {
+    func linearTarget(from pane: PaneView, next: Bool) -> PaneView? {
         let all = paneList
         guard all.count > 1, let i = all.firstIndex(where: { $0 === pane }) else { return nil }
         return all[(i + (next ? 1 : all.count - 1)) % all.count]
     }
 
     /// 换位：左右 = 整列换位；上下 = 列内换位
-    func swapping(_ pane: Ghostty.SurfaceView, direction: Direction) -> Self {
+    func swapping(_ pane: PaneView, direction: Direction) -> Self {
         guard let (c, r) = position(of: pane) else { return self }
         var next = self
         next.zoomedID = nil
@@ -169,7 +180,7 @@ struct ScrollingStrip: Codable {
     }
 
     /// Cmd+J：单 pane 列 → 併入左列纵栈；多 pane 列 → 焦点 pane 拆出为右侧独立列
-    func mergingOrSplitting(_ pane: Ghostty.SurfaceView) -> Self {
+    func mergingOrSplitting(_ pane: PaneView) -> Self {
         guard let (c, r) = position(of: pane) else { return self }
         var next = self
         next.zoomedID = nil
@@ -186,7 +197,7 @@ struct ScrollingStrip: Codable {
     }
 
     /// 调列宽（Cmd+Ctrl+←/→，±5%，25%–90%）
-    func resizingWidth(of pane: Ghostty.SurfaceView, delta: Double) -> Self {
+    func resizingWidth(of pane: PaneView, delta: Double) -> Self {
         guard let (c, _) = position(of: pane) else { return self }
         var next = self
         next.columns[c].widthFactor = min(
@@ -204,15 +215,15 @@ struct ScrollingStrip: Codable {
         return next
     }
 
-    func togglingZoom(_ pane: Ghostty.SurfaceView) -> Self {
+    func togglingZoom(_ pane: PaneView) -> Self {
         var next = self
         next.zoomedID = (zoomedID == pane.id) ? nil : pane.id
         return next
     }
 
     /// 拖放（spec §4.2-bis）：左右缘 = 目标列旁插新列；上下缘 = 併入目标列栈；中心 = 交换
-    func dropping(_ payload: Ghostty.SurfaceView,
-                  on destination: Ghostty.SurfaceView,
+    func dropping(_ payload: PaneView,
+                  on destination: PaneView,
                   zone: TerminalSplitDropZone) -> Self {
         guard payload !== destination,
               let (pc, _) = position(of: payload) else { return self }
@@ -275,7 +286,7 @@ struct ScrollingStrip: Codable {
     /// - 内容总宽 ≤ 视口：整组**居中**（两侧等隙——两列 0.49 时左右间隙相等，参照 Omarchy）
     /// - 溢出：最小滚动量让锚 pane 所在列完全可见（露边行为，截图 1/2）
     /// 偏移为内容坐标向右为正；居中时可为负（负值 = 左侧留白）。
-    func targetOffset(for pane: Ghostty.SurfaceView,
+    func targetOffset(for pane: PaneView,
                       current: CGFloat, viewport: CGFloat, gap: CGFloat,
                       paneGap: CGFloat = 5) -> CGFloat {
         guard viewport > 0, let (c, _) = position(of: pane) else { return current }
@@ -300,16 +311,16 @@ struct ScrollingStrip: Codable {
 
     // MARK: 与 dwindle 互转（Cmd+L；保 pane 保序）
 
-    static func from(tree: SplitTree<Ghostty.SurfaceView>,
+    static func from(tree: SplitTree<PaneView>,
                      widthFactor: Double = ScrollingStrip.defaultWidth) -> Self {
         ScrollingStrip(columns: tree.root?.leaves().map {
             Column(panes: [$0], widthFactor: widthFactor)
         } ?? [])
     }
 
-    func toTree() -> SplitTree<Ghostty.SurfaceView> {
-        var tree = SplitTree<Ghostty.SurfaceView>()
-        var previousHead: Ghostty.SurfaceView?
+    func toTree() -> SplitTree<PaneView> {
+        var tree = SplitTree<PaneView>()
+        var previousHead: PaneView?
         for column in columns {
             guard let head = column.panes.first else { continue }
             if let anchor = previousHead {

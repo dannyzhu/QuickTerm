@@ -31,7 +31,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     /// 全部工作区的所有 pane（主题重载/按 id 反查用）
-    var allPanes: [Ghostty.SurfaceView] {
+    var allPanes: [PaneView] {
         layouts.flatMap(\.paneList)
             + floatings.flatMap { $0.map(\.pane) }
             + (scratchpadSurface.map { [$0] } ?? [])
@@ -130,7 +130,7 @@ struct RootView: View {
     let ghostty: Ghostty.App
     let stats: SystemStatsService
     let action: (TerminalSplitOperation) -> Void
-    let onScrollingDrop: (Ghostty.SurfaceView, Ghostty.SurfaceView, TerminalSplitDropZone) -> Void
+    let onScrollingDrop: (PaneView, PaneView, TerminalSplitDropZone) -> Void
     let onSelectWorkspace: (Int) -> Void
     let onPanelChoose: (Int) -> Void
 

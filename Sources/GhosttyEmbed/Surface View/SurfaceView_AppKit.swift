@@ -7,11 +7,8 @@ import GhosttyKit
 
 extension Ghostty {
     /// The NSView implementation for a terminal surface.
-    class SurfaceView: OSView, ObservableObject, Codable, Identifiable {
-        typealias ID = UUID
-
-        /// Unique ID per surface
-        let id: UUID
+    // QuickTerm：继承 PaneView（id / focused / 焦点补丁 / 存档分发都在基类）
+    class SurfaceView: PaneView, Codable {
 
         // The current title of the surface as defined by the pty. This can be
         // changed with escape codes. This is public because the callbacks go
@@ -173,6 +170,14 @@ extension Ghostty {
         /// 强制 wait-after-command，退出后只发 SHOW_CHILD_EXITED 动作，见 Ghostty.App.showChildExited。
         var closesOnChildExit = false
 
+        // MARK: - PaneView（QuickTerm）
+
+        override class var kind: PaneKind { .terminal }
+        override var paneTitle: String { title }
+        override var workingDirectory: String? { pwd }
+        override var wantsConfirmClose: Bool { needsConfirmQuit }
+        override func encodePayload(to encoder: Encoder) throws { try encode(to: encoder) }
+
         // Returns true if quit confirmation is required for this surface to
         // exit safely.
         var needsConfirmQuit: Bool {
@@ -222,9 +227,7 @@ extension Ghostty {
         var notificationIdentifiers: Set<String> = []
 
         private var markedText: NSMutableAttributedString
-        // QuickTerm：初始值 true 会让新建 pane 未获焦点就亮激活边框（双激活竞态）；
-        // 改为 false，仅由 become/resignFirstResponder 的 focusDidChange 回调驱动。
-        private(set) var focused: Bool = false
+        // QuickTerm：`focused` 在基类 PaneView（只由 focusDidChange 驱动）
         private var prevPressureStage: Int = 0
         private var appearanceObserver: NSKeyValueObservation?
 
@@ -261,7 +264,6 @@ extension Ghostty {
 
         init(_ app: ghostty_app_t, baseConfig: SurfaceConfiguration? = nil, uuid: UUID? = nil) {
             self.markedText = NSMutableAttributedString()
-            self.id = uuid ?? .init()
 
             // Our initial config always is our application wide config.
             if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
@@ -279,7 +281,7 @@ extension Ghostty {
             // Initialize with some default frame size. The important thing is that this
             // is non-zero so that our layer bounds are non-zero so that our renderer
             // can do SOMETHING.
-            super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+            super.init(id: uuid ?? .init(), frame: NSRect(x: 0, y: 0, width: 800, height: 600))
 
             // Our cache of screen data
             cachedScreenContents = .init(duration: .milliseconds(500)) { [weak self] in
@@ -454,12 +456,10 @@ extension Ghostty {
             progressReportTimer?.invalidate()
         }
 
-        func focusDidChange(_ focused: Bool) {
+        override func focusDidChange(_ focused: Bool) {
             guard let surface = self.surface else { return }
             guard self.focused != focused else { return }
-            // QuickTerm：`focused` 非 @Published；通知 SwiftUI 观察者（PaneChrome 边框）刷新
-            objectWillChange.send()
-            self.focused = focused
+            super.focusDidChange(focused)   // QuickTerm：标志 + objectWillChange 在基类
 
             // If we lost our focus then remove the mouse event suppression so
             // our mouse release event leaving the surface can properly be
@@ -826,53 +826,8 @@ extension Ghostty {
 
         // MARK: - NSView
 
-        override func becomeFirstResponder() -> Bool {
-            let result = super.becomeFirstResponder()
-            if result {
-                focusDidChange(true)
-                // QuickTerm：单焦点不变量——通知控制器清掉其他 pane 残留的 focused
-                (window?.windowController as? BaseTerminalController)?.surfaceDidBecomeFirstResponder(self)
-            }
-            return result
-        }
-
-        // QuickTerm：first responder 视图被移出窗口时，AppKit 静默重置 FR 而**不调用**
-        // resignFirstResponder（已用独立探针验证），`focused` 会残留为 true。SwiftUI 重建
-        // 层级（Cmd+L / Cmd+T / 切工作区）时必然发生。记下"脱离时正是 FR"，重新挂载后夺回，
-        // 让标志与真相重新一致。
-        private var reclaimFocusOnAttach = false
-
-        override func viewWillMove(toWindow newWindow: NSWindow?) {
-            if newWindow == nil, let window, window.firstResponder === self {
-                reclaimFocusOnAttach = true
-            }
-            super.viewWillMove(toWindow: newWindow)
-        }
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            guard reclaimFocusOnAttach, let window else { return }
-            reclaimFocusOnAttach = false
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.window === window, window.firstResponder !== self else { return }
-                // 只在"FR 因脱离被静默重置为窗口/nil"时夺回；期间若别的 responder（如刚新建并被
-                // 控制器聚焦的 pane）已取得焦点，绝不抢——否则新建 pane 的焦点会被原 pane 夺走
-                if let fr = window.firstResponder, fr !== window { return }
-                if let controller = window.windowController as? BaseTerminalController,
-                   !controller.surfaceMayReclaimFocus(self) { return }
-                window.makeFirstResponder(self)
-            }
-        }
-
-        override func resignFirstResponder() -> Bool {
-            let result = super.resignFirstResponder()
-
-            // We sometimes call this manually (see SplitView) as a way to force us to
-            // yield our focus state.
-            if result { focusDidChange(false) }
-
-            return result
-        }
+        // QuickTerm：becomeFirstResponder / resignFirstResponder / 脱离窗口后夺回焦点
+        // 都在基类 PaneView（对所有 pane 类型通用）。
 
         override func updateTrackingAreas() {
             // To update our tracking area we just recreate it all.
@@ -1092,15 +1047,8 @@ extension Ghostty {
             )
             surfaceModel.sendMousePos(mouseEvent)
 
-            // Handle focus-follows-mouse
-            if let window,
-               let controller = window.windowController as? BaseTerminalController,
-               !controller.commandPaletteIsShowing,
-               window.isKeyWindow &&
-                    window.firstResponder !== self &&   // QuickTerm：以真 FR 为准，不信残留的 focused
-                    controller.focusFollowsMouse {
-                Ghostty.moveFocus(to: self)
-            }
+            // Handle focus-follows-mouse（QuickTerm：通用逻辑在 PaneView）
+            hoverFocusIfNeeded()
         }
 
         override func mouseDragged(with event: NSEvent) {

@@ -58,6 +58,9 @@ final class ConfigStoreTests: XCTestCase {
         let data = try JSONEncoder().encode(state)
         let decoded = try JSONDecoder().decode(MainWindowController.PersistedState.self, from: data)
         XCTAssertEqual(decoded.version, 3)
+        if !c.model.allPanes.isEmpty {
+            XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("\"kind\":\"terminal\""), "v4 叶子带 kind")
+        }
         XCTAssertEqual(decoded.layouts.count, c.model.layouts.count)
         XCTAssertEqual(decoded.activeIndex, c.model.activeIndex)
         XCTAssertEqual(decoded.layouts[c.model.activeIndex].paneList.count,

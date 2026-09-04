@@ -2,7 +2,7 @@ import AppKit
 
 /// 每工作区的布局（spec §4.2-bis v5）：scrolling 无限画布（默认）或 dwindle 平铺。
 enum WorkspaceLayout: Codable {
-    case dwindle(SplitTree<Ghostty.SurfaceView>)
+    case dwindle(SplitTree<PaneView>)
     case scrolling(ScrollingStrip)
 
     /// 新工作区默认：scrolling（v5 用户确认）
@@ -15,7 +15,7 @@ enum WorkspaceLayout: Codable {
         }
     }
 
-    var paneList: [Ghostty.SurfaceView] {
+    var paneList: [PaneView] {
         switch self {
         case .dwindle(let tree): tree.root?.leaves() ?? []
         case .scrolling(let strip): strip.paneList

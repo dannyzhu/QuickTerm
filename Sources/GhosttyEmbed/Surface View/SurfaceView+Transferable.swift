@@ -5,7 +5,7 @@ import CoreTransferable
 import UniformTypeIdentifiers
 
 /// Conformance to `Transferable` enables drag-and-drop.
-extension Ghostty.SurfaceView: Transferable {
+extension PaneView: Transferable {   // QuickTerm：所有 pane 类型都可拖放
     static var transferRepresentation: some TransferRepresentation {
         DataRepresentation(contentType: .ghosttySurfaceId) { surface in
             withUnsafeBytes(of: surface.id.uuid) { Data($0) }
