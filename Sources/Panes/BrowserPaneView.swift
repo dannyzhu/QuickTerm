@@ -18,8 +18,8 @@ final class BrowserPaneView: PaneView {
         var userAgent = "safari"
         /// Web Inspector（右键"检查元素"）
         var inspectable = false
-        /// 标签条：auto = 只有一个标签时隐藏；always = 始终显示
-        var tabBar = "auto"
+        /// 标签条：always = 始终显示（默认）；auto = 只有一个标签时隐藏
+        var tabBar = "always"
         /// 标签最大 / 最小宽度 pt（config browser-tab-width / browser-tab-min-width）
         var tabWidth = 200
         var tabMinWidth = 80
@@ -259,6 +259,7 @@ final class BrowserPaneView: PaneView {
             addSubview(v)
         }
         tabBar.onSelect = { [weak self] i in self?.selectTab(at: i) }
+        tabBar.onNewTab = { [weak self] in self?.newTab() }
         // 最后一个标签的关闭钮关掉整个 pane（与 Cmd+W / window.close 一致），否则那个 x 是死的
         tabBar.onClose = { [weak self] i in
             guard let self, !self.closeTab(at: i), self.tabs.count == 1 else { return }
@@ -345,6 +346,7 @@ final class BrowserPaneView: PaneView {
 
     /// 标签条是否显示：always 或多于一个标签
     var tabBarVisible: Bool { Self.settings.tabBarAlwaysVisible || tabs.count > 1 }
+
 
     /// 同步标签条：标题 / 激活态交给 BrowserTabBarView（手工布局，对 pane 零约束）
     private func rebuildTabBar() {

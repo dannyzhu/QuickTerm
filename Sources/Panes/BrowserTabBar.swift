@@ -8,6 +8,8 @@ import AppKit
 /// 层次：当前标签与下方工具条同色、底边开口（"贴"在工具条上，最上层）；非激活标签退后一层（更暗、更细的字），
 /// 悬停浮起并在右侧露出关闭钮；当前标签的关闭钮常显。相邻梯形斜边互相叠进 `overlap`。
 /// 宽度：在 [minWidth, maxWidth] 内等分可用宽度；到最小宽度仍放不下时横向滚动（滚轮；选中的标签自动滚入视野）。
+/// 右侧常驻"+"新建标签按钮：跟在最后一个标签后面，标签占满时钉在右端（标签的可用宽度已把它的位置扣掉，
+/// 滚动时标签不会跑到它下面）。
 final class BrowserTabBarView: NSView {
     struct Item: Equatable {
         var title: String
@@ -25,6 +27,11 @@ final class BrowserTabBarView: NSView {
         static let overlap: CGFloat = 8
         static let insetX: CGFloat = 8
         static let cornerRadius: CGFloat = 4
+        /// 右侧"+"按钮的边长与它跟标签之间的间隙
+        static let newTabSize: CGFloat = 22
+        static let newTabGap: CGFloat = 4
+        /// 标签区右边要给"+"让出的宽度
+        static let newTabReserve: CGFloat = newTabSize + newTabGap
 
         var clampedMin: CGFloat { min(minWidth, maxWidth) }
     }
@@ -38,6 +45,7 @@ final class BrowserTabBarView: NSView {
     }
     var onSelect: ((Int) -> Void)?
     var onClose: ((Int) -> Void)?
+    var onNewTab: (() -> Void)?
 
     private(set) var itemViews: [BrowserTabItemView] = []
     /// 内容超宽时的横向滚动偏移（≥ 0）
@@ -47,13 +55,28 @@ final class BrowserTabBarView: NSView {
     private var hoverArea: NSTrackingArea?
     private var background: NSColor = .black
     private var foreground: NSColor = .white
+    private let newTabButton = NSButton()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         layer?.masksToBounds = true
         clipsToBounds = true
+        newTabButton.bezelStyle = .accessoryBarAction
+        newTabButton.isBordered = false
+        newTabButton.imagePosition = .imageOnly
+        newTabButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "新建标签")?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .medium))
+        newTabButton.toolTip = "新建标签（⌘N）"
+        newTabButton.target = self
+        newTabButton.action = #selector(newTabTapped)
+        addSubview(newTabButton)
     }
+
+    @objc private func newTabTapped() { onNewTab?() }
+
+    /// 测试用："+"按钮
+    var newTabButtonForTesting: NSButton { newTabButton }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
@@ -90,6 +113,7 @@ final class BrowserTabBarView: NSView {
         self.background = background
         self.foreground = foreground
         for v in itemViews { v.applyTheme(background: background, foreground: foreground) }
+        newTabButton.contentTintColor = foreground.withAlphaComponent(0.7)
         needsDisplay = true
     }
 
@@ -99,8 +123,7 @@ final class BrowserTabBarView: NSView {
     var tabWidth: CGFloat {
         let n = CGFloat(itemViews.count)
         guard n > 0 else { return 0 }
-        let available = bounds.width - 2 * Metrics.insetX
-        let fill = (available + (n - 1) * Metrics.overlap) / n
+        let fill = (visibleWidth + (n - 1) * Metrics.overlap) / n
         return min(metrics.maxWidth, max(metrics.clampedMin, fill))
     }
 
@@ -111,7 +134,10 @@ final class BrowserTabBarView: NSView {
         return n * tabWidth - (n - 1) * Metrics.overlap
     }
 
-    var maxScrollOffset: CGFloat { max(0, contentWidth - (bounds.width - 2 * Metrics.insetX)) }
+    /// 标签可用的横向空间（两侧留白与右侧"+"之外）
+    var visibleWidth: CGFloat { max(0, bounds.width - 2 * Metrics.insetX - Metrics.newTabReserve) }
+
+    var maxScrollOffset: CGFloat { max(0, contentWidth - visibleWidth) }
     var isOverflowing: Bool { maxScrollOffset > 0.5 }
 
     var itemFrames: [CGRect] { itemViews.map(\.frame) }
@@ -136,6 +162,14 @@ final class BrowserTabBarView: NSView {
             let left = Metrics.insetX - scrollOffset + CGFloat(i) * (w - Metrics.overlap)
             v.frame = CGRect(x: snap(left), y: 0, width: snap(left + w) - snap(left), height: Metrics.tabHeight)
         }
+        // "+"跟在最后一个标签的斜边后面；标签占满可用宽度时钉在右端
+        let size = Metrics.newTabSize
+        let pinned = bounds.maxX - Metrics.insetX - size
+        let afterLast = itemViews.isEmpty
+            ? Metrics.insetX
+            : Metrics.insetX - scrollOffset + contentWidth - Metrics.slant + Metrics.newTabGap
+        newTabButton.frame = NSRect(x: snap(min(afterLast, pinned)), y: (Metrics.tabHeight - size) / 2,
+                                    width: size, height: size)
         restack()
         needsDisplay = true
     }
@@ -152,7 +186,7 @@ final class BrowserTabBarView: NSView {
         guard let i = itemViews.firstIndex(where: { $0.active }) else { return }
         let start = CGFloat(i) * (w - Metrics.overlap)
         let end = start + w
-        let visible = bounds.width - 2 * Metrics.insetX
+        let visible = visibleWidth
         if start < scrollOffset {
             scrollOffset = start
         } else if end > scrollOffset + visible {

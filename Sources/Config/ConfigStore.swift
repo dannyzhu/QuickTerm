@@ -23,7 +23,7 @@ enum ConfigStore {
     # browser-search = "https://www.google.com/search?q=%s"   # 地址栏输入非网址时的搜索模板（%s = 关键词）
     # browser-user-agent = "safari"   # 伪装成 Safari（Google 登录页拒绝嵌入式浏览器）；"webkit" = 不伪装；或填自定义 UA
     # browser-inspectable = false     # 浏览器 pane 的 Web Inspector（右键"检查元素"）
-    # browser-tab-bar = "auto"        # 标签条：auto = 只有一个标签时隐藏；always = 始终显示
+    # browser-tab-bar = "always"      # 标签条：always = 始终显示（默认）；auto = 只有一个标签时隐藏
     # browser-tab-width = 200         # 标签最大宽度 pt（40–600）
     # browser-tab-min-width = 80      # 标签最小宽度 pt（40–600）；放不下时标签条横向滚动
 
@@ -121,7 +121,7 @@ enum ConfigStore {
         var browserSearch: String = "https://www.google.com/search?q=%s"
         var browserUserAgent: String = "safari"
         var browserInspectable: Bool = false
-        var browserTabBar: String = "auto"
+        var browserTabBar: String = "always"
         var browserTabWidth: Int = 200
         var browserTabMinWidth: Int = 80
         var overrides: [WMAction: KeyCombo] = [:]

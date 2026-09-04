@@ -129,7 +129,7 @@ All panels are centred, Walker-style: `↑`/`↓` to move, `Return` to choose, `
 | `browser-search` | https://www.google.com/search?q=%s | Search template used when the address bar input is not a URL (`%s` = query) |
 | `browser-user-agent` | safari | `safari` masquerades as Safari (Google sign-in rejects embedded browsers), `webkit` sends the stock WebKit UA, or any custom string |
 | `browser-inspectable` | false | Enable Web Inspector in browser panes |
-| `browser-tab-bar` | auto | `auto` hides the tab bar while a pane has a single tab; `always` keeps it |
+| `browser-tab-bar` | always | `always` keeps the tab bar visible; `auto` hides it while a pane has a single tab. The strip ends in a `+` button that opens a new tab |
 | `browser-tab-width` | 200 | Maximum tab width in pt (40–600); tabs share the strip equally below that |
 | `browser-tab-min-width` | 80 | Minimum tab width in pt (40–600); once every tab is at the minimum the strip scrolls sideways (mouse wheel; the active tab is always scrolled into view) |
 
@@ -198,7 +198,7 @@ The Shell and Pane menus in the macOS menu bar list fixed default shortcuts for 
 # browser-search = "https://www.google.com/search?q=%s"
 # browser-user-agent = "safari"   # safari | webkit | custom UA string
 # browser-inspectable = false
-# browser-tab-bar = "auto"        # auto | always
+# browser-tab-bar = "always"      # always | auto
 # browser-tab-width = 200         # max tab width, pt
 # browser-tab-min-width = 80      # min tab width, pt (strip scrolls when exceeded)
 # inactive-blur = 2.5       # > 0 enables frosted inactive panes

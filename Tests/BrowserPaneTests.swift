@@ -101,6 +101,7 @@ final class BrowserPaneTests: XCTestCase {
         let prev = BrowserPaneView.settings
         defer { BrowserPaneView.settings = prev }
         BrowserPaneView.settings.home = "about:blank"
+        BrowserPaneView.settings.tabBar = "auto"
         let pane = BrowserPaneView(url: URL(string: "about:blank"))
         XCTAssertEqual(pane.tabs.count, 1)
         XCTAssertFalse(pane.tabBarVisible, "单标签 auto 隐藏")
@@ -125,7 +126,11 @@ final class BrowserPaneTests: XCTestCase {
         XCTAssertEqual(pane.tabs.count, 1)
         BrowserPaneView.settings.tabBar = "always"
         pane.applySettings()
-        XCTAssertTrue(pane.tabBarVisible, "always：单标签也显示标签条")
+        XCTAssertTrue(pane.tabBarVisible, "always（默认）：单标签也显示标签条")
+        // 标签条右端的"+"新建标签
+        pane.tabBarForTesting.newTabButtonForTesting.performClick(nil)
+        XCTAssertEqual(pane.tabs.count, 2, "+ 新建标签")
+        XCTAssertEqual(pane.activeTabIndex, 1, "新标签激活")
     }
 
     /// 标签条不能改变 pane 自身宽度（SwiftUI 托管的 pane 没有外部宽度约束，必需的项宽上限会把 pane 挤成 N×200）；
@@ -169,7 +174,9 @@ final class BrowserPaneTests: XCTestCase {
         bar.metrics = .init(maxWidth: 200, minWidth: 80)
         bar.update(items: [.init(title: "A", active: true), .init(title: "B", active: false)])
         bar.layoutSubtreeIfNeeded()
-        XCTAssertEqual(bar.tabWidth, 196, accuracy: 0.5, "(400-16+8)/2")
+        let usable = 400 - 2 * BrowserTabBarView.Metrics.insetX - BrowserTabBarView.Metrics.newTabReserve
+        XCTAssertEqual(bar.tabWidth, (usable + BrowserTabBarView.Metrics.overlap) / 2, accuracy: 0.5,
+                       "等分标签区（已扣掉右侧 + 的位置）")
         XCTAssertFalse(bar.isOverflowing)
         // 等宽、相邻叠进 overlap
         let f = bar.itemFrames
@@ -205,7 +212,10 @@ final class BrowserPaneTests: XCTestCase {
         XCTAssertEqual(bar.tabWidth, 80, accuracy: 0.01, "到最小宽度不再缩")
         XCTAssertTrue(bar.isOverflowing)
         let last = bar.itemFrames[7]
-        XCTAssertLessThanOrEqual(last.maxX, 400 - BrowserTabBarView.Metrics.insetX + 0.5, "当前标签在视野内")
+        let rightEdge = 400 - BrowserTabBarView.Metrics.insetX - BrowserTabBarView.Metrics.newTabReserve
+        XCTAssertLessThanOrEqual(last.maxX, rightEdge + 0.5, "当前标签在视野内、不跑到 + 底下")
+        XCTAssertGreaterThanOrEqual(bar.newTabButtonForTesting.frame.minX, last.maxX - BrowserTabBarView.Metrics.slant,
+                                    "+ 在标签右侧")
         XCTAssertGreaterThanOrEqual(last.minX, 0)
         XCTAssertGreaterThan(bar.scrollOffset, 0)
         bar.scroll(by: -10_000)
@@ -216,7 +226,9 @@ final class BrowserPaneTests: XCTestCase {
         bar.setFrameSize(NSSize(width: 200, height: BrowserTabBarView.Metrics.barHeight))
         bar.layoutSubtreeIfNeeded()
         let lastNarrow = bar.itemFrames[7]
-        XCTAssertLessThanOrEqual(lastNarrow.maxX, 200 - BrowserTabBarView.Metrics.insetX + 0.5, "变窄后当前标签仍露出")
+        XCTAssertLessThanOrEqual(lastNarrow.maxX,
+                                 200 - BrowserTabBarView.Metrics.insetX - BrowserTabBarView.Metrics.newTabReserve + 0.5,
+                                 "变窄后当前标签仍露出")
         XCTAssertGreaterThanOrEqual(lastNarrow.minX, 0)
         bar.setFrameSize(NSSize(width: 400, height: BrowserTabBarView.Metrics.barHeight))
         bar.layoutSubtreeIfNeeded()
@@ -234,6 +246,18 @@ final class BrowserPaneTests: XCTestCase {
         XCTAssertEqual(selected, 1)
         bar.itemViews[1].onClose?()
         XCTAssertEqual(closed, 1)
+        var created = 0
+        bar.onNewTab = { created += 1 }
+        bar.newTabButtonForTesting.performClick(nil)
+        XCTAssertEqual(created, 1, "+ 触发新建标签")
+        // 标签没占满时 + 紧跟最后一个标签；占满时钉在右端
+        bar.metrics = .init(maxWidth: 60, minWidth: 40)
+        bar.layoutSubtreeIfNeeded()
+        let plus = bar.newTabButtonForTesting.frame
+        XCTAssertEqual(plus.minX,
+                       bar.itemFrames[1].maxX - BrowserTabBarView.Metrics.slant + BrowserTabBarView.Metrics.newTabGap,
+                       accuracy: 0.6, "+ 紧跟最后一个标签")
+        XCTAssertLessThanOrEqual(plus.maxX, 400 - BrowserTabBarView.Metrics.insetX + 0.5)
     }
 
     /// 视觉快照（仅当设置 QUICKTERM_SNAPSHOT_DIR）：把标签条 + 工具条画成 PNG 供人工核对
