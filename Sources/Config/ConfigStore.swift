@@ -24,6 +24,8 @@ enum ConfigStore {
     # browser-user-agent = "safari"   # 伪装成 Safari（Google 登录页拒绝嵌入式浏览器）；"webkit" = 不伪装；或填自定义 UA
     # browser-inspectable = false     # 浏览器 pane 的 Web Inspector（右键"检查元素"）
     # browser-tab-bar = "auto"        # 标签条：auto = 只有一个标签时隐藏；always = 始终显示
+    # browser-tab-width = 200         # 标签最大宽度 pt（40–600）
+    # browser-tab-min-width = 80      # 标签最小宽度 pt（40–600）；放不下时标签条横向滚动
 
     [keybinds]
     # 动作 = "modifier+key"；"none" 解绑。动作清单见 Cmd+K 速查表。
@@ -120,6 +122,8 @@ enum ConfigStore {
         var browserUserAgent: String = "safari"
         var browserInspectable: Bool = false
         var browserTabBar: String = "auto"
+        var browserTabWidth: Int = 200
+        var browserTabMinWidth: Int = 80
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
         var ghosttyPassthrough: String = ""
@@ -200,6 +204,8 @@ enum ConfigStore {
                 if key == "browser-user-agent", !value.isEmpty { settings.browserUserAgent = value }
                 if key == "browser-inspectable" { settings.browserInspectable = (value.lowercased() == "true") }
                 if key == "browser-tab-bar", !value.isEmpty { settings.browserTabBar = value }
+                if key == "browser-tab-width", let v = Int(value) { settings.browserTabWidth = min(max(v, 40), 600) }
+                if key == "browser-tab-min-width", let v = Int(value) { settings.browserTabMinWidth = min(max(v, 40), 600) }
             case "keybinds":
                 guard let action = WMAction(rawValue: key) else { continue }
                 if value.lowercased() == "none" {

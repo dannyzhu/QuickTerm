@@ -20,6 +20,9 @@ final class BrowserPaneView: PaneView {
         var inspectable = false
         /// 标签条：auto = 只有一个标签时隐藏；always = 始终显示
         var tabBar = "auto"
+        /// 标签最大 / 最小宽度 pt（config browser-tab-width / browser-tab-min-width）
+        var tabWidth = 200
+        var tabMinWidth = 80
 
         static let safariUserAgent =
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15"
@@ -97,7 +100,7 @@ final class BrowserPaneView: PaneView {
     var webView: BrowserWebView { activeTab?.webView ?? placeholderWebView }
     private lazy var placeholderWebView = BrowserWebView(frame: .zero, configuration: Self.makeConfiguration())
 
-    private let tabBar = NSStackView()
+    private let tabBar = BrowserTabBarView()
     private var tabBarHeight: NSLayoutConstraint!
     private let toolbar = NSView()
     private let backButton = NSButton()
@@ -255,11 +258,12 @@ final class BrowserPaneView: PaneView {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
-        tabBar.orientation = .horizontal
-        tabBar.distribution = .gravityAreas   // 靠左紧排；宽度由各项的非必需约束决定
-        tabBar.spacing = 2
-        tabBar.alignment = .centerY
-        tabBar.wantsLayer = true
+        tabBar.onSelect = { [weak self] i in self?.selectTab(at: i) }
+        // 最后一个标签的关闭钮关掉整个 pane（与 Cmd+W / window.close 一致），否则那个 x 是死的
+        tabBar.onClose = { [weak self] i in
+            guard let self, !self.closeTab(at: i), self.tabs.count == 1 else { return }
+            self.controller?.requestClosePane(self)
+        }
         tabBarHeight = tabBar.heightAnchor.constraint(equalToConstant: 0)
 
         for (button, symbol, tip, action) in [
@@ -333,46 +337,25 @@ final class BrowserPaneView: PaneView {
     /// 测试用：标签项当前宽度
     var tabItemWidthsForTesting: [CGFloat] {
         tabBar.layoutSubtreeIfNeeded()
-        return tabBar.arrangedSubviews.map { $0.frame.width }
+        return tabBar.itemViews.map { $0.frame.width }
     }
+
+    /// 测试用：标签条视图
+    var tabBarForTesting: BrowserTabBarView { tabBar }
 
     /// 标签条是否显示：always 或多于一个标签
     var tabBarVisible: Bool { Self.settings.tabBarAlwaysVisible || tabs.count > 1 }
 
-    /// 重建标签条：每个标签一个按钮（标题 + 当前标签带关闭）
+    /// 同步标签条：标题 / 激活态交给 BrowserTabBarView（手工布局，对 pane 零约束）
     private func rebuildTabBar() {
-        for v in tabBar.arrangedSubviews { tabBar.removeArrangedSubview(v); v.removeFromSuperview() }
         let visible = tabBarVisible
         tabBar.isHidden = !visible
-        tabBarHeight.constant = visible ? 26 : 0
-        // 空 NSStackView 的隐含最小高度 = 上下 edgeInsets 之和：隐藏时连内边距一起清零，否则与高度 0 冲突
-        tabBar.edgeInsets = visible ? NSEdgeInsets(top: 3, left: 6, bottom: 3, right: 6) : NSEdgeInsets()
-        guard visible else { return }
-        // 宽度：首选 200、上限 200、彼此等宽，全部非必需——必需的上限会让 Auto Layout 反过来把
-        // 整个 pane 的宽度解成 N×200（pane 由 SwiftUI 托管、没有外部宽度约束）；空间不够时等比缩窄
-        var first: BrowserTabItemView?
-        for (i, tab) in tabs.enumerated() {
-            let item = BrowserTabItemView(title: tab.displayTitle, active: i == activeTabIndex,
-                                          foreground: themeForeground, background: themeBackground)
-            item.onSelect = { [weak self] in self?.selectTab(at: i) }
-            item.onClose = { [weak self] in self?.closeTab(at: i) }
-            tabBar.addArrangedSubview(item)
-            let preferred = item.widthAnchor.constraint(equalToConstant: 200)
-            preferred.priority = .defaultLow
-            let cap = item.widthAnchor.constraint(lessThanOrEqualToConstant: 200)
-            cap.priority = .defaultHigh
-            let floor = item.widthAnchor.constraint(greaterThanOrEqualToConstant: 40)
-            floor.priority = .defaultHigh
-            var constraints = [preferred, cap, floor]
-            if let first {
-                let equal = item.widthAnchor.constraint(equalTo: first.widthAnchor)
-                equal.priority = .defaultHigh
-                constraints.append(equal)
-            } else {
-                first = item
-            }
-            NSLayoutConstraint.activate(constraints)
-        }
+        if !visible { tabBar.updateHover(atBarPoint: nil) }   // 隐藏后收不到 mouseExited
+        tabBarHeight.constant = visible ? BrowserTabBarView.Metrics.barHeight : 0
+        tabBar.metrics = .init(maxWidth: CGFloat(Self.settings.tabWidth), minWidth: CGFloat(Self.settings.tabMinWidth))
+        tabBar.update(items: tabs.enumerated().map { i, tab in
+            .init(title: tab.displayTitle, active: i == activeTabIndex)
+        })
     }
 
     private func observe(_ tab: Tab) {
@@ -430,8 +413,9 @@ final class BrowserPaneView: PaneView {
         themeBackground = background
         themeForeground = foreground
         toolbar.wantsLayer = true
-        toolbar.layer?.backgroundColor = background.withAlphaComponent(0.6).cgColor
-        tabBar.layer?.backgroundColor = background.withAlphaComponent(0.75).cgColor
+        // 工具条用纯背景色：当前标签同色贴上来（标签条基线在它脚下断开），层次才成立
+        toolbar.layer?.backgroundColor = background.cgColor
+        tabBar.applyTheme(background: background, foreground: foreground)
         addressField.textColor = foreground
         for b in [backButton, forwardButton, reloadButton] { b.contentTintColor = foreground.withAlphaComponent(0.85) }
         rebuildTabBar()
@@ -773,63 +757,6 @@ extension BrowserPaneView: WKUIDelegate {
             completionHandler(panel.runModal() == .OK ? panel.urls : nil)
         }
     }
-}
-
-/// 标签条上的一个标签：标题 + 关闭按钮（当前标签高亮）
-final class BrowserTabItemView: NSView {
-    var onSelect: (() -> Void)?
-    var onClose: (() -> Void)?
-    private let label = NSTextField(labelWithString: "")
-    private let closeButton = NSButton()
-    private let active: Bool
-
-    init(title: String, active: Bool, foreground: NSColor, background: NSColor) {
-        self.active = active
-        super.init(frame: .zero)
-        wantsLayer = true
-        layer?.cornerRadius = 5
-        layer?.backgroundColor = active ? foreground.withAlphaComponent(0.16).cgColor : NSColor.clear.cgColor
-        translatesAutoresizingMaskIntoConstraints = false
-        label.stringValue = title
-        label.font = .systemFont(ofSize: 11, weight: active ? .semibold : .regular)
-        label.textColor = active ? foreground : foreground.withAlphaComponent(0.6)
-        label.lineBreakMode = .byTruncatingTail
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        closeButton.bezelStyle = .accessoryBarAction
-        closeButton.isBordered = false
-        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "关闭标签")
-        closeButton.contentTintColor = foreground.withAlphaComponent(0.7)
-        closeButton.controlSize = .mini
-        closeButton.target = self
-        closeButton.action = #selector(closeTapped)
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
-        closeButton.isHidden = !active
-        addSubview(label)
-        addSubview(closeButton)
-        NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 20),
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            closeButton.leadingAnchor.constraint(equalTo: label.trailingAnchor, constant: 4),
-            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
-            closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            closeButton.widthAnchor.constraint(equalToConstant: 14),
-        ])
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-
-    override func mouseDown(with event: NSEvent) {
-        onSelect?()
-    }
-
-    /// 中键点击关闭（浏览器习惯）
-    override func otherMouseDown(with event: NSEvent) {
-        if event.buttonNumber == 2 { onClose?() } else { super.otherMouseDown(with: event) }
-    }
-
-    @objc private func closeTapped() { onClose?() }
 }
 
 /// 地址栏：成为 first responder 时回报给 pane——随后接管的字段编辑器是 pane 的后代，

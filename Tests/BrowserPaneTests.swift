@@ -159,6 +159,119 @@ final class BrowserPaneTests: XCTestCase {
         window.contentView = nil
     }
 
+    /// 标签条几何：[min, max] 内等分；到最小仍放不下 → 横向滚动且当前标签滚入视野；
+    /// 当前标签常显关闭钮，非激活标签悬停才露出；斜边外的角落命中穿透给邻居；当前标签在最上层
+    @MainActor
+    func testTabBarGeometryHoverAndHitTesting() {
+        let click = NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                       windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        let bar = BrowserTabBarView(frame: NSRect(x: 0, y: 0, width: 400, height: BrowserTabBarView.Metrics.barHeight))
+        bar.metrics = .init(maxWidth: 200, minWidth: 80)
+        bar.update(items: [.init(title: "A", active: true), .init(title: "B", active: false)])
+        bar.layoutSubtreeIfNeeded()
+        XCTAssertEqual(bar.tabWidth, 196, accuracy: 0.5, "(400-16+8)/2")
+        XCTAssertFalse(bar.isOverflowing)
+        // 等宽、相邻叠进 overlap
+        let f = bar.itemFrames
+        XCTAssertEqual(f[0].width, f[1].width, accuracy: 0.01)
+        XCTAssertEqual(f[1].minX - f[0].minX, f[0].width - BrowserTabBarView.Metrics.overlap, accuracy: 0.01)
+        // 当前标签常显关闭钮；非激活的悬停才显
+        let a = bar.itemViews[0], b = bar.itemViews[1]
+        XCTAssertTrue(a.closeButtonVisible)
+        XCTAssertFalse(b.closeButtonVisible)
+        bar.updateHover(atBarPoint: NSPoint(x: f[1].midX, y: f[1].midY))
+        bar.layoutSubtreeIfNeeded()
+        XCTAssertTrue(b.closeButtonVisible, "悬停露出关闭钮")
+        XCTAssertEqual(b.frame.width - b.titleWidthForTesting, a.frame.width - a.titleWidthForTesting, accuracy: 0.01,
+                       "悬停不改变标题宽度（关闭钮的位一直留着）")
+        // 重叠带（两个标签的矩形都覆盖）里只有最上层的梯形算悬停
+        let overlapX = f[1].minX + 2
+        bar.updateHover(atBarPoint: NSPoint(x: overlapX, y: f[1].midY))
+        XCTAssertEqual([a.hovering, b.hovering].filter { $0 }.count, 1, "重叠带里只有一个标签悬停")
+        bar.updateHover(atBarPoint: nil)
+        bar.layoutSubtreeIfNeeded()
+        XCTAssertFalse(b.closeButtonVisible)
+        // 当前标签在最上层（subviews 末尾）
+        XCTAssertTrue(bar.subviews.last === a)
+        // 命中：B 左上角（斜边外）穿透给压在下面的 A；B 中心命中 B
+        let cornerInB = NSPoint(x: f[1].minX + 0.5, y: f[1].minY + 2)   // B 的斜边外、A 的梯形内
+        XCTAssertTrue(bar.hitTest(cornerInB) === a || bar.hitTest(cornerInB)?.isDescendant(of: a) == true,
+                      "斜边外的角落穿透给邻居")
+        let centerB = NSPoint(x: f[1].midX, y: f[1].midY)
+        XCTAssertTrue(bar.hitTest(centerB)?.isDescendant(of: b) == true)
+        // 8 个标签、最小 80：放不下 → 溢出；选中最后一个滚入视野
+        bar.update(items: (0..<8).map { .init(title: "T\($0)", active: $0 == 7) })
+        bar.layoutSubtreeIfNeeded()
+        XCTAssertEqual(bar.tabWidth, 80, accuracy: 0.01, "到最小宽度不再缩")
+        XCTAssertTrue(bar.isOverflowing)
+        let last = bar.itemFrames[7]
+        XCTAssertLessThanOrEqual(last.maxX, 400 - BrowserTabBarView.Metrics.insetX + 0.5, "当前标签在视野内")
+        XCTAssertGreaterThanOrEqual(last.minX, 0)
+        XCTAssertGreaterThan(bar.scrollOffset, 0)
+        bar.scroll(by: -10_000)
+        bar.layoutSubtreeIfNeeded()
+        XCTAssertEqual(bar.scrollOffset, 0, "滚动钳在 0")
+        XCTAssertEqual(bar.itemFrames[0].minX, BrowserTabBarView.Metrics.insetX, accuracy: 0.01)
+        // 变窄后当前标签仍在视野内（README 承诺）
+        bar.setFrameSize(NSSize(width: 200, height: BrowserTabBarView.Metrics.barHeight))
+        bar.layoutSubtreeIfNeeded()
+        let lastNarrow = bar.itemFrames[7]
+        XCTAssertLessThanOrEqual(lastNarrow.maxX, 200 - BrowserTabBarView.Metrics.insetX + 0.5, "变窄后当前标签仍露出")
+        XCTAssertGreaterThanOrEqual(lastNarrow.minX, 0)
+        bar.setFrameSize(NSSize(width: 400, height: BrowserTabBarView.Metrics.barHeight))
+        bar.layoutSubtreeIfNeeded()
+        // min > max 时以 max 为准
+        bar.metrics = .init(maxWidth: 100, minWidth: 300)
+        bar.update(items: [.init(title: "x", active: true)])
+        bar.layoutSubtreeIfNeeded()
+        XCTAssertEqual(bar.tabWidth, 100, accuracy: 0.01)
+        // 点击 / 关闭回调带正确下标
+        var selected = -1, closed = -1
+        bar.onSelect = { selected = $0 }
+        bar.onClose = { closed = $0 }
+        bar.update(items: [.init(title: "A", active: true), .init(title: "B", active: false)])
+        bar.itemViews[1].mouseDown(with: click)
+        XCTAssertEqual(selected, 1)
+        bar.itemViews[1].onClose?()
+        XCTAssertEqual(closed, 1)
+    }
+
+    /// 视觉快照（仅当设置 QUICKTERM_SNAPSHOT_DIR）：把标签条 + 工具条画成 PNG 供人工核对
+    @MainActor
+    func testTabBarSnapshot() throws {
+        guard let dir = ProcessInfo.processInfo.environment["QUICKTERM_SNAPSHOT_DIR"] else { return }
+        let bg = NSColor(srgbRed: 0.09, green: 0.09, blue: 0.11, alpha: 1)
+        let fg = NSColor(srgbRed: 0.92, green: 0.92, blue: 0.94, alpha: 1)
+        let width: CGFloat = 640
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 64))
+        container.wantsLayer = true
+        container.layer?.backgroundColor = bg.cgColor
+        let toolbar = NSView(frame: NSRect(x: 0, y: 4, width: width, height: 30))
+        toolbar.wantsLayer = true
+        toolbar.layer?.backgroundColor = bg.cgColor
+        let bar = BrowserTabBarView(frame: NSRect(x: 0, y: 34, width: width, height: BrowserTabBarView.Metrics.barHeight))
+        bar.applyTheme(background: bg, foreground: fg)
+        bar.update(items: [
+            .init(title: "Google", active: false),
+            .init(title: "QuickTerm – GitHub", active: true),
+            .init(title: "YouTube – a very long title that gets truncated", active: false),
+            .init(title: "百度一下，你就知道", active: false),
+        ])
+        container.addSubview(toolbar)
+        container.addSubview(bar)
+        let window = NSWindow(contentRect: container.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = container
+        bar.layoutSubtreeIfNeeded()
+        let hovered = bar.itemViews[2].frame                                // 第三个标签悬停态
+        bar.updateHover(atBarPoint: NSPoint(x: hovered.midX, y: hovered.midY))
+        container.layoutSubtreeIfNeeded()
+        let rep = try XCTUnwrap(container.bitmapImageRepForCachingDisplay(in: container.bounds))
+        container.cacheDisplay(in: container.bounds, to: rep)
+        let png = try XCTUnwrap(rep.representation(using: .png, properties: [:]))
+        try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("tabbar-dark.png"))
+        window.contentView = nil
+    }
+
     /// 多标签存档往返（tabs + activeTab），旧单页存档仍可读
     @MainActor
     func testTabsPersistence() throws {

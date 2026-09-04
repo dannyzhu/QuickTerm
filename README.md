@@ -130,6 +130,8 @@ All panels are centred, Walker-style: `↑`/`↓` to move, `Return` to choose, `
 | `browser-user-agent` | safari | `safari` masquerades as Safari (Google sign-in rejects embedded browsers), `webkit` sends the stock WebKit UA, or any custom string |
 | `browser-inspectable` | false | Enable Web Inspector in browser panes |
 | `browser-tab-bar` | auto | `auto` hides the tab bar while a pane has a single tab; `always` keeps it |
+| `browser-tab-width` | 200 | Maximum tab width in pt (40–600); tabs share the strip equally below that |
+| `browser-tab-min-width` | 80 | Minimum tab width in pt (40–600); once every tab is at the minimum the strip scrolls sideways (mouse wheel; the active tab is always scrolled into view) |
 
 Browser pane limits: no Widevine DRM (Netflix/Spotify web) and no system password autofill or passkeys (use `Cmd+Shift+O` to finish such flows in the system browser).
 | `inactive-blur` | 2.5 | `> 0` puts a frosted-glass backdrop behind inactive tiled panes (blurs the wallpaper, not the text; floating panes are exempt; the numeric value is currently on/off only) |
@@ -197,6 +199,8 @@ The Shell and Pane menus in the macOS menu bar list fixed default shortcuts for 
 # browser-user-agent = "safari"   # safari | webkit | custom UA string
 # browser-inspectable = false
 # browser-tab-bar = "auto"        # auto | always
+# browser-tab-width = 200         # max tab width, pt
+# browser-tab-min-width = 80      # min tab width, pt (strip scrolls when exceeded)
 # inactive-blur = 2.5       # > 0 enables frosted inactive panes
 
 [keybinds]                  # action = "modifiers+key"; "none" unbinds. Action ids: Cmd+K

@@ -329,6 +329,13 @@ final class MainWindowController: BaseTerminalController {
                 self.switchWorkspace(next)
                 return nil
             }
+            // 溢出的浏览器标签条自己吃横向滚轮（监视器跑在视图派发之前，否则永远轮不到它）
+            if let hit = content.hitTest(p),
+               let bar = sequence(first: hit, next: { $0.superview })
+                   .compactMap({ $0 as? BrowserTabBarView }).first,
+               bar.isOverflowing {
+                return event
+            }
             if case .scrolling = self.model.layout,
                abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY),
                abs(event.scrollingDeltaX) > 0.5 || event.phase == .ended || event.momentumPhase == .ended {
@@ -363,7 +370,8 @@ final class MainWindowController: BaseTerminalController {
         fileManagerCommand = settings.fileManagerCommand
         BrowserPaneView.settings = .init(home: settings.browserHome, search: settings.browserSearch,
                                          userAgent: settings.browserUserAgent, inspectable: settings.browserInspectable,
-                                         tabBar: settings.browserTabBar)
+                                         tabBar: settings.browserTabBar,
+                                         tabWidth: settings.browserTabWidth, tabMinWidth: settings.browserTabMinWidth)
         for case let browser as BrowserPaneView in allPanes { browser.applySettings() }   // UA / Inspector 热重载
         model.setWorkspaceCount(settings.workspaces)
         if let n = settings.visibleColumns { setVisibleColumns(n, persist: false) }

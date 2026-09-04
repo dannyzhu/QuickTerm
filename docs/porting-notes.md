@@ -198,7 +198,12 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
   `drawsBackground` 是私有 KVC，先 `responds(to: _setDrawsBackground:)`。
 - **SwiftUI 托管的 pane 没有外部宽度约束**：`NSViewRepresentable` 返回的 PaneView 内部若有必需的宽度
   约束（标签项 ≤200 + fillEqually + 两侧钉死），Auto Layout 会反过来把 pane 自身解成 N×200。pane 内部
-  所有影响宽度的约束都只能是非必需（标签条：gravityAreas + 首选/上限/等宽 @defaultHigh）。
+  所有影响宽度的约束都只能是非必需；标签条最终改为手工布局（`BrowserTabBarView.layout()` 按可用宽度算帧，
+  梯形叠放 / 溢出滚动也只有手工布局做得到）。
+- **NSTrackingArea 不感知兄弟遮挡**：每个标签自带 tracking area 时，相邻梯形重叠的 8pt 带里两个标签同时收到
+  mouseEntered（区域是纯矩形、与 hitTest / z 序无关）。悬停要由容器一个 tracking area + 自己的命中判定裁决。
+- **普通滚轮的 scrollingDelta 是"行"不是 pt**：`hasPreciseScrollingDeltas == false` 时一格 ≈ 1，直接当 pt 用
+  等于滚不动；要自行换算步长。scrolling 布局的横向平移监视器跑在视图派发之前，需要按命中放行给子视图。
 - **关标签要先记焦点**：被关的 webView `removeFromSuperview` 时 AppKit 静默把 FR 重置为窗口（同上节，
   不发 resign），之后 `holdsFirstResponder` 已是 false；先读焦点再移除，再显式 `makeFirstResponder`。
 

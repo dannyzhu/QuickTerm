@@ -130,6 +130,8 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `browser-user-agent` | safari | `safari` 伪装成 Safari（Google 登录页拒绝嵌入式浏览器）、`webkit` 用原生 WebKit UA、或任意自定义字符串 |
 | `browser-inspectable` | false | 浏览器 pane 开启 Web Inspector |
 | `browser-tab-bar` | auto | `auto` 单标签时隐藏标签条；`always` 始终显示 |
+| `browser-tab-width` | 200 | 标签最大宽度 pt（40–600）；不足时各标签等分标签条 |
+| `browser-tab-min-width` | 80 | 标签最小宽度 pt（40–600）；全部到最小仍放不下时标签条横向滚动（滚轮；当前标签自动滚入视野） |
 
 浏览器 pane 的边界：没有 Widevine DRM（Netflix/Spotify 网页版不可用）、没有系统密码自动填充和通行密钥（这类流程请用 `Cmd+Shift+O` 到系统浏览器完成）。
 | `inactive-blur` | 2.5 | `> 0` 时非激活的平铺 pane 背后垫磨砂（模糊的是壁纸，文字不受影响；浮动 pane 不垫；目前数值只作开关） |
@@ -197,6 +199,8 @@ macOS 菜单栏的 Shell / Pane 菜单只列了少数动作的固定默认快捷
 # browser-user-agent = "safari"   # safari | webkit | 自定义 UA
 # browser-inspectable = false
 # browser-tab-bar = "auto"        # auto | always
+# browser-tab-width = 200         # 标签最大宽度 pt
+# browser-tab-min-width = 80      # 标签最小宽度 pt（放不下时横向滚动）
 # inactive-blur = 2.5       # > 0 开启非激活磨砂
 
 [keybinds]                  # 动作 = "修饰键+键"；"none" 解绑。动作 id 见 Cmd+K
