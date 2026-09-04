@@ -847,6 +847,11 @@ extension Ghostty {
             reclaimFocusOnAttach = false
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.window === window, window.firstResponder !== self else { return }
+                // 只在"FR 因脱离被静默重置为窗口/nil"时夺回；期间若别的 responder（如刚新建并被
+                // 控制器聚焦的 pane）已取得焦点，绝不抢——否则新建 pane 的焦点会被原 pane 夺走
+                if let fr = window.firstResponder, fr !== window { return }
+                if let controller = window.windowController as? BaseTerminalController,
+                   !controller.surfaceMayReclaimFocus(self) { return }
                 window.makeFirstResponder(self)
             }
         }

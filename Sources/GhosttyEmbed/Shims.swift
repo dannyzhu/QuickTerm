@@ -18,6 +18,8 @@ class BaseTerminalController: NSWindowController {
                            at locationInWindow: NSPoint) -> Bool { false }
     /// 某 surface 成为 first responder（单焦点不变量：控制器清掉其他 pane 残留的 focused）
     func surfaceDidBecomeFirstResponder(_ pane: Ghostty.SurfaceView) {}
+    /// 脱离窗口后重挂的 surface 是否可以夺回焦点（控制器有明确的待聚焦目标时不允许别人夺回）
+    func surfaceMayReclaimFocus(_ pane: Ghostty.SurfaceView) -> Bool { true }
     func toggleBackgroundOpacity() {}
     func promptTabTitle() {}
     @objc func changeTabTitle(_ sender: Any?) {}

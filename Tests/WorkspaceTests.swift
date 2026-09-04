@@ -245,6 +245,36 @@ extension WorkspaceTests {
         c.closePane(try XCTUnwrap(c.paneList.first), confirmIfNeeded: false)
     }
 
+    /// 新建 pane 后焦点必须落在新 pane（dwindle：原 pane 在 leaf→split 重挂时会"夺回"焦点，需让位）
+    @MainActor
+    func testNewTerminalFocusesNewPaneInDwindle() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        let ws = c.model.layouts.count - 1          // 用空工作区，隔离前序用例遗留状态
+        c.model.switchTo(ws)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty)
+        c.model.layout = .dwindle(SplitTree())
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        var created: [Ghostty.SurfaceView] = []
+        defer { for p in created { c.closePane(p, confirmIfNeeded: false) } }
+        func frDesc() -> String {
+            if let s = c.window?.firstResponder as? Ghostty.SurfaceView { return "Surface(\(s.id.uuidString.prefix(4)))" }
+            return c.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+        }
+        for round in 0..<3 {   // 根叶 → 分裂 → 再分裂
+            let before = Set(c.paneList.map(ObjectIdentifier.init))
+            c.perform(.newTerminal)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+            let fresh = try XCTUnwrap(c.paneList.first { !before.contains(ObjectIdentifier($0)) })
+            created.append(fresh)
+            XCTAssertTrue(c.window?.firstResponder === fresh,
+                          "round \(round): 新 pane \(fresh.id.uuidString.prefix(4)) 应为 FR，实际 \(frDesc())")
+            XCTAssertTrue(fresh.focused, "round \(round): 新 pane 的 focused 应为 true")
+            XCTAssertEqual(c.paneList.filter(\.focused).count, 1, "round \(round): 只有一个 pane 激活")
+        }
+    }
+
     /// 回归：Cmd+L 重建视图层级后不得出现多个 pane 同时 focused（多激活边框 + 悬停失效）
     @MainActor
     func testToggleLayoutKeepsSingleFocus() throws {

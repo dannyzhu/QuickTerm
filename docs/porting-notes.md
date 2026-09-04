@@ -136,7 +136,10 @@ libtool 丢成员的修复改为**按架构**：`lipo -thin` 拆开逐一检查 
 但不调 `becomeFirstResponder`（什么都不做）。SwiftUI 重建层级（Cmd+L、Cmd+T、切工作区）时
 SurfaceView 会从旧 scroll view 移出再装进新建的 scroll view，恰好命中前者——`focused` 残留为
 true → 多 pane 同时激活边框/闪烁光标，且悬停守卫 `!focused` 让它们再也收不到焦点。
-对策：`viewWillMove(toWindow: nil)` 时若自己是 FR 则记账，`viewDidMoveToWindow` 后夺回；
+对策：`viewWillMove(toWindow: nil)` 时若自己是 FR 则记账，`viewDidMoveToWindow` 后夺回——但**只在
+FR 仍是窗口/nil 时**（脱离导致的静默重置），期间若别的 responder 已取得焦点绝不抢（否则 dwindle 新建
+时原 pane 重挂会把刚给新 pane 的焦点夺走；探针日志证实：moveFocus 成功后紧跟 reclaim 抢回）；
+控制器所有聚焦经 `requestFocus(to:from:)`（登记意图 → moveFocus → 0.35s 后校验再交一次）；
 `becomeFirstResponder` 通知控制器清掉其他 pane 的残留标志（单焦点不变量）；悬停与
 `focusedSurface` 以窗口 FR 为真相；启动聚焦改用 `Ghostty.moveFocus`（等待挂载）。
 回归测试 `testToggleLayoutKeepsSingleFocus`。

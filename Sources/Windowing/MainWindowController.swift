@@ -66,8 +66,32 @@ final class MainWindowController: BaseTerminalController {
     /// 单焦点不变量：任一 pane 成为 FR 时，清掉其他 pane 残留的 focused
     /// （AppKit 在 FR 视图脱离窗口时不发 resign，见 SurfaceView.viewWillMove(toWindow:)）
     override func surfaceDidBecomeFirstResponder(_ pane: Ghostty.SurfaceView) {
+        if pendingFocusTarget === pane { pendingFocusTarget = nil }   // 意图达成
         for other in model.allPanes where other !== pane && other.focused {
             other.focusDidChange(false)
+        }
+    }
+
+    /// 控制器明确要聚焦的 pane（意图）。存在时，重挂载的其他 surface 不得夺回焦点——
+    /// dwindle 新建：原 pane 在 leaf→split 重挂时会触发夺回，把刚交给新 pane 的焦点抢走。
+    private var pendingFocusTarget: Ghostty.SurfaceView?
+
+    override func surfaceMayReclaimFocus(_ pane: Ghostty.SurfaceView) -> Bool {
+        pendingFocusTarget == nil || pendingFocusTarget === pane
+    }
+
+    /// 所有控制器发起的聚焦走这里：登记意图 → moveFocus（等挂载）→ 布局动效结束后再校验一次
+    func requestFocus(to pane: Ghostty.SurfaceView, from: Ghostty.SurfaceView? = nil) {
+        pendingFocusTarget = pane
+        Ghostty.moveFocus(to: pane, from: from)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self, weak pane] in
+            guard let self, let pane, self.pendingFocusTarget === pane else { return }
+            if pane.window != nil, self.window?.firstResponder !== pane {
+                Ghostty.moveFocus(to: pane)   // 被重挂/动效期间的事件挤掉了，再交一次
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self, weak pane] in
+                if let self, let pane, self.pendingFocusTarget === pane { self.pendingFocusTarget = nil }
+            }
         }
     }
 
@@ -146,11 +170,11 @@ final class MainWindowController: BaseTerminalController {
         // 视图尚未被 SwiftUI 挂载：直接 makeFirstResponder 返回 true 却什么都不做（AppKit 报
         // "different window ((null))"），用 Ghostty.moveFocus（等待挂载后再设）
         if !AppDelegate.isRunningTests, restoreState() {
-            if let focused = focusedSurface { Ghostty.moveFocus(to: focused) }
+            if let focused = focusedSurface { requestFocus(to: focused) }
         } else {
             let first = newSurface(inheritingFrom: nil)
             model.layout = .scrolling(ScrollingStrip(pane: first))
-            Ghostty.moveFocus(to: first)
+            requestFocus(to: first)
         }
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -421,7 +445,7 @@ final class MainWindowController: BaseTerminalController {
                     }
                 }
             }
-            Ghostty.moveFocus(to: pane, from: focusedSurface)
+            requestFocus(to: pane, from: focusedSurface)
 
         case .closePane:
             if let focused = focusedSurface { closePane(focused) }
@@ -444,7 +468,7 @@ final class MainWindowController: BaseTerminalController {
             case .scrolling(let strip):
                 // Cmd+J：併入左列纵栈 ⇄ 拆出独立列（spec §4.2-bis）
                 model.layout = .scrolling(strip.mergingOrSplitting(focused))
-                Ghostty.moveFocus(to: focused)
+                requestFocus(to: focused)
             }
 
         case .toggleZoom:
@@ -475,7 +499,7 @@ final class MainWindowController: BaseTerminalController {
         case .toggleLayout:
             // Cmd+L：dwindle ⇄ scrolling——pane 集合未变时恢复上次布局，否则保 pane 保序转换
             model.toggleLayout(columnFactor: columnFactor)
-            if let focused = focusedSurface { Ghostty.moveFocus(to: focused) }
+            if let focused = focusedSurface { requestFocus(to: focused) }
 
         case .gotoWorkspace1, .gotoWorkspace2, .gotoWorkspace3, .gotoWorkspace4, .gotoWorkspace5,
              .gotoWorkspace6, .gotoWorkspace7, .gotoWorkspace8, .gotoWorkspace9, .gotoWorkspace10:
@@ -567,14 +591,14 @@ final class MainWindowController: BaseTerminalController {
                     model.layout = .dwindle(t)
                 }
             }
-            Ghostty.moveFocus(to: fp.pane)
+            requestFocus(to: fp.pane)
         } else {
             // 浮起：类 Omarchy togglefloating——固定尺寸居中
             // （宽 = 默认列宽 × 0.75，高 = 内容区 45%）
             let rect = FloatingPane.defaultRect(columnFactor: columnFactor)
             removeFromActiveLayout(focused)
             model.floating.append(FloatingPane(pane: focused, rect: rect).clamped())
-            Ghostty.moveFocus(to: focused)
+            requestFocus(to: focused)
         }
     }
 
@@ -649,7 +673,7 @@ final class MainWindowController: BaseTerminalController {
     private func toggleScratchpad() {
         if model.scratchpadVisible {
             model.scratchpadVisible = false
-            if let focused = focusedSurface { Ghostty.moveFocus(to: focused) }
+            if let focused = focusedSurface { requestFocus(to: focused) }
             return
         }
         if model.scratchpadSurface == nil {
@@ -657,7 +681,7 @@ final class MainWindowController: BaseTerminalController {
         }
         model.scratchpadVisible = true
         if let scratch = model.scratchpadSurface {
-            Ghostty.moveFocus(to: scratch)
+            requestFocus(to: scratch)
         }
     }
 
@@ -804,7 +828,7 @@ final class MainWindowController: BaseTerminalController {
         guard index != model.activeIndex else { return }
         model.switchTo(index)  // 值语义切换：瞬时、无动画（忠实 Omarchy）
         if let focused = focusedSurface {
-            Ghostty.moveFocus(to: focused)
+            requestFocus(to: focused)
         }
     }
 
@@ -818,7 +842,7 @@ final class MainWindowController: BaseTerminalController {
             let fp = model.floating.remove(at: idx)
             model.floatings[index].append(fp)
             model.switchTo(index)
-            Ghostty.moveFocus(to: focused)
+            requestFocus(to: focused)
             return
         }
 
@@ -846,7 +870,7 @@ final class MainWindowController: BaseTerminalController {
         removeFromActiveLayout(focused)
         model.layouts[index] = newTarget
         model.switchTo(index)
-        Ghostty.moveFocus(to: focused)
+        requestFocus(to: focused)
     }
 
     // MARK: 布局分派的焦点/换位/调整
@@ -861,7 +885,7 @@ final class MainWindowController: BaseTerminalController {
         case .scrolling(let strip):
             target = strip.focusTarget(from: focused, direction: direction)
         }
-        if let target { Ghostty.moveFocus(to: target, from: focused) }
+        if let target { requestFocus(to: target, from: focused) }
     }
 
     private func swapFocused(_ direction: ScrollingStrip.Direction) {
@@ -875,7 +899,7 @@ final class MainWindowController: BaseTerminalController {
         case .scrolling(let strip):
             model.layout = .scrolling(strip.swapping(focused, direction: direction))
         }
-        Ghostty.moveFocus(to: focused)
+        requestFocus(to: focused)
     }
 
     private func resizeFocused(_ direction: ScrollingStrip.Direction, precise: Bool) {
@@ -909,7 +933,7 @@ final class MainWindowController: BaseTerminalController {
         case .scrolling(let strip):
             target = strip.linearTarget(from: focused, next: next)
         }
-        if let target { Ghostty.moveFocus(to: target, from: focused) }
+        if let target { requestFocus(to: target, from: focused) }
     }
 
     // MARK: Surface 生命周期
@@ -949,7 +973,7 @@ final class MainWindowController: BaseTerminalController {
         // 最后一个 pane 关闭后窗口保留（RootView 显示"新建终端"提示），不退出程序；
         // 退出只由 Cmd+Q / 菜单触发（AppDelegate.applicationShouldTerminate 决定是否确认）
         if !model.layout.isEmpty, wasFocused, let next = successor ?? paneList.first {
-            Ghostty.moveFocus(to: next)
+            requestFocus(to: next)
         }
     }
 
@@ -1002,7 +1026,7 @@ final class MainWindowController: BaseTerminalController {
         if drop.zone == .center {
             if let swapped = try? tree.swapping(drop.payload, drop.destination) {
                 model.layout = .dwindle(swapped)
-                Ghostty.moveFocus(to: drop.payload)
+                requestFocus(to: drop.payload)
             }
             return
         }
@@ -1018,7 +1042,7 @@ final class MainWindowController: BaseTerminalController {
         if let newTree = try? without.inserting(
             view: drop.payload, at: drop.destination, direction: direction) {
             model.layout = .dwindle(newTree)
-            Ghostty.moveFocus(to: drop.payload)
+            requestFocus(to: drop.payload)
         }
     }
 
@@ -1028,7 +1052,7 @@ final class MainWindowController: BaseTerminalController {
                        zone: TerminalSplitDropZone) {
         guard case .scrolling(let strip) = model.layout else { return }
         model.layout = .scrolling(strip.dropping(payload, on: destination, zone: zone))
-        Ghostty.moveFocus(to: payload)
+        requestFocus(to: payload)
     }
 }
 
