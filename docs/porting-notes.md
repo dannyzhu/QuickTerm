@@ -157,3 +157,20 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
 **登记时机的坑**：存活登记表必须在调用 `ghostty_surface_new` **之前**登记视图——它在返回前就会同步回调
 （`set_cell_size` 等）。登记若放在 `surfaceModel = …` 之后，守卫会把创建期的首个回调当悬垂丢弃
 （全套 70 用例稳定出现 78 次"假悬垂"，栈顶是 `SurfaceView.init → withCValue → performAction → setCellSize`）。
+
+## 关闭动效与 SwiftUI 视图复用（2026-09-04）
+
+关闭 pane 分两段（`MainWindowController.beginClose/finishClose`）：先标记 `WorkspaceModel.closingPanes`
+（pane 仍在布局，焦点已交给接班人），0.28s 动效到点才真正移除。两条坑：
+
+- **同位置 split 换 split 会复用 @State**：dwindle 关闭 A 后，兄弟子树 split(B,C) 顶到原 split(A,…) 的
+  视图位置，`TerminalSplitSubtreeView` 的 `switch` 仍走 `.split` 分支 → SwiftUI 复用 `SplitBranchView`
+  连同锁存的关闭态（closeProgress=1）→ B 被压成 0 宽。对策不是加 `.id`（会让子树重挂、闪屏），而是
+  锁存"关闭中的叶 id"，body 里只在该叶仍是直接子叶时才采用锁存几何，并在 `.onChange(of: CloseKey)`
+  里复位。
+- **并发关闭不经 perform**：子进程退出走 `ghosttyDidCloseSurface → closePane`，不会 flush 淡出中的
+  pane；接班人要在"其他淡出中 pane 已移除"的布局上算，否则焦点交给一个正在消失的 pane。
+
+其它：`ScrollingStrip.Column` 加了稳定 `id`（原用列首 pane id 做 ForEach 身份，列首关掉整列重建，列内
+其余 pane 脱离/重挂窗口）。
+

@@ -97,6 +97,8 @@ final class WorkspaceModel: ObservableObject {
     @Published var newTerminalCombo: String = "Cmd+Return"
     /// dwindle 刚分裂出的新 pane（局部动效：原 pane 收缩到 ratio、新 pane 渐显；动画结束后清空）
     @Published var appearingPane: UUID?
+    /// 正在淡出的 pane（仍在布局里；视图层播放收拢/渐隐，动效结束后控制器才真正移除）
+    @Published var closingPanes: Set<UUID> = []
 
     // 每屏可见列数（菜单显示用镜像）
     @Published var visibleColumnsDisplay: Int =
@@ -158,14 +160,16 @@ struct RootView: View {
             ZStack {
                 switch model.layout {
                 case .dwindle(let tree):
-                    TerminalSplitTreeView(tree: tree, action: action, appearingPane: model.appearingPane)
+                    TerminalSplitTreeView(tree: tree, action: action, appearingPane: model.appearingPane,
+                                          closingPanes: model.closingPanes)
                         .padding(theme.gapsEnabled ? theme.dwindleGap : 0)   // 外圈与 pane 留白同值
                 case .scrolling(let strip):
                     ScrollingStripView(
                         strip: strip,
                         workspaceIndex: model.activeIndex,
                         pan: model.stripPan,
-                        onDrop: onScrollingDrop)
+                        onDrop: onScrollingDrop,
+                        closingPanes: model.closingPanes)
                         .padding(theme.gapsEnabled ? 5 : 0)
                 }
 
@@ -184,7 +188,8 @@ struct RootView: View {
                 GeometryReader { geo in
                     ForEach(model.floating) { fp in
                         ScrollingPaneCell(surfaceView: fp.pane, onDrop: { _, _, _ in },
-                                          floating: true)
+                                          floating: true,
+                                          closing: model.closingPanes.contains(fp.id))
                             .frame(width: fp.rect.width * geo.size.width,
                                    height: fp.rect.height * geo.size.height)
                             .position(x: (fp.rect.origin.x + fp.rect.width / 2) * geo.size.width,

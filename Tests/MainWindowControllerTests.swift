@@ -30,7 +30,7 @@ final class MainWindowControllerTests: XCTestCase {
         c.perform(.newTerminal)
         XCTAssertEqual(c.paneList.count, before + 1)
         let newPane = try XCTUnwrap(c.focusedSurface)
-        c.closePane(newPane, confirmIfNeeded: false)
+        c.closePane(newPane, confirmIfNeeded: false, animated: false)
         XCTAssertEqual(c.paneList.count, before, "关闭后应回收（scrolling 删空列）")
     }
 }

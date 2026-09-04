@@ -54,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !Self.isRunningTests, let controller else { return .terminateNow }
+        controller.flushPendingCloses()   // 淡出中的 pane 已经关了，不算"还开着"
         let open = controller.model.allPanes.count
         guard Self.shouldConfirmQuit(openPaneCount: open) else { return .terminateNow }
         let alert = NSAlert()

@@ -8,6 +8,8 @@ struct ScrollingStripView: View {
     let workspaceIndex: Int
     let pan: WorkspaceModel.StripPanEvent?
     let onDrop: (Ghostty.SurfaceView, Ghostty.SurfaceView, TerminalSplitDropZone) -> Void
+    /// 正在淡出的 pane（渐隐；到点后控制器移除、列条带重排）
+    var closingPanes: Set<UUID> = []
 
     @State private var offset: CGFloat = 0
     @State private var lastPanSerial: Int = -1
@@ -18,15 +20,18 @@ struct ScrollingStripView: View {
         GeometryReader { geo in
             if let zoomed = strip.zoomedPane {
                 // zoom：焦点 pane 占满内容区（同 dwindle 语义）
-                ScrollingPaneCell(surfaceView: zoomed, onDrop: onDrop)
+                ScrollingPaneCell(surfaceView: zoomed, onDrop: onDrop,
+                                  closing: closingPanes.contains(zoomed.id))
+                    .id(zoomed.id)   // 换了 zoom 的 pane 要换视图身份（faded 等状态不可沿用）
             } else {
                 let widths = strip.columnWidths(viewport: geo.size.width, gap: columnGap)
                 HStack(alignment: .top, spacing: columnGap) {
                     ForEach(Array(strip.columns.enumerated()),
-                            id: \.element.panes.first!.id) { index, column in
+                            id: \.element.id) { index, column in
                         VStack(spacing: 0) {
                             ForEach(column.panes, id: \.id) { pane in
-                                ScrollingPaneCell(surfaceView: pane, onDrop: onDrop)
+                                ScrollingPaneCell(surfaceView: pane, onDrop: onDrop,
+                                                  closing: closingPanes.contains(pane.id))
                             }
                         }
                         .frame(width: max(widths[index], 50))
@@ -114,6 +119,10 @@ struct ScrollingPaneCell: View {
     let onDrop: (Ghostty.SurfaceView, Ghostty.SurfaceView, TerminalSplitDropZone) -> Void
     /// 浮动层渲染（RootView）：透传给 PaneChrome 关掉非激活磨砂
     var floating: Bool = false
+    /// 关闭中 → 渐隐并停止响应鼠标（悬停不再夺焦点）
+    var closing: Bool = false
+    /// 渐隐由状态驱动（一出生就 closing 的单元也能淡出），见 TerminalSplitLeaf
+    @State private var faded = false
 
     @ObservedObject private var modifierState = ModifierState.shared
     @State private var dropZone: TerminalSplitDropZone?
@@ -150,6 +159,13 @@ struct ScrollingPaneCell: View {
                     }
                 }
                 .modifier(PaneChrome(surfaceView: surfaceView, floating: floating))
+                .opacity(faded ? 0 : 1)
+                .allowsHitTesting(!closing)
+                .onChange(of: closing, initial: true) { _, closing in
+                    if !closing { faded = false; return }   // 身份复用兜底：不在关闭中就必须可见
+                    guard !faded else { return }
+                    withAnimation(.easeOut(duration: 0.28)) { faded = true }
+                }
                 .preference(key: FocusedStripPaneKey.self,
                             value: surfaceView.focused ? surfaceView.id : nil)
         }

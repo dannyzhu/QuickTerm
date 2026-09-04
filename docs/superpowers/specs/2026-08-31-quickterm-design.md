@@ -268,7 +268,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 | Omarchy | QuickTerm | 动作 id | 功能 |
 |---|---|---|---|
 | Super+Return | `Cmd+Return` | `new-terminal` | 新建（scrolling 右插新列 / dwindle 分裂，继承 cwd） |
-| Super+W | `Cmd+W` | `close-pane` | 关闭焦点 pane（有活动进程二次确认；最后一个 pane 关闭后窗口保留并显示"新建终端"提示，不退出程序）。焦点去向：scrolling = 左邻（否则右/上/下）；dwindle = 接管空间的兄弟子树中最近的 pane（左/上孩子→兄弟首叶即"下一个"，右/下孩子→兄弟末叶即"上一个"，Hyprland 语义） |
+| Super+W | `Cmd+W` | `close-pane` | 关闭焦点 pane（有活动进程二次确认；最后一个 pane 关闭后窗口保留并显示"新建终端"提示，不退出程序）。焦点去向：scrolling = 左邻（否则右/上/下）；dwindle = 接管空间的兄弟子树中最近的 pane（左/上孩子→兄弟首叶即"下一个"，右/下孩子→兄弟末叶即"上一个"，Hyprland 语义）。动效（与创建对称，0.28s）：关闭方渐隐、dwindle 下其槽位收拢、兄弟子树平滑长满；动效期间 pane 仍在布局（焦点已交出、悬停不夺焦点），到点后才真正移除；任何布局操作/工作区切换/存档前先把淡出中的 pane 立即移除；系统"减弱动态效果"时直接移除 |
 | Super+←→↑↓ | `Cmd+←→↑↓` | `focus-*` | 方向焦点 |
 | Super+Shift+←→↑↓ | `Cmd+Shift+←→↑↓` | `swap-*` | 换位（视口自动跟随） |
 | Super+J | `Cmd+J` | `toggle-split-dir` | scrolling 併列⇄拆列 / dwindle 翻转分裂方向 |

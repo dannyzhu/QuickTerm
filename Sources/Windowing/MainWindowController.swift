@@ -18,6 +18,16 @@ final class MainWindowController: BaseTerminalController {
     private var mouseMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
     private var lastSplitAnimationAt: Date?
+    /// 关闭动效时长（与创建动效同源）；到点后才真正从布局移除、释放 surface
+    static let closeAnimationDuration: TimeInterval = 0.28
+    /// 关闭动效开关（系统"减弱动态效果"时关；测试可显式打开）
+    var closeAnimationEnabled: Bool = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    /// 淡出中的 pane 及其预先算好的焦点接班人（关闭开始时树还完整，接班关系才算得出）
+    private var pendingCloses: [ObjectIdentifier: PendingClose] = [:]
+    private struct PendingClose {
+        let view: Ghostty.SurfaceView
+        let successor: Ghostty.SurfaceView?
+    }
     private var scrollMonitor: Any?
     private var resizeTarget: Ghostty.SurfaceView?
     private var floatingMoveIndex: Int?
@@ -213,7 +223,9 @@ final class MainWindowController: BaseTerminalController {
             switch event.type {
             case .leftMouseDown:
                 // ⌘+左键：浮动 pane = 自由移动（置顶）；平铺 pane 放行给 DnD 拖拽源
-                if let idx = self.floatingIndex(of: self.paneUnderPointer(event)) {
+                if let pane = self.paneUnderPointer(event),
+                   !self.model.closingPanes.contains(pane.id),   // 淡出中的 pane 不再拖
+                   let idx = self.floatingIndex(of: pane) {
                     self.floatingMoveIndex = self.raiseFloating(at: idx)
                     return nil
                 }
@@ -228,6 +240,7 @@ final class MainWindowController: BaseTerminalController {
                 return had ? nil : event
             case .rightMouseDown:
                 self.resizeTarget = self.paneUnderPointer(event)
+                    .flatMap { self.model.closingPanes.contains($0.id) ? nil : $0 }   // 淡出中不缩放
                 return self.resizeTarget == nil ? event : nil
             case .rightMouseDragged:
                 guard let pane = self.resizeTarget else { return event }
@@ -326,6 +339,7 @@ final class MainWindowController: BaseTerminalController {
     }
 
     func saveState() {
+        flushPendingCloses()   // 淡出中的 pane 不进存档
         let state = PersistedState(
             layouts: model.layouts, floatings: model.floatings, activeIndex: model.activeIndex)
         if let data = try? JSONEncoder().encode(state) {
@@ -417,6 +431,7 @@ final class MainWindowController: BaseTerminalController {
     // MARK: WM 动作（spec §5.1 + §4.2-bis；按活动布局分派）
 
     func perform(_ action: WMAction, precise: Bool = false) {
+        flushPendingCloses()   // 布局操作先在真实布局上做（淡出中的 pane 立即移除）
         if action != .newTerminal { model.appearingPane = nil }  // 非插入类变更不重播进场动效
         switch action {
         case .newTerminal:
@@ -574,7 +589,9 @@ final class MainWindowController: BaseTerminalController {
     // MARK: 浮动 pane（spec v7：Cmd+T / ⌘拖移动 / ⌘右拖调大小）
 
     func toggleFloat(_ target: Ghostty.SurfaceView? = nil) {
-        guard let focused = target ?? focusedSurface else { return }
+        flushPendingCloses()
+        guard let focused = target ?? focusedSurface,
+              paneList.contains(focused) else { return }   // 显式目标可能刚被 flush 移除
         if let idx = model.floating.firstIndex(where: { $0.pane === focused }) {
             // 塞回平铺：scrolling = 尾列右侧新列；dwindle = 规则插入
             let fp = model.floating.remove(at: idx)
@@ -615,6 +632,7 @@ final class MainWindowController: BaseTerminalController {
     override func surfaceIsOccluded(_ pane: Ghostty.SurfaceView,
                                     at locationInWindow: NSPoint) -> Bool {
         if model.activePanel != nil { return true }  // 面板遮罩在最顶层
+        if model.closingPanes.contains(pane.id) { return true }  // 淡出中：悬停不再夺焦点
         if model.scratchpadVisible { return model.scratchpadSurface !== pane }
         guard !model.floating.isEmpty,
               let point = normalizedContentPoint(locationInWindow) else { return false }
@@ -646,7 +664,7 @@ final class MainWindowController: BaseTerminalController {
 
     /// ⌘+左键拖动浮动 pane（deltaY 向下为正 = SwiftUI y 正方向）
     private func moveFloating(at index: Int, dx: CGFloat, dy: CGFloat) {
-        guard let content = window?.contentView else { return }
+        guard let content = window?.contentView, model.floating.indices.contains(index) else { return }
         var fp = model.floating[index]
         fp.rect.origin.x += dx / max(content.bounds.width, 1)
         fp.rect.origin.y += dy / max(content.bounds.height, 1)
@@ -654,7 +672,7 @@ final class MainWindowController: BaseTerminalController {
     }
 
     private func resizeFloating(at index: Int, dx: CGFloat, dy: CGFloat) {
-        guard let content = window?.contentView else { return }
+        guard let content = window?.contentView, model.floating.indices.contains(index) else { return }
         var fp = model.floating[index]
         fp.rect.size.width += dx / max(content.bounds.width, 1)
         fp.rect.size.height += dy / max(content.bounds.height, 1)
@@ -825,6 +843,7 @@ final class MainWindowController: BaseTerminalController {
     // MARK: 工作区（spec §5.2）
 
     func switchWorkspace(_ index: Int) {
+        flushPendingCloses()
         model.appearingPane = nil
         guard index != model.activeIndex else { return }
         model.switchTo(index)  // 值语义切换：瞬时、无动画（忠实 Omarchy）
@@ -947,8 +966,8 @@ final class MainWindowController: BaseTerminalController {
     }
 
     /// 关闭一个 pane（scrolling 空列删除；dwindle 兄弟回收）；全部工作区皆空才关窗。
-    func closePane(_ view: Ghostty.SurfaceView, confirmIfNeeded: Bool = true) {
-        guard paneList.contains(view) else { return }
+    func closePane(_ view: Ghostty.SurfaceView, confirmIfNeeded: Bool = true, animated: Bool = true) {
+        guard paneList.contains(view), !model.closingPanes.contains(view.id) else { return }
         if confirmIfNeeded, view.needsConfirmQuit {
             // 确认对话框异步弹出：本方法可能正处在引擎 close_surface 回调栈内（键绑定 → Zig keyCallback），
             // 模态嵌套 run loop 期间若子进程退出会二次回调并同步释放 surface，返回后引擎栈仍触碰它（UAF）。
@@ -961,28 +980,82 @@ final class MainWindowController: BaseTerminalController {
                 alert.addButton(withTitle: "关闭")
                 alert.addButton(withTitle: "取消")
                 guard alert.runModal() == .alertFirstButtonReturn else { return }
-                guard self.paneList.contains(view) else { return }
-                self.removePane(view)
+                guard self.paneList.contains(view), !self.model.closingPanes.contains(view.id) else { return }
+                self.beginClose(view, animated: animated)
             }
             return
         }
-        removePane(view)
+        beginClose(view, animated: animated)
     }
 
-    private func removePane(_ view: Ghostty.SurfaceView) {
+    /// 关闭分两段（与创建动效对称）：先把焦点交给接班人并标记淡出——视图层播放收拢/渐隐——
+    /// 动效到点后 finishClose 才真正移除并释放 surface。窗口不可见或动效关闭时直接移除。
+    private func beginClose(_ view: Ghostty.SurfaceView, animated: Bool) {
+        guard animated, closeAnimationEnabled, window?.isVisible == true else {
+            removePane(view)
+            return
+        }
+        let successor = closeSuccessor(of: view)
+        // 焦点交接是异步的：同一轮里前一个关闭刚把焦点意图指向本 pane（pendingFocusTarget）
+        // 时 focused 还是 false，也要把焦点接着往下传，别让意图落在一个淡出中的 pane 上
+        if view.focused || pendingFocusTarget === view, let next = successor ?? firstLivePane(excluding: view) {
+            requestFocus(to: next, from: view)
+        }
+        pendingCloses[ObjectIdentifier(view)] = PendingClose(view: view, successor: successor)
+        model.closingPanes.insert(view.id)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.closeAnimationDuration + 0.02) {
+            [weak self, weak view] in
+            guard let self, let view else { return }
+            self.finishClose(view)
+        }
+    }
+
+    private func finishClose(_ view: Ghostty.SurfaceView) {
+        guard let pending = pendingCloses.removeValue(forKey: ObjectIdentifier(view)) else { return }
+        model.closingPanes.remove(view.id)
+        guard paneList.contains(view) else { return }   // 已被别的路径移除
         let wasFocused = view.focused
-        // scrolling：删除前记下左邻（spec：焦点左移）
-        var successor: Ghostty.SurfaceView?
+        removeFromActiveLayout(view)  // 放弃引用 → SurfaceView.deinit 释放 surface
+        // 焦点通常在 beginClose 已交出；仍在关闭方（如接班人期间被关掉）时再兜一次
+        if wasFocused, let next = pending.successor.flatMap({ paneList.contains($0) ? $0 : nil })
+            ?? firstLivePane(excluding: view) {
+            requestFocus(to: next)
+        }
+    }
+
+    /// 兜底焦点：第一个不在淡出中的 pane
+    private func firstLivePane(excluding view: Ghostty.SurfaceView) -> Ghostty.SurfaceView? {
+        paneList.first { $0 !== view && !model.closingPanes.contains($0.id) }
+    }
+
+    /// 淡出中的 pane 立即移除：布局操作 / 工作区切换 / 存档之前调用，保证它们看到的是真实布局
+    func flushPendingCloses() {
+        for pending in Array(pendingCloses.values) { finishClose(pending.view) }
+    }
+
+    /// 关闭 view 后应接管焦点的 pane（scrolling：左邻优先；dwindle：兄弟子树最近叶；浮动：无）。
+    /// 在"其他淡出中的 pane 已移除"的布局上算：子进程同时退出等并发关闭（不经 perform，不 flush）
+    /// 不能把焦点交给一个正在消失的 pane。
+    private func closeSuccessor(of view: Ghostty.SurfaceView) -> Ghostty.SurfaceView? {
+        let fading = paneList.filter { $0 !== view && model.closingPanes.contains($0.id) }
         switch model.layout {
-        case .scrolling(let strip):
-            successor = strip.focusTarget(from: view, direction: .left)
+        case .scrolling(var strip):
+            for p in fading { strip = strip.removing(p) }
+            return strip.focusTarget(from: view, direction: .left)
                 ?? strip.focusTarget(from: view, direction: .right)
                 ?? strip.focusTarget(from: view, direction: .up)
                 ?? strip.focusTarget(from: view, direction: .down)
-        case .dwindle(let tree):
+        case .dwindle(var tree):
+            for p in fading { if let n = tree.root?.node(view: p) { tree = tree.removing(n) } }
             // Hyprland dwindle 语义：焦点交给接管空间的兄弟子树中最近的 pane（下一个，否则上一个）
-            successor = tree.closeSuccessor(of: view)
+            return tree.closeSuccessor(of: view)
         }
+    }
+
+    /// 同步移除（无动效路径）
+    private func removePane(_ view: Ghostty.SurfaceView) {
+        let wasFocused = view.focused
+        let successor = closeSuccessor(of: view)   // 删除前算：删完兄弟关系就没了
         removeFromActiveLayout(view)  // 放弃引用 → SurfaceView.deinit 释放 surface
         // 最后一个 pane 关闭后窗口保留（RootView 显示"新建终端"提示），不退出程序；
         // 退出只由 Cmd+Q / 菜单触发（AppDelegate.applicationShouldTerminate 决定是否确认）
@@ -992,9 +1065,33 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
+    /// 在任一工作区里找到并移除（活动工作区用 removeFromActiveLayout，那条路径还管焦点）
+    private func removeFromAnyWorkspace(_ view: Ghostty.SurfaceView) {
+        for i in model.layouts.indices {
+            if let idx = model.floatings[i].firstIndex(where: { $0.pane === view }) {
+                model.floatings[i].remove(at: idx)
+                return
+            }
+            switch model.layouts[i] {
+            case .dwindle(let tree):
+                if let node = tree.root?.node(view: view) {
+                    model.layouts[i] = .dwindle(tree.removing(node))
+                    return
+                }
+            case .scrolling(let strip):
+                if strip.paneList.contains(where: { $0 === view }) {
+                    model.layouts[i] = .scrolling(strip.removing(view))
+                    return
+                }
+            }
+        }
+    }
+
     private func removeFromActiveLayout(_ view: Ghostty.SurfaceView) {
         if let idx = model.floating.firstIndex(where: { $0.pane === view }) {
             model.floating.remove(at: idx)
+            floatingMoveIndex = nil   // 索引已失效（拖动途中被到点移除时不能再用）
+            if resizeTarget === view { resizeTarget = nil }
             return
         }
         switch model.layout {
@@ -1017,7 +1114,13 @@ final class MainWindowController: BaseTerminalController {
             model.scratchpadSurface = nil
             return
         }
-        guard paneList.contains(view) else { return }
+        guard paneList.contains(view) else {
+            // 非活动工作区里的 pane（如切走后 shell 退出）：直接从所在工作区移除，不动焦点。
+            // 异步：本方法在引擎 close_surface 回调栈内，后台 pane 没有 SwiftUI 持有，
+            // 同步放弃引用会立刻 free 仍在引擎栈上的 surface
+            DispatchQueue.main.async { [weak self] in self?.removeFromAnyWorkspace(view) }
+            return
+        }
         let processAlive = (notification.userInfo?["process_alive"] as? Bool) ?? false
         closePane(view, confirmIfNeeded: processAlive)
     }
@@ -1025,6 +1128,7 @@ final class MainWindowController: BaseTerminalController {
     // MARK: SwiftUI 回调（dwindle 分隔条 / 双布局拖放）
 
     func handleSplitOperation(_ op: TerminalSplitOperation) {
+        flushPendingCloses()   // 拖放/拖分隔条不经 perform：先落到真实布局
         guard case .dwindle(let tree) = model.layout else { return }
         switch op {
         case .resize(let resize):
@@ -1065,6 +1169,7 @@ final class MainWindowController: BaseTerminalController {
     func scrollingDrop(payload: Ghostty.SurfaceView,
                        destination: Ghostty.SurfaceView,
                        zone: TerminalSplitDropZone) {
+        flushPendingCloses()
         guard case .scrolling(let strip) = model.layout else { return }
         model.layout = .scrolling(strip.dropping(payload, on: destination, zone: zone))
         requestFocus(to: payload)

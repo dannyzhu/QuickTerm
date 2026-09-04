@@ -211,6 +211,32 @@ final class ScrollingStripTests: XCTestCase {
         let decoded = try JSONDecoder().decode(ScrollingStrip.self, from: data)
         XCTAssertEqual(decoded.columns.count, 2)
         XCTAssertEqual(decoded.columns[1].widthFactor, ScrollingStrip.defaultWidth + ScrollingStrip.widthStep, accuracy: 0.001)
+        XCTAssertEqual(decoded.columns.map(\.id), strip.columns.map(\.id), "列稳定 id 随存档往返")
+    }
+
+    /// 旧存档的列没有 id / widthFactor：解码补新 id 与默认宽
+    func testColumnDecodesLegacyArchiveWithoutId() throws {
+        let legacy = try JSONDecoder().decode(ScrollingStrip.Column.self,
+                                              from: Data(#"{"panes":[]}"#.utf8))
+        XCTAssertEqual(legacy.widthFactor, ScrollingStrip.defaultWidth, accuracy: 0.0001)
+        let another = try JSONDecoder().decode(ScrollingStrip.Column.self,
+                                               from: Data(#"{"panes":[],"widthFactor":0.6}"#.utf8))
+        XCTAssertEqual(another.widthFactor, 0.6, accuracy: 0.0001)
+        XCTAssertNotEqual(legacy.id, another.id, "缺 id 时各自补新 id")
+    }
+
+    /// 拖拽换位：载荷独占一列时沿用原列（id 不变 → SwiftUI 视作移动，pane 不重挂）
+    @MainActor
+    func testDroppingSoleColumnKeepsColumnIdentity() throws {
+        let a = try pane(), b = try pane()
+        let strip = ScrollingStrip(pane: a).insertingColumnRight(of: a, pane: b)
+        let ids = strip.columns.map(\.id)
+        let moved = strip.dropping(a, on: b, zone: .right)
+        XCTAssertTrue(moved.columns[0].panes.first === b)
+        XCTAssertTrue(moved.columns[1].panes.first === a)
+        XCTAssertEqual(moved.columns.map(\.id), [ids[1], ids[0]], "列身份随 pane 一起移动")
+        let back = moved.dropping(a, on: b, zone: .left)
+        XCTAssertEqual(back.columns.map(\.id), ids)
     }
 }
 

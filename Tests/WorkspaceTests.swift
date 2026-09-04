@@ -64,7 +64,7 @@ final class WorkspaceTests: XCTestCase {
 
         // 清理
         c.switchWorkspace(2)
-        if let pane = c.paneList.first { c.closePane(pane, confirmIfNeeded: false) }
+        if let pane = c.paneList.first { c.closePane(pane, confirmIfNeeded: false, animated: false) }
         c.model.switchTo(0)
     }
 
@@ -84,7 +84,7 @@ final class WorkspaceTests: XCTestCase {
         if case .scrolling = c.model.layout {} else { XCTFail("应切回 scrolling") }
         XCTAssertEqual(c.paneList.count, before, "往返保 pane")
 
-        c.closePane(extra, confirmIfNeeded: false)
+        c.closePane(extra, confirmIfNeeded: false, animated: false)
     }
 
     func testWorkspaceKeybindings() {
@@ -117,7 +117,7 @@ extension WorkspaceTests {
         XCTAssertTrue(c.model.floating.isEmpty, "塞回后浮动层清空")
         XCTAssertEqual(c.model.layout.paneList.count, tiledBefore, "平铺层恢复")
 
-        c.closePane(pane, confirmIfNeeded: false)
+        c.closePane(pane, confirmIfNeeded: false, animated: false)
     }
 
     func testToggleFloatKeybinding() {
@@ -149,7 +149,7 @@ extension WorkspaceTests {
         c.toggleFloat(pane)
         defer {
             c.toggleFloat(pane)
-            c.closePane(pane, confirmIfNeeded: false)
+            c.closePane(pane, confirmIfNeeded: false, animated: false)
         }
         let rect = try XCTUnwrap(c.model.floating.first?.rect)
         XCTAssertEqual(rect, FloatingPane.defaultRect(columnFactor: c.columnFactor))
@@ -237,12 +237,190 @@ extension WorkspaceTests {
         XCTAssertTrue(c.model.layout.isEmpty, "末位工作区应为空")
         c.perform(.newTerminal)
         let only = try XCTUnwrap(c.paneList.first)
-        c.closePane(only, confirmIfNeeded: false)
+        c.closePane(only, confirmIfNeeded: false, animated: false)
         XCTAssertTrue(c.model.layout.isEmpty, "最后一个 pane 已关")
         XCTAssertTrue(c.window?.isVisible ?? false, "窗口保留，不随最后一个 pane 关闭")
         c.perform(.newTerminal)
         XCTAssertEqual(c.paneList.count, 1, "空工作区可直接新建终端")
-        c.closePane(try XCTUnwrap(c.paneList.first), confirmIfNeeded: false)
+        c.closePane(try XCTUnwrap(c.paneList.first), confirmIfNeeded: false, animated: false)
+    }
+
+    /// 关闭动效：关闭先标记淡出（pane 仍在布局、焦点已交给接班人），动效到点后才真正移除；
+    /// 任何布局操作前先把淡出中的 pane 立即移除（flush），定时器到点不再有副作用
+    @MainActor
+    func testClosePaneAnimatedDefersRemovalAndFocusesSuccessor() throws {
+        let c = try controller
+        let prevAnim = c.closeAnimationEnabled
+        defer { c.closeAnimationEnabled = prevAnim }
+        let home = c.model.activeIndex
+        let ws = c.model.layouts.count - 1
+        c.model.switchTo(ws)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty, "末位工作区应为空")
+        c.model.layout = .dwindle(SplitTree())
+        c.closeAnimationEnabled = true   // 不受系统"减弱动态效果"影响
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        c.perform(.newTerminal)
+        let a = try XCTUnwrap(c.paneList.first)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        c.perform(.newTerminal)
+        let b = try XCTUnwrap(c.paneList.first { $0 !== a })
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        XCTAssertTrue(c.window?.firstResponder === b, "新 pane 应为焦点")
+
+        c.closePane(b, confirmIfNeeded: false)   // animated 默认开
+        XCTAssertEqual(c.paneList.count, 2, "动效期间 pane 仍在布局")
+        XCTAssertTrue(c.model.closingPanes.contains(b.id))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertTrue(c.window?.firstResponder === a, "焦点在关闭开始时就交给接班人")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        XCTAssertEqual(c.paneList.count, 1, "动效到点后真正移除")
+        XCTAssertTrue(c.model.closingPanes.isEmpty)
+        XCTAssertTrue(c.window?.firstResponder === a)
+
+        // flush：淡出中再做布局操作 → 立即移除；到点的定时器不再有副作用
+        c.perform(.newTerminal)
+        let d = try XCTUnwrap(c.paneList.first { $0 !== a })
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        c.closePane(d, confirmIfNeeded: false)
+        XCTAssertEqual(c.paneList.count, 2)
+        c.perform(.focusLeft)
+        XCTAssertEqual(c.paneList.count, 1, "布局操作前 flush 淡出中的 pane")
+        XCTAssertTrue(c.model.closingPanes.isEmpty)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        XCTAssertEqual(c.paneList.count, 1)
+        XCTAssertTrue(c.window?.firstResponder === a)
+        c.closePane(a, confirmIfNeeded: false, animated: false)
+    }
+
+    /// dwindle 三 pane 夹具：split(A, split(B, C))，焦点 C（末位空工作区，动效开）
+    @MainActor
+    private func dwindleTriple(_ c: MainWindowController) throws -> (a: Ghostty.SurfaceView, b: Ghostty.SurfaceView, cc: Ghostty.SurfaceView) {
+        XCTAssertTrue(c.model.layout.isEmpty, "末位工作区应为空")
+        c.model.layout = .dwindle(SplitTree())
+        c.closeAnimationEnabled = true
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        func spawn() throws -> Ghostty.SurfaceView {
+            let before = Set(c.paneList.map(ObjectIdentifier.init))
+            c.perform(.newTerminal)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+            return try XCTUnwrap(c.paneList.first { !before.contains(ObjectIdentifier($0)) })
+        }
+        let a = try spawn(), b = try spawn(), cc = try spawn()
+        guard case .dwindle(let tree) = c.model.layout, case .split(let root)? = tree.root,
+              case .leaf(let l) = root.left, l === a, case .split = root.right else {
+            // 夹具形状在测试宿主里是确定的（1024×720 窗口，新 pane 相对焦点插入）：
+            // 不成形 = 焦点交接回归，必须失败而不是跳过
+            XCTFail("期望 split(A, split(B, C))，实际 \(c.model.layout)")
+            throw FixtureShapeError()
+        }
+        return (a, b, cc)
+    }
+
+    private struct FixtureShapeError: Error {}
+
+    /// 窗口坐标里的 pane 矩形
+    private func windowRect(_ v: Ghostty.SurfaceView) -> NSRect { v.convert(v.bounds, to: nil) }
+
+    /// 关闭的 pane 其兄弟是子树时，兄弟子树会顶到父分裂视图的位置被 SwiftUI 复用（连同锁存的关闭态）；
+    /// 派生几何必须立刻回到正常——否则幸存子树的一个孩子被压成 0 宽、内容钉在旧尺寸盖住另一个
+    @MainActor
+    func testCloseAnimationSurvivorSubtreeKeepsGeometry() throws {
+        let c = try controller
+        let prevAnim = c.closeAnimationEnabled
+        defer { c.closeAnimationEnabled = prevAnim }
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        let (a, b, cc) = try dwindleTriple(c)
+        defer { for p in [b, cc] where c.paneList.contains(p) { c.closePane(p, confirmIfNeeded: false, animated: false) } }
+        c.closePane(a, confirmIfNeeded: false)   // 动效关闭；根变成 split(B, C)，复用根分裂视图
+        RunLoop.main.run(until: Date().addingTimeInterval(0.7))
+        XCTAssertEqual(c.paneList.count, 2)
+        let rb = windowRect(b), rc = windowRect(cc)
+        XCTAssertGreaterThan(rb.width, 40, "B 尺寸异常 \(rb)")
+        XCTAssertGreaterThan(rb.height, 40, "B 尺寸异常 \(rb)")
+        XCTAssertGreaterThan(rc.width, 40, "C 尺寸异常 \(rc)")
+        XCTAssertGreaterThan(rc.height, 40, "C 尺寸异常 \(rc)")
+        let overlap = rb.intersection(rc)
+        XCTAssertLessThan(overlap.width * overlap.height, 100, "B/C 重叠：B=\(rb) C=\(rc)（残留的关闭态几何）")
+    }
+
+    /// 淡出中紧接着新建：perform 先 flush（根 → 叶 B）再插入 D（根 → split(B, D)），同一轮更新里
+    /// 根分裂视图被复用；B 不能被压成 0 宽
+    @MainActor
+    func testCloseThenNewTerminalReusesBranchWithoutStaleState() throws {
+        let c = try controller
+        let prevAnim = c.closeAnimationEnabled
+        defer { c.closeAnimationEnabled = prevAnim }
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty)
+        c.model.layout = .dwindle(SplitTree())
+        c.closeAnimationEnabled = true
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        c.perform(.newTerminal)
+        let a = try XCTUnwrap(c.paneList.first)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        c.perform(.newTerminal)
+        let b = try XCTUnwrap(c.paneList.first { $0 !== a })
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        c.closePane(a, confirmIfNeeded: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        c.perform(.newTerminal)                 // flush + 插入
+        XCTAssertEqual(c.paneList.count, 2)
+        let d = try XCTUnwrap(c.paneList.first { $0 !== b })
+        defer { for p in [b, d] where c.paneList.contains(p) { c.closePane(p, confirmIfNeeded: false, animated: false) } }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.7))
+        let rb = windowRect(b), rd = windowRect(d)
+        XCTAssertGreaterThan(rb.width, 40, "B 尺寸异常 \(rb)")
+        XCTAssertGreaterThan(rd.width, 40, "D 尺寸异常 \(rd)")
+        let overlap = rb.intersection(rd)
+        XCTAssertLessThan(overlap.width * overlap.height, 100, "B/D 重叠：B=\(rb) D=\(rd)")
+    }
+
+    /// 并发关闭（子进程同时退出，不经 perform 不 flush）：接班人不能是正在淡出的 pane
+    @MainActor
+    func testConcurrentCloseSuccessorSkipsFadingPane() throws {
+        let c = try controller
+        let prevAnim = c.closeAnimationEnabled
+        defer { c.closeAnimationEnabled = prevAnim }
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        let (a, b, cc) = try dwindleTriple(c)
+        defer { if c.paneList.contains(a) { c.closePane(a, confirmIfNeeded: false, animated: false) } }
+        XCTAssertTrue(c.window?.firstResponder === cc)
+        c.closePane(b, confirmIfNeeded: false)    // B 淡出（非焦点）
+        c.closePane(cc, confirmIfNeeded: false)   // C 淡出：兄弟 B 在淡出中，接班人应为 A
+        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+        XCTAssertTrue(c.window?.firstResponder === a, "接班人应跳过淡出中的 B")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertEqual(c.paneList.count, 1)
+        XCTAssertTrue(c.paneList.first === a)
+        XCTAssertTrue(c.window?.firstResponder === a)
+    }
+
+    /// 非活动工作区里 shell 退出：pane 直接从所在工作区移除（原先只处理活动工作区，死 surface 会残留）
+    @MainActor
+    func testChildExitInBackgroundWorkspaceRemovesPane() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        let ws = c.model.layouts.count - 1
+        c.switchWorkspace(ws)
+        defer { c.switchWorkspace(home) }
+        XCTAssertTrue(c.model.layout.isEmpty)
+        c.model.layout = .dwindle(SplitTree())
+        c.perform(.newTerminal)
+        let p = try XCTUnwrap(c.paneList.first)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        c.switchWorkspace(home)
+        XCTAssertFalse(c.paneList.contains(p))
+        NotificationCenter.default.post(name: Ghostty.Notification.ghosttyCloseSurface, object: p,
+                                        userInfo: ["process_alive": false])
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))   // 移除在回调栈外异步进行
+        XCTAssertTrue(c.model.layouts[ws].isEmpty, "后台工作区的 pane 应被移除")
     }
 
     /// 新建 pane 后焦点必须落在新 pane（dwindle：原 pane 在 leaf→split 重挂时会"夺回"焦点，需让位）
@@ -257,7 +435,7 @@ extension WorkspaceTests {
         c.model.layout = .dwindle(SplitTree())
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         var created: [Ghostty.SurfaceView] = []
-        defer { for p in created { c.closePane(p, confirmIfNeeded: false) } }
+        defer { for p in created { c.closePane(p, confirmIfNeeded: false, animated: false) } }
         func frDesc() -> String {
             if let s = c.window?.firstResponder as? Ghostty.SurfaceView { return "Surface(\(s.id.uuidString.prefix(4)))" }
             return c.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
@@ -284,7 +462,7 @@ extension WorkspaceTests {
         for _ in 0..<4 { c.perform(.newTerminal) }
         let created = c.paneList.filter { !before.contains(ObjectIdentifier($0)) }
         XCTAssertEqual(created.count, 4)
-        defer { for p in created { c.closePane(p, confirmIfNeeded: false) } }
+        defer { for p in created { c.closePane(p, confirmIfNeeded: false, animated: false) } }
         let target = try XCTUnwrap(created.last)
         Ghostty.moveFocus(to: target)
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))

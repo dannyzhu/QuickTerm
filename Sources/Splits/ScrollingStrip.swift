@@ -6,8 +6,25 @@ import AppKit
 /// 由控制器用 focusedSurface 反查，悬停焦点因此天然同步。
 struct ScrollingStrip: Codable {
     struct Column: Codable {
+        /// 稳定身份（SwiftUI ForEach 用）：列首 pane 关掉时整列不再重建——否则列内其余 pane 的
+        /// SurfaceView 会脱离/重挂窗口（闪一帧、FR 被静默重置）。旧存档无此字段时新建。
+        var id = UUID()
         var panes: [Ghostty.SurfaceView]
         var widthFactor: Double = ScrollingStrip.defaultWidth
+
+        init(panes: [Ghostty.SurfaceView], widthFactor: Double = ScrollingStrip.defaultWidth) {
+            self.panes = panes
+            self.widthFactor = widthFactor
+        }
+
+        private enum CodingKeys: String, CodingKey { case id, panes, widthFactor }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+            panes = try c.decode([Ghostty.SurfaceView].self, forKey: .panes)
+            widthFactor = try c.decodeIfPresent(Double.self, forKey: .widthFactor) ?? ScrollingStrip.defaultWidth
+        }
     }
 
     /// 露边（每侧，视口比例）：溢出时焦点列外侧露出邻列的一条边（gap+边框+一点底色，
@@ -191,15 +208,18 @@ struct ScrollingStrip: Codable {
                   on destination: Ghostty.SurfaceView,
                   zone: TerminalSplitDropZone) -> Self {
         guard payload !== destination,
-              position(of: payload) != nil else { return self }
+              let (pc, _) = position(of: payload) else { return self }
+        // 载荷原本独占一列 → 沿用那一列（稳定 id / 列宽）：SwiftUI 视作移动而非删列+建列，
+        // 否则 pane 会脱离/重挂窗口
+        let carried: Column? = columns[pc].panes.count == 1 ? columns[pc] : nil
         var next = removing(payload)
         guard let (dc, dr) = next.position(of: destination) else { return self }
         next.zoomedID = nil
         switch zone {
         case .left:
-            next.columns.insert(Column(panes: [payload]), at: dc)
+            next.columns.insert(carried ?? Column(panes: [payload]), at: dc)
         case .right:
-            next.columns.insert(Column(panes: [payload]), at: dc + 1)
+            next.columns.insert(carried ?? Column(panes: [payload]), at: dc + 1)
         case .top:
             next.columns[dc].panes.insert(payload, at: dr)
         case .bottom:
