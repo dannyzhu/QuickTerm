@@ -34,7 +34,12 @@ final class MainWindowController: BaseTerminalController {
     }
     private var scrollMonitor: Any?
     private var resizeTarget: PaneView?
-    private var floatingMoveIndex: Int?
+    /// ⌘+左键在浮动 pane 上的拖动会话：edges 空 = 移动（置顶），否则按边/角缩放
+    private var floatingDrag: (index: Int, edges: FloatingPane.DragEdges)?
+    /// ⌘ 悬停在浮动 pane 上时由我们设置了光标（离开 / 松 ⌘ / 拖完时复位）
+    private var floatingCursorActive = false
+    /// 浮动 pane 四周可拖动缩放的边框带宽（pt）
+    static let floatingEdgeBand: CGFloat = 14
     private var configWatcher: ConfigWatcher?
     private var lastConfigContent: String?
     private var stripPanSerial = 0
@@ -230,49 +235,80 @@ final class MainWindowController: BaseTerminalController {
         // ⌘ 状态跟踪（拖拽源浮层）+ ⌘+右键拖拽调整大小（spec §4.2）
         mouseMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.flagsChanged, .rightMouseDown, .rightMouseDragged, .rightMouseUp,
-                       .leftMouseDown, .leftMouseDragged, .leftMouseUp]
+                       .leftMouseDown, .leftMouseDragged, .leftMouseUp, .mouseMoved]
         ) { [weak self] event in
             guard let self else { return event }
             if event.type == .flagsChanged {
-                ModifierState.shared.commandHeld = event.modifierFlags.contains(.command)
+                let held = event.modifierFlags.contains(.command)
+                ModifierState.shared.commandHeld = held
+                if !held, self.floatingDrag == nil { self.resetFloatingCursor() }
                 return event
             }
+            // 拖动会话按鼠标键收尾，不按修饰键：先松 ⌘ 再松左键也必须正常结束，否则残留会话会劫持
+            // 下一次 ⌘ 拖动（平铺 pane 的 DnD 拖不动、光标挂死）
+            if let drag = self.floatingDrag {
+                switch event.type {
+                case .leftMouseDragged:
+                    if drag.edges.isMove {
+                        self.moveFloating(at: drag.index, dx: event.deltaX, dy: event.deltaY)
+                    } else {
+                        self.resizeFloating(at: drag.index, edges: drag.edges, dx: event.deltaX, dy: event.deltaY)
+                    }
+                    return nil
+                case .leftMouseUp:
+                    self.floatingDrag = nil
+                    if event.modifierFlags.contains(.command) {
+                        self.updateFloatingCursor(for: self.floatingDragHit(event)?.edges)
+                    } else {
+                        self.resetFloatingCursor()
+                    }
+                    return nil
+                default: break
+                }
+            }
+            if let pane = self.resizeTarget {
+                switch event.type {
+                case .rightMouseDragged:
+                    if let idx = self.floatingIndex(of: pane) {
+                        self.resizeFloating(at: idx, dx: event.deltaX, dy: event.deltaY)
+                    } else {
+                        self.resizeByDrag(pane: pane, dx: event.deltaX, dy: event.deltaY)
+                    }
+                    return nil
+                case .rightMouseUp:
+                    self.resizeTarget = nil
+                    return nil
+                default: break
+                }
+            }
             guard event.window === self.window,
-                  event.modifierFlags.contains(.command) else { return event }
+                  event.modifierFlags.contains(.command) else {
+                if event.type == .mouseMoved { self.resetFloatingCursor() }
+                return event
+            }
             switch event.type {
+            case .mouseMoved:
+                // ⌘ 悬停：浮动 pane 中间 = 抓手，四边/四角 = 对应方向的缩放光标
+                self.updateFloatingCursor(for: self.floatingDragHit(event)?.edges)
+                return event
             case .leftMouseDown:
-                // ⌘+左键：浮动 pane = 自由移动（置顶）；平铺 pane 放行给 DnD 拖拽源
-                if let pane = self.paneUnderPointer(event),
-                   !self.model.closingPanes.contains(pane.id),   // 淡出中的 pane 不再拖
-                   let idx = self.floatingIndex(of: pane) {
-                    self.floatingMoveIndex = self.raiseFloating(at: idx)
+                // ⌘+左键：浮动 pane 中间 = 自由移动（置顶）、四边/四角 = 缩放（对边不动）；
+                // 平铺 pane 放行给 DnD 拖拽源
+                if let hit = self.floatingDragHit(event) {
+                    let idx = hit.edges.isMove ? self.raiseFloating(at: hit.index) : hit.index
+                    self.floatingDrag = (idx, hit.edges)
+                    if hit.edges.isMove { NSCursor.closedHand.set(); self.floatingCursorActive = true }
                     return nil
                 }
                 return event
-            case .leftMouseDragged:
-                guard let idx = self.floatingMoveIndex else { return event }
-                self.moveFloating(at: idx, dx: event.deltaX, dy: event.deltaY)
-                return nil
-            case .leftMouseUp:
-                let had = self.floatingMoveIndex != nil
-                self.floatingMoveIndex = nil
-                return had ? nil : event
+            case .leftMouseDragged, .leftMouseUp:
+                return event   // 无会话：放行（会话内的拖动/松开在上面已处理）
             case .rightMouseDown:
                 self.resizeTarget = self.paneUnderPointer(event)
                     .flatMap { self.model.closingPanes.contains($0.id) ? nil : $0 }   // 淡出中不缩放
                 return self.resizeTarget == nil ? event : nil
-            case .rightMouseDragged:
-                guard let pane = self.resizeTarget else { return event }
-                if let idx = self.floatingIndex(of: pane) {
-                    self.resizeFloating(at: idx, dx: event.deltaX, dy: event.deltaY)
-                } else {
-                    self.resizeByDrag(pane: pane, dx: event.deltaX, dy: event.deltaY)
-                }
-                return nil
-            case .rightMouseUp:
-                let hadTarget = self.resizeTarget != nil
-                self.resizeTarget = nil
-                return hadTarget ? nil : event
+            case .rightMouseDragged, .rightMouseUp:
+                return event   // 无会话：放行
             default:
                 return event
             }
@@ -686,21 +722,84 @@ final class MainWindowController: BaseTerminalController {
         return model.floating.firstIndex { $0.pane === pane }
     }
 
+    /// ⌘ 拖动 / 悬停命中判定：按浮动 pane 的矩形（含留白与边框带，自顶向下）而非 NSView 命中——
+    /// 边框带落在 PaneChrome 的留白里，NSView 命中测试到不了那里
+    func floatingDragHit(_ event: NSEvent) -> (index: Int, edges: FloatingPane.DragEdges)? {
+        floatingDragHit(atWindowPoint: event.locationInWindow)
+    }
+
+    func floatingDragHit(atWindowPoint point: NSPoint) -> (index: Int, edges: FloatingPane.DragEdges)? {
+        // 面板遮罩 / scratchpad 在浮动层之上（与 surfaceIsOccluded 的遮挡顺序一致）
+        guard model.activePanel == nil, !model.scratchpadVisible else { return nil }
+        guard let p = normalizedContentPoint(point), let content = window?.contentView else { return nil }
+        let barH: CGFloat = model.barVisible ? StatusBarView.height : 0
+        let W = max(content.bounds.width, 1), H = max(content.bounds.height - barH, 1)
+        for idx in model.floating.indices.reversed() {   // 数组末位最顶
+            let fp = model.floating[idx]
+            guard !model.closingPanes.contains(fp.pane.id) else { continue }   // 淡出中的不再拖
+            if let edges = FloatingPane.dragEdges(at: p, in: fp.rect,
+                                                  bandX: Self.floatingEdgeBand / W,
+                                                  bandY: Self.floatingEdgeBand / H) {
+                return (idx, edges)
+            }
+        }
+        return nil
+    }
+
+    /// ⌘ 悬停光标：nil = 不在浮动 pane 上（复位）；空 = 中间（抓手）；否则对应边/角的缩放光标
+    private func updateFloatingCursor(for edges: FloatingPane.DragEdges?) {
+        guard let edges else { resetFloatingCursor(); return }
+        let cursor: NSCursor
+        if edges.isMove {
+            cursor = .openHand
+        } else {
+            let position: NSCursor.FrameResizePosition = switch (edges.contains(.left), edges.contains(.right),
+                                                                edges.contains(.top), edges.contains(.bottom)) {
+            case (true, _, true, _): .topLeft
+            case (_, true, true, _): .topRight
+            case (true, _, _, true): .bottomLeft
+            case (_, true, _, true): .bottomRight
+            case (true, _, _, _): .left
+            case (_, true, _, _): .right
+            case (_, _, true, _): .top
+            default: .bottom
+            }
+            cursor = .frameResize(position: position, directions: .all)
+        }
+        cursor.set()
+        floatingCursorActive = true
+    }
+
+    private func resetFloatingCursor() {
+        guard floatingCursorActive else { return }
+        floatingCursorActive = false
+        NSCursor.arrow.set()
+        window?.resetCursorRects()   // 让终端 / 网页视图按自己的规则重设光标
+    }
+
     /// ⌘+左键拖动浮动 pane（deltaY 向下为正 = SwiftUI y 正方向）
     private func moveFloating(at index: Int, dx: CGFloat, dy: CGFloat) {
         guard let content = window?.contentView, model.floating.indices.contains(index) else { return }
+        let barH: CGFloat = model.barVisible ? StatusBarView.height : 0   // 纵向分母与浮动层几何/缩放一致
         var fp = model.floating[index]
         fp.rect.origin.x += dx / max(content.bounds.width, 1)
-        fp.rect.origin.y += dy / max(content.bounds.height, 1)
+        fp.rect.origin.y += dy / max(content.bounds.height - barH, 1)
         model.floating[index] = fp.clamped()
     }
 
+    /// ⌘+右键拖动：从右下角缩放（Hyprland 语义，任意位置按下）
     private func resizeFloating(at index: Int, dx: CGFloat, dy: CGFloat) {
+        resizeFloating(at: index, edges: [.right, .bottom], dx: dx, dy: dy)
+    }
+
+    /// ⌘+左键在边框带 / 角上拖动：被拖的边跟随指针，对边不动
+    private func resizeFloating(at index: Int, edges: FloatingPane.DragEdges, dx: CGFloat, dy: CGFloat) {
         guard let content = window?.contentView, model.floating.indices.contains(index) else { return }
-        var fp = model.floating[index]
-        fp.rect.size.width += dx / max(content.bounds.width, 1)
-        fp.rect.size.height += dy / max(content.bounds.height, 1)
-        model.floating[index] = fp.clamped()
+        let barH: CGFloat = model.barVisible ? StatusBarView.height : 0
+        model.floating[index] = model.floating[index].resized(
+            edges: edges,
+            dx: dx / max(content.bounds.width, 1),
+            dy: dy / max(content.bounds.height - barH, 1))
     }
 
     /// 置顶（数组末位 = 最顶）
@@ -1226,7 +1325,8 @@ final class MainWindowController: BaseTerminalController {
         forgetFileManagerSession(view)
         if let idx = model.floating.firstIndex(where: { $0.pane === view }) {
             model.floating.remove(at: idx)
-            floatingMoveIndex = nil   // 索引已失效（拖动途中被到点移除时不能再用）
+            floatingDrag = nil        // 索引已失效（拖动途中被到点移除时不能再用）
+            resetFloatingCursor()
             if resizeTarget === view { resizeTarget = nil }
             return
         }

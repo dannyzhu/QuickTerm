@@ -151,7 +151,7 @@ Every action below can be rebound in `config.toml` (see [Configuration](#configu
 | `Cmd+Ctrl+=` | `equalize` | Equalise all / reset column widths |
 | `Alt+Tab` / `Alt+Shift+Tab`, `Cmd+]` / `Cmd+[` | `cycle-pane-next` / `-prev` | Cycle panes |
 | `Cmd+L` | `toggle-layout` | Scrolling ⇄ dwindle |
-| `Cmd+T` | `toggle-float` | Float ⇄ tile |
+| `Cmd+T` | `toggle-float` | Float ⇄ tile. With ⌘ held: drag the middle to move, drag an edge to resize on that axis, drag a corner to resize both (opposite side stays put); the cursor shows what will happen. ⌘+right-drag resizes from the bottom-right corner |
 | `Cmd+S` | `scratchpad` | Scratchpad terminal |
 | `Cmd+Shift+B` | `file-manager` | File manager ([yazi](https://github.com/sxyazi/yazi)) in a new pane, starting in the focused pane's directory; quitting in another directory opens a terminal there |
 | `Cmd+B` | `new-browser` | Browser pane (WebKit) opening `browser-home` |

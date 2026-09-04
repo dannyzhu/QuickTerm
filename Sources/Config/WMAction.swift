@@ -133,7 +133,7 @@ enum WMAction: String, CaseIterable {
         case .toggleLayout: "布局切换（scrolling ⇄ dwindle）"
         case .openSettings: "打开配置文件（QuickTerm + ghostty）"
         case .exitFullscreen: "退出全屏（仅全屏时生效）"
-        case .toggleFloat: "pane 浮动 ⇄ 平铺（⌘拖移动、⌘右拖调大小）"
+        case .toggleFloat: "pane 浮动 ⇄ 平铺（⌘拖中间移动、⌘拖四边/四角缩放、⌘右拖调大小）"
         }
     }
 }

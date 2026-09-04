@@ -729,6 +729,35 @@ extension WorkspaceTests {
         c.model.layout = .empty
     }
 
+    /// ⌘ 拖动命中判定按浮动 pane 的矩形（含留白带）：中间 = 移动，边框带 = 缩放，角 = 双轴
+    @MainActor
+    func testFloatingDragHitZonesInWindowCoordinates() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty)
+        c.perform(.newTerminal)
+        let pane = try XCTUnwrap(c.paneList.first)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        c.toggleFloat(pane)
+        defer { c.closePane(pane, confirmIfNeeded: false, animated: false) }
+        let fp = try XCTUnwrap(c.model.floating.first)
+        let content = try XCTUnwrap(c.window?.contentView)
+        let barH: CGFloat = c.model.barVisible ? StatusBarView.height : 0
+        let W = content.bounds.width, H = content.bounds.height - barH
+        // 归一化 → 窗口坐标（contentView 为 flipped：y 自顶向下）
+        func windowPoint(_ nx: CGFloat, _ ny: CGFloat) -> NSPoint {
+            let local = NSPoint(x: nx * W, y: content.isFlipped ? ny * H + barH : content.bounds.height - (ny * H + barH))
+            return content.convert(local, to: nil)
+        }
+        let r = fp.rect
+        XCTAssertEqual(c.floatingDragHit(atWindowPoint: windowPoint(r.midX, r.midY))?.edges, [], "中间 = 移动")
+        XCTAssertEqual(c.floatingDragHit(atWindowPoint: windowPoint(r.minX + 3 / W, r.midY))?.edges, [.left])
+        XCTAssertEqual(c.floatingDragHit(atWindowPoint: windowPoint(r.maxX - 3 / W, r.maxY - 3 / H))?.edges, [.right, .bottom])
+        XCTAssertNil(c.floatingDragHit(atWindowPoint: windowPoint(r.minX - 0.05, r.midY)), "矩形外不命中")
+    }
+
     /// 新建 pane 后焦点必须落在新 pane（dwindle：原 pane 在 leaf→split 重挂时会"夺回"焦点，需让位）
     @MainActor
     func testNewTerminalFocusesNewPaneInDwindle() throws {

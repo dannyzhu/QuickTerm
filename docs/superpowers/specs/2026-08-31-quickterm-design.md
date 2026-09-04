@@ -281,7 +281,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 | Super+J | `Cmd+J` | `toggle-split-dir` | scrolling 併列⇄拆列 / dwindle 翻转分裂方向 |
 | Super+F | `Cmd+F` | `toggle-zoom` | pane zoom |
 | Super+L | `Cmd+L` | `toggle-layout` | scrolling ⇄ dwindle |
-| Super+T | `Cmd+T` | `toggle-float` | 浮动 ⇄ 平铺 |
+| Super+T | `Cmd+T` | `toggle-float` | 浮动 ⇄ 平铺。⌘+左键：按浮动 pane 矩形命中（含留白），中间 = 移动并置顶，四边 14pt 带 = 沿该轴缩放，四角 = 双轴缩放，对边不动，最小 0.15；⌘ 悬停显示抓手 / frameResize 光标，松 ⌘ 或离开复位；⌘+右键任意处拖动 = 右下角缩放（Hyprland） |
 | Super+B | `Cmd+B` | `new-browser` | 浏览器 pane：WKWebView + 薄工具条（后退/前进/刷新、地址栏、进度），一 pane 一页；键盘焦点在 WKWebView（PaneView.focusTarget），FR 为其后代即视为 pane 持焦；WM 级 Cmd 键仍先被监视器拦截；`web-*` 动作（后退 Cmd+Shift+[、前进 Cmd+Shift+]、重载 Cmd+R、地址栏 Cmd+Shift+L、缩放 Cmd+= / - / 0、外部打开 Cmd+Shift+O）只在焦点是浏览器 pane 时消费，否则放行给终端。登录态在 WebKit 默认数据存储（跨 pane、跨重启）；默认伪装 Safari UA（Google 登录）。边界：无 Widevine、无系统密码填充、通行密钥不可用 |
 | Super+Shift+F | `Cmd+Shift+B` | `file-manager` | 新 pane 运行 TUI 文件管理器（默认 yazi，`file-manager-command` 可改；以焦点 pane 目录启动；退出时目录已变则原位开终端，即 yazi `y` 包装函数语义；关闭不弹进程确认；程序缺失开提示 pane）。Cmd+F 已是 toggle-zoom，故用 Cmd+Shift+B |
 | Super+‑/= | `Cmd+Ctrl+←→↑↓` | `resize-*` | 调整大小（+Shift 微调）※偏移 1 |

@@ -151,7 +151,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `Cmd+Ctrl+=` | `equalize` | 全部等分 / 列宽重置 |
 | `Alt+Tab` / `Alt+Shift+Tab`、`Cmd+]` / `Cmd+[` | `cycle-pane-next` / `-prev` | 循环 pane |
 | `Cmd+L` | `toggle-layout` | scrolling ⇄ dwindle |
-| `Cmd+T` | `toggle-float` | 浮动 ⇄ 平铺 |
+| `Cmd+T` | `toggle-float` | 浮动 ⇄ 平铺。按住 ⌘：拖中间移动，拖四边沿该轴缩放，拖四角双轴缩放（对边不动），光标会提示；⌘+右键拖动从右下角缩放 |
 | `Cmd+S` | `scratchpad` | Scratchpad 终端 |
 | `Cmd+Shift+B` | `file-manager` | 文件管理器（[yazi](https://github.com/sxyazi/yazi)）在新 pane 里以焦点 pane 的目录启动；在别的目录退出则原位开终端 |
 | `Cmd+B` | `new-browser` | 浏览器 pane（WebKit），打开 `browser-home` |
