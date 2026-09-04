@@ -184,6 +184,8 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
 - **不能手动对 WKWebView 调 resignFirstResponder**：WebKit 内部 `_newFirstResponderAfterResigning` 只允许在
   makeFirstResponder 流程内调用，否则 NSInternalInconsistencyException。`PaneView.moveFocus` 只对
   "自己就是 FR"的 pane 手动 resign。
+- **WKWebView 子类覆写 mouseMoved 收不到事件**：它的 tracking area 由内部观察者对象持有，事件投给观察者。
+  非终端 pane 的悬停即焦点由 PaneView 容器自己的 tracking area 驱动（`installsHoverTracking`）。
 - **新 pane 插入会合成 mouseMoved**：邻居 tracking area 因尺寸变化重建时 AppKit 合成一次 mouseMoved，鼠标
   停在旧 pane 上就会把刚交出去的焦点抢回。悬停即焦点必须尊重控制器的待聚焦意图（`paneMayReclaimFocus`）。
 - **键名归一化**：`charactersIgnoringModifiers` 对符号/数字键保留 Shift（Cmd+Shift+[ → "{"），
