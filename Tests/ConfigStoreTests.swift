@@ -109,6 +109,9 @@ extension ConfigStoreTests {
         XCTAssertEqual(ConfigStore.parse("").dividerOpacity, 0.2, accuracy: 0.001, "dwindle 分隔细线默认 0.2")
         XCTAssertEqual(ConfigStore.parse("divider-opacity = 0.4").dividerOpacity, 0.4, accuracy: 0.001)
         XCTAssertEqual(ConfigStore.parse("divider-opacity = -1").dividerOpacity, 0.0, accuracy: 0.001, "clamp 下限")
+        XCTAssertEqual(ConfigStore.parse("").dwindleGap, 3, "dwindle 留白默认 3（相邻 7pt ≈ 原 11 的 64%）")
+        XCTAssertEqual(ConfigStore.parse("dwindle-gap = 5").dwindleGap, 5)
+        XCTAssertEqual(ConfigStore.parse("dwindle-gap = 99").dwindleGap, 20, "clamp 上限")
     }
 
     /// 已有配置文件补全缺失键：注释+默认值插在第一个 section 前；幂等；完整文件不动；活跃设置不被覆盖
@@ -141,7 +144,7 @@ extension ConfigStoreTests {
         XCTAssertFalse(ConfigStore.ensureTemplateKeys(at: url))
         let keys = Set(ConfigStore.templateKeyLines.map(\.key))
         for k in ["theme", "workspaces", "pane-padding", "visible-columns", "pane-opacity",
-                  "active-opacity", "bar-opacity", "divider-opacity", "inactive-blur"] {
+                  "active-opacity", "bar-opacity", "divider-opacity", "dwindle-gap", "inactive-blur"] {
             XCTAssertTrue(keys.contains(k), "模板缺少 \(k)")
         }
     }

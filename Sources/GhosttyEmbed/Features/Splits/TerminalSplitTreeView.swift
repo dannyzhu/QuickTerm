@@ -173,6 +173,7 @@ private struct SplitBranchView: View {
 }
 
 private struct TerminalSplitLeaf: View {
+    @EnvironmentObject var theme: ThemeManager   // QuickTerm：dwindle 留白（dwindle-gap）
     let surfaceView: Ghostty.SurfaceView
     let isSplit: Bool
     let action: (TerminalSplitOperation) -> Void
@@ -229,7 +230,7 @@ private struct TerminalSplitLeaf: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Terminal pane")
             // QuickTerm：pane 视觉（焦点边框 / gaps_in / 弹入动画），见 PaneChrome.swift
-            .modifier(PaneChrome(surfaceView: surfaceView))
+            .modifier(PaneChrome(surfaceView: surfaceView, inset: theme.dwindleGap))
         }
     }
 

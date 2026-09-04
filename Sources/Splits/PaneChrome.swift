@@ -16,9 +16,13 @@ struct PaneChrome: ViewModifier {
     /// 已播过弹入的 surface：视图因布局变化重挂载时不再重播（否则整屏一起"闪"）
     private static var popped = Set<UUID>()
 
-    init(surfaceView: Ghostty.SurfaceView, floating: Bool = false) {
+    /// 每边留白（nil = 默认 gapInset；dwindle 传 theme.dwindleGap）
+    var inset: CGFloat? = nil
+
+    init(surfaceView: Ghostty.SurfaceView, floating: Bool = false, inset: CGFloat? = nil) {
         self.surfaceView = surfaceView
         self.floating = floating
+        self.inset = inset
         _appeared = State(initialValue: Self.popped.contains(surfaceView.id))
     }
 
@@ -36,7 +40,7 @@ struct PaneChrome: ViewModifier {
                 }
             }
             .border(surfaceView.focused ? theme.accent : Palette.inactiveBorder, width: 2)
-            .padding(theme.gapsEnabled ? Self.gapInset : 0)
+            .padding(theme.gapsEnabled ? (inset ?? Self.gapInset) : 0)
             .scaleEffect(appeared ? 1 : 0.87)
             .opacity(appeared ? 1 : 0)
             .onAppear {

@@ -159,7 +159,7 @@ struct RootView: View {
                 switch model.layout {
                 case .dwindle(let tree):
                     TerminalSplitTreeView(tree: tree, action: action, appearingPane: model.appearingPane)
-                        .padding(theme.gapsEnabled ? 5 : 0)
+                        .padding(theme.gapsEnabled ? theme.dwindleGap : 0)   // 外圈与 pane 留白同值
                 case .scrolling(let strip):
                     ScrollingStripView(
                         strip: strip,
