@@ -27,7 +27,7 @@ QuickTerm 把 [Omarchy](https://omarchy.org) 的 Hyprland 平铺桌面装进一�
 
 ## 安装
 
-预构建的 DMG 在 [Releases](https://github.com/dannyzhu/QuickTerm/releases) 页面（Apple Silicon，macOS 15+）。
+预构建的 DMG 在 [Releases](https://github.com/dannyzhu/QuickTerm/releases) 页面（通用二进制，Apple Silicon 与 Intel 均可，macOS 15+）。
 
 1. 打开 DMG，把 **QuickTerm** 拖进 **应用程序**。
 2. 应用是 ad-hoc 签名、未经 Apple 公证，首次打开会被 macOS 拦下。先双击一次，关掉"Apple 无法验证……"的对话框，然后二选一：
@@ -42,7 +42,7 @@ QuickTerm 把 [Omarchy](https://omarchy.org) 的 Hyprland 平铺桌面装进一�
 
 ## 构建环境要求
 
-仅从源码构建时需要。Releases 里的 DMG 在任何 Apple Silicon Mac（macOS 15+）上直接运行，不需要以下任何东西。
+仅从源码构建时需要。Releases 里的 DMG 在任何 Mac（Apple Silicon 或 Intel，macOS 15+）上直接运行，不需要以下任何东西。
 
 - macOS 15+（开发验证于 macOS 26 / Xcode 26.6，Apple Silicon）
 - Xcode 26+，并已安装 Metal Toolchain：`xcodebuild -downloadComponent MetalToolchain`
@@ -55,6 +55,7 @@ QuickTerm 把 [Omarchy](https://omarchy.org) 的 Hyprland 平铺桌面装进一�
 git clone --recurse-submodules <本仓库>
 cd quickterm
 scripts/build-ghosttykit.sh      # 先把 pin 版 Zig 装到 .tools/，再构建 vendor/ghostty/macos/GhosttyKit.xcframework（首次 10–30 分钟）
+# GHOSTTYKIT_TARGET=universal scripts/build-ghosttykit.sh   # arm64 + x86_64 通用库（发布 DMG 必需；耗时约 2 倍）
 scripts/fetch-themes.sh          # 拉取 Omarchy 主题壁纸（不进 git，约 50 MB）
 xcodegen generate
 xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug build

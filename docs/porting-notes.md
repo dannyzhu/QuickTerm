@@ -115,6 +115,20 @@ AppDelegate.isRunningTests 下退出时跳过 surface 释放。
 正是这样失效的）。现在 QuickTerm 不调该 API，由 `GhosttyDefaultConfig.userConfigFiles()`
 按同样顺序只加载存在且非空的常规文件；一个都没有才加载内置兜底。
 
+## 通用二进制（arm64 + x86_64）构建
+
+`GHOSTTYKIT_TARGET=universal scripts/build-ghosttykit.sh` → ghostty 的 `-Dxcframework-target=universal`
+（`GhosttyLib.initMacOSUniversal`：aarch64 与 x86_64 各 `initStatic` 再 `LipoStep`），Zig 交叉编译
+x86_64-macos 无需 Rosetta；SDK overlay 的 tbd 本就含 `x86_64-macos` 目标。xcframework 切片目录变为
+`macos-arm64_x86_64`，归档名由 `libghostty-fat.a` 变为 `libghostty.a`——脚本按 `ls macos-*/*.a` 动态定位。
+libtool 丢成员的修复改为**按架构**：`lipo -thin` 拆开逐一检查 `_ghostty_init`，缺失的架构从缓存中
+同架构的组成档案重打（(档案名, 架构) 取最新，且只取单架构、**macOS 平台**的归档——universal 目标
+顺带编 iOS/模拟器切片，其 arm64 归档与 macOS 同名更新，混入会报 `built for 'iOS'`；平台看 Mach-O
+`LC_BUILD_VERSION`），再 `lipo -create` 合回。Xcode Release 默认
+`ARCHS = arm64 x86_64`、`ONLY_ACTIVE_ARCH = NO`，xcframework 含双架构后 app 自动为通用二进制；
+`scripts/make-release.sh` 用 `lipo -archs` 校验产物含 `RELEASE_ARCHS`（默认 arm64 x86_64）才继续。
+开发迭代仍用默认 `native`（快一倍）。
+
 ## AppKit：first responder 视图脱离窗口时不发 resignFirstResponder
 
 独立探针（scratch 脚本）验证：`makeFirstResponder(A)` 后 `A.removeFromSuperview()`，窗口 FR 被

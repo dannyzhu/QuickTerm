@@ -27,7 +27,7 @@ QuickTerm puts the feel of [Omarchy](https://omarchy.org)'s Hyprland desktop ins
 
 ## Install
 
-Pre-built DMGs are on the [Releases](https://github.com/dannyzhu/QuickTerm/releases) page (Apple Silicon, macOS 15+).
+Pre-built DMGs are on the [Releases](https://github.com/dannyzhu/QuickTerm/releases) page (universal binary for Apple Silicon and Intel, macOS 15+).
 
 1. Open the DMG and drag **QuickTerm** into **Applications**.
 2. The app is ad-hoc signed and not notarized, so macOS blocks the first launch. Double-click it once and dismiss the "Apple could not verify…" dialog, then either:
@@ -42,7 +42,7 @@ Optional: with the DMG and its `.sha256` file in the same folder, run `shasum -a
 
 ## Build requirements
 
-Only needed to build from source. The DMG from Releases runs on any Apple Silicon Mac with macOS 15+ and needs none of this.
+Only needed to build from source. The DMG from Releases runs on any Mac (Apple Silicon or Intel) with macOS 15+ and needs none of this.
 
 - macOS 15 or later (developed on macOS 26 / Xcode 26.6, Apple Silicon)
 - Xcode 26+ with the Metal Toolchain: `xcodebuild -downloadComponent MetalToolchain`
@@ -55,6 +55,7 @@ Only needed to build from source. The DMG from Releases runs on any Apple Silico
 git clone --recurse-submodules <this repo>
 cd quickterm
 scripts/build-ghosttykit.sh      # installs the pinned Zig into .tools/, then builds vendor/ghostty/macos/GhosttyKit.xcframework (10–30 min first time)
+# GHOSTTYKIT_TARGET=universal scripts/build-ghosttykit.sh   # arm64 + x86_64 universal library (needed for release DMGs; ~2× build time)
 scripts/fetch-themes.sh          # pulls Omarchy theme wallpapers (not in git, ~50 MB)
 xcodegen generate
 xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug build

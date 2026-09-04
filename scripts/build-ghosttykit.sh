@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # 构建 GhosttyKit.xcframework。Zig 版本严格跟随 vendor/ghostty 的 pin。
+#   GHOSTTYKIT_TARGET=native     本机架构（默认；开发迭代快）
+#   GHOSTTYKIT_TARGET=universal  arm64 + x86_64 通用库（发布 DMG 用；Zig 交叉编译，无需 Rosetta）
 set -euo pipefail
+TARGET="${GHOSTTYKIT_TARGET:-native}"
+case "$TARGET" in native|universal) ;; *) echo "error: GHOSTTYKIT_TARGET 须为 native|universal" >&2; exit 2 ;; esac
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GHOSTTY="$ROOT/vendor/ghostty"
@@ -67,51 +71,90 @@ export QUICKTERM_SDK="$OV"
 export PATH="$TOOLS/bin:$PATH"
 
 cd "$GHOSTTY"
+echo "building GhosttyKit ($TARGET)…"
 "$ZIG" build -Doptimize=ReleaseFast \
-  -Demit-xcframework=true -Demit-macos-app=false -Dxcframework-target=native
+  -Demit-xcframework=true -Demit-macos-app=false -Dxcframework-target="$TARGET"
 
 test -d "$OUT" || { echo "error: 未找到 $OUT"; exit 1; }
 
 # --- 归档修复：Xcode 26.6 的 libtool 会因对齐问题丢弃 Zig 生成的归档成员
 # --- （libghostty_zcu.o 等），导致 _ghostty_init/ImGui 符号缺失。
-# --- 从全部组成档案重打完整 fat 归档，替换 xcframework 内的副本。
-FAT="$OUT/macos-arm64/libghostty-fat.a"
-if ! nm "$FAT" 2>/dev/null | grep -q "T _ghostty_init"; then
-  echo "repacking fat archive (libtool dropped members)..."
-  python3 - "$GHOSTTY" "$FAT" <<'PYEOF'
+# --- 按架构分别检查；缺失的架构从缓存中该架构的全部组成档案重打，再 lipo 回通用归档。
+# 切换 native/universal 后可能残留旧切片：只保留最新的一份
+SLICE="$(ls -dt "$OUT"/macos-* | head -1)"
+for d in "$OUT"/macos-*; do [ "$d" = "$SLICE" ] || { echo "removing stale slice $(basename "$d")"; rm -rf "$d"; }; done
+FAT="$(ls "$SLICE"/*.a | head -1)"
+python3 - "$GHOSTTY" "$FAT" <<'PYEOF'
 import os, subprocess, sys, tempfile
 ghostty, fat = sys.argv[1], sys.argv[2]
-cache = os.path.join(ghostty, ".zig-cache")
-# 每个档案名只取最新一份（缓存可能残留多优化级别副本）
-newest = {}
-for root, _, files in os.walk(cache):
-    for f in files:
-        if f.endswith(".a") and "ghostty-fat" not in f:
-            p = os.path.join(root, f)
-            if f not in newest or os.path.getmtime(p) > os.path.getmtime(newest[f]):
-                newest[f] = p
+def archs(path):
+    r = subprocess.run(["lipo", "-archs", path], capture_output=True, text=True)
+    return r.stdout.split() if r.returncode == 0 else []
+def has_init(path):
+    return " T _ghostty_init" in subprocess.run(["nm", path], capture_output=True, text=True).stdout
+def platform(path):
+    # Mach-O LC_BUILD_VERSION 的 platform：1 = macOS，2 = iOS，7 = iOS 模拟器…；
+    # universal 目标还会编 iOS 切片，其 arm64 归档与 macOS 同名，必须按平台过滤
+    out = subprocess.run(["otool", "-l", path], capture_output=True, text=True).stdout
+    i = out.find("LC_BUILD_VERSION")
+    if i < 0:
+        return 1 if "LC_VERSION_MIN_MACOSX" in out or "LC_VERSION_MIN" not in out else 0
+    for line in out[i:i+400].splitlines():
+        if line.strip().startswith("platform"):
+            try: return int(line.split()[1])
+            except ValueError: return 0
+    return 0
+fat_archs = archs(fat)
+assert fat_archs, f"无法识别架构: {fat}"
 with tempfile.TemporaryDirectory() as tmp:
-    objs = []
-    for i, (name, path) in enumerate(sorted(newest.items())):
-        d = os.path.join(tmp, f"d{i}")
-        os.makedirs(d)
-        subprocess.run(["ar", "x", path], cwd=d, check=True)
-        for member in os.listdir(d):
-            src = os.path.join(d, member)
-            os.chmod(src, 0o644)
-            if member.endswith(".o"):
-                dst = os.path.join(tmp, f"{i}_{member}")
-                os.rename(src, dst)
-                objs.append(dst)
-    out = os.path.join(tmp, "fat.a")
-    subprocess.run(["ar", "qc", out] + objs, check=True)
-    subprocess.run(["ranlib", out], check=True)
-    syms = subprocess.run(["nm", out], capture_output=True, text=True).stdout
-    assert " T _ghostty_init" in syms, "repack 后仍缺 _ghostty_init"
-    subprocess.run(["cp", out, fat], check=True)
-print("repacked:", fat)
+    thins = {}
+    for a in fat_archs:
+        thin = os.path.join(tmp, f"thin-{a}.a")
+        if len(fat_archs) > 1:
+            subprocess.run(["lipo", fat, "-thin", a, "-output", thin], check=True)
+        else:
+            subprocess.run(["cp", fat, thin], check=True)
+        thins[a] = thin
+    need = [a for a, t in thins.items() if not has_init(t)]
+    if not need:
+        print("archive ok:", fat_archs); sys.exit(0)
+    print("repacking archs (libtool dropped members):", need)
+    cache = os.path.join(ghostty, ".zig-cache")
+    newest = {}   # (档案名, 架构) → 最新一份（缓存可能残留多优化级别/多目标副本）
+    for root, _, files in os.walk(cache):
+        for f in files:
+            if f.endswith(".a") and "ghostty-fat" not in f:
+                p = os.path.join(root, f)
+                pa = archs(p)
+                if len(pa) != 1: continue   # 跳过通用（lipo 合成）归档，只取单架构组成档案
+                if platform(p) != 1: continue   # 只取 macOS 平台（排除 iOS / 模拟器切片的同名归档）
+                for a in pa:
+                    k = (f, a)
+                    if k not in newest or os.path.getmtime(p) > os.path.getmtime(newest[k]):
+                        newest[k] = p
+    for a in need:
+        objs = []
+        d0 = os.path.join(tmp, f"x-{a}"); os.makedirs(d0)
+        for i, ((name, arch), path) in enumerate(sorted(newest.items())):
+            if arch != a: continue
+            d = os.path.join(d0, f"d{i}"); os.makedirs(d)
+            subprocess.run(["ar", "x", path], cwd=d, check=True)
+            for m in os.listdir(d):
+                src = os.path.join(d, m); os.chmod(src, 0o644)
+                if m.endswith(".o"):
+                    dst = os.path.join(d0, f"{i}_{m}"); os.rename(src, dst); objs.append(dst)
+        out = os.path.join(tmp, f"re-{a}.a")
+        subprocess.run(["ar", "qc", out] + objs, check=True)
+        subprocess.run(["ranlib", out], check=True)
+        assert has_init(out), f"{a}: repack 后仍缺 _ghostty_init"
+        thins[a] = out
+    if len(thins) > 1:
+        subprocess.run(["lipo", "-create"] + [thins[a] for a in fat_archs] + ["-output", fat], check=True)
+    else:
+        subprocess.run(["cp", next(iter(thins.values())), fat], check=True)
+    print("repacked:", fat, archs(fat))
 PYEOF
-fi
+echo "archs: $(lipo -archs "$FAT")"
 
 echo "OK: $OUT"
 echo "resources: $GHOSTTY/zig-out/share/ghostty （打包进 app bundle）"

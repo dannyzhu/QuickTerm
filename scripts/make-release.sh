@@ -48,7 +48,9 @@ mkdir -p "$ROOT/build"
 rm -rf "$DERIVED/Build/Products"
 xcodegen generate >/dev/null
 echo "▶ Release 构建…（日志 $BUILD_LOG）"
+# generic 目标：按 ARCHS_STANDARD（arm64 x86_64）构建；不指定会落到"My Mac"只编本机架构
 if ! xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Release \
+     -destination 'generic/platform=macOS' ONLY_ACTIVE_ARCH=NO \
      -derivedDataPath "$DERIVED" build >"$BUILD_LOG" 2>&1; then
   grep -E "error:" "$BUILD_LOG" | head -20 >&2
   fail "构建失败（BUILD FAILED），见 $BUILD_LOG"
@@ -57,7 +59,12 @@ APP="$DERIVED/Build/Products/Release/QuickTerm.app"
 [ -d "$APP" ] || fail "构建未产出 $APP"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")"
 TAG="v$VERSION"
-echo "版本 $VERSION"
+# 架构校验：发布包须为通用二进制（GhosttyKit 需先以 GHOSTTYKIT_TARGET=universal 构建）
+ARCHS_BUILT="$(lipo -archs "$APP/Contents/MacOS/QuickTerm")"
+for want in ${RELEASE_ARCHS:-arm64 x86_64}; do
+  case " $ARCHS_BUILT " in *" $want "*) ;; *) fail "产物缺少架构 $want（实际：$ARCHS_BUILT）。先 GHOSTTYKIT_TARGET=universal scripts/build-ghosttykit.sh" ;; esac
+done
+echo "版本 $VERSION（架构：$ARCHS_BUILT）"
 
 if [ "$UPLOAD" = 1 ]; then
   git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null || fail "缺本地 tag $TAG：git tag $TAG"
@@ -111,8 +118,12 @@ if [ "$UPLOAD" = 1 ]; then
   if gh release view "$TAG" >/dev/null 2>&1; then
     gh release upload "$TAG" "$DMG" "$DMG.sha256" --clobber
   else
-    gh release create "$TAG" "$DMG" "$DMG.sha256" --verify-tag \
-      --title "QuickTerm $VERSION" --generate-notes
+    NOTES="$ROOT/docs/releases/$TAG.md"   # 有手写发布说明则用之，否则由 gh 自动生成
+    if [ -f "$NOTES" ]; then
+      gh release create "$TAG" "$DMG" "$DMG.sha256" --verify-tag --title "QuickTerm $VERSION" --notes-file "$NOTES"
+    else
+      gh release create "$TAG" "$DMG" "$DMG.sha256" --verify-tag --title "QuickTerm $VERSION" --generate-notes
+    fi
   fi
   echo "已发布：$(gh release view "$TAG" --json url -q .url)"
 fi

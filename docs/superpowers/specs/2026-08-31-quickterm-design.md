@@ -336,6 +336,7 @@ quickterm/
 ├─ Resources/AppIcon.icns
 ├─ vendor/ghostty         # submodule，pin v1.3.1
 ├─ scripts/               # build-ghosttykit.sh、fetch-zig-deps.sh、fetch-themes.sh、make-icon.sh/.swift
+- 通用二进制：`GHOSTTYKIT_TARGET=universal scripts/build-ghosttykit.sh`（arm64 + x86_64，发布 DMG 必需；归档修复按架构分别处理后 lipo；详见 porting-notes「通用二进制构建」）；开发默认 `native`。
 └─ docs/                  # 本方案、porting-notes.md、acceptance/、superpowers/plans/
 ```
 
