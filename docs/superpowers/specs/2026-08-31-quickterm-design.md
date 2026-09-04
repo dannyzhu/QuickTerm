@@ -266,7 +266,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 | Omarchy | QuickTerm | 动作 id | 功能 |
 |---|---|---|---|
 | Super+Return | `Cmd+Return` | `new-terminal` | 新建（scrolling 右插新列 / dwindle 分裂，继承 cwd） |
-| Super+W | `Cmd+W` | `close-pane` | 关闭焦点 pane（有活动进程二次确认；全部工作区皆空才关窗） |
+| Super+W | `Cmd+W` | `close-pane` | 关闭焦点 pane（有活动进程二次确认；最后一个 pane 关闭后窗口保留并显示"新建终端"提示，不退出程序） |
 | Super+←→↑↓ | `Cmd+←→↑↓` | `focus-*` | 方向焦点 |
 | Super+Shift+←→↑↓ | `Cmd+Shift+←→↑↓` | `swap-*` | 换位（视口自动跟随） |
 | Super+J | `Cmd+J` | `toggle-split-dir` | scrolling 併列⇄拆列 / dwindle 翻转分裂方向 |
@@ -305,6 +305,8 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 悬停焦点；⌘+左拖（平铺 = 拖放，浮动 = 移动并置顶）；⌘+右拖调大小；顶栏滚轮切工作区；内容区双指横滑平移画布；顶栏双击 zoom；时钟点击换格式；音量点击静音；dwindle 分隔条拖拽 / 双击等分；面板遮罩点击关闭。
 
 **偏移说明**：1) `Cmd+-/=` 是 mac 终端字号铁律，resize 改 `Cmd+Ctrl+方向`；2) `Cmd+K` 归 QuickTerm 速查表——**QuickTerm 不注入任何终端级 keybind**，需要清屏键请在 ghostty 配置自行 `keybind =`。
+
+**退出语义**（2026-09-04）：`Cmd+Q`/菜单退出/引擎 quit 动作统一经 `applicationShouldTerminate`——还有打开的 pane（含浮动与 Scratchpad）时弹确认（退出/取消），一个都没有时直接退出；退出前保存状态。
 
 **保留系统行为不占用**：`Cmd+C/V`、`Cmd++/-/0`、`Cmd+Q/M/H`。测试固化 `Cmd+C/V/-`、裸 `Esc`、`Cmd+Q`、未定义组合一律放行。
 

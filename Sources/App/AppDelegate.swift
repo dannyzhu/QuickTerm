@@ -48,6 +48,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         !Self.isRunningTests
     }
 
+    /// 退出语义（用户 2026-09-04）：有打开的 pane → 确认；一个都没有 → 直接退出。
+    /// 菜单 Cmd+Q 与引擎 quit 动作都经此处。
+    static func shouldConfirmQuit(openPaneCount: Int) -> Bool { openPaneCount > 0 }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !Self.isRunningTests, let controller else { return .terminateNow }
+        let open = controller.model.allPanes.count
+        guard Self.shouldConfirmQuit(openPaneCount: open) else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "退出 QuickTerm？"
+        alert.informativeText = "还有 \(open) 个终端打开着，退出会结束其中的进程。布局与目录会保存，下次启动恢复。"
+        alert.addButton(withTitle: "退出")
+        alert.addButton(withTitle: "取消")
+        return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         if !Self.isRunningTests {
             controller?.saveState()  // spec §4.8：退出保存布局与 cwd

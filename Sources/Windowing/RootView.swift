@@ -93,6 +93,9 @@ final class WorkspaceModel: ObservableObject {
     @Published var scratchpadVisible = false
     @Published var scratchpadSurface: Ghostty.SurfaceView?
 
+    /// 新建终端的当前绑定（空工作区提示用；控制器在键位表构建后写入）
+    @Published var newTerminalCombo: String = "Cmd+Return"
+
     // 每屏可见列数（菜单显示用镜像）
     @Published var visibleColumnsDisplay: Int =
         UserDefaults.standard.object(forKey: "quickterm.visibleColumns") as? Int ?? 2
@@ -162,6 +165,17 @@ struct RootView: View {
                         pan: model.stripPan,
                         onDrop: onScrollingDrop)
                         .padding(theme.gapsEnabled ? 5 : 0)
+                }
+
+                // 空工作区：最后一个 pane 关掉后窗口保留，提示怎么开新终端
+                if model.layout.isEmpty && model.floating.isEmpty {
+                    VStack(spacing: 6) {
+                        Text("\(model.newTerminalCombo)  新建终端")
+                        Text("Cmd+Q  退出").opacity(0.6)
+                    }
+                    .font(.custom("Monaco", size: 14))
+                    .foregroundStyle(theme.foreground.opacity(0.55))
+                    .allowsHitTesting(false)
                 }
 
                 // 浮动层（spec v7）：悬浮于平铺之上；数组序 = z 序

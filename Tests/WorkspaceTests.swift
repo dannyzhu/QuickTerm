@@ -223,6 +223,28 @@ extension WorkspaceTests {
 }
 
 extension WorkspaceTests {
+    /// 退出语义：有 pane 才确认；关掉最后一个 pane 窗口仍在且能直接新建
+    @MainActor
+    func testLastPaneCloseKeepsWindowAndQuitConfirmRule() throws {
+        XCTAssertFalse(AppDelegate.shouldConfirmQuit(openPaneCount: 0), "没有 pane → 直接退出")
+        XCTAssertTrue(AppDelegate.shouldConfirmQuit(openPaneCount: 1), "有 pane → 确认")
+
+        let c = try controller
+        let home = c.model.activeIndex
+        let ws = c.model.layouts.count - 1
+        c.model.switchTo(ws)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty, "末位工作区应为空")
+        c.perform(.newTerminal)
+        let only = try XCTUnwrap(c.paneList.first)
+        c.closePane(only, confirmIfNeeded: false)
+        XCTAssertTrue(c.model.layout.isEmpty, "最后一个 pane 已关")
+        XCTAssertTrue(c.window?.isVisible ?? false, "窗口保留，不随最后一个 pane 关闭")
+        c.perform(.newTerminal)
+        XCTAssertEqual(c.paneList.count, 1, "空工作区可直接新建终端")
+        c.closePane(try XCTUnwrap(c.paneList.first), confirmIfNeeded: false)
+    }
+
     /// 回归：Cmd+L 重建视图层级后不得出现多个 pane 同时 focused（多激活边框 + 悬停失效）
     @MainActor
     func testToggleLayoutKeepsSingleFocus() throws {

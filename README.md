@@ -128,12 +128,12 @@ All panels are centred, Walker-style: `↑`/`↓` to move, `Return` to choose, `
 
 ## Default keybindings
 
-Every action below can be rebound in `config.toml` (see [Configuration](#configuration)). Keys not in this table are passed straight to the terminal — `Cmd+C`/`Cmd+V`, font-size keys, `Cmd+Q` etc. are untouched.
+Every action below can be rebound in `config.toml` (see [Configuration](#configuration)). Keys not in this table are passed straight to the terminal — `Cmd+C`/`Cmd+V`, font-size keys, `Cmd+Q` etc. are untouched. `Cmd+Q` asks for confirmation while any pane is open and quits immediately when there are none.
 
 | Key | Action id | What it does |
 |---|---|---|
 | `Cmd+Return` | `new-terminal` | New terminal (right of the focused column / dwindle split), inherits cwd |
-| `Cmd+W` | `close-pane` | Close focused pane (confirms if a process is running) |
+| `Cmd+W` | `close-pane` | Close focused pane (confirms if a process is running). Closing the last pane keeps the window open with a hint; the app does not quit |
 | `Cmd+←↑↓→` | `focus-*` | Move focus |
 | `Cmd+Shift+←↑↓→` | `swap-*` | Swap pane / column; viewport follows |
 | `Cmd+J` | `toggle-split-dir` | Merge/split column (scrolling) · flip split (dwindle) |

@@ -264,6 +264,9 @@ final class MainWindowController: BaseTerminalController {
             workspaceCount: settings.workspaces,
             overrides: settings.overrides,
             unbound: settings.unbound)
+        // 空工作区提示用当前实际绑定
+        model.newTerminalCombo = keybindings.displayBindings()
+            .first { $0.action == .newTerminal }?.combo ?? "Cmd+Return"
         model.setWorkspaceCount(settings.workspaces)
         if let n = settings.visibleColumns { setVisibleColumns(n, persist: false) }
         themeManager.updateFromConfig(
@@ -923,11 +926,9 @@ final class MainWindowController: BaseTerminalController {
                 ?? strip.focusTarget(from: view, direction: .down)
         }
         removeFromActiveLayout(view)  // 放弃引用 → SurfaceView.deinit 释放 surface
-        if model.layout.isEmpty {
-            if model.allEmpty, !AppDelegate.isRunningTests {
-                window?.close()
-            }
-        } else if wasFocused, let next = successor ?? paneList.first {
+        // 最后一个 pane 关闭后窗口保留（RootView 显示"新建终端"提示），不退出程序；
+        // 退出只由 Cmd+Q / 菜单触发（AppDelegate.applicationShouldTerminate 决定是否确认）
+        if !model.layout.isEmpty, wasFocused, let next = successor ?? paneList.first {
             Ghostty.moveFocus(to: next)
         }
     }

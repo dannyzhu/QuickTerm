@@ -128,12 +128,12 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 
 ## 默认快捷键
 
-下表每个动作都可在 `config.toml` 改键（见[配置](#配置)）。不在表内的组合一律放行给终端 —— `Cmd+C`/`Cmd+V`、字号键、`Cmd+Q` 等完全不受影响。
+下表每个动作都可在 `config.toml` 改键（见[配置](#配置)）。不在表内的组合一律放行给终端 —— `Cmd+C`/`Cmd+V`、字号键、`Cmd+Q` 等完全不受影响。`Cmd+Q` 在还有 pane 打开时会先确认，一个 pane 都没有时直接退出。
 
 | 按键 | 动作 id | 功能 |
 |---|---|---|
 | `Cmd+Return` | `new-terminal` | 新建终端（焦点列右侧 / dwindle 分裂），继承当前目录 |
-| `Cmd+W` | `close-pane` | 关闭焦点 pane（有进程运行时确认） |
+| `Cmd+W` | `close-pane` | 关闭焦点 pane（有进程运行时确认）。关掉最后一个 pane 后窗口保留并提示新建，程序不退出 |
 | `Cmd+←↑↓→` | `focus-*` | 移动焦点 |
 | `Cmd+Shift+←↑↓→` | `swap-*` | 换位（视口自动跟随） |
 | `Cmd+J` | `toggle-split-dir` | 併列/拆列（scrolling）· 翻转分裂（dwindle） |
