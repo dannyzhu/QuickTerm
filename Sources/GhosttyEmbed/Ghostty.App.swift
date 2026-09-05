@@ -653,7 +653,7 @@ extension Ghostty {
                 checkForUpdates(app)
 
             case GHOSTTY_ACTION_OPEN_URL:
-                return openURL(action.action.open_url)
+                return openURL(action.action.open_url, target: target)
 
             case GHOSTTY_ACTION_UNDO:
                 return undo(app, target: target)
@@ -732,7 +732,8 @@ extension Ghostty {
         }
 
         private static func openURL(
-            _ v: ghostty_action_open_url_s
+            _ v: ghostty_action_open_url_s,
+            target: ghostty_target_s? = nil
         ) -> Bool {
             let action = Ghostty.Action.OpenURL(c: v)
 
@@ -748,6 +749,14 @@ extension Ghostty {
                 // like ~/Documents/file.txt resolve correctly.
                 let expandedPath = NSString(string: action.url).standardizingPath
                 url = URL(filePath: expandedPath)
+            }
+
+            // QuickTerm：终端里 ⌘+点击的网页链接先交给窗口控制器（在浏览器 pane 里打开；
+            // link-opener = system 或非 http(s) 时控制器不接管，落到下面的系统打开）
+            if action.kind != .text, let target, target.tag == GHOSTTY_TARGET_SURFACE,
+               let surface = target.target.surface, let surfaceView = self.surfaceView(from: surface),
+               surfaceView.controller?.openLink(url, from: surfaceView) == true {
+                return true
             }
 
             switch action.kind {

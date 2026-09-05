@@ -888,10 +888,15 @@ extension Ghostty {
             setSurfaceSize(width: UInt32(scaledSize.width), height: UInt32(scaledSize.height))
         }
 
+        /// QuickTerm：测试用——真正送进引擎的左键按下 / 抬起次数（拖拽源浮层、浮动会话的点击穿透）
+        private(set) var leftPressCountForTesting = 0
+        private(set) var leftReleaseCountForTesting = 0
+
         override func mouseDown(with event: NSEvent) {
             guard let surface = self.surface else { return }
             let mods = Ghostty.ghosttyMods(event.modifierFlags)
             ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, mods)
+            leftPressCountForTesting += 1
         }
 
         override func mouseUp(with event: NSEvent) {
@@ -909,6 +914,7 @@ extension Ghostty {
             guard let surface = self.surface else { return }
             let mods = Ghostty.ghosttyMods(event.modifierFlags)
             ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, mods)
+            leftReleaseCountForTesting += 1
 
             // Release pressure
             ghostty_surface_mouse_pressure(surface, 0, 0)

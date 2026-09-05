@@ -121,6 +121,20 @@ final class BrowserPaneView: PaneView {
     var lastRequestedURL: URL? { activeTab?.lastRequestedURL }
 
     override var paneTitle: String { activeTab?.displayTitle ?? "浏览器" }
+
+    /// 最近一次激活（成为焦点 / 被送来链接）的时间：终端 ⌘+点击链接时选"最近的"浏览器 pane 用
+    private(set) var lastActivatedAt = Date()
+
+    override func paneDidBecomeFirstResponder() {
+        super.paneDidBecomeFirstResponder()
+        lastActivatedAt = Date()
+    }
+
+    /// 外部（终端 ⌘+点击）送来的链接：新标签打开并激活
+    func openLink(_ url: URL) {
+        addTab(url: url, activate: true)
+        lastActivatedAt = Date()
+    }
     /// 容器自己不接受焦点：键盘焦点在当前标签的 WKWebView
     override var acceptsFirstResponder: Bool { false }
     override var focusTarget: NSView { webView }
@@ -343,6 +357,8 @@ final class BrowserPaneView: PaneView {
 
     /// 测试用：标签条视图
     var tabBarForTesting: BrowserTabBarView { tabBar }
+    /// 测试用：地址栏
+    var addressFieldForTesting: NSTextField { addressField }
 
     /// 标签条是否显示：always 或多于一个标签
     var tabBarVisible: Bool { Self.settings.tabBarAlwaysVisible || tabs.count > 1 }

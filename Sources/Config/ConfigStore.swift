@@ -26,6 +26,7 @@ enum ConfigStore {
     # browser-tab-bar = "always"      # 标签条：always = 始终显示（默认）；auto = 只有一个标签时隐藏
     # browser-tab-width = 200         # 标签最大宽度 pt（40–600）
     # browser-tab-min-width = 80      # 标签最小宽度 pt（40–600）；放不下时标签条横向滚动
+    # link-opener = "browser-pane"    # 终端 ⌘+点击链接：browser-pane = 在浏览器 pane 打开（有则用最近激活的，无则新开）；system = 系统浏览器
 
     [keybinds]
     # 动作 = "modifier+key"；"none" 解绑。动作清单见 Cmd+K 速查表。
@@ -125,6 +126,7 @@ enum ConfigStore {
         var browserTabBar: String = "always"
         var browserTabWidth: Int = 200
         var browserTabMinWidth: Int = 80
+        var linkOpener: String = "browser-pane"
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
         var ghosttyPassthrough: String = ""
@@ -207,6 +209,7 @@ enum ConfigStore {
                 if key == "browser-tab-bar", !value.isEmpty { settings.browserTabBar = value }
                 if key == "browser-tab-width", let v = Int(value) { settings.browserTabWidth = min(max(v, 40), 600) }
                 if key == "browser-tab-min-width", let v = Int(value) { settings.browserTabMinWidth = min(max(v, 40), 600) }
+                if key == "link-opener", !value.isEmpty { settings.linkOpener = value }
             case "keybinds":
                 guard let action = WMAction(rawValue: key) else { continue }
                 if value.lowercased() == "none" {

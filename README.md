@@ -101,6 +101,7 @@ Switching layouts keeps every pane in order (columns become right-splits, stacks
 | `⌘` + left-drag a tiled pane | Drop on a pane's centre to swap. Drop on an edge: in scrolling, insert a column beside it (left/right) or stack into it (top/bottom); in dwindle, split on that side |
 | `⌘` + left-drag a floating pane | Move (raises to front) |
 | `⌘` + right-drag | Resize: column width in scrolling, nearest divider in dwindle, the pane itself if floating |
+| `⌘` + click a link in a terminal | Opens it in a browser pane — a new tab in the most recently focused browser pane of the workspace, or a new browser pane beside the terminal if there is none (`link-opener = "system"` restores the default browser) |
 | Scroll wheel over the status bar | Cycle workspaces |
 | Two-finger horizontal swipe | Pan the scrolling canvas |
 | Double-click empty status bar | Zoom window to the visible screen area |
@@ -131,6 +132,7 @@ All panels are centred, Walker-style: `↑`/`↓` to move, `Return` to choose, `
 | `browser-inspectable` | false | Enable Web Inspector in browser panes |
 | `browser-tab-bar` | always | `always` keeps the tab bar visible; `auto` hides it while a pane has a single tab. The strip ends in a `+` button that opens a new tab |
 | `browser-tab-width` | 200 | Maximum tab width in pt (40–600); tabs share the strip equally below that |
+| `link-opener` | browser-pane | Where `⌘`-clicked http(s) links in a terminal open: `browser-pane` opens a new tab in the workspace's most recently focused browser pane (or a new browser pane beside the terminal if there is none); `system` uses the default browser. Other schemes (mailto, ssh, file paths) always go to the system |
 | `browser-tab-min-width` | 80 | Minimum tab width in pt (40–600); once every tab is at the minimum the strip scrolls sideways (mouse wheel; the active tab is always scrolled into view) |
 
 Browser pane limits: no Widevine DRM (Netflix/Spotify web) and no system password autofill or passkeys (use `Cmd+Shift+O` to finish such flows in the system browser).
@@ -202,6 +204,7 @@ The Shell and Pane menus in the macOS menu bar show the default shortcuts for a 
 # browser-tab-bar = "always"      # always | auto
 # browser-tab-width = 200         # max tab width, pt
 # browser-tab-min-width = 80      # min tab width, pt (strip scrolls when exceeded)
+# link-opener = "browser-pane"    # browser-pane | system — where ⌘-clicked terminal links open
 # inactive-blur = 2.5       # > 0 enables frosted inactive panes
 
 [keybinds]                  # action = "modifiers+key"; "none" unbinds. Action ids: Cmd+K

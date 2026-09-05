@@ -212,6 +212,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 | 顶栏 | `bar-opacity` | 0.75 | 纯 UI |
 | pane 留白 | `pane-gap` | 5 | 纯 UI；每 pane 每边留白 pt，scrolling / dwindle / 浮动一致（相邻 = 2×gap = 10pt；dwindle 1pt 分隔线画在边界上不占布局）；外圈同值；旧键 `dwindle-gap` 作别名 |
 | 浏览器首页 / 搜索 / UA / Inspector | `browser-home` / `browser-search` / `browser-user-agent` / `browser-inspectable` | google / google search / safari / false | 浏览器 pane 行为；UA 为 `safari`（伪装）/ `webkit`（不伪装）/ 自定义 |
+| 链接打开位置 | `link-opener` | browser-pane | 终端 ⌘+点击的 http(s) 链接：browser-pane = 当前工作区最近激活（成为焦点 / 被送过链接）的浏览器 pane 里新标签打开，没有则新开一个；system = 系统默认浏览器。mailto/ssh/文件路径始终交系统 |
 | 文件管理器程序 | `file-manager-command` | yazi | `file-manager` 动作运行的程序：名字按 PATH + Homebrew/cargo 常见目录查找，或绝对路径；yazi/lf/ranger 退出写最后目录（--cwd-file / -last-dir-path / --choosedir） |
 | dwindle 分隔线 | `divider-opacity` | 0.2 | 纯 UI；SplitView 的 1pt 分隔细线（色 = 引擎 split-divider-color）按此不透明度半透明，受总开关（关闭 = 实线） |
 | 非激活磨砂 | `inactive-blur` | 2.5 | `NSVisualEffectView(.hudWindow, .withinWindow)` backdrop——模糊的是壁纸，文字锐利。**数值目前只作开关（> 0 开启）**，未作为半径生效 |
@@ -233,6 +234,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 # divider-opacity = 0.2     # 0–1，dwindle 分隔细线
 # pane-gap = 5              # 0–20 pt，每 pane 每边留白（scrolling / dwindle 一致）
 # file-manager-command = "yazi"   # file-manager 动作运行的程序
+# link-opener = "browser-pane"    # 终端 ⌘+点击链接：browser-pane | system
 # browser-home = "https://www.google.com"
 # browser-search = "https://www.google.com/search?q=%s"
 # browser-user-agent = "safari"
@@ -315,7 +317,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 
 ### 鼠标手势（硬编码）
 
-悬停焦点；⌘+左拖（平铺 = 拖放，浮动 = 移动并置顶）；⌘+右拖调大小；顶栏滚轮切工作区；内容区双指横滑平移画布；顶栏双击 zoom；时钟点击换格式；音量点击静音；dwindle 分隔条拖拽 / 双击等分；面板遮罩点击关闭。
+悬停焦点；⌘+左拖（平铺 = 拖放，浮动 = 移动并置顶）；⌘+右拖调大小；⌘+点击终端链接 = 引擎 open_url 先交窗口控制器（`link-opener` = browser-pane：http(s) 在当前工作区最近激活的浏览器 pane 开新标签并聚焦，没有则在终端旁新开；system 或其它 scheme 走系统默认应用）；顶栏滚轮切工作区；内容区双指横滑平移画布；顶栏双击 zoom；时钟点击换格式；音量点击静音；dwindle 分隔条拖拽 / 双击等分；面板遮罩点击关闭。
 
 **偏移说明**：1) `Cmd+-/=` 是 mac 终端字号铁律，resize 改 `Cmd+Ctrl+方向`；2) `Cmd+K` 归 QuickTerm 速查表，清屏挪到 `Cmd+Shift+K`（WM 动作 `clear-terminal`，对焦点终端调引擎 `clear_screen`；**QuickTerm 仍不向 ghostty 注入 keybind**，其它终端级键请在 ghostty 配置自行 `keybind =`）。
 

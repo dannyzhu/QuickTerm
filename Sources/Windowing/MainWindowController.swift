@@ -26,6 +26,8 @@ final class MainWindowController: BaseTerminalController {
     private var pendingCloses: [ObjectIdentifier: PendingClose] = [:]
     /// 文件管理器程序（config `file-manager-command`，默认 yazi）
     var fileManagerCommand = FileManagerLaunch.defaultProgram
+    /// 终端里 ⌘+点击的链接开在哪（config link-opener）：browser-pane = 浏览器 pane；system = 系统默认浏览器
+    var linkOpener = "browser-pane"
     /// 运行中的文件管理器 pane → 会话（退出时读 cwd 文件决定是否原位开终端；关闭不弹进程确认）
     private var fileManagerSessions: [ObjectIdentifier: FileManagerLaunch.Session] = [:]
     private struct PendingClose {
@@ -35,7 +37,17 @@ final class MainWindowController: BaseTerminalController {
     private var scrollMonitor: Any?
     private var resizeTarget: PaneView?
     /// ⌘+左键在浮动 pane 上的拖动会话：edges 空 = 移动（置顶），否则按边/角缩放
-    private var floatingDrag: (index: Int, edges: FloatingPane.DragEdges)?
+    /// ⌘+左键在浮动 pane 上的拖动会话：按下即开始（置顶 / 光标），拖过阈值才算真拖；抬起时没拖过 = 纯点击，
+    /// 把按下 + 抬起一并交给 pane 本体（⌘+点击链接靠引擎在 release 时 open_url）
+    struct FloatingDragSession {
+        /// 会话跟着 pane 走，不存下标：按住期间 Cmd+T / 切工作区 / 移动 pane 会改 floating 数组
+        weak var pane: PaneView?
+        let edges: FloatingPane.DragEdges
+        let down: NSEvent
+        var moved = false
+        static let threshold: CGFloat = 3
+    }
+    private var floatingDrag: FloatingDragSession?
     /// ⌘ 悬停在浮动 pane 上时由我们设置了光标（离开 / 松 ⌘ / 拖完时复位）
     private var floatingCursorActive = false
     /// 浮动 pane 四周可拖动缩放的边框带宽（pt）
@@ -280,25 +292,8 @@ final class MainWindowController: BaseTerminalController {
             }
             // 拖动会话按鼠标键收尾，不按修饰键：先松 ⌘ 再松左键也必须正常结束，否则残留会话会劫持
             // 下一次 ⌘ 拖动（平铺 pane 的 DnD 拖不动、光标挂死）
-            if let drag = self.floatingDrag {
-                switch event.type {
-                case .leftMouseDragged:
-                    if drag.edges.isMove {
-                        self.moveFloating(at: drag.index, dx: event.deltaX, dy: event.deltaY)
-                    } else {
-                        self.resizeFloating(at: drag.index, edges: drag.edges, dx: event.deltaX, dy: event.deltaY)
-                    }
-                    return nil
-                case .leftMouseUp:
-                    self.floatingDrag = nil
-                    if event.modifierFlags.contains(.command) {
-                        self.updateFloatingCursor(for: self.floatingDragHit(event)?.edges)
-                    } else {
-                        self.resetFloatingCursor()
-                    }
-                    return nil
-                default: break
-                }
+            if self.floatingDrag != nil, let handled = self.floatingSessionEvent(event) {
+                return handled ? nil : event
             }
             if let pane = self.resizeTarget {
                 switch event.type {
@@ -322,19 +317,14 @@ final class MainWindowController: BaseTerminalController {
             }
             switch event.type {
             case .mouseMoved:
-                // ⌘ 悬停：浮动 pane 中间 = 抓手，四边/四角 = 对应方向的缩放光标
-                self.updateFloatingCursor(for: self.floatingDragHit(event)?.edges)
+                // ⌘ 悬停：浮动 pane 中间 = 抓手（指着链接时 = 链接指针），四边/四角 = 对应方向的缩放光标
+                let hit = self.floatingDragHit(event)
+                self.updateFloatingCursor(for: hit?.edges, pane: hit.map { self.model.floating[$0.index].pane })
                 return event
             case .leftMouseDown:
                 // ⌘+左键：浮动 pane 中间 = 自由移动（置顶）、四边/四角 = 缩放（对边不动）；
                 // 平铺 pane 放行给 DnD 拖拽源
-                if let hit = self.floatingDragHit(event) {
-                    let idx = hit.edges.isMove ? self.raiseFloating(at: hit.index) : hit.index
-                    self.floatingDrag = (idx, hit.edges)
-                    if hit.edges.isMove { NSCursor.closedHand.set(); self.floatingCursorActive = true }
-                    return nil
-                }
-                return event
+                return self.beginFloatingDrag(with: event) ? nil : event
             case .leftMouseDragged, .leftMouseUp:
                 return event   // 无会话：放行（会话内的拖动/松开在上面已处理）
             case .rightMouseDown:
@@ -402,6 +392,7 @@ final class MainWindowController: BaseTerminalController {
         model.newTerminalCombo = keybindings.displayBindings()
             .first { $0.action == .newTerminal }?.combo ?? "Cmd+Return"
         fileManagerCommand = settings.fileManagerCommand
+        linkOpener = settings.linkOpener
         BrowserPaneView.settings = .init(home: settings.browserHome, search: settings.browserSearch,
                                          userAgent: settings.browserUserAgent, inspectable: settings.browserInspectable,
                                          tabBar: settings.browserTabBar,
@@ -779,6 +770,64 @@ final class MainWindowController: BaseTerminalController {
 
     /// ⌘ 拖动 / 悬停命中判定：按浮动 pane 的矩形（含留白与边框带，自顶向下）而非 NSView 命中——
     /// 边框带落在 PaneChrome 的留白里，NSView 命中测试到不了那里
+    /// ⌘+左键按下：命中浮动 pane 就开会话（中间 = 移动并置顶，四边/四角 = 缩放）。true = 已接管
+    @discardableResult
+    func beginFloatingDrag(with event: NSEvent) -> Bool {
+        guard let hit = floatingDragHit(event) else { return false }
+        let idx = hit.edges.isMove ? raiseFloating(at: hit.index) : hit.index
+        floatingDrag = FloatingDragSession(pane: model.floating[idx].pane, edges: hit.edges, down: event)
+        if hit.edges.isMove { NSCursor.closedHand.set(); floatingCursorActive = true }
+        return true
+    }
+
+    /// 会话内的拖动 / 抬起。返回 true = 事件已消费，false = 放行，nil = 与会话无关。
+    /// 抬起时没拖过阈值 = 纯点击：按下 + 抬起一并交给 pane 的键盘焦点视图（终端 → 引擎 PRESS/RELEASE，
+    /// ⌘+点击链接才能触发 open_url；浏览器 → WKWebView）
+    func floatingSessionEvent(_ event: NSEvent) -> Bool? {
+        guard let drag = floatingDrag else { return nil }
+        switch event.type {
+        case .leftMouseDragged:
+            // pane 已不在浮动层（按住期间 Cmd+T / 切工作区 / 移走）：会话作废
+            guard let pane = drag.pane, let index = model.floating.firstIndex(where: { $0.pane === pane }),
+                  !model.closingPanes.contains(pane.id) else {
+                floatingDrag = nil
+                resetFloatingCursor()
+                return true
+            }
+            // 过阈值前的位移不能丢：跨过阈值的那一下把从按下点起的累计位移一次补上（deltaY 向下为正，窗口坐标向上为正）
+            var dx = event.deltaX, dy = event.deltaY
+            if !drag.moved {
+                dx = event.locationInWindow.x - drag.down.locationInWindow.x
+                dy = drag.down.locationInWindow.y - event.locationInWindow.y
+                guard hypot(dx, dy) >= FloatingDragSession.threshold else { return true }
+                floatingDrag?.moved = true
+            }
+            if drag.edges.isMove {
+                moveFloating(at: index, dx: dx, dy: dy)
+            } else {
+                resizeFloating(at: index, edges: drag.edges, dx: dx, dy: dy)
+            }
+            return true
+        case .leftMouseUp:
+            floatingDrag = nil
+            if !drag.moved, let pane = drag.pane, model.floating.contains(where: { $0.pane === pane }),
+               !model.closingPanes.contains(pane.id),
+               let target = pane.clickTarget(atWindowPoint: drag.down.locationInWindow) {
+                target.mouseDown(with: drag.down)
+                target.mouseUp(with: event)
+            }
+            if event.modifierFlags.contains(.command) {
+                let hit = floatingDragHit(event)
+                updateFloatingCursor(for: hit?.edges, pane: hit.map { model.floating[$0.index].pane })
+            } else {
+                resetFloatingCursor()
+            }
+            return true
+        default:
+            return nil
+        }
+    }
+
     func floatingDragHit(_ event: NSEvent) -> (index: Int, edges: FloatingPane.DragEdges)? {
         floatingDragHit(atWindowPoint: event.locationInWindow)
     }
@@ -802,11 +851,12 @@ final class MainWindowController: BaseTerminalController {
     }
 
     /// ⌘ 悬停光标：nil = 不在浮动 pane 上（复位）；空 = 中间（抓手）；否则对应边/角的缩放光标
-    private func updateFloatingCursor(for edges: FloatingPane.DragEdges?) {
+    private func updateFloatingCursor(for edges: FloatingPane.DragEdges?, pane: PaneView? = nil) {
         guard let edges else { resetFloatingCursor(); return }
         let cursor: NSCursor
         if edges.isMove {
-            cursor = .openHand
+            // 终端报告指着链接：⌘+点击会开链接，光标给链接指针而不是抓手
+            cursor = (pane as? Ghostty.SurfaceView)?.pointerStyle == .link ? .pointingHand : .openHand
         } else {
             let position: NSCursor.FrameResizePosition = switch (edges.contains(.left), edges.contains(.right),
                                                                 edges.contains(.top), edges.contains(.bottom)) {
@@ -1155,6 +1205,45 @@ final class MainWindowController: BaseTerminalController {
 
     override func requestClosePane(_ pane: PaneView) {
         closePane(pane, confirmIfNeeded: false)
+    }
+
+    /// 终端 ⌘+点击的 http(s) 链接：当前工作区已有浏览器 pane → 最近激活的那个里开新标签；没有 → 在终端旁新开一个。
+    /// 其它 scheme（mailto / ssh / 文件…）与 link-opener = system 时不接管，引擎走系统默认应用
+    override func openLink(_ url: URL, from: PaneView?) -> Bool {
+        guard linkOpener.lowercased() != "system",
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else { return false }
+        // 从 Scratchpad 点的链接：先收起 Scratchpad，否则浏览器 pane 在遮罩下面、焦点也被它挡着
+        if let from, from === model.scratchpadSurface, model.scratchpadVisible { model.scratchpadVisible = false }
+        if let browser = mostRecentBrowserPane() {
+            // 别的 pane zoom 时浏览器 pane 没挂载（window == nil），标签会加在看不见的地方、焦点也交不过去
+            if browser.window == nil { clearZoom() }
+            browser.openLink(url)
+            requestFocus(to: browser, from: from)
+        } else {
+            openBrowserPane(url: url, from: from)   // insertNewPane 自己会解除 zoom
+        }
+        return true
+    }
+
+    /// 解除当前布局的 zoom（有的话）
+    private func clearZoom() {
+        switch model.layout {
+        case .dwindle(let tree):
+            if tree.zoomed != nil { model.layout = .dwindle(SplitTree(root: tree.root, zoomed: nil)) }
+        case .scrolling(let strip):
+            if strip.zoomedID != nil {
+                var next = strip
+                next.zoomedID = nil
+                model.layout = .scrolling(next)
+            }
+        }
+    }
+
+    /// 当前工作区（平铺 + 浮动）里最近激活过的浏览器 pane；淡出中的不算
+    func mostRecentBrowserPane() -> BrowserPaneView? {
+        paneList.compactMap { $0 as? BrowserPaneView }
+            .filter { !model.closingPanes.contains($0.id) }
+            .max { $0.lastActivatedAt < $1.lastActivatedAt }
     }
 
     private func applyBrowserTheme(_ pane: BrowserPaneView) {

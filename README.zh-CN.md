@@ -101,6 +101,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `⌘` + 左键拖平铺 pane | 落到目标中心 = 交换。落到边缘：scrolling 下左右缘 = 在旁边插一列、上下缘 = 併进目标列的栈；dwindle 下 = 在该侧分裂插入 |
 | `⌘` + 左键拖浮动 pane | 移动（并置顶） |
 | `⌘` + 右键拖 | 调大小：scrolling 改列宽，dwindle 调就近分隔条，浮动 pane 改自身 |
+| `⌘` + 点击终端里的链接 | 在浏览器 pane 里打开——当前工作区最近激活的浏览器 pane 开新标签，没有就在终端旁新开一个（`link-opener = "system"` 恢复系统浏览器） |
 | 顶栏上滚滚轮 | 循环工作区 |
 | 双指横滑 | 平移 scrolling 画布 |
 | 顶栏空白处双击 | 窗口 zoom 铺满可视区 |
@@ -131,6 +132,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `browser-inspectable` | false | 浏览器 pane 开启 Web Inspector |
 | `browser-tab-bar` | always | `always` 始终显示标签条；`auto` 单标签时隐藏。标签条右端有 `+` 按钮,点击新建标签 |
 | `browser-tab-width` | 200 | 标签最大宽度 pt（40–600）；不足时各标签等分标签条 |
+| `link-opener` | browser-pane | 终端里 `⌘`+点击的 http(s) 链接开在哪：`browser-pane` = 在当前工作区最近激活的浏览器 pane 里开新标签（没有就在终端旁新开一个浏览器 pane）；`system` = 系统默认浏览器。其它 scheme（mailto、ssh、文件路径）始终交给系统 |
 | `browser-tab-min-width` | 80 | 标签最小宽度 pt（40–600）；全部到最小仍放不下时标签条横向滚动（滚轮；当前标签自动滚入视野） |
 
 浏览器 pane 的边界：没有 Widevine DRM（Netflix/Spotify 网页版不可用）、没有系统密码自动填充和通行密钥（这类流程请用 `Cmd+Shift+O` 到系统浏览器完成）。
@@ -202,6 +204,7 @@ macOS 菜单栏的 Shell / Pane 菜单只列了少数动作的默认快捷键；
 # browser-tab-bar = "always"      # always | auto
 # browser-tab-width = 200         # 标签最大宽度 pt
 # browser-tab-min-width = 80      # 标签最小宽度 pt（放不下时横向滚动）
+# link-opener = "browser-pane"    # browser-pane | system：终端 ⌘+点击链接开在哪
 # inactive-blur = 2.5       # > 0 开启非激活磨砂
 
 [keybinds]                  # 动作 = "修饰键+键"；"none" 解绑。动作 id 见 Cmd+K

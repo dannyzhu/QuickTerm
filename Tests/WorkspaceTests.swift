@@ -664,6 +664,190 @@ extension WorkspaceTests {
         XCTAssertEqual(factors(), [f, f, f])
     }
 
+    /// 终端 ⌘+点击链接：没有浏览器 pane → 新开；已有 → 最近激活的那个里开新标签；多个 → 最近聚焦的；
+    /// 非 http(s) 与 link-opener = system 不接管
+    @MainActor
+    func testTerminalLinkOpensInMostRecentBrowserPane() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty)
+        let prevSettings = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = prevSettings }
+        BrowserPaneView.settings.home = "about:blank"
+        let prevOpener = c.linkOpener
+        defer { c.linkOpener = prevOpener }
+        c.linkOpener = "browser-pane"
+        c.perform(.newTerminal)
+        let term = try XCTUnwrap(c.paneList.first)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        let link1 = URL(string: "http://127.0.0.1:9/one")!
+        XCTAssertTrue(c.openLink(link1, from: term), "http 链接被接管")
+        let b1 = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView } as? BrowserPaneView, "没有浏览器 pane 时新开一个")
+        XCTAssertEqual(b1.tabs.count, 1)
+        XCTAssertEqual(b1.activeTab?.lastRequestedURL, link1)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        let link2 = URL(string: "http://127.0.0.1:9/two")!
+        XCTAssertTrue(c.openLink(link2, from: term))
+        XCTAssertEqual(c.paneList.filter { $0 is BrowserPaneView }.count, 1, "已有浏览器 pane 时不新开")
+        XCTAssertEqual(b1.tabs.count, 2, "在已有 pane 里开新标签")
+        XCTAssertEqual(b1.activeTab?.lastRequestedURL, link2, "新标签激活")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        c.perform(.newBrowser)
+        let b2 = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView && $0 !== b1 } as? BrowserPaneView)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertTrue(c.mostRecentBrowserPane() === b2, "刚新建并聚焦的浏览器 pane 是最近的")
+        c.requestFocus(to: b1)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertTrue(c.mostRecentBrowserPane() === b1, "重新聚焦 b1 后它是最近的")
+        let link3 = URL(string: "http://127.0.0.1:9/three")!
+        XCTAssertTrue(c.openLink(link3, from: term))
+        XCTAssertEqual(b1.tabs.count, 3, "多个浏览器 pane 时用最近激活的")
+        XCTAssertEqual(b2.tabs.count, 1)
+        XCTAssertFalse(c.openLink(URL(string: "mailto:a@b.c")!, from: term), "非 http(s) 交给系统")
+        c.linkOpener = "system"
+        XCTAssertFalse(c.openLink(link1, from: term), "system 模式不接管")
+        XCTAssertEqual(b1.tabs.count, 3)
+        for p in c.paneList { c.closePane(p, confirmIfNeeded: false, animated: false) }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+    }
+
+    private func mouse(_ type: NSEvent.EventType, at p: NSPoint, in window: NSWindow, flags: NSEvent.ModifierFlags = .command) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: p, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                           windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    }
+
+    /// ⌘ 按住时平铺 pane 上叠着拖拽源浮层：纯点击（没拖过阈值）必须整体转交给 surface（引擎收到 PRESS + RELEASE，
+    /// ⌘+点击链接才会触发 open_url）；轻微抖动不算拖
+    @MainActor
+    func testCommandClickPassesThroughDragSourceOverlay() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty)
+        c.perform(.newTerminal)
+        let pane = try XCTUnwrap(c.paneList.first as? Ghostty.SurfaceView)
+        defer { c.closePane(pane, confirmIfNeeded: false, animated: false) }
+        let window = try XCTUnwrap(c.window)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        ModifierState.shared.commandHeld = true
+        defer { ModifierState.shared.commandHeld = false }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        // 精确匹配类名：SwiftUI 的宿主视图类名里也含 "SurfaceDragSourceViewRepresentable"
+        func findOverlay(_ v: NSView) -> NSView? {
+            if String(describing: type(of: v)) == "SurfaceDragSourceView" { return v }
+            for sub in v.subviews { if let hit = findOverlay(sub) { return hit } }
+            return nil
+        }
+        let overlay = try XCTUnwrap(window.contentView.flatMap(findOverlay), "⌘ 按住时应挂上拖拽源浮层")
+        let center = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.midY), to: nil)
+        let press0 = pane.leftPressCountForTesting, release0 = pane.leftReleaseCountForTesting
+        overlay.mouseDown(with: mouse(.leftMouseDown, at: center, in: window))
+        overlay.mouseDragged(with: mouse(.leftMouseDragged, at: NSPoint(x: center.x + 1, y: center.y + 1), in: window))   // 抖动 < 阈值
+        XCTAssertEqual(pane.leftPressCountForTesting, press0, "按下时不转发（拖起来就没 release 了）")
+        overlay.mouseUp(with: mouse(.leftMouseUp, at: center, in: window))
+        XCTAssertEqual(pane.leftPressCountForTesting, press0 + 1, "抬起时补送 PRESS")
+        XCTAssertEqual(pane.leftReleaseCountForTesting, release0 + 1, "再送 RELEASE")
+        overlay.mouseUp(with: mouse(.leftMouseUp, at: center, in: window))
+        XCTAssertEqual(pane.leftReleaseCountForTesting, release0 + 1, "没有配对按下的抬起不转发")
+    }
+
+    /// 浮动 pane 的 ⌘ 会话：抬起时没拖过阈值 = 纯点击交给 pane 本体；拖过阈值 = 移动且不点击
+    @MainActor
+    func testCommandClickOnFloatingPaneReachesSurface() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty)
+        c.perform(.newTerminal)
+        let pane = try XCTUnwrap(c.paneList.first as? Ghostty.SurfaceView)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        c.toggleFloat(pane)
+        defer { c.closePane(pane, confirmIfNeeded: false, animated: false) }
+        let window = try XCTUnwrap(c.window)
+        let content = try XCTUnwrap(window.contentView)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        let fp = try XCTUnwrap(c.model.floating.first)
+        let barH: CGFloat = c.model.barVisible ? StatusBarView.height : 0
+        let W = content.bounds.width, H = content.bounds.height - barH
+        func windowPoint(_ nx: CGFloat, _ ny: CGFloat) -> NSPoint {
+            let local = NSPoint(x: nx * W, y: content.isFlipped ? ny * H + barH : content.bounds.height - (ny * H + barH))
+            return content.convert(local, to: nil)
+        }
+        let center = windowPoint(fp.rect.midX, fp.rect.midY)
+        let press0 = pane.leftPressCountForTesting, release0 = pane.leftReleaseCountForTesting
+        // 纯点击
+        XCTAssertTrue(c.beginFloatingDrag(with: mouse(.leftMouseDown, at: center, in: window)))
+        XCTAssertEqual(c.floatingSessionEvent(mouse(.leftMouseDragged, at: NSPoint(x: center.x + 1, y: center.y), in: window)), true)
+        XCTAssertEqual(c.floatingSessionEvent(mouse(.leftMouseUp, at: center, in: window)), true)
+        XCTAssertEqual(pane.leftPressCountForTesting, press0 + 1, "没拖 → 点击交给 surface")
+        XCTAssertEqual(pane.leftReleaseCountForTesting, release0 + 1)
+        XCTAssertEqual(c.model.floating.first?.rect.midX ?? 0, fp.rect.midX, accuracy: 0.001, "没拖就不移动")
+        // 真拖：过阈值后移动（阈值前的位移在跨过时一次补上，不丢），抬起不点击
+        let before = try XCTUnwrap(c.model.floating.first).rect
+        XCTAssertTrue(c.beginFloatingDrag(with: mouse(.leftMouseDown, at: center, in: window)))
+        XCTAssertEqual(c.floatingSessionEvent(mouse(.leftMouseDragged, at: NSPoint(x: center.x + 2, y: center.y), in: window)), true)
+        XCTAssertEqual(c.model.floating.first?.rect.midX ?? 0, before.midX, accuracy: 0.0001, "阈值内不动")
+        XCTAssertEqual(c.floatingSessionEvent(mouse(.leftMouseDragged, at: NSPoint(x: center.x + 40, y: center.y), in: window)), true)
+        XCTAssertEqual(((c.model.floating.first?.rect.midX ?? 0) - before.midX) * W, 40, accuracy: 0.5, "累计位移全部补上")
+        XCTAssertEqual(c.floatingSessionEvent(mouse(.leftMouseUp, at: NSPoint(x: center.x + 40, y: center.y), in: window)), true)
+        XCTAssertEqual(pane.leftPressCountForTesting, press0 + 1, "拖动不产生点击")
+        XCTAssertNil(c.floatingSessionEvent(mouse(.leftMouseUp, at: center, in: window)), "会话已结束")
+        // 按住期间 pane 离开浮动层（Cmd+T 回平铺）：抬起不转交、不崩
+        let center2 = { () -> NSPoint in let r = c.model.floating.first!.rect; return windowPoint(r.midX, r.midY) }()
+        XCTAssertTrue(c.beginFloatingDrag(with: mouse(.leftMouseDown, at: center2, in: window)))
+        c.toggleFloat(pane)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        XCTAssertEqual(c.floatingSessionEvent(mouse(.leftMouseUp, at: center2, in: window)), true)
+        XCTAssertEqual(pane.leftPressCountForTesting, press0 + 1, "pane 已不在浮动层：不转交点击")
+        c.toggleFloat(pane)   // 还原为浮动，defer 里统一关闭
+    }
+
+    /// 别的 pane zoom 时复用浏览器 pane：先解除 zoom，标签才看得见、焦点才交得过去；从 Scratchpad 点链接先收起 Scratchpad
+    @MainActor
+    func testTerminalLinkUnzoomsAndHidesScratchpad() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty)
+        let prevSettings = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = prevSettings }
+        BrowserPaneView.settings.home = "about:blank"
+        let prevOpener = c.linkOpener
+        defer { c.linkOpener = prevOpener }
+        c.linkOpener = "browser-pane"
+        c.perform(.newTerminal)
+        let term = try XCTUnwrap(c.paneList.first)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        c.perform(.newBrowser)
+        let browser = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView } as? BrowserPaneView)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        c.requestFocus(to: term)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        c.perform(.toggleZoom)   // 终端 zoom，浏览器 pane 卸载
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        XCTAssertNil(browser.window, "zoom 后浏览器 pane 没挂载")
+        XCTAssertTrue(c.openLink(URL(string: "http://127.0.0.1:9/z")!, from: term))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        XCTAssertNotNil(browser.window, "复用时解除 zoom，浏览器 pane 重新挂载")
+        XCTAssertEqual(browser.tabs.count, 2)
+        XCTAssertTrue(c.window?.firstResponder === browser.webView, "焦点交给浏览器 pane")
+        // Scratchpad 里点链接
+        c.perform(.scratchpad)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        let scratch = try XCTUnwrap(c.model.scratchpadSurface)
+        XCTAssertTrue(c.model.scratchpadVisible)
+        XCTAssertTrue(c.openLink(URL(string: "http://127.0.0.1:9/s")!, from: scratch))
+        XCTAssertFalse(c.model.scratchpadVisible, "先收起 Scratchpad")
+        XCTAssertEqual(browser.tabs.count, 3)
+        for p in c.paneList { c.closePane(p, confirmIfNeeded: false, animated: false) }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+    }
+
     /// 浏览器 pane：Cmd+B 新建并聚焦（FR 是内部 WKWebView，pane 视为持有焦点）、布局切换后仍在且保持焦点、
     /// 存档带 kind=browser、关闭不弹确认、焦点回到终端
     @MainActor

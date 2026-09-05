@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 extension Ghostty {
@@ -85,7 +86,18 @@ extension Ghostty {
 
         /// The surface view that will be dragged. Its UUID is encoded into the
         /// pasteboard for drop targets to identify which surface is being moved.
-        var surfaceView: PaneView?
+        var surfaceView: PaneView? {
+            didSet {
+                // QuickTerm：终端报告"指着链接"（pointerStyle = .link）时重算光标矩形，⌘ 下也能看到链接指针
+                pointerObserver = (surfaceView as? Ghostty.SurfaceView)?.$pointerStyle
+                    .receive(on: DispatchQueue.main)
+                    .sink { [weak self] _ in
+                        guard let self, let window = self.window else { return }
+                        window.invalidateCursorRects(for: self)
+                    }
+            }
+        }
+        private var pointerObserver: AnyCancellable?
 
         /// Callback invoked when the drag state changes. Called with `true` when
         /// a drag session begins, and `false` when it ends (completed or cancelled).
@@ -105,6 +117,13 @@ extension Ghostty {
         /// Whether the current drag was cancelled by pressing escape.
         private var dragCancelledByEscape: Bool = false
 
+        /// QuickTerm：按下但还没拖过阈值的那次 mouseDown。纯点击（抬起时仍在）整体转交给 pane 本体——
+        /// ⌘+点击链接靠引擎在 release 时 open_url，浮层吞掉按下/抬起就永远开不了；
+        /// 不能在按下时就转发：随后开始拖拽的话 surface 永远收不到 release，引擎会以为左键一直按着
+        private var pendingClick: NSEvent?
+        /// 拖过这个距离才开始 DnD（之前一动就拖，点击时手抖一下就变成拖 pane）
+        private static let dragThreshold: CGFloat = 4
+
         deinit {
             if let escapeMonitor {
                 NSEvent.removeMonitor(escapeMonitor)
@@ -121,6 +140,17 @@ extension Ghostty {
             // window's drag handler. This fixes issue #10110 where grab handles
             // would drag the window instead of initiating pane drags.
             // Don't call super - the drag will be initiated in mouseDragged.
+            pendingClick = event   // QuickTerm：记下，抬起时若没拖就当点击转交
+        }
+
+        /// QuickTerm：没拖过阈值就抬起 = 纯点击，按下 + 抬起一并交给 pane 的键盘焦点视图
+        /// （终端 = SurfaceView → 引擎 PRESS/RELEASE；浏览器 = WKWebView）
+        override func mouseUp(with event: NSEvent) {
+            guard let down = pendingClick else { return }
+            pendingClick = nil
+            guard let target = surfaceView?.clickTarget(atWindowPoint: down.locationInWindow) else { return }
+            target.mouseDown(with: down)
+            target.mouseUp(with: event)
         }
 
         override func updateTrackingAreas() {
@@ -139,6 +169,13 @@ extension Ghostty {
         }
 
         override func resetCursorRects() {
+            // QuickTerm：⌘ 悬停在链接上显示链接指针而不是抓手（⌘+点击链接是正式功能，得有提示）。
+            // 光标仲裁走命中视图（本浮层）自己的矩形，不能只是"不加矩形"——那样会沿本浮层的响应链往上走，
+            // 永远到不了终端滚动视图的 documentCursor
+            if !isTracking, let terminal = surfaceView as? Ghostty.SurfaceView, terminal.pointerStyle == .link {
+                addCursorRect(bounds, cursor: .pointingHand)
+                return
+            }
             addCursorRect(bounds, cursor: isTracking ? .closedHand : .openHand)
         }
 
@@ -152,6 +189,13 @@ extension Ghostty {
 
         override func mouseDragged(with event: NSEvent) {
             guard !isTracking, let surfaceView = surfaceView else { return }
+            // QuickTerm：过了阈值才算拖拽
+            if let down = pendingClick {
+                let dx = event.locationInWindow.x - down.locationInWindow.x
+                let dy = event.locationInWindow.y - down.locationInWindow.y
+                if hypot(dx, dy) < Self.dragThreshold { return }
+                pendingClick = nil
+            }
 
             // Create our dragging item from our transferable
             guard let pasteboardItem = surfaceView.pasteboardItem() else { return }

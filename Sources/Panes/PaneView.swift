@@ -48,6 +48,17 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
     /// 键盘焦点实际落到的视图（终端 = 自己；浏览器 = WKWebView）
     var focusTarget: NSView { self }
 
+    /// ⌘ 拖拽源浮层 / 浮动会话把"纯点击"转交给 pane 时的目标：指针下的视图必须是焦点视图或其后代
+    /// （终端 = surface、浏览器 = 网页），否则 nil——落在浏览器工具条等 AppKit 控件上不能直接调
+    /// mouseDown（NSControl 会进入等待抬起的跟踪循环，而真正的抬起已经过去了）
+    func clickTarget(atWindowPoint point: NSPoint) -> NSView? {
+        guard let superview else { return nil }
+        let focus = focusTarget
+        guard let hit = hitTest(superview.convert(point, from: nil)),
+              hit === focus || hit.isDescendant(of: focus) else { return nil }
+        return focus
+    }
+
     // MARK: - 焦点
 
     /// 是否持有键盘焦点（PaneChrome 边框等观察）。非 @Published：变化时手动发 objectWillChange

@@ -296,6 +296,30 @@ final class BrowserPaneTests: XCTestCase {
         window.contentView = nil
     }
 
+    /// ⌘ 纯点击的转交目标：落在网页上 → WKWebView；落在地址栏 / 标签条等 AppKit 控件上 → nil（不能直接调 mouseDown）
+    @MainActor
+    func testClickTargetOnlyForwardsToWebView() throws {
+        let prev = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = prev }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        window.contentView = host
+        pane.frame = host.bounds
+        host.addSubview(pane)
+        pane.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        let webCenter = pane.webView.convert(NSPoint(x: pane.webView.bounds.midX, y: pane.webView.bounds.midY), to: nil)
+        XCTAssertTrue(pane.clickTarget(atWindowPoint: webCenter) === pane.webView, "网页区域 → WKWebView")
+        let field = pane.addressFieldForTesting
+        let fieldCenter = field.convert(NSPoint(x: field.bounds.midX, y: field.bounds.midY), to: nil)
+        XCTAssertNil(pane.clickTarget(atWindowPoint: fieldCenter), "地址栏 → 不转交")
+        XCTAssertNil(pane.clickTarget(atWindowPoint: NSPoint(x: -50, y: -50)), "pane 外 → nil")
+        window.contentView = nil
+    }
+
     /// 多标签存档往返（tabs + activeTab），旧单页存档仍可读
     @MainActor
     func testTabsPersistence() throws {

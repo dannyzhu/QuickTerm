@@ -206,6 +206,9 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
   pane）。对"作用于焦点终端"的动作（清屏）必须按窗口真 FR 选目标，否则会作用到用户看不见的 pane。
 - **ghostty 的 performable 绑定**：`clear_screen` 在 alt screen 上引擎返回 false、期望宿主把按键交给程序；
   宿主不能直接放行给 AppKit（菜单键等价会吞掉），要显式 `surface.keyDown(with:)`。
+- **⌘ 拖拽源浮层会吞掉 ⌘+点击**：SurfaceDragSource 浮层 acceptsFirstMouse + 吞 mouseDown、不转发 mouseUp，
+  引擎永远收不到 PRESS/RELEASE，⌘+点击链接（open_url 在 release 时触发）根本不会发生。浮层和浮动 pane 的 ⌘
+  会话都要"没拖过阈值就抬起 = 纯点击，按下 + 抬起一并转交 pane 本体"；不能在按下时就转发（随后拖拽则没有 release）。
 - **普通滚轮的 scrollingDelta 是"行"不是 pt**：`hasPreciseScrollingDeltas == false` 时一格 ≈ 1，直接当 pt 用
   等于滚不动；要自行换算步长。scrolling 布局的横向平移监视器跑在视图派发之前，需要按命中放行给子视图。
 - **关标签要先记焦点**：被关的 webView `removeFromSuperview` 时 AppKit 静默把 FR 重置为窗口（同上节，
