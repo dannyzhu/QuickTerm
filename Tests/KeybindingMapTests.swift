@@ -11,6 +11,7 @@ final class KeybindingMapTests: XCTestCase {
             ("return", .command, .newTerminal),
             ("b", [.command, .shift], .fileManager),
             ("b", .command, .newBrowser),
+            ("k", .command, .keybindingHelp), ("k", [.command, .shift], .clearTerminal),
             ("r", .command, .webReload), ("l", [.command, .shift], .webFocusAddress),
             ("n", .command, .webNewTab), ("tab", .control, .webNextTab), ("tab", [.control, .shift], .webPrevTab),
             ("w", .command, .closePane),
@@ -42,6 +43,30 @@ final class KeybindingMapTests: XCTestCase {
         XCTAssertFalse(MainWindowController.consumes(.webReload, focusedPane: nil))
         XCTAssertTrue(MainWindowController.consumes(.newBrowser, focusedPane: nil))
         XCTAssertTrue(MainWindowController.consumes(.closePane, focusedPane: browser))
+        // 终端专属：焦点在浏览器 / 无焦点 pane 时放行（Cmd+Shift+K 交给页面）
+        XCTAssertTrue(WMAction.clearTerminal.terminalOnly)
+        XCTAssertFalse(MainWindowController.consumes(.clearTerminal, focusedPane: browser))
+        XCTAssertFalse(MainWindowController.consumes(.clearTerminal, focusedPane: nil))
+    }
+
+    /// 菜单固定快捷键：解绑 / 改键后不执行；焦点 pane 不消费的动作不执行；鼠标点菜单项始终执行
+    @MainActor
+    func testMenuShortcutRespectsKeymapAndConsumption() throws {
+        let cmdShiftK = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [.command, .shift], timestamp: 0, windowNumber: 0,
+            context: nil, characters: "k", charactersIgnoringModifiers: "K", isARepeat: false, keyCode: 40))
+        let bound = KeybindingMap()
+        XCTAssertTrue(MainWindowController.menuShortcutAllowed(.clearTerminal, event: nil, keybindings: bound,
+                                                                focusedPane: nil), "鼠标点菜单项")
+        XCTAssertFalse(MainWindowController.menuShortcutAllowed(.clearTerminal, event: cmdShiftK, keybindings: bound,
+                                                                 focusedPane: BrowserPaneView(url: nil)),
+                       "焦点在浏览器：清屏不执行")
+        let unbound = KeybindingMap(unbound: [.clearTerminal])
+        XCTAssertFalse(MainWindowController.menuShortcutAllowed(.clearTerminal, event: cmdShiftK, keybindings: unbound,
+                                                                 focusedPane: nil), "none 解绑后菜单快捷键失效")
+        let rebound = KeybindingMap(overrides: [.clearTerminal: KeyCombo(key: "l", [.command, .shift])])
+        XCTAssertFalse(MainWindowController.menuShortcutAllowed(.clearTerminal, event: cmdShiftK, keybindings: rebound,
+                                                                 focusedPane: nil), "改键后原组合不再触发")
     }
 
     func testResizeWithShiftIsPrecise() {

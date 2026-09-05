@@ -5,6 +5,8 @@ enum WMAction: String, CaseIterable {
     case newTerminal = "new-terminal"
     case fileManager = "file-manager"
     case newBrowser = "new-browser"
+    // 终端 pane 专属（焦点不在终端时放行）：Cmd+K 归速查表，清屏挪到 Cmd+Shift+K
+    case clearTerminal = "clear-terminal"
     // 浏览器 pane 专属（焦点不在浏览器 pane 时放行给终端，见 MainWindowController 键盘监视器）
     case webBack = "web-back", webForward = "web-forward", webReload = "web-reload"
     case webFocusAddress = "web-focus-address", webOpenExternal = "web-open-external"
@@ -66,6 +68,8 @@ enum WMAction: String, CaseIterable {
 
     /// 只对焦点浏览器 pane 生效的动作：焦点在终端时不消费按键（Cmd+R / Cmd+= 等仍归终端）
     var browserOnly: Bool { rawValue.hasPrefix("web-") }
+    /// 只对焦点终端 pane 生效的动作：焦点在浏览器等其它 pane 时不消费按键
+    var terminalOnly: Bool { self == .clearTerminal }
 
     var isGotoWorkspace: Bool { rawValue.hasPrefix("goto-workspace-") }
     var isMoveToWorkspace: Bool { rawValue.hasPrefix("move-to-workspace-") }
@@ -76,6 +80,7 @@ enum WMAction: String, CaseIterable {
         case .newTerminal: "新建终端（scrolling 右插新列 / dwindle 分裂，继承当前目录）"
         case .fileManager: "文件管理器（新 pane 运行 yazi，继承当前目录；退出时目录已变则原位开终端）"
         case .newBrowser: "新建浏览器 pane（打开 browser-home）"
+        case .clearTerminal: "清屏（清除屏幕与回滚；仅终端 pane 聚焦时生效）"
         case .webBack: "浏览器：后退（仅焦点在浏览器 pane 时）"
         case .webForward: "浏览器：前进"
         case .webReload: "浏览器：重新加载"

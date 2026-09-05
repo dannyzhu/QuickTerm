@@ -32,6 +32,7 @@ enum ConfigStore {
     # new-terminal = "cmd+return"
     # file-manager = "cmd+shift+b"
     # new-browser = "cmd+b"
+    # clear-terminal = "cmd+shift+k"
     # goto-workspace-1 = "cmd+1"
 
     [ghostty]

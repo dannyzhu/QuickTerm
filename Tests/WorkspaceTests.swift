@@ -680,6 +680,23 @@ extension WorkspaceTests {
         c.perform(.newTerminal)
         let a = try XCTUnwrap(c.paneList.first)
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        // Cmd+Shift+K 清屏：焦点终端时消费并由引擎执行 clear_screen（返回 true = 动作合法且已执行）
+        XCTAssertTrue(MainWindowController.consumes(.clearTerminal, focusedPane: a))
+        XCTAssertTrue(c.clearTarget === a, "清屏目标 = 焦点终端")
+        XCTAssertTrue(c.clearFocusedTerminal())
+        // Scratchpad 打开时目标必须是 Scratchpad（它不在 paneList 里，focusedPane 会退回到第一块平铺 pane）
+        c.perform(.scratchpad)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        let scratch = try XCTUnwrap(c.model.scratchpadSurface)
+        XCTAssertTrue(c.model.scratchpadVisible)
+        XCTAssertTrue(c.clearTarget === scratch, "Scratchpad 聚焦时清屏目标是 Scratchpad")
+        XCTAssertFalse(c.clearTarget === a, "不能清掉被盖住的平铺终端")
+        XCTAssertTrue(MainWindowController.consumes(.clearTerminal, focusedPane: c.clearTarget))
+        XCTAssertTrue(c.clearFocusedTerminal())
+        c.perform(.scratchpad)   // 收起
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        XCTAssertFalse(c.model.scratchpadVisible)
+        XCTAssertTrue(c.clearTarget === a, "收起后回到平铺终端")
         c.perform(.newBrowser)
         let b = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView } as? BrowserPaneView)
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))

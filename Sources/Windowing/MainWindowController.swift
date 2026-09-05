@@ -69,7 +69,33 @@ final class MainWindowController: BaseTerminalController {
     }
     /// WM 键是否由本控制器消费：浏览器专属动作只在焦点是浏览器 pane 时消费
     static func consumes(_ action: WMAction, focusedPane: PaneView?) -> Bool {
-        !action.browserOnly || focusedPane is BrowserPaneView
+        if action.browserOnly { return focusedPane is BrowserPaneView }
+        if action.terminalOnly { return focusedPane is Ghostty.SurfaceView }
+        return true
+    }
+
+    /// 菜单项的固定快捷键触发时是否执行动作：以 [keybinds] 与 pane 消费规则为准——解绑 / 改键后的组合、
+    /// 焦点 pane 不消费的动作（清屏时焦点在浏览器）都不执行（按键交还焦点终端）；鼠标点菜单项（非 keyDown）始终执行
+    static func menuShortcutAllowed(_ action: WMAction, event: NSEvent?, keybindings: KeybindingMap,
+                                   focusedPane: PaneView?) -> Bool {
+        guard let event, event.type == .keyDown else { return true }
+        guard keybindings.action(for: event)?.action == action else { return false }
+        return consumes(action, focusedPane: focusedPane)
+    }
+
+    /// 清屏目标：以窗口真 FR 为准。Scratchpad 不在 paneList 里，focusedPane 会退回到第一块平铺 pane——
+    /// 用它选目标会清掉用户看不见的终端的回滚
+    var clearTarget: Ghostty.SurfaceView? {
+        if let window, let fr = window.firstResponder as? Ghostty.SurfaceView { return fr }
+        if model.scratchpadVisible, let scratch = model.scratchpadSurface { return scratch }
+        return focusedSurface
+    }
+
+    /// 对清屏目标执行引擎 clear_screen（清屏 + 清回滚）。false = 没有终端目标，或引擎没执行
+    /// （ghostty 把 clear_screen 标为 performable：alt screen 上（vim / less）不清、按键该交给程序）
+    @discardableResult
+    func clearFocusedTerminal() -> Bool {
+        clearTarget?.surfaceModel?.perform(action: "clear_screen") == true
     }
 
     /// 焦点 pane 是否在浮动层
@@ -226,8 +252,16 @@ final class MainWindowController: BaseTerminalController {
             guard let self, let window = self.window, event.window === window else { return event }
             if self.model.activePanel != nil, self.handlePanelKey(event) { return nil }
             guard let hit = self.keybindings.action(for: event) else { return event }
-            // 浏览器专属动作：焦点不在浏览器 pane 时不消费（Cmd+R / Cmd+= 等仍归终端）
-            guard Self.consumes(hit.action, focusedPane: self.focusedPane) else { return event }
+            // pane 专属动作：浏览器专属的焦点不在浏览器 pane 时不消费（Cmd+R / Cmd+= 等仍归终端），
+            // 终端专属的（清屏）焦点不在终端时放行；清屏按真 FR 选目标（Scratchpad 不在 paneList 里）
+            let target = hit.action.terminalOnly ? self.clearTarget : self.focusedPane
+            guard Self.consumes(hit.action, focusedPane: target) else { return event }
+            if hit.action == .clearTerminal {
+                // 引擎没执行（alt screen）→ 按 ghostty performable 语义把按键交给程序；
+                // 不能 return event：Shell 菜单的 ⇧⌘K 键等价会再把它吞掉
+                if !self.clearFocusedTerminal(), let surface = self.clearTarget { surface.keyDown(with: event) }
+                return nil
+            }
             self.perform(hit.action, precise: hit.precise)
             return nil
         }
@@ -504,6 +538,10 @@ final class MainWindowController: BaseTerminalController {
         switch action {
         case .newTerminal:
             insertNewPane(newSurface(inheritingFrom: focusedPane))
+
+        case .clearTerminal:
+            // 同 ghostty 的 clear_screen（Terminal.app Cmd+K 语义：清屏 + 清回滚）；只作用于真 FR 终端
+            clearFocusedTerminal()
 
         case .fileManager:
             // Omarchy Super+Shift+F：新 pane 里以焦点 pane 的目录启动 TUI 文件管理器

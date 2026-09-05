@@ -158,6 +158,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `Cmd+S` | `scratchpad` | Scratchpad 终端 |
 | `Cmd+Shift+B` | `file-manager` | 文件管理器（[yazi](https://github.com/sxyazi/yazi)）在新 pane 里以焦点 pane 的目录启动；在别的目录退出则原位开终端 |
 | `Cmd+B` | `new-browser` | 浏览器 pane（WebKit），打开 `browser-home` |
+| `Cmd+Shift+K` | `clear-terminal` | 仅终端 pane：清屏并清回滚（ghostty 的 `clear_screen`；`Cmd+K` 被速查表占用） |
 | `Cmd+Shift+L` / `Cmd+R` | `web-focus-address` / `web-reload` | 仅焦点在浏览器 pane 时：地址栏 / 重新加载（其它 pane 放行这些键） |
 | `Cmd+Shift+[` / `Cmd+Shift+]` | `web-back` / `web-forward` | 仅浏览器 pane：后退 / 前进 |
 | `Cmd+=` / `Cmd+-` / `Cmd+0` | `web-zoom-in` / `web-zoom-out` / `web-zoom-reset` | 仅浏览器 pane：页面缩放（终端字号键不受影响） |
@@ -175,9 +176,9 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `Cmd+,` | `open-settings` | 打开 `config.toml`（存在 ghostty 配置时一并打开） |
 | `Ctrl+Cmd+F` / `Cmd+Esc` | `toggle-fullscreen` / `exit-fullscreen` | 非原生全屏（隐藏 Dock 与菜单栏） |
 
-与 Omarchy 的两处有意偏移：调整大小用 `Cmd+Ctrl+方向`，因为 `Cmd+-`/`Cmd+=` 在所有 macOS 终端里都是字号键；`Cmd+K` 是速查表而不是"清屏"（需要清屏键请在 ghostty 配置里自行绑定）。
+与 Omarchy 的两处有意偏移：调整大小用 `Cmd+Ctrl+方向`，因为 `Cmd+-`/`Cmd+=` 在所有 macOS 终端里都是字号键；`Cmd+K` 是速查表而不是"清屏"——清屏用 `Cmd+Shift+K`（`clear-terminal`，同样可改键）。
 
-macOS 菜单栏的 Shell / Pane 菜单只列了少数动作的固定默认快捷键，不随改键变化；速查表（`Cmd+K`）永远是准的。
+macOS 菜单栏的 Shell / Pane 菜单只列了少数动作的默认快捷键；标签不随改键变化，但快捷键本身遵守 `[keybinds]`（解绑或改键后的组合不再从菜单触发）。速查表（`Cmd+K`）永远反映当前键位表。
 
 ## 配置
 

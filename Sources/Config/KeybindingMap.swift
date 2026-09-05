@@ -100,6 +100,7 @@ struct KeybindingMap {
         KeyCombo(key: "backspace", .command): .toggleOpacity,
         KeyCombo(key: "backspace", [.command, .shift]): .toggleGaps,
         KeyCombo(key: "k", .command): .keybindingHelp,
+        KeyCombo(key: "k", [.command, .shift]): .clearTerminal,   // ghostty 默认的 Cmd+K 被速查表占用
         KeyCombo(key: "space", [.command, .option]): .mainMenu,
         KeyCombo(key: "s", .command): .scratchpad,
         KeyCombo(key: "f", [.command, .control]): .toggleFullscreen,

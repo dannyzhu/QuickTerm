@@ -158,6 +158,7 @@ Every action below can be rebound in `config.toml` (see [Configuration](#configu
 | `Cmd+S` | `scratchpad` | Scratchpad terminal |
 | `Cmd+Shift+B` | `file-manager` | File manager ([yazi](https://github.com/sxyazi/yazi)) in a new pane, starting in the focused pane's directory; quitting in another directory opens a terminal there |
 | `Cmd+B` | `new-browser` | Browser pane (WebKit) opening `browser-home` |
+| `Cmd+Shift+K` | `clear-terminal` | Terminal pane only: clear the screen and scrollback (ghostty's `clear_screen`; `Cmd+K` is taken by the cheat sheet) |
 | `Cmd+Shift+L` / `Cmd+R` | `web-focus-address` / `web-reload` | Browser pane only: address bar / reload (other panes pass these keys through) |
 | `Cmd+Shift+[` / `Cmd+Shift+]` | `web-back` / `web-forward` | Browser pane only: history navigation |
 | `Cmd+=` / `Cmd+-` / `Cmd+0` | `web-zoom-in` / `web-zoom-out` / `web-zoom-reset` | Browser pane only: page zoom (terminal font size keys are untouched) |
@@ -175,9 +176,9 @@ Every action below can be rebound in `config.toml` (see [Configuration](#configu
 | `Cmd+,` | `open-settings` | Open `config.toml` (and your ghostty config if present) |
 | `Ctrl+Cmd+F` / `Cmd+Esc` | `toggle-fullscreen` / `exit-fullscreen` | Non-native fullscreen (hides Dock and menu bar) |
 
-Two deliberate deviations from Omarchy: resizing uses `Cmd+Ctrl+arrows` because `Cmd+-`/`Cmd+=` are font-size keys in every macOS terminal, and `Cmd+K` is the cheat sheet rather than "clear screen" (bind your own clear key in your ghostty config if you want one).
+Two deliberate deviations from Omarchy: resizing uses `Cmd+Ctrl+arrows` because `Cmd+-`/`Cmd+=` are font-size keys in every macOS terminal, and `Cmd+K` is the cheat sheet rather than "clear screen" — clearing is `Cmd+Shift+K` (`clear-terminal`, rebindable like everything else).
 
-The Shell and Pane menus in the macOS menu bar list fixed default shortcuts for a few actions and don't follow rebinds; the cheat sheet (`Cmd+K`) always does.
+The Shell and Pane menus in the macOS menu bar show the default shortcuts for a few actions; the labels don't follow rebinds, but the shortcuts themselves obey `[keybinds]` (an unbound or rebound combo no longer fires from the menu). The cheat sheet (`Cmd+K`) always reflects the live map.
 
 ## Configuration
 

@@ -202,6 +202,10 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
   梯形叠放 / 溢出滚动也只有手工布局做得到）。
 - **NSTrackingArea 不感知兄弟遮挡**：每个标签自带 tracking area 时，相邻梯形重叠的 8pt 带里两个标签同时收到
   mouseEntered（区域是纯矩形、与 hitTest / z 序无关）。悬停要由容器一个 tracking area + 自己的命中判定裁决。
+- **`focusedPane` 只搜 paneList，Scratchpad 不在其中**：Scratchpad 聚焦时它退回到 `paneList.first`（第一块平铺
+  pane）。对"作用于焦点终端"的动作（清屏）必须按窗口真 FR 选目标，否则会作用到用户看不见的 pane。
+- **ghostty 的 performable 绑定**：`clear_screen` 在 alt screen 上引擎返回 false、期望宿主把按键交给程序；
+  宿主不能直接放行给 AppKit（菜单键等价会吞掉），要显式 `surface.keyDown(with:)`。
 - **普通滚轮的 scrollingDelta 是"行"不是 pt**：`hasPreciseScrollingDeltas == false` 时一格 ≈ 1，直接当 pt 用
   等于滚不动；要自行换算步长。scrolling 布局的横向平移监视器跑在视图派发之前，需要按命中放行给子视图。
 - **关标签要先记焦点**：被关的 webView `removeFromSuperview` 时 AppKit 静默把 FR 重置为窗口（同上节，

@@ -36,6 +36,7 @@ enum MainMenu {
         shellMenu.addItem(wm(.newTerminal, title: "新建终端", key: "\r", delegate: delegate))
         shellMenu.addItem(wm(.fileManager, title: "文件管理器", key: "b", modifiers: [.command, .shift], delegate: delegate))
         shellMenu.addItem(wm(.newBrowser, title: "新建浏览器", key: "b", delegate: delegate))
+        shellMenu.addItem(wm(.clearTerminal, title: "清屏", key: "k", modifiers: [.command, .shift], delegate: delegate))
         shellMenu.addItem(wm(.closePane, title: "关闭 Pane", key: "w", delegate: delegate))
         main.setSubmenu(shellMenu, for: shellItem)
 
@@ -76,8 +77,18 @@ enum MainMenu {
 extension AppDelegate {
     @objc func performWMAction(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
-              let action = WMAction(rawValue: raw) else { return }
-        controller?.perform(action)
+              let action = WMAction(rawValue: raw), let controller else { return }
+        // 键等价触发（currentEvent 是 keyDown）时以 [keybinds] 为准：解绑 / 改键，或焦点 pane 不消费该动作
+        // （清屏时焦点在浏览器）就不执行，按键交还焦点终端；鼠标点菜单项始终执行。菜单里的快捷键只是提示
+        let event = NSApp.currentEvent
+        guard MainWindowController.menuShortcutAllowed(action, event: event, keybindings: controller.keybindings,
+                                                       focusedPane: controller.focusedPane) else {
+            if let event, let surface = event.window?.firstResponder as? Ghostty.SurfaceView {
+                surface.keyDown(with: event)
+            }
+            return
+        }
+        controller.perform(action)
     }
 }
 
