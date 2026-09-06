@@ -105,6 +105,64 @@ final class BrowserExtensionTests: XCTestCase {
         XCTAssertNil(accepted(body: "abcdefghijklmnopabcdefghijklmnop"))
     }
 
+    // MARK: - Web Store 注入按钮（端到端）
+
+    /// 商店详情页上，注入的「添加到 QuickTerm」要挨着商店自己（灰掉的）「添加至 Chrome」按钮；
+    /// 点击后经私有 content world 的通道把 id 送到原生侧；不在详情页时按钮隐藏
+    @MainActor
+    func testWebStoreButtonSitsNextToStoreButtonAndPostsID() throws {
+        let id = "abcdefghijklmnopabcdefghijklmnop"
+        final class Recorder: NSObject, WKScriptMessageHandler {
+            var received: [Any] = []
+            func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) { received.append(m.body) }
+        }
+        let recorder = Recorder()
+        let configuration = WKWebViewConfiguration()
+        configuration.userContentController.addUserScript(BrowserExtensionWebStore.userScript)
+        configuration.userContentController.add(recorder, contentWorld: BrowserExtensionWebStore.contentWorld,
+                                                name: BrowserExtensionWebStore.messageHandlerName)
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 600, height: 400), configuration: configuration)
+        let window = NSWindow(contentRect: webView.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = webView
+        defer { window.contentView = nil }
+        let url = try XCTUnwrap(URL(string: "https://chromewebstore.google.com/detail/video-speed/\(id)?pli=1"))
+        // 商店按钮由 JS 晚些渲染：先给空壳，再补上，检验 MutationObserver 的挪位
+        webView.loadHTMLString("""
+            <html><body><h1>Ext</h1><div id="row"></div>
+            <script>setTimeout(function(){
+              var b=document.createElement('button'); b.textContent='添加至 Chrome'; b.disabled=true;
+              document.getElementById('row').appendChild(b);}, 150);</script></body></html>
+            """, baseURL: url)
+        func eval(_ js: String) throws -> Any? {
+            var result: Any?; var done = false
+            webView.evaluateJavaScript(js, in: nil, in: BrowserExtensionWebStore.contentWorld) { r in
+                if case .success(let v) = r { result = v }
+                done = true
+            }
+            let deadline = Date().addingTimeInterval(3)
+            while !done, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+            return result
+        }
+        let probe = "(function(){var b=document.getElementById('quickterm-install-button');" +
+            "return b && b.previousElementSibling ? b.previousElementSibling.textContent : null})()"
+        let deadline = Date().addingTimeInterval(5)
+        var neighbour: String?
+        while Date() < deadline, neighbour != "添加至 Chrome" {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            neighbour = try eval(probe) as? String
+        }
+        XCTAssertEqual(neighbour, "添加至 Chrome", "注入按钮应挨在商店按钮后面")
+        XCTAssertEqual(try eval("document.getElementById('quickterm-install-button').style.position") as? String, "static",
+                       "挪到行内后不再是右下角浮动")
+        _ = try eval("document.getElementById('quickterm-install-button').click(); 0")
+        let clickDeadline = Date().addingTimeInterval(3)
+        while Date() < clickDeadline, recorder.received.isEmpty { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        XCTAssertEqual((recorder.received.first as? [String: Any])?["id"] as? String, id, "点击后送出详情页的 id")
+        // 站内跳到非详情页：按钮隐藏
+        _ = try eval("history.pushState({}, '', '/category/extensions'); window.dispatchEvent(new Event('popstate')); 0")
+        XCTAssertEqual(try eval("document.getElementById('quickterm-install-button').hidden") as? Bool, true)
+    }
+
     // MARK: - 管理器：安装 / 启停 / 移除
 
     @MainActor

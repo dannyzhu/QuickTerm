@@ -287,27 +287,83 @@ enum BrowserExtensionWebStore {
         return id
     }
 
+    /// 注入脚本：把「添加到 QuickTerm」放在商店自己那颗（对非 Chrome 浏览器灰掉的）「添加至 Chrome」按钮旁边；
+    /// 商店是 SPA、按钮由 JS 晚些渲染，所以先放右下角兜底，MutationObserver 等到商店按钮出现再挪过去；
+    /// 详情页之间的站内跳转不会重新注入，id 在点击时从 location 重新取，不在详情页时把按钮藏起来
     private static let script = """
     (function () {
       if (\(storeHosts.map { "location.hostname !== '\($0)'" }.joined(separator: " && "))) return;
-      if (!location.pathname.includes('/detail/')) return;
       if (document.getElementById('quickterm-install-button')) return;
-      var match = location.pathname.match(/([a-p]{32})/);
-      if (!match) return;
-      var id = match[1];
+      var zh = (navigator.language || '').toLowerCase().indexOf('zh') === 0;
+      var label = zh ? '添加到 QuickTerm' : 'Add to QuickTerm';
+      var installing = zh ? '正在安装…' : 'Installing…';
+      var storeButtonText = /^(添加至 Chrome|添加到 Chrome|Add to Chrome|加入 Chrome|安裝到 Chrome)$/i;
+      function currentID() {
+        if (!location.pathname.includes('/detail/')) return null;
+        var m = location.pathname.match(/([a-p]{32})/);
+        return m ? m[1] : null;
+      }
       var button = document.createElement('button');
       button.id = 'quickterm-install-button';
-      button.textContent = '添加到 QuickTerm';
-      button.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:2147483647;' +
-        'padding:10px 16px;border:0;border-radius:8px;background:#1a73e8;color:#fff;' +
-        'font:600 13px -apple-system,system-ui,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.35);cursor:pointer';
+      button.type = 'button';
+      button.textContent = label;
+      var base = 'z-index:2147483647;padding:10px 20px;border:0;border-radius:20px;background:#1a73e8;color:#fff;' +
+        'font:500 14px -apple-system,system-ui,sans-serif;cursor:pointer;white-space:nowrap;';
+      function styleFloating() {
+        button.style.cssText = base + 'position:fixed;right:20px;bottom:20px;box-shadow:0 2px 10px rgba(0,0,0,.35);';
+      }
+      function styleInline() {
+        button.style.cssText = base + 'position:static;margin-left:12px;vertical-align:middle;';
+      }
+      function storeButton() {
+        var buttons = document.querySelectorAll('button');
+        for (var i = 0; i < buttons.length; i++) {
+          if (buttons[i] === button) continue;
+          if (storeButtonText.test((buttons[i].textContent || '').trim())) return buttons[i];
+        }
+        return null;
+      }
+      function place() {
+        var id = currentID();
+        button.hidden = !id;
+        if (!id) return;
+        var anchor = storeButton();
+        if (anchor && anchor.parentNode) {
+          if (button.previousElementSibling !== anchor) {
+            anchor.insertAdjacentElement('afterend', button);
+            styleInline();
+          }
+        } else if (button.parentNode !== document.body) {
+          document.body.appendChild(button);
+          styleFloating();
+        }
+      }
       button.addEventListener('click', function () {
+        var id = currentID();
+        if (!id) return;
         try {
           window.webkit.messageHandlers.\(messageHandlerName).postMessage({ id: id });
-          button.textContent = '正在安装…';
+          button.textContent = installing;
         } catch (e) {}
       });
+      styleFloating();
       document.body.appendChild(button);
+      place();
+      // 观察回调里只做"必要时才动 DOM"的事（place 自带守卫）：回调里无条件改 DOM 会再次触发观察者，
+      // 微任务死循环把页面 JS 线程卡死。商店 DOM 变动很频繁，用 setTimeout 合并
+      // （不用 requestAnimationFrame：后台标签 / 未渲染的 WebView 里 rAF 不触发）
+      var scheduled = false;
+      var observer = new MutationObserver(function () {
+        if (scheduled) return;
+        scheduled = true;
+        setTimeout(function () {
+          scheduled = false;
+          if (!button.isConnected) { document.body.appendChild(button); styleFloating(); }
+          place();
+        }, 50);
+      });
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      window.addEventListener('popstate', place);
     })();
     """
 }
