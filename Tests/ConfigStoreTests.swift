@@ -141,6 +141,9 @@ extension ConfigStoreTests {
         XCTAssertTrue(ConfigStore.parse("").browserExtensions, "扩展默认开启")
         XCTAssertFalse(ConfigStore.parse("browser-extensions = false").browserExtensions)
         XCTAssertTrue(ConfigStore.parse("browser-extensions = true").browserExtensions)
+        XCTAssertEqual(ConfigStore.parse("").browserDownloadDir, "~/Downloads", "下载目录默认 ~/Downloads")
+        XCTAssertEqual(ConfigStore.parse("browser-download-dir = \"/tmp/dl\"").browserDownloadDir, "/tmp/dl")
+        XCTAssertEqual(ConfigStore.parse("browser-download-dir = \"\"").browserDownloadDir, "~/Downloads", "空值不覆盖默认")
         XCTAssertEqual(ConfigStore.parse("").linkOpener, "browser-pane", "终端链接默认开在浏览器 pane")
         XCTAssertEqual(ConfigStore.parse("link-opener = system").linkOpener, "system")
     }
@@ -178,7 +181,7 @@ extension ConfigStoreTests {
                   "active-opacity", "bar-opacity", "divider-opacity", "pane-gap", "inactive-blur",
                   "file-manager-command", "browser-home", "browser-search", "browser-user-agent",
                   "browser-inspectable", "browser-tab-bar", "browser-tab-width", "browser-tab-min-width",
-                  "browser-extensions", "link-opener"] {
+                  "browser-extensions", "browser-download-dir", "link-opener"] {
             XCTAssertTrue(keys.contains(k), "模板缺少 \(k)")
         }
         for k in ["new-terminal", "cursor-style", "动作"] {

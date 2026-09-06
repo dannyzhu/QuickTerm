@@ -23,6 +23,27 @@ final class BrowserPaneView: PaneView {
         /// 标签最大 / 最小宽度 pt（config browser-tab-width / browser-tab-min-width）
         var tabWidth = 200
         var tabMinWidth = 80
+        /// 下载落盘目录（config browser-download-dir，支持 `~`；目录不存在时回退 ~/Downloads）
+        var downloadDirectory = "~/Downloads"
+
+        /// 系统的 ~/Downloads（回退用）
+        static var systemDownloadsURL: URL {
+            FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+                ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+        }
+
+        /// 解析后的下载目录：展开 `~`，不是个真目录就回退 ~/Downloads
+        var downloadDirectoryURL: URL {
+            let raw = downloadDirectory.trimmingCharacters(in: .whitespaces)
+            guard !raw.isEmpty else { return Self.systemDownloadsURL }
+            let expanded = (raw as NSString).expandingTildeInPath
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: expanded, isDirectory: &isDirectory),
+               isDirectory.boolValue {
+                return URL(fileURLWithPath: expanded, isDirectory: true)
+            }
+            return Self.systemDownloadsURL
+        }
 
         static let safariUserAgent =
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15"
@@ -212,7 +233,19 @@ final class BrowserPaneView: PaneView {
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
     let addressField = BrowserAddressField()   // 测试需访问
-    /// 地址栏右侧的扩展工具条（Task B 的下载按钮将插在地址栏与它之间）
+    /// 地址栏与扩展工具条之间的下载按钮（无下载时隐藏，宽度与两侧间距一起收成 0）
+    let downloadButton = BrowserDownloadButton()
+    /// 本 pane 的下载列表（WKDownloadDelegate 的回调都落到它上面）
+    let downloads = BrowserDownloadList()
+    private lazy var downloadPopover = BrowserDownloadPopover(list: downloads)
+    /// 弹出层由 pane 持有：`NSPopover.contentViewController` 是强引用，内容控制器再反持 NSPopover
+    /// 就成环（pane 关掉后列表 / 条目 / WKDownload 永远释放不掉）。第一次点开时才建
+    private var downloadPopoverHost: NSPopover?
+    /// 下载按钮的宽度与右侧间距：隐藏时归零，工具条里就当它不存在
+    /// （左侧 6pt 是地址栏与扩展条之间本来就有的间距，一直留着）
+    private var downloadButtonWidth: NSLayoutConstraint!
+    private var downloadTrailingGap: NSLayoutConstraint!
+    /// 地址栏右侧的扩展工具条（下载按钮插在地址栏与它之间）
     let extensionBar = BrowserExtensionToolbar()
     /// Web Store 页面 →「添加到 QuickTerm」的消息处理器（弱引用 pane，避免 WKUserContentController 成环）
     private lazy var scriptHandler = BrowserExtensionScriptHandler(pane: self)
@@ -272,6 +305,10 @@ final class BrowserPaneView: PaneView {
     func paneWillClose() {
         guard !reportedWindowClose else { return }
         reportedWindowClose = true
+        // 下载列表是 pane 私有的：pane 一关就没有界面、没有进度，WKDownload.delegate 又是弱引用
+        // （会自动置空）。与其留一堆没人管的传输，不如明确取消掉
+        for item in downloads.items where item.isActive { downloads.cancel(item) }
+        downloadPopoverHost?.performClose(nil)
         extensionController?.didCloseWindow(self)
     }
 
@@ -556,6 +593,14 @@ final class BrowserPaneView: PaneView {
         addressField.action = #selector(addressEntered)
         toolbar.addSubview(addressField)
 
+        downloadButton.translatesAutoresizingMaskIntoConstraints = false
+        downloadButton.target = self
+        downloadButton.action = #selector(showDownloads)
+        downloadButton.list = downloads
+        downloadButton.isHidden = true
+        toolbar.addSubview(downloadButton)
+        downloads.onChange = { [weak self] in self?.downloadsDidChange() }
+
         // 扩展工具条：手工布局，只对外报 intrinsicContentSize（非必需优先级，撑不动 pane 宽度）
         extensionBar.pane = self
         extensionBar.translatesAutoresizingMaskIntoConstraints = false
@@ -569,6 +614,10 @@ final class BrowserPaneView: PaneView {
         progressBar.maxValue = 1
         progressBar.controlSize = .small
         progressBar.isHidden = true
+
+        downloadButtonWidth = downloadButton.widthAnchor.constraint(equalToConstant: 0)
+        downloadTrailingGap = downloadButton.trailingAnchor.constraint(equalTo: extensionBar.leadingAnchor,
+                                                                       constant: 0)
 
         NSLayoutConstraint.activate([
             tabBar.topAnchor.constraint(equalTo: topAnchor),
@@ -589,8 +638,12 @@ final class BrowserPaneView: PaneView {
             reloadButton.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
             reloadButton.widthAnchor.constraint(equalToConstant: 24),
             addressField.leadingAnchor.constraint(equalTo: reloadButton.trailingAnchor, constant: 6),
-            // 地址栏 | （Task B：下载按钮） | 扩展条
-            addressField.trailingAnchor.constraint(equalTo: extensionBar.leadingAnchor, constant: -6),
+            // 地址栏 | 6pt | 下载按钮（无下载时宽 0、右侧间距也 0，还原成原来的"地址栏 | 6pt | 扩展条"） | 扩展条
+            addressField.trailingAnchor.constraint(equalTo: downloadButton.leadingAnchor, constant: -6),
+            downloadButtonWidth,
+            downloadTrailingGap,
+            downloadButton.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
+            downloadButton.heightAnchor.constraint(equalToConstant: BrowserDownloadButton.size),
             extensionBar.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor, constant: -6),
             extensionBar.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
             extensionBar.heightAnchor.constraint(equalToConstant: BrowserExtensionToolbar.buttonSize),
@@ -701,6 +754,7 @@ final class BrowserPaneView: PaneView {
         addressField.textColor = foreground
         for b in [backButton, forwardButton, reloadButton] { b.contentTintColor = foreground.withAlphaComponent(0.85) }
         extensionBar.applyTheme(foreground: foreground)
+        downloadButton.tint = foreground.withAlphaComponent(0.85)
         rebuildTabBar()
     }
 
@@ -991,11 +1045,11 @@ extension BrowserPaneView: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
-        download.delegate = self
+        beginDownload(download)
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
-        download.delegate = self
+        beginDownload(download)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -1050,27 +1104,97 @@ extension BrowserPaneView: WKNavigationDelegate {
     }
 }
 
-// MARK: - 下载（落到 ~/Downloads，同名加序号）
+// MARK: - 下载（落到 browser-download-dir，默认 ~/Downloads，同名加序号）
 
 extension BrowserPaneView: WKDownloadDelegate {
+    /// 接管一个下载：挂代理 + 立刻进列表。
+    /// 早于 `decideDestinationUsing` —— 连不上服务器的下载根本走不到定目的地那一步，
+    /// 但它同样要在列表里显示成"失败"
+    func beginDownload(_ download: WKDownload) {
+        download.delegate = self
+        guard downloads.item(for: download) == nil else { return }
+        let guessed = download.originalRequest?.url?.lastPathComponent ?? ""
+        let filename = guessed.isEmpty || guessed == "/" ? "下载中的文件" : guessed
+        downloads.add(BrowserDownloadItem(download: download, filename: filename))
+    }
+
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
                   suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
-        let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser
+        let dir = Self.settings.downloadDirectoryURL
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var name = suggestedFilename.isEmpty ? "download" : suggestedFilename
         var candidate = dir.appendingPathComponent(name)
         var n = 1
         let base = (name as NSString).deletingPathExtension, ext = (name as NSString).pathExtension
-        while FileManager.default.fileExists(atPath: candidate.path) {
+        // 同名判定不能只看磁盘：WebKit 是收到我们的回复之后才建文件的，两条同名下载的
+        // decideDestination 可能都赶在建文件之前，于是拿到同一个路径（后一条 EEXIST 失败甚至卡死）。
+        // 已经交给别的进行中下载的目的地同样算占用
+        let reserved = Set(downloads.items.compactMap {
+            $0.isActive ? $0.destination?.standardizedFileURL.path : nil
+        })
+        func isTaken(_ url: URL) -> Bool {
+            FileManager.default.fileExists(atPath: url.path)
+                || reserved.contains(url.standardizedFileURL.path)
+        }
+        while isTaken(candidate) {
             n += 1
             name = ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)"
             candidate = dir.appendingPathComponent(name)
         }
+        if let item = downloads.item(for: download) {
+            item.setDestination(candidate)
+            downloadsDidChange()
+        } else {
+            let item = BrowserDownloadItem(download: download, filename: candidate.lastPathComponent)
+            item.setDestination(candidate)
+            downloads.add(item)
+        }
         completionHandler(candidate)
     }
 
-    func downloadDidFinish(_ download: WKDownload) {}
-    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {}
+    func downloadDidFinish(_ download: WKDownload) {
+        guard let item = downloads.item(for: download) else { return }
+        downloads.markCompleted(item)
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        guard let item = downloads.item(for: download) else { return }
+        let ns = error as NSError
+        // 用户点了取消（列表里已经是 .cancelled，markCancelled 幂等）
+        if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled {
+            downloads.markCancelled(item)
+        } else {
+            downloads.markFailed(item, message: ns.localizedDescription)
+        }
+    }
+
+    // MARK: 工具条上的下载按钮
+
+    /// 列表变了：按钮的可见性 / 进度环 + 打开着的弹出层
+    func downloadsDidChange() {
+        let hasItems = !downloads.items.isEmpty
+        downloadButton.update()
+        downloadButtonWidth.constant = hasItems ? BrowserDownloadButton.size : 0
+        downloadTrailingGap.constant = hasItems ? -6 : 0
+        // 用可选链：没点开过就不去实例化弹出层
+        if downloadPopoverHost?.isShown == true { downloadPopover.rebuild() }
+    }
+
+    @objc func showDownloads() {
+        guard !downloads.items.isEmpty else { return }
+        let host = downloadPopoverHost ?? {
+            let popover = NSPopover()
+            popover.behavior = .transient
+            popover.contentViewController = downloadPopover
+            downloadPopoverHost = popover
+            return popover
+        }()
+        downloadPopover.rebuild()
+        host.show(relativeTo: downloadButton.bounds, of: downloadButton, preferredEdge: .maxY)
+    }
+
+    /// 测试用：弹出层（不弹出也能查行数）
+    var downloadPopoverForTesting: BrowserDownloadPopover { downloadPopover }
 }
 
 // MARK: - UI 代理（JS 对话框 / 新窗口 → 新标签 / 文件选择）

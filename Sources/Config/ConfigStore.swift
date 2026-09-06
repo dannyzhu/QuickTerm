@@ -27,6 +27,7 @@ enum ConfigStore {
     # browser-tab-width = 200         # 标签最大宽度 pt（40–600）
     # browser-tab-min-width = 80      # 标签最小宽度 pt（40–600）；放不下时标签条横向滚动
     # browser-extensions = true   # 浏览器 pane 加载 WebExtensions（Chrome Web Store 安装 / 从 Chrome 导入；macOS 15.4+）
+    # browser-download-dir = "~/Downloads"   # 浏览器 pane 下载落盘目录（支持 ~；目录不存在时回退 ~/Downloads）
     # link-opener = "browser-pane"    # 终端 ⌘+点击链接：browser-pane = 在浏览器 pane 打开（有则用最近激活的，无则新开）；system = 系统浏览器
 
     [keybinds]
@@ -129,6 +130,8 @@ enum ConfigStore {
         var browserTabMinWidth: Int = 80
         /// 浏览器 pane 是否加载 WebExtensions（关掉 = 全部 unload，新标签也不挂 controller）
         var browserExtensions: Bool = true
+        /// 浏览器 pane 的下载目录（支持 `~`；不是个真目录时回退 ~/Downloads）
+        var browserDownloadDir: String = "~/Downloads"
         var linkOpener: String = "browser-pane"
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
@@ -213,6 +216,7 @@ enum ConfigStore {
                 if key == "browser-tab-width", let v = Int(value) { settings.browserTabWidth = min(max(v, 40), 600) }
                 if key == "browser-tab-min-width", let v = Int(value) { settings.browserTabMinWidth = min(max(v, 40), 600) }
                 if key == "browser-extensions" { settings.browserExtensions = (value.lowercased() != "false") }
+                if key == "browser-download-dir", !value.isEmpty { settings.browserDownloadDir = value }
                 if key == "link-opener", !value.isEmpty { settings.linkOpener = value }
             case "keybinds":
                 guard let action = WMAction(rawValue: key) else { continue }

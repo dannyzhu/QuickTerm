@@ -269,3 +269,34 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
   （`window.webkit.messageHandlers.<name>`）。注册到私有 `WKContentWorld`，并在收到消息时校验
   `frameInfo.isMainFrame` + `frameInfo.request.url` 是商店详情页 + id 与该页一致，否则任意网页 / iframe 都能
   凭一条 postMessage 拉起原生安装弹窗。
+
+## WKDownload 进度 UI（2026-09-06）
+
+- **连接就失败的下载不会走 `decideDestinationUsing`**：目的地是收到响应之后才谈的，`http://127.0.0.1:9/`
+  这种连接被拒的下载直接跳到 `didFailWithError`。所以列表条目要在**挂代理那一刻**（`didBecome download` /
+  `startDownload` 的回调里）就建好（文件名先用请求 URL 猜），`decideDestinationUsing` 再回填真正的落盘路径，
+  否则失败的下载在界面上根本不存在。
+- **进度来自 `WKDownload.progress`**（WKDownload 遵守 `NSProgressReporting`）：KVO 观察
+  `fractionCompleted`，回调可能不在主线程，且大文件每收一个包就来一次——统一 `DispatchQueue.main.async`
+  再节流到 ≤ 10 Hz 才刷界面（`BrowserDownloadList.notifyInterval`）。总大小未知时
+  `totalUnitCount <= 0`，聚合进度要返回 nil（不确定）而不是 0。
+- **取消后 WebKit 还会回调一次 `didFailWithError(NSURLErrorCancelled)`**：状态流转要幂等
+  （`markFailed` 只作用于仍在进行中的条目），否则"已取消"会被翻成"失败：cancelled"。
+- **工具条上的按钮隐藏时要连间距一起收成 0**：`isHidden` 只是不画，Auto Layout 的宽度与间距仍然占位，
+  地址栏会平白短一截。按钮插在地址栏与扩展条之间时只切**宽度（22 / 0）与右侧间距（-6 / 0）**，
+  左侧 6pt 是地址栏与扩展条之间本来就有的间距，必须一直留着——两侧都切成 0 的话，没有下载时地址栏的
+  圆角边框会直接顶到扩展条的拼图按钮上（pane 内不能有必需的宽度约束，见上面的浏览器 pane 一节）。
+- **`NSButton.isFlipped == true`**（NSView / NSControl 是 false）：自绘按钮在 `draw(_:)` 里 +y 是**向下**的。
+  圆弧 / 箭头 / 勾这类按"y 向上"写的几何会画成上箭头、倒勾、从 6 点开始逆时针的进度环，而圆环本身对称
+  看不出来。要么 `override var isFlipped: Bool { false }`（本类完全自绘、不调 `super.draw`，这样最省事），
+  要么整套几何改写成 y 向下。回归测试只能走 `cacheDisplay(in:to:)`（它按 isFlipped 设 CTM）后读位图，
+  直接调 `draw(_:)` 用的是当前上下文的坐标系，验不出来。
+- **`NSPopover.contentViewController` 是强引用**：内容控制器再存一个 `lazy var popover` 反持它就成了两个
+  对象互锁的环，谁也不会释放。NSPopover 要由**展示方**（这里是 pane）持有；而且判断"弹出层开着吗"要用
+  `host?.isShown == true` 这种可选链，别为了读一个 `isShown` 把 lazy 的弹出层实例化出来。
+- **同名并发下载的目的地不能只查磁盘**：WebKit 是收到 `decideDestinationUsing` 的回复之后才在网络进程里
+  建文件的，两条同名下载的 decideDestination 可能都赶在建文件之前 → 拿到同一个路径，后一条直接
+  `NSURLErrorCannotCreateFile(-3000)` 甚至没有任何回调地卡住。去重时要把"已经交给别的进行中下载"的
+  目的地一起算作占用。
+- **pane 关闭时进行中的下载明确取消**（`paneWillClose`）：下载列表是 pane 私有的，`WKDownload.delegate`
+  又是弱引用（pane 走了自动置空），不取消就是一堆没有界面、没有代理的传输在后台跑。

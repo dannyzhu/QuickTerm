@@ -213,6 +213,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 | pane 留白 | `pane-gap` | 5 | 纯 UI；每 pane 每边留白 pt，scrolling / dwindle / 浮动一致（相邻 = 2×gap = 10pt；dwindle 1pt 分隔线画在边界上不占布局）；外圈同值；旧键 `dwindle-gap` 作别名 |
 | 浏览器首页 / 搜索 / UA / Inspector | `browser-home` / `browser-search` / `browser-user-agent` / `browser-inspectable` | google / google search / safari / false | 浏览器 pane 行为；UA 为 `safari`（伪装）/ `webkit`（不伪装）/ 自定义 |
 | 浏览器扩展 | `browser-extensions` | true | 浏览器 pane 加载 WebExtensions（`WKWebExtension`，macOS 15.4+）：Web Store 页面注入「添加到 QuickTerm」、拼图菜单可从本机 Chrome 导入 / 启停 / 移除；false = 全部 unload 且不挂 controller |
+| 浏览器下载目录 | `browser-download-dir` | ~/Downloads | 浏览器 pane 下载的落盘目录（`~` 展开；不是已存在目录时回退 `~/Downloads`）；下载进度环在地址栏右侧，点开的弹出层可取消 / 在 Finder 中显示 / 移除 / 清除已完成 |
 | 链接打开位置 | `link-opener` | browser-pane | 终端 ⌘+点击的 http(s) 链接：browser-pane = 当前工作区最近激活（成为焦点 / 被送过链接）的浏览器 pane 里新标签打开，没有则新开一个；system = 系统默认浏览器。mailto/ssh/文件路径始终交系统 |
 | 文件管理器程序 | `file-manager-command` | yazi | `file-manager` 动作运行的程序：名字按 PATH + Homebrew/cargo 常见目录查找，或绝对路径；yazi/lf/ranger 退出写最后目录（--cwd-file / -last-dir-path / --choosedir） |
 | dwindle 分隔线 | `divider-opacity` | 0.2 | 纯 UI；SplitView 的 1pt 分隔细线（色 = 引擎 split-divider-color）按此不透明度半透明，受总开关（关闭 = 实线） |
@@ -242,6 +243,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 # browser-inspectable = false
 # browser-tab-bar = "auto"
 # browser-extensions = true       # 浏览器 pane 加载 WebExtensions（macOS 15.4+）
+# browser-download-dir = "~/Downloads"   # 浏览器 pane 的下载落盘目录
 # inactive-blur = 2.5       # > 0 开启磨砂
 
 [keybinds]                  # 值 "modifier+key"；"none" 解绑；动作清单 = Cmd+K 速查表
@@ -287,7 +289,7 @@ AppDelegate (AppKit 生命周期；测试宿主隔离 isRunningTests)
 | Super+F | `Cmd+F` | `toggle-zoom` | pane zoom |
 | Super+L | `Cmd+L` | `toggle-layout` | scrolling ⇄ dwindle |
 | Super+T | `Cmd+T` | `toggle-float` | 浮动 ⇄ 平铺。⌘+左键：按浮动 pane 矩形命中（含留白），中间 = 移动并置顶，四边 14pt 带 = 沿该轴缩放，四角 = 双轴缩放，对边不动，最小 0.15；⌘ 悬停显示抓手 / frameResize 光标，松 ⌘ 或离开复位；⌘+右键任意处拖动 = 右下角缩放（Hyprland） |
-| Super+B | `Cmd+B` | `new-browser` | 浏览器 pane：WKWebView + 薄工具条（后退/前进/刷新、地址栏、进度），每 pane 多标签；键盘焦点在 WKWebView（PaneView.focusTarget），FR 为其后代即视为 pane 持焦；WM 级 Cmd 键仍先被监视器拦截；`web-*` 动作（后退 Cmd+Shift+[、前进 Cmd+Shift+]、重载 Cmd+R、地址栏 Cmd+Shift+L、缩放 Cmd+= / - / 0、外部打开 Cmd+Shift+O）只在焦点是浏览器 pane 时消费，否则放行给终端。登录态在 WebKit 默认数据存储（跨 pane、跨重启）；默认伪装 Safari UA（Google 登录）。**多标签**：每标签一个 WKWebView，标签条（`browser-tab-bar` always 默认常显 / auto 单标签隐藏；右端 `+` 新建标签；梯形标签、当前标签与工具条同色贴合、非激活标签悬停露出关闭钮、宽度 `browser-tab-width` / `browser-tab-min-width` 之间等分、放不下时横向滚动），`web-new-tab` Cmd+N、`web-next/prev-tab` Ctrl+Tab / Ctrl+Shift+Tab，Cmd+W 多标签时关当前标签、最后一个关 pane，⌘+点击链接后台标签，`window.open`/target=_blank 用 WebKit 给的 configuration 建真标签（opener/postMessage 可用），window.close 关标签；存档 tabs + activeTab（旧单页格式兼容）。**扩展**（`browser-extensions`，macOS 15.4+）：`WKWebExtension` 跑 Chrome / Firefox 扩展，pane = 扩展眼里的窗口、标签 = 标签；地址栏右侧扩展按钮（图标 + badge + popup）与拼图菜单（`web-extensions` = Cmd+Shift+E：启停 / 选项页 / 移除 / 从本机 Chrome 导入 / 打开商店与扩展文件夹），Web Store 详情页注入「添加到 QuickTerm」，扩展装在 `~/Library/Application Support/QuickTerm/Extensions/`。边界：无 Widevine、无系统密码填充、通行密钥不可用；扩展侧无阻断式 webRequest / identity / history / downloads / management / proxy / debugger / 原生消息，storage.sync 不跨设备 |
+| Super+B | `Cmd+B` | `new-browser` | 浏览器 pane：WKWebView + 薄工具条（后退/前进/刷新、地址栏、进度），每 pane 多标签；键盘焦点在 WKWebView（PaneView.focusTarget），FR 为其后代即视为 pane 持焦；WM 级 Cmd 键仍先被监视器拦截；`web-*` 动作（后退 Cmd+Shift+[、前进 Cmd+Shift+]、重载 Cmd+R、地址栏 Cmd+Shift+L、缩放 Cmd+= / - / 0、外部打开 Cmd+Shift+O）只在焦点是浏览器 pane 时消费，否则放行给终端。登录态在 WebKit 默认数据存储（跨 pane、跨重启）；默认伪装 Safari UA（Google 登录）。**多标签**：每标签一个 WKWebView，标签条（`browser-tab-bar` always 默认常显 / auto 单标签隐藏；右端 `+` 新建标签；梯形标签、当前标签与工具条同色贴合、非激活标签悬停露出关闭钮、宽度 `browser-tab-width` / `browser-tab-min-width` 之间等分、放不下时横向滚动），`web-new-tab` Cmd+N、`web-next/prev-tab` Ctrl+Tab / Ctrl+Shift+Tab，Cmd+W 多标签时关当前标签、最后一个关 pane，⌘+点击链接后台标签，`window.open`/target=_blank 用 WebKit 给的 configuration 建真标签（opener/postMessage 可用），window.close 关标签；存档 tabs + activeTab（旧单页格式兼容）。**下载**：地址栏右侧进度环（多下载汇总；总量未知转动弧；全部完成打勾、只剩失败感叹号），点击展开列表可取消 / 在 Finder 中显示 / 移除 / 清除已完成；目录 `browser-download-dir`；列表随 pane，关 pane 取消在途下载。**扩展**（`browser-extensions`，macOS 15.4+）：`WKWebExtension` 跑 Chrome / Firefox 扩展，pane = 扩展眼里的窗口、标签 = 标签；地址栏右侧扩展按钮（图标 + badge + popup）与拼图菜单（`web-extensions` = Cmd+Shift+E：启停 / 选项页 / 移除 / 从本机 Chrome 导入 / 打开商店与扩展文件夹），Web Store 详情页注入「添加到 QuickTerm」，扩展装在 `~/Library/Application Support/QuickTerm/Extensions/`。边界：无 Widevine、无系统密码填充、通行密钥不可用；扩展侧无阻断式 webRequest / identity / history / downloads / management / proxy / debugger / 原生消息，storage.sync 不跨设备 |
 | Super+Shift+F | `Cmd+Shift+B` | `file-manager` | 新 pane 运行 TUI 文件管理器（默认 yazi，`file-manager-command` 可改；以焦点 pane 目录启动；退出时目录已变则原位开终端，即 yazi `y` 包装函数语义；关闭不弹进程确认；程序缺失开提示 pane）。Cmd+F 已是 toggle-zoom，故用 Cmd+Shift+B |
 | — | `Cmd+Shift+K` | `clear-terminal` | 清屏 + 清回滚：对焦点终端 surface 调引擎 `clear_screen`；只在焦点是终端 pane 时消费（terminalOnly），浏览器等 pane 放行 ※偏移 2 |
 | Super+‑/= | `Cmd+Ctrl+←→↑↓` | `resize-*` | 调整大小（+Shift 微调）※偏移 1 |

@@ -136,6 +136,10 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `link-opener` | browser-pane | 终端里 `⌘`+点击的 http(s) 链接开在哪：`browser-pane` = 在当前工作区最近激活的浏览器 pane 里开新标签（没有就在终端旁新开一个浏览器 pane）；`system` = 系统默认浏览器。其它 scheme（mailto、ssh、文件路径）始终交给系统 |
 | `browser-tab-min-width` | 80 | 标签最小宽度 pt（40–600）；全部到最小仍放不下时标签条横向滚动（滚轮；当前标签自动滚入视野） |
 | `browser-extensions` | true | 浏览器 pane 加载 WebExtensions（见 [浏览器扩展](#浏览器扩展)）。`false` = 全部卸载，新标签也不再挂扩展 controller |
+| `browser-download-dir` | ~/Downloads | 浏览器 pane 的下载落盘目录（支持 `~`；不是个已存在的目录时回退 `~/Downloads`）。下载进度显示在地址栏右侧，点开可取消 / 在 Finder 中显示 / 清除已完成 |
+
+下载落在 `browser-download-dir`（默认 `~/Downloads`）：下载期间地址栏右侧出现进度环，点开是下载列表——取消、在 Finder 中显示、移除单行、清除已完成。
+列表属于 pane：关掉这个 pane 会取消它里面还没下完的下载。
 
 浏览器 pane 的边界：没有 Widevine DRM（Netflix/Spotify 网页版不可用）、没有系统密码自动填充和通行密钥（这类流程请用 `Cmd+Shift+O` 到系统浏览器完成）。
 
@@ -219,6 +223,7 @@ macOS 菜单栏的 Shell / Pane 菜单只列了少数动作的默认快捷键；
 # browser-tab-width = 200         # 标签最大宽度 pt
 # browser-tab-min-width = 80      # 标签最小宽度 pt（放不下时横向滚动）
 # browser-extensions = true       # 浏览器 pane 加载 WebExtensions（macOS 15.4+）
+# browser-download-dir = "~/Downloads"   # 浏览器 pane 的下载落盘目录
 # link-opener = "browser-pane"    # browser-pane | system：终端 ⌘+点击链接开在哪
 # inactive-blur = 2.5       # > 0 开启非激活磨砂
 

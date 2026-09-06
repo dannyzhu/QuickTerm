@@ -136,6 +136,10 @@ All panels are centred, Walker-style: `↑`/`↓` to move, `Return` to choose, `
 | `link-opener` | browser-pane | Where `⌘`-clicked http(s) links in a terminal open: `browser-pane` opens a new tab in the workspace's most recently focused browser pane (or a new browser pane beside the terminal if there is none); `system` uses the default browser. Other schemes (mailto, ssh, file paths) always go to the system |
 | `browser-tab-min-width` | 80 | Minimum tab width in pt (40–600); once every tab is at the minimum the strip scrolls sideways (mouse wheel; the active tab is always scrolled into view) |
 | `browser-extensions` | true | Load WebExtensions in browser panes (see [Browser extensions](#browser-extensions)). `false` unloads them all and stops attaching the extension controller to new tabs |
+| `browser-download-dir` | ~/Downloads | Where browser panes save downloads (`~` is expanded; falls back to `~/Downloads` when the path is not an existing directory). Progress shows right of the address bar — click the ring for the list (cancel, reveal in Finder, clear finished) |
+
+Downloads land in `browser-download-dir` (`~/Downloads` by default): a progress ring appears right of the address bar while anything is downloading, and clicking it opens the list — cancel, reveal in Finder, remove a row, or clear the finished ones.
+The list belongs to the pane: closing the pane cancels whatever is still downloading in it.
 
 Browser pane limits: no Widevine DRM (Netflix/Spotify web) and no system password autofill or passkeys (use `Cmd+Shift+O` to finish such flows in the system browser).
 
@@ -219,6 +223,7 @@ The Shell and Pane menus in the macOS menu bar show the default shortcuts for a 
 # browser-tab-width = 200         # max tab width, pt
 # browser-tab-min-width = 80      # min tab width, pt (strip scrolls when exceeded)
 # browser-extensions = true       # load WebExtensions in browser panes (macOS 15.4+)
+# browser-download-dir = "~/Downloads"   # where browser panes save downloads
 # link-opener = "browser-pane"    # browser-pane | system — where ⌘-clicked terminal links open
 # inactive-blur = 2.5       # > 0 enables frosted inactive panes
 

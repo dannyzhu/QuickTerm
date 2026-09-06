@@ -399,7 +399,8 @@ final class MainWindowController: BaseTerminalController {
         BrowserPaneView.settings = .init(home: settings.browserHome, search: settings.browserSearch,
                                          userAgent: settings.browserUserAgent, inspectable: settings.browserInspectable,
                                          tabBar: settings.browserTabBar,
-                                         tabWidth: settings.browserTabWidth, tabMinWidth: settings.browserTabMinWidth)
+                                         tabWidth: settings.browserTabWidth, tabMinWidth: settings.browserTabMinWidth,
+                                         downloadDirectory: settings.browserDownloadDir)
         BrowserExtensionManager.shared.isEnabled = settings.browserExtensions
         for case let browser as BrowserPaneView in allPanes { browser.applySettings() }   // UA / Inspector 热重载
         model.setWorkspaceCount(settings.workspaces)
