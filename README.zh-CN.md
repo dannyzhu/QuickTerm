@@ -23,11 +23,12 @@ QuickTerm 把 [Omarchy](https://omarchy.org) 的 Hyprland 平铺桌面装进一�
 - **玻璃质感** —— pane 以 0.92 透明度压在连续壁纸之上，激活 pane 合成到 0.98，非激活的平铺 pane 垫磨砂（文字依然锐利）。一个键全部关掉。
 - **直接复用你的 Ghostty 配置** —— 字体、光标、滚动、shell 集成、终端级键位全部从 `~/.config/ghostty/config` 读入，QuickTerm 只在其上叠加主题配色与 padding。
 - **全部可改键** —— 每个窗口管理动作都是 `config.toml` 里的一个键；`Cmd+K` 随时查实时速查表。
+- **浏览器 pane 带扩展** —— `Cmd+B` 开一个多标签的 WebKit 浏览器 pane；Chrome / Firefox 的 WebExtensions 可以直接从 Chrome Web Store 装，或从本机 Chrome 导入（macOS 15.4+）。
 - **状态恢复** —— 布局、浮动 pane、活动工作区、每个 pane 的工作目录，下次启动原样回来。
 
 ## 安装
 
-预构建的 DMG 在 [Releases](https://github.com/dannyzhu/QuickTerm/releases) 页面（通用二进制，Apple Silicon 与 Intel 均可，macOS 15+）。
+预构建的 DMG 在 [Releases](https://github.com/dannyzhu/QuickTerm/releases) 页面（通用二进制，Apple Silicon 与 Intel 均可，macOS 15.4+）。
 
 1. 打开 DMG，把 **QuickTerm** 拖进 **应用程序**。
 2. 应用是 ad-hoc 签名、未经 Apple 公证，首次打开会被 macOS 拦下。先双击一次，关掉"Apple 无法验证……"的对话框，然后二选一：
@@ -42,9 +43,9 @@ QuickTerm 把 [Omarchy](https://omarchy.org) 的 Hyprland 平铺桌面装进一�
 
 ## 构建环境要求
 
-仅从源码构建时需要。Releases 里的 DMG 在任何 Mac（Apple Silicon 或 Intel，macOS 15+）上直接运行，不需要以下任何东西。
+仅从源码构建时需要。Releases 里的 DMG 在任何 Mac（Apple Silicon 或 Intel，macOS 15.4+）上直接运行，不需要以下任何东西。
 
-- macOS 15+（开发验证于 macOS 26 / Xcode 26.6，Apple Silicon）
+- macOS 15.4+（开发验证于 macOS 26 / Xcode 26.6，Apple Silicon）
 - Xcode 26+，并已安装 Metal Toolchain：`xcodebuild -downloadComponent MetalToolchain`
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen)：`brew install xcodegen`
 - Zig 无需手动安装，脚本按 Ghostty pin 的精确版本自动装到 `.tools/`
@@ -134,11 +135,23 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `browser-tab-width` | 200 | 标签最大宽度 pt（40–600）；不足时各标签等分标签条 |
 | `link-opener` | browser-pane | 终端里 `⌘`+点击的 http(s) 链接开在哪：`browser-pane` = 在当前工作区最近激活的浏览器 pane 里开新标签（没有就在终端旁新开一个浏览器 pane）；`system` = 系统默认浏览器。其它 scheme（mailto、ssh、文件路径）始终交给系统 |
 | `browser-tab-min-width` | 80 | 标签最小宽度 pt（40–600）；全部到最小仍放不下时标签条横向滚动（滚轮；当前标签自动滚入视野） |
+| `browser-extensions` | true | 浏览器 pane 加载 WebExtensions（见 [浏览器扩展](#浏览器扩展)）。`false` = 全部卸载，新标签也不再挂扩展 controller |
 
 浏览器 pane 的边界：没有 Widevine DRM（Netflix/Spotify 网页版不可用）、没有系统密码自动填充和通行密钥（这类流程请用 `Cmd+Shift+O` 到系统浏览器完成）。
+
 | `inactive-blur` | 2.5 | `> 0` 时非激活的平铺 pane 背后垫磨砂（模糊的是壁纸，文字不受影响；浮动 pane 不垫；目前数值只作开关） |
 
 `Cmd+Backspace` 一键全部关掉（pane 与顶栏变不透明）；`Cmd+Shift+Backspace` 开关 gaps。
+
+### 浏览器扩展
+
+浏览器 pane 用 WebKit 的 `WKWebExtension` 跑 Chrome / Firefox 格式的 WebExtensions（macOS 15.4+）。`browser-extensions = false` 整体关闭。
+
+- **从 Chrome Web Store 安装** —— 在浏览器 pane 里打开扩展的商店页，点右下角注入的 **添加到 QuickTerm** 按钮：QuickTerm 下载 CRX、列出它要的权限，确认后安装。
+- **从 Chrome 导入** —— 工具条右端的拼图菜单（`Cmd+Shift+E`）里有「从 Chrome 导入已安装扩展…」：把 `~/Library/Application Support/Google/Chrome/Default/Extensions` 里每个扩展的最高版本复制过来（主题、打包应用、已装过的跳过）。
+- **管理** —— 同一个菜单里启用 / 停用、打开扩展的选项页、移除。每个启用且有工具条动作的扩展在拼图左边有一个按钮（带 badge），点击弹出它的 popup；页面右键菜单末尾会追加扩展自己的菜单项。
+- **文件位置** —— `~/Library/Application Support/QuickTerm/Extensions/<id>/`，启用状态在同目录的 `state.json`。扩展与你的标签共享 cookie 与登录态。
+- **支持范围** —— WebKit 实现了约 25 个 WebExtension API 命名空间。不支持：阻断式 `webRequest`（用 `declarativeNetRequest`）、`identity`、`history`、`downloads`、`management`、`proxy`、`debugger` 与原生消息；`storage.sync` 只存本地、不跨设备。manifest 里声明的权限在安装时一次性授予，扩展运行中再要的权限会弹窗确认。
 
 ## 默认快捷键
 
@@ -166,6 +179,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `Cmd+=` / `Cmd+-` / `Cmd+0` | `web-zoom-in` / `web-zoom-out` / `web-zoom-reset` | 仅浏览器 pane：页面缩放（终端字号键不受影响） |
 | `Cmd+Shift+O` | `web-open-external` | 仅浏览器 pane：用系统默认浏览器打开当前页 |
 | `Cmd+N` / `Ctrl+Tab` / `Ctrl+Shift+Tab` | `web-new-tab` / `web-next-tab` / `web-prev-tab` | 仅浏览器 pane：标签页。`Cmd+W` 关当前标签（最后一个标签关 pane）；⌘+点击链接后台新标签；`window.open` 开新标签 |
+| `Cmd+Shift+E` | `web-extensions` | 仅浏览器 pane：扩展菜单（安装 / 启停 / 从 Chrome 导入） |
 | `Cmd+1…5` | `goto-workspace-N` | 切换工作区（`workspaces > 5` 时补 `Cmd+6…9,0`） |
 | `Cmd+Shift+1…5` | `move-to-workspace-N` | 把 pane 移到工作区并跟随 |
 | `Cmd+Shift+Space` | `toggle-bar` | 顶栏显示/隐藏 |
@@ -204,6 +218,7 @@ macOS 菜单栏的 Shell / Pane 菜单只列了少数动作的默认快捷键；
 # browser-tab-bar = "always"      # always | auto
 # browser-tab-width = 200         # 标签最大宽度 pt
 # browser-tab-min-width = 80      # 标签最小宽度 pt（放不下时横向滚动）
+# browser-extensions = true       # 浏览器 pane 加载 WebExtensions（macOS 15.4+）
 # link-opener = "browser-pane"    # browser-pane | system：终端 ⌘+点击链接开在哪
 # inactive-blur = 2.5       # > 0 开启非激活磨砂
 

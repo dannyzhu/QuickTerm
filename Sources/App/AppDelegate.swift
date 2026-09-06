@@ -51,6 +51,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         controller = MainWindowController(ghostty: ghostty, themeManager: themeManager)
+        // 配置已由控制器加载（browser-extensions 决定开关）：装好的扩展在这里异步加载。
+        // 测试宿主里不加载（与 restoreState 同一策略）：用户装的扩展会跑进测试的 WebView，
+        // 扩展工具条的用例也会跟着变红
+        if !Self.isRunningTests {
+            Task { @MainActor in await BrowserExtensionManager.shared.loadInstalled() }
+        }
         MainMenu.install(delegate: self)
         NSApp.activate(ignoringOtherApps: true)
     }

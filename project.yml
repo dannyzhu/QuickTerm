@@ -2,11 +2,11 @@ name: QuickTerm
 options:
   bundleIdPrefix: dev.danny
   deploymentTarget:
-    macOS: "15.0"
+    macOS: "15.4"
 settings:
   base:
     SWIFT_VERSION: "5.10"
-    MACOSX_DEPLOYMENT_TARGET: "15.0"
+    MACOSX_DEPLOYMENT_TARGET: "15.4"
 targets:
   QuickTerm:
     type: application

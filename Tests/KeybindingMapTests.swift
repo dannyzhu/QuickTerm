@@ -14,6 +14,7 @@ final class KeybindingMapTests: XCTestCase {
             ("k", .command, .keybindingHelp), ("k", [.command, .shift], .clearTerminal),
             ("r", .command, .webReload), ("l", [.command, .shift], .webFocusAddress),
             ("n", .command, .webNewTab), ("tab", .control, .webNextTab), ("tab", [.control, .shift], .webPrevTab),
+            ("e", [.command, .shift], .webExtensions),
             ("w", .command, .closePane),
             ("left", .command, .focusLeft), ("right", .command, .focusRight),
             ("up", .command, .focusUp), ("down", .command, .focusDown),
@@ -37,6 +38,7 @@ final class KeybindingMapTests: XCTestCase {
     @MainActor
     func testBrowserOnlyActionsConsumedOnlyForBrowserPane() {
         XCTAssertTrue(WMAction.webReload.browserOnly)
+        XCTAssertTrue(WMAction.webExtensions.browserOnly, "⌘⇧E 只在浏览器 pane 消费")
         XCTAssertFalse(WMAction.newBrowser.browserOnly)
         let browser = BrowserPaneView(url: nil)
         XCTAssertTrue(MainWindowController.consumes(.webReload, focusedPane: browser))

@@ -214,3 +214,58 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
 - **关标签要先记焦点**：被关的 webView `removeFromSuperview` 时 AppKit 静默把 FR 重置为窗口（同上节，
   不发 resign），之后 `holdsFirstResponder` 已是 false；先读焦点再移除，再显式 `makeFirstResponder`。
 
+
+## WKWebExtension（浏览器扩展，2026-09-06）
+
+- **部署目标抬到 15.4**：WKWebExtension 全家都是 macOS 15.4+，`project.yml` 的 `deploymentTarget.macOS` 与
+  `MACOSX_DEPLOYMENT_TARGET` 要一起改，README 的"macOS 15+"同步。
+- **Swift 名字与头文件类名不同**（用旧名直接报"已重命名"）：`WKWebExtensionControllerConfiguration` →
+  `WKWebExtensionController.Configuration`、`WKWebExtensionTabConfiguration` → `WKWebExtension.TabConfiguration`、
+  `WKWebExtensionWindowConfiguration` → `WKWebExtension.WindowConfiguration`、`WKWebExtensionMessagePort` →
+  `WKWebExtension.MessagePort`、`context.inspectable` → `isInspectable`。
+- **`grantedPermissions` / `grantedPermissionMatchPatterns` 字典里的 Date 是"过期时间"不是"授予时间"**：
+  批量赋值时写 `Date()` 等于当场失效（权限白授）。改用单项 `setPermissionStatus(.grantedExplicitly, for:)`
+  （不带 expirationDate = distant future）。内容脚本的 `matches` 也要授权，取 `allRequestedMatchPatterns`
+  （含 content_scripts），只授 `requestedPermissionMatchPatterns`（= host_permissions）不够。
+- **WKWebExtension 的类与协议都带 `WK_SWIFT_UI_ACTOR`（= @MainActor）**：`BrowserPaneView.Tab` 必须标
+  `@MainActor` 才能实现 `WKWebExtensionTab`；随之 KVO 回调（@Sendable 闭包）里 `tab.title = …` 会报
+  "main actor-isolated property 不能在 Sendable 闭包里改"，用 `MainActor.assumeIsolated`（WebKit 这些 KVO
+  一律主线程回调）。反过来，纯函数（CRX 解析 / Web Store URL / Chrome 目录扫描）要标 `nonisolated`，
+  否则非 @MainActor 的测试用例调不动。
+- **pane 关闭的 `didCloseWindow` 不能放在 deinit**：deinit 是 nonisolated，够不到 MainActor 的 controller。
+  改由控制器的移除路径（`removeFromActiveLayout` / `removeFromAnyWorkspace`）调 `paneWillClose()`，内部自带
+  "只报一次"标志。
+- **XCTest 的 async 用例里 `RunLoop.main.run(until:)` 推不动 WebKit 的页面加载**：同一段 `loadHTMLString`
+  在 async 用例里 5s 仍停在 about:blank（连不挂扩展 controller 的对照组也一样），换成非 async 用例 + 主 runloop
+  轮询后 0.3s 就完成。非 async 用例里要跑异步安装：起 `Task` 再转 runloop 等标志位。
+- **内容脚本对 `loadHTMLString(baseURL:)` 是会注入的**（baseURL 用真实 http 域名即可），不需要自定义
+  scheme + `WKWebExtensionMatchPattern.registerCustomURLScheme`。
+- **复用 WKWebViewConfiguration 要先摘再挂**：`window.open` 交回来的 configuration 可能已注册过同名
+  script message handler，重复 `add(_:name:)` 抛 ObjC 异常；先 `removeScriptMessageHandler(forName:)`。
+- **非持久配置不设 `defaultWebsiteDataStore`**：只有持久配置（`Configuration(identifier:)`）才挂
+  `.default()` 与浏览标签共享 cookie；测试用的 `.nonPersistent()` 保持隔离。
+- **扩展自己的页面要用 `context.webViewConfiguration` 建 WebView**：`webkit-extension://…`（选项页、
+  `tabs.create(runtime.getURL(…))`、`runtime.openOptionsPage()`）的主帧加载在普通配置的 WKWebView 里会被
+  WebKit 直接拒掉（`NSURLErrorResourceUnavailable`，页面变成我们的错误页），因为它检查的是配置上的
+  `requiredWebExtensionBaseURL`；反过来，用扩展配置建的 WebView 也去不了 http(s)。头文件明说"在扩展 URL
+  与普通 URL 之间导航时 app 必须换掉 tab 的 web view"——`addTab` 按 URL 挑配置，`decidePolicyFor` 里跨界时
+  `rebuildWebView` 原地换（标签身份 / 扩展看到的 tabId 不变）。`controller.extensionContext(for: url)` 只认
+  **已加载**的扩展。
+- **`context.uniqueIdentifier` 不会连带改 `baseURL`**：不显式设 `baseURL = webkit-extension://<id>/` 的话，
+  扩展页面的 origin（`runtime.getURL`、页面侧 storage）每次启动都换一个随机 host。两者要一起设（且只能在
+  load 之前设）。
+- **页面右键菜单的扩展项 WebKit 自己会加**：`WebContextMenuProxyMac` 见到 page 上挂着 webExtensionController
+  就会追加各扩展的 `contextMenus` 项（含分隔线）。再自己 `willOpenMenu` 追加 = 重复项，而且
+  `context.menuItems(for: tab)` 给的是**标签条**右键那一套（tab 上下文），不是页面上下文。
+- **`didCloseTab` 要在把标签从 pane 上摘下来之前报**：WebKit 在这次调用里同步回调 `tab.window(for:)` 去算
+  `tabs.onRemoved` 的 windowId，`tab.pane` 已是 nil 的话扩展收到的是 `windowId = -1`。同理 `indexInWindow`
+  不在窗口里要返回 `NSNotFound`（返回 0 等于谎称自己是第一个标签）。
+- **关标签时"上一个激活标签"要在数组变短之前取**：`tabs.remove` 之后 `activeTabIndex` 还是旧值，
+  `activeTab` 指到的已经是别人，`tabs.onActivated` 要么不发要么带着一个从没激活过的 previousTabId。
+- **测试宿主是真 app**：`applicationDidFinishLaunching` 里的 `loadInstalled()` 要用 `isRunningTests` 挡住
+  （否则用户真装的扩展会跑进每个测试 WebView，工具条用例也跟着红），`shared` 在测试下用
+  `.nonPersistent()` + 临时目录，别改写用户的 `state.json` / `controller-id`。
+- **页面 → 原生的安装通道要挡来源**：`add(_:name:)` 注册的 handler 在 page world、所有框架都能调
+  （`window.webkit.messageHandlers.<name>`）。注册到私有 `WKContentWorld`，并在收到消息时校验
+  `frameInfo.isMainFrame` + `frameInfo.request.url` 是商店详情页 + id 与该页一致，否则任意网页 / iframe 都能
+  凭一条 postMessage 拉起原生安装弹窗。

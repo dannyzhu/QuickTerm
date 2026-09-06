@@ -24,7 +24,8 @@ class BaseTerminalController: NSWindowController {
     /// 脱离窗口后重挂的 pane 是否可以夺回焦点（控制器有明确的待聚焦目标时不允许别人夺回）
     func paneMayReclaimFocus(_ pane: PaneView) -> Bool { true }
     /// 打开一个浏览器 pane（target=_blank / window.open 也走这里）
-    func openBrowserPane(url: URL, from: PaneView?) {}
+    @discardableResult
+    func openBrowserPane(url: URL, from: PaneView?) -> BrowserPaneView? { nil }
     /// 终端里 ⌘+点击的链接：true = 已在浏览器 pane 里打开；false = 不接管（交给系统默认应用）
     func openLink(_ url: URL, from: PaneView?) -> Bool { false }
     /// pane 自己请求关闭（页面 window.close() 关掉最后一个标签）

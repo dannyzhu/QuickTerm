@@ -64,6 +64,7 @@ struct KeybindingMap {
         KeyCombo(key: "n", .command): .webNewTab,               // Cmd+T 已是浮动开关
         KeyCombo(key: "tab", .control): .webNextTab,
         KeyCombo(key: "tab", [.control, .shift]): .webPrevTab,
+        KeyCombo(key: "e", [.command, .shift]): .webExtensions,
         KeyCombo(key: "w", .command): .closePane,
         KeyCombo(key: "left", .command): .focusLeft,
         KeyCombo(key: "right", .command): .focusRight,

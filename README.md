@@ -23,11 +23,12 @@ QuickTerm puts the feel of [Omarchy](https://omarchy.org)'s Hyprland desktop ins
 - **Glass** — panes at 0.92 opacity over a continuous wallpaper, active pane composites to 0.98, inactive tiled panes get a frosted backdrop (text stays sharp). One key toggles it all off.
 - **Your Ghostty config just works** — fonts, cursor, scrollback, shell integration and terminal-level keybinds are read from `~/.config/ghostty/config`. QuickTerm only layers theme colours and padding on top.
 - **Everything rebindable** — every window-manager action is a key in `config.toml`; `Cmd+K` shows the live cheat sheet.
+- **Browser panes with extensions** — `Cmd+B` opens a tabbed WebKit browser pane; Chrome/Firefox WebExtensions install straight from the Chrome Web Store or import from your local Chrome (macOS 15.4+).
 - **State restore** — layouts, floating panes, active workspace and each pane's working directory come back on launch.
 
 ## Install
 
-Pre-built DMGs are on the [Releases](https://github.com/dannyzhu/QuickTerm/releases) page (universal binary for Apple Silicon and Intel, macOS 15+).
+Pre-built DMGs are on the [Releases](https://github.com/dannyzhu/QuickTerm/releases) page (universal binary for Apple Silicon and Intel, macOS 15.4+).
 
 1. Open the DMG and drag **QuickTerm** into **Applications**.
 2. The app is ad-hoc signed and not notarized, so macOS blocks the first launch. Double-click it once and dismiss the "Apple could not verify…" dialog, then either:
@@ -42,9 +43,9 @@ Optional: with the DMG and its `.sha256` file in the same folder, run `shasum -a
 
 ## Build requirements
 
-Only needed to build from source. The DMG from Releases runs on any Mac (Apple Silicon or Intel) with macOS 15+ and needs none of this.
+Only needed to build from source. The DMG from Releases runs on any Mac (Apple Silicon or Intel) with macOS 15.4+ and needs none of this.
 
-- macOS 15 or later (developed on macOS 26 / Xcode 26.6, Apple Silicon)
+- macOS 15.4 or later (developed on macOS 26 / Xcode 26.6, Apple Silicon)
 - Xcode 26+ with the Metal Toolchain: `xcodebuild -downloadComponent MetalToolchain`
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`
 - Zig is installed automatically into `.tools/` at the exact version Ghostty pins
@@ -134,11 +135,23 @@ All panels are centred, Walker-style: `↑`/`↓` to move, `Return` to choose, `
 | `browser-tab-width` | 200 | Maximum tab width in pt (40–600); tabs share the strip equally below that |
 | `link-opener` | browser-pane | Where `⌘`-clicked http(s) links in a terminal open: `browser-pane` opens a new tab in the workspace's most recently focused browser pane (or a new browser pane beside the terminal if there is none); `system` uses the default browser. Other schemes (mailto, ssh, file paths) always go to the system |
 | `browser-tab-min-width` | 80 | Minimum tab width in pt (40–600); once every tab is at the minimum the strip scrolls sideways (mouse wheel; the active tab is always scrolled into view) |
+| `browser-extensions` | true | Load WebExtensions in browser panes (see [Browser extensions](#browser-extensions)). `false` unloads them all and stops attaching the extension controller to new tabs |
 
 Browser pane limits: no Widevine DRM (Netflix/Spotify web) and no system password autofill or passkeys (use `Cmd+Shift+O` to finish such flows in the system browser).
+
 | `inactive-blur` | 2.5 | `> 0` puts a frosted-glass backdrop behind inactive tiled panes (blurs the wallpaper, not the text; floating panes are exempt; the numeric value is currently on/off only) |
 
 `Cmd+Backspace` turns all of it off at once (panes and bar go opaque); `Cmd+Shift+Backspace` toggles the gaps.
+
+### Browser extensions
+
+Browser panes run Chrome/Firefox WebExtensions through WebKit's `WKWebExtension` (macOS 15.4+). Set `browser-extensions = false` to turn the whole thing off.
+
+- **Install from the Chrome Web Store** — open an extension's store page in a browser pane and click the **添加到 QuickTerm** button injected in the bottom-right corner. QuickTerm downloads the CRX, shows what the extension asks for, and installs it once you confirm.
+- **Import from Chrome** — the puzzle-piece menu at the right end of the toolbar (`Cmd+Shift+E`) has *从 Chrome 导入已安装扩展…*: it copies the newest version of every extension in `~/Library/Application Support/Google/Chrome/Default/Extensions`, skipping themes, packaged apps and anything already installed.
+- **Manage** — the same menu enables/disables an extension, opens its options page, or removes it. Every enabled extension with a toolbar action gets a button (badge included) left of the puzzle icon; clicking it opens the extension's popup, and page context menus gain the extension's own items.
+- **Where things live** — `~/Library/Application Support/QuickTerm/Extensions/<id>/`, with `state.json` holding the enabled flags. Extensions share cookies and login state with your tabs.
+- **Scope** — WebKit implements roughly 25 WebExtension API namespaces. Not supported: blocking `webRequest` (use `declarativeNetRequest`), `identity`, `history`, `downloads`, `management`, `proxy`, `debugger` and native messaging; `storage.sync` is local, not synced across devices. Permissions listed in the manifest are granted at install time; anything an extension asks for later raises a confirmation dialog.
 
 ## Default keybindings
 
@@ -166,6 +179,7 @@ Every action below can be rebound in `config.toml` (see [Configuration](#configu
 | `Cmd+=` / `Cmd+-` / `Cmd+0` | `web-zoom-in` / `web-zoom-out` / `web-zoom-reset` | Browser pane only: page zoom (terminal font size keys are untouched) |
 | `Cmd+Shift+O` | `web-open-external` | Browser pane only: open the current page in the system browser |
 | `Cmd+N` / `Ctrl+Tab` / `Ctrl+Shift+Tab` | `web-new-tab` / `web-next-tab` / `web-prev-tab` | Browser pane only: tabs. `Cmd+W` closes the current tab (the last tab closes the pane); ⌘-click a link for a background tab; `window.open` opens a tab |
+| `Cmd+Shift+E` | `web-extensions` | Browser pane only: the extensions menu (install, enable/disable, import from Chrome) |
 | `Cmd+1…5` | `goto-workspace-N` | Switch workspace (`Cmd+6…9,0` when `workspaces > 5`) |
 | `Cmd+Shift+1…5` | `move-to-workspace-N` | Move pane to workspace and follow |
 | `Cmd+Shift+Space` | `toggle-bar` | Show/hide status bar |
@@ -204,6 +218,7 @@ The Shell and Pane menus in the macOS menu bar show the default shortcuts for a 
 # browser-tab-bar = "always"      # always | auto
 # browser-tab-width = 200         # max tab width, pt
 # browser-tab-min-width = 80      # min tab width, pt (strip scrolls when exceeded)
+# browser-extensions = true       # load WebExtensions in browser panes (macOS 15.4+)
 # link-opener = "browser-pane"    # browser-pane | system — where ⌘-clicked terminal links open
 # inactive-blur = 2.5       # > 0 enables frosted inactive panes
 

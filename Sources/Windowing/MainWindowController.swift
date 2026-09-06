@@ -221,6 +221,9 @@ final class MainWindowController: BaseTerminalController {
         }
         applyAppearance()
 
+        // 浏览器扩展：pane 就是扩展眼里的"窗口"，管理器要能找到它们
+        BrowserExtensionManager.shared.host = self
+
         // 配置链第 4 层：config.toml（键位/工作区数/主题/[ghostty] 透传）+ 热重载
         ConfigStore.ensureTemplateKeys()  // 已有配置文件补全新增键（注释形式，幂等）
         lastConfigContent = (try? String(contentsOf: ConfigStore.configURL, encoding: .utf8)) ?? ""
@@ -397,6 +400,7 @@ final class MainWindowController: BaseTerminalController {
                                          userAgent: settings.browserUserAgent, inspectable: settings.browserInspectable,
                                          tabBar: settings.browserTabBar,
                                          tabWidth: settings.browserTabWidth, tabMinWidth: settings.browserTabMinWidth)
+        BrowserExtensionManager.shared.isEnabled = settings.browserExtensions
         for case let browser as BrowserPaneView in allPanes { browser.applySettings() }   // UA / Inspector 热重载
         model.setWorkspaceCount(settings.workspaces)
         if let n = settings.visibleColumns { setVisibleColumns(n, persist: false) }
@@ -563,6 +567,7 @@ final class MainWindowController: BaseTerminalController {
         case .webNewTab: browserPane?.newTab()
         case .webNextTab: browserPane?.selectTab(offset: 1)
         case .webPrevTab: browserPane?.selectTab(offset: -1)
+        case .webExtensions: browserPane?.showExtensionsMenu()
 
         case .closePane:
             // 浏览器 pane 多标签时 Cmd+W 关当前标签，最后一个标签才关 pane（Chrome 语义）
@@ -1197,10 +1202,12 @@ final class MainWindowController: BaseTerminalController {
     private var browserPane: BrowserPaneView? { focusedPane as? BrowserPaneView }
 
     /// 新建浏览器 pane：插进活动布局并聚焦（页面里 target=_blank / window.open 也走这里）
-    override func openBrowserPane(url: URL, from: PaneView?) {
+    @discardableResult
+    override func openBrowserPane(url: URL, from: PaneView?) -> BrowserPaneView? {
         let pane = BrowserPaneView(url: url)
         applyBrowserTheme(pane)
         insertNewPane(pane, anchor: from)
+        return pane
     }
 
     override func requestClosePane(_ pane: PaneView) {
@@ -1237,6 +1244,12 @@ final class MainWindowController: BaseTerminalController {
                 model.layout = .scrolling(next)
             }
         }
+    }
+
+    /// 最近激活的浏览器 pane（全部工作区，含浮动；淡出中的不算）——扩展宿主用
+    private func mostRecentBrowserPaneAnywhere() -> BrowserPaneView? {
+        browserPanes.filter { !model.closingPanes.contains($0.id) }
+            .max { $0.lastActivatedAt < $1.lastActivatedAt }
     }
 
     /// 当前工作区（平铺 + 浮动）里最近激活过的浏览器 pane；淡出中的不算
@@ -1449,6 +1462,7 @@ final class MainWindowController: BaseTerminalController {
     /// 在任一工作区里找到并移除（活动工作区用 removeFromActiveLayout，那条路径还管焦点）
     private func removeFromAnyWorkspace(_ view: PaneView) {
         forgetFileManagerSession(view)
+        (view as? BrowserPaneView)?.paneWillClose()
         for i in model.layouts.indices {
             if let idx = model.floatings[i].firstIndex(where: { $0.pane === view }) {
                 model.floatings[i].remove(at: idx)
@@ -1471,6 +1485,7 @@ final class MainWindowController: BaseTerminalController {
 
     private func removeFromActiveLayout(_ view: PaneView) {
         forgetFileManagerSession(view)
+        (view as? BrowserPaneView)?.paneWillClose()
         if let idx = model.floating.firstIndex(where: { $0.pane === view }) {
             model.floating.remove(at: idx)
             floatingDrag = nil        // 索引已失效（拖动途中被到点移除时不能再用）
@@ -1571,5 +1586,26 @@ private extension ScrollingStrip.Direction {
         case .up: .up
         case .down: .down
         }
+    }
+}
+
+// MARK: - 浏览器扩展宿主（pane = 扩展眼里的窗口）
+
+extension MainWindowController: BrowserExtensionHost {
+    /// 全部工作区（含浮动层与 scratchpad）里的浏览器 pane
+    var browserPanes: [BrowserPaneView] { allPanes.compactMap { $0 as? BrowserPaneView } }
+
+    /// 持 first responder 的浏览器 pane；没有就取最近激活的那个
+    var focusedBrowserPane: BrowserPaneView? {
+        if let window, let holder = browserPanes.first(where: { $0.holdsFirstResponder(of: window) }) {
+            return holder
+        }
+        return mostRecentBrowserPaneAnywhere()
+    }
+
+    /// 扩展的 windows.create：在活动工作区新开一个浏览器 pane
+    @discardableResult
+    func openBrowserWindow(url: URL?) -> BrowserPaneView? {
+        openBrowserPane(url: url ?? BrowserPaneView.settings.homeURL, from: focusedPane)
     }
 }

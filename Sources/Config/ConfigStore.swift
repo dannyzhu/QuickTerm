@@ -26,6 +26,7 @@ enum ConfigStore {
     # browser-tab-bar = "always"      # 标签条：always = 始终显示（默认）；auto = 只有一个标签时隐藏
     # browser-tab-width = 200         # 标签最大宽度 pt（40–600）
     # browser-tab-min-width = 80      # 标签最小宽度 pt（40–600）；放不下时标签条横向滚动
+    # browser-extensions = true   # 浏览器 pane 加载 WebExtensions（Chrome Web Store 安装 / 从 Chrome 导入；macOS 15.4+）
     # link-opener = "browser-pane"    # 终端 ⌘+点击链接：browser-pane = 在浏览器 pane 打开（有则用最近激活的，无则新开）；system = 系统浏览器
 
     [keybinds]
@@ -126,6 +127,8 @@ enum ConfigStore {
         var browserTabBar: String = "always"
         var browserTabWidth: Int = 200
         var browserTabMinWidth: Int = 80
+        /// 浏览器 pane 是否加载 WebExtensions（关掉 = 全部 unload，新标签也不挂 controller）
+        var browserExtensions: Bool = true
         var linkOpener: String = "browser-pane"
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
@@ -209,6 +212,7 @@ enum ConfigStore {
                 if key == "browser-tab-bar", !value.isEmpty { settings.browserTabBar = value }
                 if key == "browser-tab-width", let v = Int(value) { settings.browserTabWidth = min(max(v, 40), 600) }
                 if key == "browser-tab-min-width", let v = Int(value) { settings.browserTabMinWidth = min(max(v, 40), 600) }
+                if key == "browser-extensions" { settings.browserExtensions = (value.lowercased() != "false") }
                 if key == "link-opener", !value.isEmpty { settings.linkOpener = value }
             case "keybinds":
                 guard let action = WMAction(rawValue: key) else { continue }
