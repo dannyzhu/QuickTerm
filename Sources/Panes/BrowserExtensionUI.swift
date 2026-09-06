@@ -1,9 +1,10 @@
 import AppKit
 import WebKit
 
-/// 地址栏右侧的扩展工具条：每个启用且对当前标签有动作的扩展一个按钮，末尾一个拼图菜单。
+/// 地址栏右侧的扩展工具条：每个"固定到工具条"、启用且对当前标签有动作的扩展一个按钮，末尾一个拼图菜单。
+/// 未固定的扩展（Chrome 语义）只出现在拼图菜单里——从 Chrome 导入几十个扩展也不会把地址栏挤没。
 ///
-/// 手工布局：pane 由 SwiftUI 托管、没有外部宽度约束，pane 内部任何**必需**的宽度约束都会反过来
+/// 手工布局：pane 由 SwiftUI 托管、没有外部宽度约束，pane 内部优先级 >= 500 的宽度约束都会反过来
 /// 把 pane 撑成工具条的宽度（见 porting-notes）。这里只对外报 intrinsicContentSize（非必需优先级），
 /// 内部按钮的帧在 layout() 里自己算。
 final class BrowserExtensionToolbar: NSView {
@@ -53,12 +54,12 @@ final class BrowserExtensionToolbar: NSView {
 
     private var manager: BrowserExtensionManager { .current }
 
-    /// 当前标签下应该显示的扩展动作（启用 + 对该标签有动作）
+    /// 当前标签下应该显示的扩展动作（固定到工具条 + 启用 + 对该标签有动作）
     private func visibleActions(for tab: BrowserPaneView.Tab?)
         -> [(item: BrowserExtensionManager.Installed, action: WKWebExtension.Action)] {
         guard manager.isEnabled else { return [] }
         return manager.installed.compactMap { item in
-            guard item.enabled, item.context.isLoaded,
+            guard item.enabled, item.pinned, item.context.isLoaded,
                   let action = item.context.action(for: tab) else { return nil }
             return (item, action)
         }
@@ -89,20 +90,34 @@ final class BrowserExtensionToolbar: NSView {
         NSSize(width: CGFloat(actionButtons.count + 1) * Self.step, height: Self.buttonSize)
     }
 
+    /// 被压到比 intrinsic 还窄时（地址栏保底 200pt 会把工具条压掉），从左到右只摆放得下的按钮，
+    /// 剩下的藏起来——它们仍可从拼图菜单点开；拼图按钮永远在最右且可见
+    func fittingActionButtonCount(width: CGFloat) -> Int {
+        let room = width - Self.buttonSize
+        guard room > 0 else { return 0 }
+        return min(actionButtons.count, max(0, Int((room / Self.step).rounded(.down))))
+    }
+
     override func layout() {
         super.layout()
         let y = (bounds.height - Self.buttonSize) / 2
+        let shown = fittingActionButtonCount(width: bounds.width)
         for (i, button) in actionButtons.enumerated() {
+            button.isHidden = i >= shown
             button.frame = NSRect(x: CGFloat(i) * Self.step, y: y,
                                   width: Self.buttonSize, height: Self.buttonSize)
         }
-        menuButton.frame = NSRect(x: CGFloat(actionButtons.count) * Self.step, y: y,
-                                  width: Self.buttonSize, height: Self.buttonSize)
+        // 全放得下时按钮右边紧跟拼图（= 老行为）；有按钮被藏起来时拼图贴住右边缘（Chrome 同款，
+        // 且拖动 pane 边缘时拼图跟着边走，不会甩下一截 0–23pt 的空隙再整格跳）
+        let menuX = shown < actionButtons.count
+            ? max(0, bounds.width - Self.buttonSize)
+            : CGFloat(shown) * Self.step
+        menuButton.frame = NSRect(x: menuX, y: y, width: Self.buttonSize, height: Self.buttonSize)
     }
 
-    /// 弹出层的锚点：该扩展的按钮，没有就用拼图按钮
+    /// 弹出层的锚点：该扩展**看得见**的按钮，没有就用拼图按钮（藏起来的按钮当锚点会把 popover 挂到零帧上）
     func anchorButton(for context: WKWebExtensionContext) -> NSButton {
-        actionButtons.first { $0.item?.context === context } ?? menuButton
+        actionButtons.first { $0.item?.context === context && !$0.isHidden } ?? menuButton
     }
 
     /// 测试用
@@ -137,8 +152,8 @@ final class BrowserExtensionToolbar: NSView {
             menu.addItem(.separator())
         } else {
             for item in manager.installed {
-                let entry = NSMenuItem(title: item.displayName, action: nil, keyEquivalent: "")
-                entry.state = item.enabled ? .on : .off
+                let title = item.enabled ? item.displayName : "\(item.displayName)（已停用）"
+                let entry = NSMenuItem(title: title, action: nil, keyEquivalent: "")
                 entry.submenu = submenu(for: item)
                 menu.addItem(entry)
             }
@@ -152,8 +167,16 @@ final class BrowserExtensionToolbar: NSView {
 
     private func submenu(for item: BrowserExtensionManager.Installed) -> NSMenu {
         let menu = NSMenu()
-        menu.addItem(command(title: item.enabled ? "停用" : "启用",
-                             selector: #selector(toggleEnabled(_:)), represented: item))
+        // 「打开」= 点它工具条按钮的等价物：没固定 / 固定了但工具条放不下时，扩展仍能从这里点开
+        if item.enabled, item.context.isLoaded, item.context.action(for: pane?.activeTab) != nil {
+            menu.addItem(command(title: "打开", selector: #selector(performActionFromMenu(_:)), represented: item))
+        }
+        let pin = command(title: "固定到工具条", selector: #selector(togglePinned(_:)), represented: item)
+        pin.state = item.pinned ? .on : .off
+        menu.addItem(pin)
+        let enable = command(title: "启用", selector: #selector(toggleEnabled(_:)), represented: item)
+        enable.state = item.enabled ? .on : .off
+        menu.addItem(enable)
         if item.hasOptionsPage {
             menu.addItem(command(title: "选项…", selector: #selector(openOptions(_:)), represented: item))
         }
@@ -167,6 +190,16 @@ final class BrowserExtensionToolbar: NSView {
         item.target = self
         item.representedObject = represented
         return item
+    }
+
+    @objc private func performActionFromMenu(_ sender: NSMenuItem) {
+        guard let item = sender.representedObject as? BrowserExtensionManager.Installed else { return }
+        item.context.performAction(for: pane?.activeTab)
+    }
+
+    @objc private func togglePinned(_ sender: NSMenuItem) {
+        guard let item = sender.representedObject as? BrowserExtensionManager.Installed else { return }
+        manager.setPinned(!item.pinned, for: item)
     }
 
     @objc private func toggleEnabled(_ sender: NSMenuItem) {

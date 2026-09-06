@@ -66,6 +66,29 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
         var version: String?
         var installedAt: Date
         var enabled: Bool
+        /// 固定到工具条（Chrome 语义）：只有固定的扩展在地址栏右边有按钮，其它的都在拼图菜单里
+        var pinned: Bool
+
+        init(id: String, source: Source, version: String?, installedAt: Date,
+             enabled: Bool, pinned: Bool = false) {
+            self.id = id
+            self.source = source
+            self.version = version
+            self.installedAt = installedAt
+            self.enabled = enabled
+            self.pinned = pinned
+        }
+
+        /// 1.5.2 及更早的 state.json 没有 pinned 键：缺键 = 不固定（decodeIfPresent，不能让整条记录解不出来）
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            source = try container.decode(Source.self, forKey: .source)
+            version = try container.decodeIfPresent(String.self, forKey: .version)
+            installedAt = try container.decode(Date.self, forKey: .installedAt)
+            enabled = try container.decode(Bool.self, forKey: .enabled)
+            pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+        }
     }
 
     /// 一个已安装扩展的运行时三元组
@@ -83,6 +106,7 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
 
         var id: String { record.id }
         var enabled: Bool { record.enabled }
+        var pinned: Bool { record.pinned }
         var displayName: String { webExtension.displayName ?? record.id }
         var hasOptionsPage: Bool { webExtension.hasOptionsPage }
     }
@@ -261,6 +285,14 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
         NotificationCenter.default.post(name: .browserExtensionsDidChange, object: self)
     }
 
+    /// 固定 / 取消固定到工具条（Chrome 的「Pin to toolbar」）
+    func setPinned(_ pinned: Bool, for item: Installed) {
+        guard item.record.pinned != pinned else { return }
+        item.record.pinned = pinned
+        saveRecords()
+        NotificationCenter.default.post(name: .browserExtensionsDidChange, object: self)
+    }
+
     func remove(_ item: Installed) {
         unload(item)
         try? FileManager.default.removeItem(at: directory(for: item.id))
@@ -378,7 +410,8 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
     @discardableResult
     func commit(_ staged: Staged) async throws -> Installed {
         defer { try? FileManager.default.removeItem(at: staged.container) }
-        return try await install(directory: staged.directory, id: staged.id, source: .webStore)
+        // 用户在商店页明确点了「添加到 QuickTerm」：与 Chrome 一样默认固定到工具条
+        return try await install(directory: staged.directory, id: staged.id, source: .webStore, pinned: true)
     }
 
     /// 用户取消：删掉临时文件
@@ -396,20 +429,24 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
 
     /// 把一个已解包的扩展目录装进 store（本地扩展 / Chrome 导入 / Web Store 解包后都走这里）
     @discardableResult
-    func install(directory: URL, id: String, source: Source) async throws -> Installed {
+    func install(directory: URL, id: String, source: Source, pinned: Bool = false) async throws -> Installed {
         let fm = FileManager.default
         guard fm.fileExists(atPath: directory.appendingPathComponent("manifest.json").path) else {
             throw BrowserExtensionError.noManifest
         }
         let destination = self.directory(for: id)
-        if let existing = installedExtension(withID: id) {
+        let existing = installedExtension(withID: id)
+        if let existing {
             unload(existing)
             installed.removeAll { $0 === existing }
         }
         if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
         try fm.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
         try fm.copyItem(at: directory, to: destination)
-        let record = Record(id: id, source: source, version: nil, installedAt: Date(), enabled: true)
+        // 重装 / 更新（商店页的「添加到 QuickTerm」也是这条路）沿用用户已有的固定选择——用户手动取消固定过，
+        // 更新一下不能把按钮又塞回工具条（Chrome 更新扩展同样不动 pinned_extensions）；首次安装才用调用方的默认值
+        let record = Record(id: id, source: source, version: nil, installedAt: Date(), enabled: true,
+                            pinned: existing?.record.pinned ?? pinned)
         let item = try await makeInstalled(record: record, directory: destination)
         installed = Self.sorted(installed + [item])
         saveRecords()
@@ -510,18 +547,31 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
         return a.install < b.install
     }
 
+    /// Chrome 里"固定到工具条"的扩展 id：`<profile>/Preferences`（JSON）的 `extensions.pinned_extensions`。
+    /// 文件不在 / 不是 JSON / 没这个键都返回空集合（= 导入后一个都不固定，不算错）
+    nonisolated static func chromePinnedExtensionIDs(preferences: URL) -> Set<String> {
+        guard let data = try? Data(contentsOf: preferences),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let extensions = json["extensions"] as? [String: Any],
+              let pinned = extensions["pinned_extensions"] as? [Any] else { return [] }
+        return Set(pinned.compactMap { $0 as? String })
+    }
+
     /// 导入本机 Chrome 已装的扩展（已装过的跳过）
     @discardableResult
     func importFromChrome(profile: URL = BrowserExtensionManager.defaultChromeProfile)
         async -> (imported: Int, skipped: Int, failed: [String]) {
         let candidates = Self.chromeCandidates(inExtensions: profile.appendingPathComponent("Extensions",
                                                                                             isDirectory: true))
+        // 在 Chrome 里固定到工具条的，导入后同样固定；其余只在拼图菜单里（几十个扩展不会把地址栏挤没）
+        let pinned = Self.chromePinnedExtensionIDs(preferences: profile.appendingPathComponent("Preferences"))
         var imported = 0, skipped = 0
         var failed: [String] = []
         for candidate in candidates {
             if installedExtension(withID: candidate.id) != nil { skipped += 1; continue }
             do {
-                _ = try await install(directory: candidate.directory, id: candidate.id, source: .chrome)
+                _ = try await install(directory: candidate.directory, id: candidate.id, source: .chrome,
+                                      pinned: pinned.contains(candidate.id))
                 imported += 1
             } catch {
                 failed.append(candidate.id)

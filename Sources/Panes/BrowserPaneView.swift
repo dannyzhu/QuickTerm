@@ -233,6 +233,10 @@ final class BrowserPaneView: PaneView {
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
     let addressField = BrowserAddressField()   // 测试需访问
+    /// 地址栏的保底宽度：扩展固定得再多也不能把它挤得比这还窄（Chrome 也是同一套做法）
+    static let addressFieldMinimumWidth: CGFloat = 200
+    /// 保底宽度约束的优先级：必须低于 500（SwiftUI 托管 pane 的量宽优先级），否则窄 pane 会被这条约束撑宽
+    static let addressFieldMinimumPriority = NSLayoutConstraint.Priority(rawValue: 300)
     /// 地址栏与扩展工具条之间的下载按钮（无下载时隐藏，宽度与两侧间距一起收成 0）
     let downloadButton = BrowserDownloadButton()
     /// 本 pane 的下载列表（WKDownloadDelegate 的回调都落到它上面）
@@ -588,6 +592,10 @@ final class BrowserPaneView: PaneView {
         addressField.lineBreakMode = .byTruncatingTail
         addressField.usesSingleLineMode = true
         addressField.cell?.sendsActionOnEndEditing = false
+        // 地址栏的文字宽度不参与"谁被压"的竞争（比扩展条的 .defaultLow 还低一档）：
+        // 否则一条长 URL 会反过来把扩展条挤没。地址栏的下限只由下面 >= 200 的约束保证
+        addressField.setContentCompressionResistancePriority(
+            .init(rawValue: NSLayoutConstraint.Priority.defaultLow.rawValue - 1), for: .horizontal)
         addressField.delegate = self
         addressField.target = self
         addressField.action = #selector(addressEntered)
@@ -605,7 +613,9 @@ final class BrowserPaneView: PaneView {
         extensionBar.pane = self
         extensionBar.translatesAutoresizingMaskIntoConstraints = false
         extensionBar.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        extensionBar.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        // 压缩阻力比地址栏的保底宽度低：固定的扩展一多，先压扩展条（放不下的按钮藏起来、留在拼图菜单里），
+        // 不能把地址栏挤成一小段
+        extensionBar.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         toolbar.addSubview(extensionBar)
 
         progressBar.style = .bar
@@ -614,6 +624,18 @@ final class BrowserPaneView: PaneView {
         progressBar.maxValue = 1
         progressBar.controlSize = .small
         progressBar.isHidden = true
+
+        // 地址栏保底宽度：优先级高于扩展条的压缩阻力（.defaultLow = 250）——扩展再多也给地址栏留 200pt；
+        // 但必须 **低于 500**：pane 由 SwiftUI 托管，NSHostingView 量 pane 时按 500 的 fitting priority 走，
+        // >= 500 的宽度约束（哪怕非必需）会反过来把窄 pane 撑宽（实测 pane 宽 250 会被撑成 300）
+        let addressFieldMinWidth = addressField.widthAnchor.constraint(greaterThanOrEqualToConstant:
+                                                                        Self.addressFieldMinimumWidth)
+        addressFieldMinWidth.priority = Self.addressFieldMinimumPriority
+        // 扩展条至少留一颗拼图的宽度：比地址栏保底再高一档（同样 < 500）——pane 窄到连 200pt 地址栏都放不下时
+        // 让地址栏继续让（Chrome 同款），拼图按钮永远留在 pane 里、点得到
+        let extensionBarMinWidth = extensionBar.widthAnchor.constraint(greaterThanOrEqualToConstant:
+                                                                        BrowserExtensionToolbar.buttonSize)
+        extensionBarMinWidth.priority = .init(rawValue: Self.addressFieldMinimumPriority.rawValue + 10)
 
         downloadButtonWidth = downloadButton.widthAnchor.constraint(equalToConstant: 0)
         downloadTrailingGap = downloadButton.trailingAnchor.constraint(equalTo: extensionBar.leadingAnchor,
@@ -649,6 +671,8 @@ final class BrowserPaneView: PaneView {
             extensionBar.heightAnchor.constraint(equalToConstant: BrowserExtensionToolbar.buttonSize),
             addressField.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
             addressField.heightAnchor.constraint(equalToConstant: 22),
+            addressFieldMinWidth,
+            extensionBarMinWidth,
             progressBar.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: -2),
             progressBar.leadingAnchor.constraint(equalTo: leadingAnchor),
             progressBar.trailingAnchor.constraint(equalTo: trailingAnchor),

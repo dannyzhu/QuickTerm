@@ -104,3 +104,31 @@
 ## 验收
 - 全套测试全绿（含新用例）；`xcodebuild … Debug build` 成功。
 - 手动冒烟（主会话做）：`open -a QuickTerm --args --open-browser https://chromewebstore.google.com/detail/…` 页面出现「添加到 QuickTerm」；拼图菜单可导入本机 Chrome 扩展；下载一个文件时地址栏右侧出现进度环。
+
+---
+
+## Task C：扩展"固定到工具条"（与 Chrome 一致）+ 地址栏保底宽度
+
+**问题**：从 Chrome 导入几十个扩展后，工具条上的扩展按钮把地址栏挤到只剩几十 pt。Chrome 的做法：每个扩展可单独"固定到工具条"，未固定的只在拼图菜单里。
+
+### C.1 数据
+- `BrowserExtensionManager.Record` 加 `var pinned: Bool`（默认 **false**）；自定义 `init(from:)` 用 `decodeIfPresent` 兼容旧 state.json（缺键 = false）。
+- `func setPinned(_:for:)` 写记录、存盘、post `.browserExtensionsDidChange`。
+- Web Store 安装（用户明确装的）→ `pinned = true`；`install(directory:id:source:)` 加参数 `pinned: Bool = false`。
+- Chrome 导入：读 `<profile>/Preferences`（JSON）里 `extensions.pinned_extensions`（字符串数组）——在 Chrome 里固定的导入后同样固定；文件缺失 / 解析失败 = 全部不固定。纯函数 `nonisolated static func chromePinnedExtensionIDs(preferences: URL) -> Set<String>`。
+
+### C.2 工具条（BrowserExtensionUI.swift）
+- `visibleActions` 只取 **enabled && pinned** 且对当前标签有动作的扩展。
+- **溢出保底**：pane 里 `addressField.widthAnchor >= 200`（priority `.defaultHigh`，非必需），`extensionBar` 的水平 compression resistance 降到 `.defaultLow`，hugging 保持 `.defaultHigh`。工具条被压到小于 intrinsic 宽时，`layout()` 只摆放放得下的按钮（从左到右），放不下的 `isHidden = true`；拼图按钮永远在最右且可见。放不下的固定扩展仍可从拼图菜单点开。
+- 菜单：每个扩展一行（标题 = 名字；停用的加后缀「（已停用）」并置灰图标），子菜单：「打开」（有动作时；`performAction(for: activeTab)`）、「固定到工具条」（`state = pinned ? .on : .off`，切换）、「启用」（`state = enabled ? .on : .off`，切换）、「选项…」（有 options 时）、分隔、「移除…」。菜单尾部的三条命令不变。
+- 扩展条右侧的拼图按钮 tooltip 不变。
+
+### C.3 文档
+- README（英/中）「浏览器扩展」小节：固定/取消固定的说法（Chrome 语义；商店安装默认固定，导入沿用 Chrome 里的固定状态；地址栏最少保留 200pt，放不下的固定扩展在拼图菜单里）。spec Super+B 行补一句。
+
+### C.4 测试（Tests/BrowserExtensionTests.swift 追加）
+- 旧 state.json（无 pinned 键）解码 → pinned false；setPinned 往返存盘。
+- 工具条：装两个有动作的 fixture 扩展，都启用、只固定一个 → 工具条 1 个按钮；取消固定 → 0；再固定两个后把工具条 frame 压到只够 1 个按钮 + 拼图 → 第二个按钮 isHidden。
+- 地址栏保底：pane 宽 600 时装 20 个固定扩展（或直接给工具条 20 个假动作）→ 地址栏宽 ≥ 200。
+- `chromePinnedExtensionIDs`：临时 Preferences JSON 里 `{"extensions":{"pinned_extensions":["a…","b…"]}}` → 集合；缺文件 → 空。
+- 菜单：子菜单含「固定到工具条」且 state 反映记录。

@@ -446,7 +446,284 @@ final class BrowserExtensionTests: XCTestCase {
         XCTAssertTrue(titles.contains("打开扩展文件夹"))
     }
 
+    // MARK: - 固定到工具条
+
+    /// 旧 state.json（1.5.2 及更早，没有 pinned 键）解码出来 = 不固定；setPinned 之后往返存盘
+    @MainActor
+    func testPinnedFlagDefaultsFalseForLegacyStateAndRoundTrips() throws {
+        let store = try Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store) }
+        let fixture = try Self.makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let id = "abcdefghijklmnopabcdefghijklmnop"
+        try FileManager.default.copyItem(at: fixture, to: store.appendingPathComponent(id, isDirectory: true))
+        // 老格式：只有 enabled，没有 pinned
+        try """
+        [{"enabled": true, "id": "\(id)", "installedAt": "2026-01-01T00:00:00Z", "source": "chrome"}]
+        """.write(to: store.appendingPathComponent("state.json"), atomically: true, encoding: .utf8)
+
+        let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
+        try Self.runUntilDone("加载已装扩展") { await manager.loadInstalled() }
+        let item = try XCTUnwrap(manager.installedExtension(withID: id))
+        // source / installedAt 只有"旧记录真的解出来了"才对得上：解码失败时 loadInstalled() 会合成一条
+        // .local + 当下时间的兜底记录，那条同样是 enabled=true / pinned=false，光看这两位测不出回归
+        XCTAssertEqual(item.record.source, .chrome, "记录来自旧 state.json，不是缺记录时合成的兜底值")
+        XCTAssertEqual(item.record.installedAt,
+                       try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-01-01T00:00:00Z")))
+        XCTAssertTrue(item.enabled)
+        XCTAssertFalse(item.pinned, "缺 pinned 键 = 不固定")
+
+        manager.setPinned(true, for: item)
+        XCTAssertTrue(item.pinned)
+        let reloaded = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
+        try Self.runUntilDone("重新加载") { await reloaded.loadInstalled() }
+        XCTAssertTrue(try XCTUnwrap(reloaded.installedExtension(withID: id)).pinned, "固定状态持久化")
+    }
+
+    /// Chrome 的 `<profile>/Preferences` 里 extensions.pinned_extensions = 导入后同样固定的那批
+    func testChromePinnedExtensionIDs() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("qt-chromeprefs-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let preferences = dir.appendingPathComponent("Preferences")
+        XCTAssertTrue(BrowserExtensionManager.chromePinnedExtensionIDs(preferences: preferences).isEmpty,
+                      "文件不存在 = 一个都不固定")
+
+        let a = String(repeating: "a", count: 32), b = String(repeating: "b", count: 32)
+        try #"{"extensions": {"pinned_extensions": ["\#(a)", "\#(b)"]}, "profile": {"name": "x"}}"#
+            .write(to: preferences, atomically: true, encoding: .utf8)
+        XCTAssertEqual(BrowserExtensionManager.chromePinnedExtensionIDs(preferences: preferences), [a, b])
+
+        try "not json at all".write(to: preferences, atomically: true, encoding: .utf8)
+        XCTAssertTrue(BrowserExtensionManager.chromePinnedExtensionIDs(preferences: preferences).isEmpty,
+                      "解析失败 = 一个都不固定，不是错误")
+    }
+
+    /// 工具条只显示固定的扩展；固定得放不下时从左到右摆，放不下的藏起来（拼图永远在最右）
+    @MainActor
+    func testToolbarShowsOnlyPinnedExtensionsAndHidesOverflow() throws {
+        let store = try Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store) }
+        let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let fixture = try Self.makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let first = String(repeating: "a", count: 32), second = String(repeating: "b", count: 32)
+        try Self.installSynchronously(fixture, id: first, into: manager)
+        try Self.installSynchronously(fixture, id: second, into: manager)
+        let one = try XCTUnwrap(manager.installedExtension(withID: first))
+        let two = try XCTUnwrap(manager.installedExtension(withID: second))
+
+        let bar = BrowserExtensionToolbar(frame: NSRect(x: 0, y: 0, width: 400, height: 22))
+        bar.reload()
+        XCTAssertTrue(bar.actionButtonsForTesting.isEmpty, "两个都没固定 → 工具条上没有按钮")
+
+        manager.setPinned(true, for: one)
+        bar.reload()
+        XCTAssertEqual(bar.actionButtonsForTesting.count, 1, "只有固定的那个上工具条")
+
+        manager.setPinned(false, for: one)
+        bar.reload()
+        XCTAssertTrue(bar.actionButtonsForTesting.isEmpty, "取消固定 → 回到拼图菜单里")
+
+        manager.setPinned(true, for: one)
+        manager.setPinned(true, for: two)
+        bar.reload()
+        XCTAssertEqual(bar.actionButtonsForTesting.count, 2)
+        XCTAssertEqual(bar.intrinsicContentSize.width, 3 * BrowserExtensionToolbar.step, accuracy: 0.01)
+        // 压到只够一个按钮 + 拼图
+        bar.frame = NSRect(x: 0, y: 0, width: BrowserExtensionToolbar.step + BrowserExtensionToolbar.buttonSize,
+                           height: 22)
+        bar.needsLayout = true
+        bar.layoutSubtreeIfNeeded()
+        XCTAssertFalse(bar.actionButtonsForTesting[0].isHidden, "第一个还摆得下")
+        XCTAssertTrue(bar.actionButtonsForTesting[1].isHidden, "第二个放不下 → 藏起来（仍在拼图菜单里）")
+        let menu = bar.menuButtonForTesting
+        XCTAssertFalse(menu.isHidden)
+        XCTAssertEqual(menu.frame.maxX, bar.bounds.maxX, accuracy: 0.01, "拼图永远在最右")
+        XCTAssertGreaterThanOrEqual(menu.frame.minX, bar.actionButtonsForTesting[0].frame.maxX - 0.01)
+
+        // 宽度不是整格时（46 是"刚好一格 + 拼图"的特例）拼图同样贴住右边缘，不留一截空隙
+        bar.frame = NSRect(x: 0, y: 0, width: 60, height: 22)
+        bar.needsLayout = true
+        bar.layoutSubtreeIfNeeded()
+        XCTAssertFalse(bar.actionButtonsForTesting[0].isHidden)
+        XCTAssertTrue(bar.actionButtonsForTesting[1].isHidden)
+        XCTAssertEqual(menu.frame.maxX, bar.bounds.maxX, accuracy: 0.01, "有按钮被藏起来 → 拼图贴右边缘")
+        XCTAssertLessThanOrEqual(bar.actionButtonsForTesting[0].frame.maxX, menu.frame.minX + 0.01,
+                                 "拼图不压在按钮上")
+
+        // 全放得下时保持老行为：按钮右边紧跟拼图
+        bar.frame = NSRect(x: 0, y: 0, width: 400, height: 22)
+        bar.needsLayout = true
+        bar.layoutSubtreeIfNeeded()
+        XCTAssertEqual(menu.frame.minX, 2 * BrowserExtensionToolbar.step, accuracy: 0.01)
+    }
+
+    /// 拼图菜单：每个扩展一行，子菜单里「固定到工具条」的勾选跟着记录走；停用的加后缀
+    @MainActor
+    func testExtensionMenuPinItem() throws {
+        let store = try Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store) }
+        let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let fixture = try Self.makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let id = String(repeating: "a", count: 32)
+        try Self.installSynchronously(fixture, id: id, into: manager)
+        let item = try XCTUnwrap(manager.installedExtension(withID: id))
+
+        let bar = BrowserExtensionToolbar(frame: NSRect(x: 0, y: 0, width: 400, height: 22))
+        func submenuItem(_ title: String) throws -> NSMenuItem {
+            let entry = try XCTUnwrap(bar.buildMenu().items.first { $0.title.hasPrefix(item.displayName) })
+            return try XCTUnwrap(entry.submenu?.items.first { $0.title == title })
+        }
+        XCTAssertEqual(try submenuItem("固定到工具条").state, .off, "默认不固定")
+        XCTAssertEqual(try submenuItem("启用").state, .on)
+        manager.setPinned(true, for: item)
+        XCTAssertEqual(try submenuItem("固定到工具条").state, .on)
+
+        manager.setEnabled(false, for: item)
+        let titles = bar.buildMenu().items.map(\.title)
+        XCTAssertTrue(titles.contains("\(item.displayName)（已停用）"), "\(titles)")
+        XCTAssertEqual(try submenuItem("启用").state, .off)
+    }
+
+    /// 地址栏保底：固定的扩展多到摆不下时，压的是扩展条，不是地址栏；pane 宽度也不能被内部约束改掉
+    @MainActor
+    func testAddressFieldKeepsMinimumWidthWhenManyExtensionsPinned() throws {
+        let store = try Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store) }
+        let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let fixture = try Self.makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        for letter in ["a", "b", "c", "d", "e", "f"] {
+            let id = String(repeating: letter, count: 32)
+            try Self.installSynchronously(fixture, id: id, into: manager)
+            manager.setPinned(true, for: try XCTUnwrap(manager.installedExtension(withID: id)))
+        }
+
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        let width: CGFloat = 420
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let hosting = NSHostingView(rootView: PaneHostView(pane: pane).frame(width: width, height: 600))
+        window.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        defer { window.contentView = nil }
+
+        XCTAssertEqual(pane.frame.width, width, accuracy: 1, "内部约束不能反过来改 pane 宽度")
+        let bar = pane.extensionBar
+        XCTAssertEqual(bar.actionButtonsForTesting.count, 6, "六个都固定了")
+        let field = pane.addressFieldForTesting
+        XCTAssertGreaterThanOrEqual(field.frame.width, BrowserPaneView.addressFieldMinimumWidth - 0.5,
+                                    "地址栏至少 200pt，被压的是扩展条")
+        XCTAssertLessThan(bar.frame.width, bar.intrinsicContentSize.width, "扩展条被压窄")
+        let hidden = bar.actionButtonsForTesting.filter(\.isHidden).count
+        XCTAssertGreaterThan(hidden, 0, "放不下的按钮藏起来（仍可从拼图菜单点开）")
+        XCTAssertFalse(bar.menuButtonForTesting.isHidden)
+        XCTAssertLessThanOrEqual(bar.menuButtonForTesting.frame.maxX, bar.bounds.maxX + 0.01,
+                                 "拼图不会溢出工具条")
+    }
+
+    /// pane 窄到连 200pt 地址栏都放不下时：让地址栏继续让，拼图按钮仍在 pane 里（点得到）；
+    /// 而且保底约束不能反过来把 pane 撑宽——托管这块 NSView 的 SwiftUI 是按 500 的优先级量宽的
+    @MainActor
+    func testNarrowPaneKeepsPuzzleInsideAndDoesNotResizePane() throws {
+        let store = try Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store) }
+        let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let fixture = try Self.makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        for letter in ["a", "b", "c"] {
+            let id = String(repeating: letter, count: 32)
+            try Self.installSynchronously(fixture, id: id, into: manager)
+            manager.setPinned(true, for: try XCTUnwrap(manager.installedExtension(withID: id)))
+        }
+
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        let width: CGFloat = 250
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let hosting = NSHostingView(rootView: PaneHostView(pane: pane).frame(width: width, height: 600))
+        window.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        defer { window.contentView = nil }
+
+        XCTAssertEqual(pane.frame.width, width, accuracy: 1, "保底约束不能反过来改 pane 宽度")
+        let bar = pane.extensionBar
+        let field = pane.addressFieldForTesting
+        XCTAssertGreaterThanOrEqual(bar.frame.width, BrowserExtensionToolbar.buttonSize - 0.5,
+                                    "扩展条至少留得下一颗拼图")
+        let menu = bar.menuButtonForTesting
+        XCTAssertFalse(menu.isHidden)
+        let puzzle = bar.convert(menu.frame, to: pane)
+        XCTAssertTrue(pane.bounds.contains(puzzle), "拼图整颗都在 pane 里：\(puzzle) vs \(pane.bounds)")
+        XCTAssertGreaterThan(field.frame.width, 0)
+        XCTAssertLessThan(field.frame.width, BrowserPaneView.addressFieldMinimumWidth,
+                          "这么窄的 pane 里让步的是地址栏，不是拼图")
+        XCTAssertLessThanOrEqual(field.frame.maxX, bar.frame.minX + 0.5, "地址栏仍在扩展条左边")
+    }
+
+    /// 商店页重装 / 更新不覆盖用户手动取消过的固定状态（Chrome 更新扩展也不动 pinned_extensions）
+    @MainActor
+    func testWebStoreReinstallKeepsUserUnpinned() async throws {
+        let store = try Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store) }
+        let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
+        let fixture = try Self.makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let id = String(repeating: "a", count: 32)
+
+        let item = try await manager.install(directory: fixture, id: id, source: .webStore, pinned: true)
+        XCTAssertTrue(item.pinned, "商店安装默认固定到工具条")
+        manager.setPinned(false, for: item)
+
+        // 用户又点了一次商店页的「添加到 QuickTerm」（= 更新同路径）
+        _ = try await manager.install(directory: fixture, id: id, source: .webStore, pinned: true)
+        XCTAssertEqual(manager.installed.count, 1)
+        let again = manager.installedExtension(withID: id)
+        XCTAssertEqual(again?.pinned, false, "沿用用户取消固定的选择")
+        XCTAssertEqual(again?.enabled, true)
+
+        // 换个 id 首次安装仍然默认固定
+        let other = String(repeating: "b", count: 32)
+        let fresh = try await manager.install(directory: fixture, id: other, source: .webStore, pinned: true)
+        XCTAssertTrue(fresh.pinned)
+    }
+
     // MARK: - 夹具
+
+    /// 非 async 用例里等一个异步操作落地（转主 runloop，别阻塞 @MainActor）
+    @MainActor
+    private static func runUntilDone(_ what: String, timeout: TimeInterval = 5,
+                                     _ body: @escaping @MainActor () async -> Void) throws {
+        var done = false
+        Task { @MainActor in
+            await body()
+            done = true
+        }
+        let deadline = Date().addingTimeInterval(timeout)
+        while !done, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        XCTAssertTrue(done, "\(what)应在 \(timeout)s 内完成")
+    }
 
     /// 非 async 用例里跑一次异步安装：起 Task 后转主 runloop 等它落地
     @MainActor

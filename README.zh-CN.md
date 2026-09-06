@@ -153,8 +153,10 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 
 - **从 Chrome Web Store 安装** —— 在浏览器 pane 里打开扩展的商店页，点右下角注入的 **添加到 QuickTerm** 按钮：QuickTerm 下载 CRX、列出它要的权限，确认后安装。
 - **从 Chrome 导入** —— 工具条右端的拼图菜单（`Cmd+Shift+E`）里有「从 Chrome 导入已安装扩展…」：把 `~/Library/Application Support/Google/Chrome/Default/Extensions` 里每个扩展的最高版本复制过来（主题、打包应用、已装过的跳过）。
-- **管理** —— 同一个菜单里启用 / 停用、打开扩展的选项页、移除。每个启用且有工具条动作的扩展在拼图左边有一个按钮（带 badge），点击弹出它的 popup；页面右键菜单末尾会追加扩展自己的菜单项。
-- **文件位置** —— `~/Library/Application Support/QuickTerm/Extensions/<id>/`，启用状态在同目录的 `state.json`。扩展与你的标签共享 cookie 与登录态。
+- **管理** —— 同一个菜单里列出全部已安装扩展（停用的带「（已停用）」后缀），子菜单可以打开、固定到工具条、启用 / 停用、打开选项页、移除。
+- **固定到工具条** —— 与 Chrome 一样：只有**固定**的扩展才在拼图左边有按钮（带 badge），其余都待在拼图菜单里（菜单里的「打开」等同于点那颗按钮）。从商店装的默认固定，从 Chrome 导入的沿用它在 Chrome 里的固定状态；地址栏最少保留 200pt，固定了但放不下的按钮会从工具条上藏起来，仍可从拼图菜单点开；pane 窄到连 200pt 都放不下时改由地址栏继续让步——拼图按钮始终看得见、点得到。
+- **popup 与右键菜单** —— 点扩展按钮弹出它的 popup；页面右键菜单末尾会追加扩展自己的菜单项。
+- **文件位置** —— `~/Library/Application Support/QuickTerm/Extensions/<id>/`，启用与固定状态在同目录的 `state.json`。扩展与你的标签共享 cookie 与登录态。
 - **支持范围** —— WebKit 实现了约 25 个 WebExtension API 命名空间。不支持：阻断式 `webRequest`（用 `declarativeNetRequest`）、`identity`、`history`、`downloads`、`management`、`proxy`、`debugger` 与原生消息；`storage.sync` 只存本地、不跨设备。manifest 里声明的权限在安装时一次性授予，扩展运行中再要的权限会弹窗确认。
 
 ## 默认快捷键
