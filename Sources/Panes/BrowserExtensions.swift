@@ -207,6 +207,8 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
             let record = records.first { $0.id == id }
                 ?? Record(id: id, source: .local, version: nil, installedAt: Date(), enabled: true)
             do {
+                // 垫片版本升级 / 旧版本装的扩展：这里补上（幂等，已是当前版本什么都不做）
+                applyCompatShim(to: dir, id: id)
                 result.append(try await makeInstalled(record: record, directory: dir))
             } catch {
                 Self.logger.warning("扩展加载失败 id=\(id, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
@@ -215,6 +217,15 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
         installed = Self.sorted(result)
         saveRecords()
         NotificationCenter.default.post(name: .browserExtensionsDidChange, object: self)
+    }
+
+    /// 套 WebKit 兼容垫片（见 BrowserExtensionCompat）。失败只记日志：扩展照常加载，只是没垫片
+    private func applyCompatShim(to directory: URL, id: String) {
+        do {
+            try BrowserExtensionCompat.apply(to: directory)
+        } catch {
+            Self.logger.warning("扩展兼容垫片写入失败 id=\(id, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private static func sorted(_ items: [Installed]) -> [Installed] {
@@ -443,6 +454,7 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
         if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
         try fm.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
         try fm.copyItem(at: directory, to: destination)
+        applyCompatShim(to: destination, id: id)
         // 重装 / 更新（商店页的「添加到 QuickTerm」也是这条路）沿用用户已有的固定选择——用户手动取消固定过，
         // 更新一下不能把按钮又塞回工具条（Chrome 更新扩展同样不动 pinned_extensions）；首次安装才用调用方的默认值
         let record = Record(id: id, source: source, version: nil, installedAt: Date(), enabled: true,

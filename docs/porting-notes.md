@@ -46,6 +46,10 @@
 4. **Metal Toolchain**：Xcode 26 需 `xcodebuild -downloadComponent MetalToolchain`（一次性，688MB）
 5. 链接需 `-lc++`（spirv-cross）；测试 target 以 app 为 TEST_HOST 并自行链接 xcframework
 
+- **xcodegen 2.46 起默认 `ENABLE_USER_SCRIPT_SANDBOXING = YES`**（2026-09-07）：「Bundle Ghostty Resources」脚本
+  要 `rm -rf` / `cp -R` 到产物目录，沙盒下直接 `deny file-read-data`，整个构建失败（现象：`error: Sandbox: rm(…) deny(1)`）。
+  `project.yml` 的 `settings.base` 里显式关掉；重新 `xcodegen generate` 后生效。
+
 ## M1 增补
 
 - 拷入 `Features/Splits/{TerminalSplitTreeView,SplitView,SplitView.Divider}.swift`
@@ -275,6 +279,33 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
   （`window.webkit.messageHandlers.<name>`）。注册到私有 `WKContentWorld`，并在收到消息时校验
   `frameInfo.isMainFrame` + `frameInfo.request.url` 是商店详情页 + id 与该页一致，否则任意网页 / iframe 都能
   凭一条 postMessage 拉起原生安装弹窗。
+
+- **后台加载失败只给一个 `WKWebExtensionContextErrorBackgroundContentFailedToLoad`，没有 JS 原因**（2026-09-07）：
+  诊断办法是把扩展目录拷一份，在后台脚本最前面塞一段前导——监听 `error` / `unhandledrejection`、包一层
+  `console.*`，都写进 `chrome.storage.local`——再从扩展自己的页面（`context.webViewConfiguration` 建的
+  WebView 加载 `webkit-extension://<id>/x.html`）用 `callAsyncJavaScript` 读出来。真实扩展这样查出三类根因：
+  - **WebKit 缺 `webNavigation.onHistoryStateUpdated` / `onReferenceFragmentUpdated`**：Stylish 在 service worker
+    顶层直接 `addListener` → TypeError → 后台永远起不来。
+  - **WebKit 的 `importScripts()` 会在每个被导入脚本求值后清空 microtask 队列**（Chrome 不会；用合成扩展验证过：
+    导入存在 / 不存在的文件都清，忙等与 `console.log` 不清）。Tampermonkey 用 `let pt=true;(async()=>{await null;pt=false})()`
+    判断"监听器是否在启动阶段注册"，而它启动时 `importScripts("/test.js")` 一个空文件——标记就此翻转，随后
+    `tabs.onUpdated.addListener` 抛错、`init` 中止，popup 的 `runtime.connect` 报 "No runtime.onConnect listeners"，
+    永远转圈。
+  - **扩展页面的 scheme 是 `webkit-extension:`，不是 `chrome-extension:`**：Tampermonkey 的 Chrome 构建把
+    `INTERNAL_PAGE_PROTOCOLS = ["chrome-extension:"]` 写死，后台用它判断 sender.url 是不是自己的页面，popup 的
+    `loadTree` 被当成外来页面拒掉（"this context doesn't have the permission"），popup 空白。垫片把全部 .js 里的
+    字面量 `chrome-extension:` 替成 `webkit-extension:`（只碰 .js / .mjs；不碰 html / json；两个 scheme 等长，压缩代码的
+    偏移量不受影响）。已知副作用：ChatGPT 扩展把它当 storage key 前缀（`codex:chrome-extension:persisted-atom:`），
+    换 scheme 后旧值孤立一次。
+  三者都靠 `BrowserExtensionCompat` 在安装 / 启动加载时改写扩展目录解决：manifest 的 `background.service_worker`
+  指向同目录的 `__quickterm-background.js`（classic 用 `importScripts`、module 用 `import` 先拉 `/__quickterm-compat.js`
+  再拉原脚本；放同目录是为了原脚本里相对路径的 importScripts 仍按原目录解析），`background.scripts` 数组则直接在
+  前面插一项；原始 `background` 与垫片版本记在 manifest 的 `__quickterm` 下，幂等。垫片里的 `importScripts`
+  只跳过安装时扫出来的空 `.js`（求值本来就没有效果），其余照旧走原生。扩展自己的页面（popup / 选项页）目前不注入
+  垫片——真实案例里页面侧都有 typeof 守卫。文件扫描用 `enumerator(atPath:)` 拿相对路径：`enumerator(at:)` 返回的是
+  解析过符号链接的绝对 URL，store 目录本身是链接（放 Dropbox）时和 `directory.path` 前缀对不上、列表整个空掉。
+  manifest 里的 worker 路径带 `..` 的一律不包装（`../../x.js` 不能让我们往扩展目录外写）；判断只看字符串，别拿
+  `standardizedFileURL` / `resolvingSymlinksInPath` 比前缀——目标文件还不存在时 /var 与 /private/var 只解析一边，前缀对不上。
 
 ## WKDownload 进度 UI（2026-09-06）
 

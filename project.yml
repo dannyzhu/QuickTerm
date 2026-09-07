@@ -7,6 +7,8 @@ settings:
   base:
     SWIFT_VERSION: "5.10"
     MACOSX_DEPLOYMENT_TARGET: "15.4"
+    # xcodegen 2.46 起默认打开脚本沙盒；「Bundle Ghostty Resources」要 rm/cp 到产物目录，沙盒下直接被拒
+    ENABLE_USER_SCRIPT_SANDBOXING: false
 targets:
   QuickTerm:
     type: application
