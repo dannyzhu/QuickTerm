@@ -376,7 +376,7 @@ final class BrowserPaneView: PaneView {
     /// 扩展接线：每个标签的配置都要挂 controller（不挂的标签对扩展不可见），
     /// 外加 Web Store 详情页的「添加到 QuickTerm」按钮与它的回传通道。
     /// 通道注册在私有 content world 里：页面自己的 JS 够不着 `messageHandlers.quicktermExtension`
-    private func prepareForExtensions(_ configuration: WKWebViewConfiguration) {
+    private func prepareForExtensions(_ configuration: WKWebViewConfiguration, extensionPage: Bool = false) {
         let manager = BrowserExtensionManager.current
         guard manager.isEnabled else { return }
         configuration.webExtensionController = manager.controller
@@ -387,6 +387,11 @@ final class BrowserPaneView: PaneView {
                                            contentWorld: world)
         content.add(scriptHandler, contentWorld: world, name: BrowserExtensionWebStore.messageHandlerName)
         content.addUserScript(BrowserExtensionWebStore.userScript)
+        // 网页里嵌的扩展 iframe：tabs.* 等改走后台转发（直接调会被 WebKit 杀掉页面进程）。扩展配置（扩展页开的
+        // window.open 弹窗跑在扩展进程里，直接调没问题）不注入；window.open 给回来的 configuration 与开窗方共用
+        // 同一个 userContentController，别重复追加
+        guard !extensionPage, !content.userScripts.contains(where: { $0 === BrowserExtensionCompat.frameUserScript }) else { return }
+        content.addUserScript(BrowserExtensionCompat.frameUserScript)
     }
 
     // MARK: - 标签管理
@@ -1269,10 +1274,10 @@ extension BrowserPaneView: WKUIDelegate {
     /// 页面拿到真实的 window 对象（window.opener / postMessage 可用，弹窗登录能回传）
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        prepareForExtensions(configuration)
+        let source = tab(for: webView)
+        prepareForExtensions(configuration, extensionPage: source?.extensionContext != nil)
         let popup = BrowserWebView(frame: .zero, configuration: configuration)
         // 来源是当前标签才前台打开；后台标签（定时 window.open 等）的弹窗在后台开，不打断用户输入
-        let source = tab(for: webView)
         let tab = addTab(url: nil, activate: source === activeTab, webView: popup)
         // WebKit 给的 configuration 继承了开窗方的扩展绑定：新标签的"当前配置属于谁"要跟着记，
         // 否则第一次跨界导航判断会错

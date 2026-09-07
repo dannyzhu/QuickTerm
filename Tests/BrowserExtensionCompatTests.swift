@@ -226,6 +226,75 @@ final class BrowserExtensionCompatTests: XCTestCase {
         XCTAssertEqual(v2 as? Int, 2, "重装后跑的是新后台")
     }
 
+    /// 网页里嵌的扩展 iframe（Stylish 侧栏）：直接调 tabs.query 会被 WebKit 杀掉页面进程；改走后台转发后拿到真结果，
+    /// 页面进程活着；来自网页（内容脚本）的转发请求被后台拒绝
+    @MainActor
+    func testEmbeddedExtensionFrameRelaysPrivilegedAPIs() async throws {
+        let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
+            "bg.js": "// 后台只靠垫片里的转发\n",
+            "cs.js": """
+            const f = document.createElement("iframe"); f.src = chrome.runtime.getURL("frame.html"); document.body.appendChild(f);
+            chrome.runtime.sendMessage({ __quickterm_relay: { ns: "tabs", fn: "query", args: [{}] } })
+              .then((r) => chrome.storage.local.set({ fromContentScript: r }));
+            """,
+            "frame.html": "<html><head><script src=\"frame.js\"></script></head><body>F</body></html>\n",
+            "frame.js": """
+            (async () => {
+              const out = { relayed: !!chrome.tabs[Symbol.for("QuickTerm.relayed")] };
+              try { out.tabs = (await chrome.tabs.query({})).map((t) => t.url); } catch (e) { out.tabs = "ERR " + e.message; }
+              try { out.window = typeof (await chrome.windows.getCurrent()).id; } catch (e) { out.window = "ERR " + e.message; }
+              try { out.callback = await new Promise((r) => chrome.tabs.query({}, (tabs) => r(Array.isArray(tabs) ? tabs.length : "bad"))); } catch (e) { out.callback = "ERR " + e.message; }
+              out.eventsKept = typeof chrome.tabs.onUpdated.addListener;
+              out.storageDirect = typeof (await chrome.storage.local.get(null));
+              chrome.storage.local.set({ fromFrame: out });
+            })();
+            """,
+        ], manifest: [
+            "host_permissions": ["http://example.test/*"],
+            "content_scripts": [["matches": ["http://example.test/*"], "js": ["cs.js"], "run_at": "document_end"]],
+            "web_accessible_resources": [["resources": ["frame.html", "frame.js"], "matches": ["http://example.test/*"]]],
+        ])
+        defer { try? FileManager.default.removeItem(at: manager.storeDirectory) }
+        let host = Host()
+        manager.host = host
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView?.addSubview(pane); pane.frame = window.contentView!.bounds; window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        defer { pane.paneWillClose() }
+        host.panes = [pane]
+        let tab = try XCTUnwrap(pane.activeTab)
+        XCTAssertTrue(tab.webView.configuration.userContentController.userScripts.contains { $0.source == BrowserExtensionCompat.frameScript },
+                      "普通标签的配置里带 frame 脚本")
+        _ = await Self.loadBackground(item.context)
+        tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
+
+        let storedFrame = try await Self.storageValue(item, key: "fromFrame")
+        let fromFrame = try XCTUnwrap(storedFrame as? [String: Any], "iframe 里的脚本跑完")
+        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
+        XCTAssertEqual(fromFrame["relayed"] as? Bool, true, "chrome.tabs 已换成代理")
+        XCTAssertEqual(fromFrame["tabs"] as? [String], ["http://example.test/"], "tabs.query 经后台转发拿到 pane 的标签")
+        XCTAssertEqual(fromFrame["window"] as? String, "number", "windows.getCurrent 同样转发")
+        XCTAssertEqual(fromFrame["callback"] as? Int, 1, "回调形式也能用")
+        XCTAssertEqual(fromFrame["eventsKept"] as? String, "function", "事件对象保留原样")
+        XCTAssertEqual(fromFrame["storageDirect"] as? String, "object", "storage 不经转发")
+        let storedCS = try await Self.storageValue(item, key: "fromContentScript")
+        let fromContentScript = try XCTUnwrap(storedCS as? [String: Any])
+        XCTAssertNotNil(fromContentScript["error"], "网页来源的转发请求被拒：\(fromContentScript)")
+    }
+
+    final class Host: BrowserExtensionHost {
+        var panes: [BrowserPaneView] = []
+        var browserPanes: [BrowserPaneView] { panes }
+        var focusedBrowserPane: BrowserPaneView? { panes.first }
+        func openBrowserWindow(url: URL?) -> BrowserPaneView? { nil }
+    }
+
     /// 旧版本装的扩展（目录里没垫片）：启动加载时补上
     @MainActor
     func testLoadInstalledAppliesShimToExistingDirectories() async throws {
@@ -260,7 +329,8 @@ final class BrowserExtensionCompatTests: XCTestCase {
     }
 
     /// 最小 MV3 扩展 + 一个空页面（用来从扩展 origin 读 storage）
-    private static func makeExtension(background: [String: Any]?, files: [String: String], at location: URL? = nil) throws -> URL {
+    private static func makeExtension(background: [String: Any]?, files: [String: String], at location: URL? = nil,
+                                      manifest extra: [String: Any] = [:]) throws -> URL {
         let fm = FileManager.default
         let dir = location ?? fm.temporaryDirectory.appendingPathComponent("qt-compat-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -269,6 +339,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
             "permissions": ["storage", "webNavigation"],
         ]
         if let background { manifest["background"] = background }
+        manifest.merge(extra) { _, new in new }
         try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted])
             .write(to: dir.appendingPathComponent("manifest.json"))
         try "<html><body>page</body></html>\n".write(to: dir.appendingPathComponent("page.html"), atomically: true, encoding: .utf8)
@@ -287,11 +358,12 @@ final class BrowserExtensionCompatTests: XCTestCase {
     }
 
     @MainActor
-    private static func installed(background: [String: Any], files: [String: String], id: String = freshID()) async throws
+    private static func installed(background: [String: Any], files: [String: String], id: String = freshID(),
+                                  manifest extra: [String: Any] = [:]) async throws
         -> (BrowserExtensionManager, BrowserExtensionManager.Installed) {
         let store = try makeStore()
         let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
-        let fixture = try makeExtension(background: background, files: files)
+        let fixture = try makeExtension(background: background, files: files, manifest: extra)
         defer { try? FileManager.default.removeItem(at: fixture) }
         let item = try await manager.install(directory: fixture, id: id, source: .local)
         return (manager, item)

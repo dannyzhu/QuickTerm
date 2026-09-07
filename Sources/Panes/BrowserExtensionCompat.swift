@@ -1,4 +1,5 @@
 import Foundation
+import WebKit
 
 /// WebKit 与 Chrome 的 WebExtension 运行时差异垫片。
 ///
@@ -17,11 +18,18 @@ import Foundation
 ///    popup 的请求，popup 一片空白）。把所有 .js 里的字面量 `chrome-extension:` 改成 `webkit-extension:`——对 WebKit
 ///    来说这正是"移植"时该改的那一处，且 Chrome 专属的 `chrome-extension://` URL 在 WebKit 里本来也打不开。
 ///
+/// 4. 嵌在网页里的扩展页面（Stylish 的侧栏是网页里一个 `webkit-extension://…/index.html` iframe）跑在网页的
+///    WebContent 进程里，从那里直接调 `tabs.*` / `windows.*` / `action.*` / `scripting.*` / `alarms.*` / `contextMenus.*` /
+///    `cookies.*`，UI 进程当成非法 IPC（"Received an invalid message WebExtensionContext_TabsQuery"）直接杀掉整个页面进程。
+///    `runtime.sendMessage` / `storage` / `i18n` / `permissions` 从那里调是允许的，于是：网页 WebView 里注入
+///    `frameScript`，把这些命名空间换成经 `runtime.sendMessage` 转给后台的代理；后台的垫片（本文件的 compat.js）收到
+///    `__quickterm_relay` 消息后代为调用、回传结果。只接受来自扩展自己 origin 的请求。
+///
 /// 改写是幂等的：manifest 里 `__quickterm` 记着原始 `background` 与垫片版本，版本一致就不再动。
 /// 扩展更新（重装）会整目录替换，随之重新生成。
 enum BrowserExtensionCompat {
     /// 垫片版本：脚本内容或改写规则变了就 +1，已装扩展下次启动会重新生成
-    static let version = 1
+    static let version = 2
     static let compatFile = "__quickterm-compat.js"
     static let wrapperFile = "__quickterm-background.js"
     static let manifestKey = "__quickterm"
@@ -189,6 +197,30 @@ enum BrowserExtensionCompat {
               define(api.webNavigation, "onReferenceFragmentUpdated", noopEvent());
             }
           }
+          // 嵌在网页里的扩展 iframe 直接调 tabs.* 等会被 WebKit 杀掉页面进程（见 frameScript）：这里代为调用
+          const RELAY = "__quickterm_relay";
+          const relayed = new Set();   // chrome 与 browser 多半是同一个对象：同一个 runtime 只挂一次
+          for (const api of [g.chrome, g.browser]) {
+            if (!api || !api.runtime || !api.runtime.onMessage || relayed.has(api.runtime)) continue;
+            relayed.add(api.runtime);
+            const own = api.runtime.getURL("");
+            api.runtime.onMessage.addListener((message, sender, reply) => {
+              if (!message || typeof message !== "object" || !(RELAY in message)) return false;
+              const url = sender && sender.url;
+              if (typeof url !== "string" || !url.startsWith(own)) { reply({ error: "QuickTerm relay: sender is not an extension page" }); return false; }
+              const { ns, fn, args } = message[RELAY] || {};
+              const target = api[ns];
+              const f = target && target[fn];
+              if (typeof f !== "function") { reply({ error: "QuickTerm relay: " + ns + "." + fn + " is not available" }); return false; }
+              const fail = (e) => { try { reply({ error: String((e && e.message) || e) }); } catch (_) {} };
+              Promise.resolve().then(() => f.apply(target, Array.isArray(args) ? args : []))
+                .then((result) => {
+                  // 结果可能带不过消息通道（Window、宿主对象）：给个明确的错误而不是让框架等到"no response"
+                  try { reply({ result: result === undefined ? null : result }); } catch (e) { fail(e); }
+                }, fail);
+              return true;
+            });
+          }
           // WebKit 的 importScripts 在每个脚本求值后清空 microtask 队列（Chrome 不会）。空脚本本来就没有效果，
           // 直接跳过，免得靠「一个 microtask 之后」判断启动阶段的扩展（Tampermonkey）被打断
           const EMPTY = new Set(\(list));
@@ -205,6 +237,68 @@ enum BrowserExtensionCompat {
 
         """
     }
+
+    /// 注入到**网页** WebView 全部框架的脚本（document start，page world）：只在 `webkit-extension:` 框架里生效，
+    /// 把从网页进程直接调会被杀的命名空间换成经后台转发的代理。事件（onXxx）与常量保留原样——注册监听不会触发那条 IPC。
+    /// 已知取舍：回调形式拿不到 runtime.lastError；带函数的参数（scripting.executeScript 的 func）过不了消息序列化；
+    /// 后台若对所有消息都同步 reply，会抢在转发结果之前
+    static let frameScript = """
+    (() => {
+      // 只管嵌在网页里的扩展 iframe；扩展页面做主帧时跑在扩展进程里（普通配置的 WebView 根本进不去扩展主帧）
+      if (location.protocol !== "webkit-extension:" || window === window.top) return;
+      const RELAY = "__quickterm_relay";
+      const SAFE = new Set(["runtime", "storage", "i18n", "permissions", "extension", "dom", "devtools", "test"]);
+      const MARK = Symbol.for("QuickTerm.relayed");
+      // API 方法多半挂在原型上：沿原型链收集属性名（到 Object.prototype 为止）
+      const propertyNames = (object) => {
+        const names = new Set();
+        for (let o = object; o && o !== Object.prototype; o = Object.getPrototypeOf(o)) {
+          for (const name of Object.getOwnPropertyNames(o)) if (name !== "constructor") names.add(name);
+        }
+        return names;
+      };
+      const relay = (runtime, ns, fn) => function (...args) {
+        const callback = typeof args[args.length - 1] === "function" ? args.pop() : null;
+        const promise = runtime.sendMessage({ [RELAY]: { ns, fn, args } }).then((response) => {
+          if (!response) throw new Error("QuickTerm relay: no response from the extension background");
+          if (response.error) throw new Error(response.error);
+          return response.result;
+        });
+        if (!callback) return promise;
+        promise.then((value) => callback(value), () => callback(undefined));
+        return undefined;
+      };
+      // WebKit 的命名空间对象上 defineProperty 不生效（宿主对象的静态属性），只能整个换掉根对象：
+      // 复制一份普通对象，安全的命名空间原样引用，危险的换成代理
+      const wrap = (root) => {
+        if (!root || typeof root !== "object" || root[MARK]) return root;
+        const runtime = root.runtime;
+        if (!runtime || typeof runtime.sendMessage !== "function") return root;
+        const wrapped = { [MARK]: true };
+        for (const ns of propertyNames(root)) {
+          let original;
+          try { original = root[ns]; } catch (_) { continue; }
+          if (SAFE.has(ns) || !original || typeof original !== "object") { wrapped[ns] = original; continue; }
+          const replacement = { [MARK]: true };
+          for (const key of propertyNames(original)) {
+            let value;
+            try { value = original[key]; } catch (_) { continue; }
+            replacement[key] = typeof value === "function" ? relay(runtime, ns, key) : value;
+          }
+          wrapped[ns] = replacement;
+        }
+        return wrapped;
+      };
+      for (const name of ["chrome", "browser"]) {
+        try {
+          const wrapped = wrap(globalThis[name]);
+          if (wrapped !== globalThis[name]) Object.defineProperty(globalThis, name, { value: wrapped, configurable: true, writable: true, enumerable: false });
+        } catch (_) {}
+      }
+    })();
+    """
+
+    static let frameUserScript = WKUserScript(source: frameScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
 
     /// JS 字符串字面量（JSON 编码的字符串在 JS 里是合法字面量）
     static func jsString(_ s: String) -> String {

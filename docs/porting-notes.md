@@ -297,7 +297,20 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
     字面量 `chrome-extension:` 替成 `webkit-extension:`（只碰 .js / .mjs；不碰 html / json；两个 scheme 等长，压缩代码的
     偏移量不受影响）。已知副作用：ChatGPT 扩展把它当 storage key 前缀（`codex:chrome-extension:persisted-atom:`），
     换 scheme 后旧值孤立一次。
-  三者都靠 `BrowserExtensionCompat` 在安装 / 启动加载时改写扩展目录解决：manifest 的 `background.service_worker`
+  - **嵌在网页里的扩展 iframe 调 `tabs.query` → UI 进程当非法 IPC 杀掉页面进程**（现象：我们的"页面进程反复崩溃"
+    错误页；`~/Library/Logs/DiagnosticReports/ExcUserFault_QuickTerm-*.ips` 里栈是
+    `WebProcessProxy::didReceiveInvalidMessage`；`log stream --predicate 'process == "QuickTerm"'` 能看到
+    `Received an invalid message WebExtensionContext_TabsQuery from WebContent process`——`log show` 反而查不到）。
+    Stylish 点图标是往当前页注入一个 `webkit-extension://<id>/index.html` iframe，里面的 React 应用一上来就
+    `tabs.query`。用合成扩展逐个 API 二分：从这种 iframe 里调 `tabs.* / windows.* / action.* / scripting.* /
+    alarms.* / contextMenus.* / cookies.*` 都会被杀；`runtime.sendMessage`（promise 形式能拿到回复，回调形式拿不到）、
+    `runtime.connect`（端口立刻断）、`runtime.getManifest`、`storage.*`、`i18n`、`permissions` 与各种 `onXxx.addListener`
+    都正常。修法：网页 WebView 里注入 `BrowserExtensionCompat.frameUserScript`（document start、全部框架、page world），
+    在 `webkit-extension:` 框架里把这些命名空间换成经 `runtime.sendMessage({__quickterm_relay})` 转给后台的代理，
+    后台垫片代为调用后回传，只接受 sender.url 是扩展自己 origin 的请求。坑：WebKit 的命名空间对象
+    （`chrome.tabs`）上 `Object.defineProperty` 静默无效，方法也都在原型上（`Object.keys` 看不到），只能整个
+    换掉 `globalThis.chrome` / `browser`（这两个是普通可写数据属性），复制一份普通对象再赋回去。
+  前三者都靠 `BrowserExtensionCompat`（第四个还要 pane 侧的 `frameUserScript`） 在安装 / 启动加载时改写扩展目录解决：manifest 的 `background.service_worker`
   指向同目录的 `__quickterm-background.js`（classic 用 `importScripts`、module 用 `import` 先拉 `/__quickterm-compat.js`
   再拉原脚本；放同目录是为了原脚本里相对路径的 importScripts 仍按原目录解析），`background.scripts` 数组则直接在
   前面插一项；原始 `background` 与垫片版本记在 manifest 的 `__quickterm` 下，幂等。垫片里的 `importScripts`
