@@ -681,6 +681,18 @@ extension Ghostty {
             self.context = config.context
         }
 
+#if os(macOS)
+        // QuickTerm：多屏幕（spec v9 §2）——surface 一律在 `SurfaceView.init` 里建，那时视图还不在
+        // 任何窗口上（没有 window 就没有 screen），所以初始 scale_factor 只能按主显示器种。
+        // 混合 DPI 下第二台显示器上的窗口因此会先按错的缩放建 surface：这一步由
+        // `SurfaceView.viewDidMoveToWindow` 挂进窗口后补一次 backing 变更纠正（见那里的注释），
+        // 别在这里读 view.window —— 唯一的调用点（init）拿到的永远是 nil。
+        // 顺带去掉 NSScreen.main! 的强解包：没有显示器时（无头 CI）不该崩
+        static func seedScaleFactor() -> Double {
+            NSScreen.main.map { Double($0.backingScaleFactor) } ?? 2
+        }
+#endif
+
         /// Provides a C-compatible ghostty configuration within a closure. The configuration
         /// and all its string pointers are only valid within the closure.
         func withCValue<T>(view: SurfaceView, _ body: (inout ghostty_surface_config_s) throws -> T) rethrows -> T {
@@ -691,7 +703,7 @@ extension Ghostty {
             config.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(
                 nsview: Unmanaged.passUnretained(view).toOpaque()
             ))
-            config.scale_factor = NSScreen.main!.backingScaleFactor
+            config.scale_factor = Self.seedScaleFactor()
 #elseif os(iOS)
             config.platform_tag = GHOSTTY_PLATFORM_IOS
             config.platform = ghostty_platform_u(ios: ghostty_platform_ios_s(

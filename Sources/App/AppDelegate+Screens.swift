@@ -8,7 +8,7 @@ extension AppDelegate {
     func newScreen(on screen: NSScreen? = nil, inheritingFrom pane: PaneView? = nil) -> MainWindowController {
         let index = screens.nextIndex()
         let controller = MainWindowController(
-            ghostty: ghostty, themeManager: themeManager,
+            ghostty: ghostty, session: session,
             screen: screen, index: index, restoring: !screens.didCreateFirstScreen,
             inheritedDirectory: pane?.workingDirectory)
         screens.add(controller)

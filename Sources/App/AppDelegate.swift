@@ -17,6 +17,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let screens = ScreenRegistry()
     var controllers: [MainWindowController] { screens.controllers }
 
+    /// 进程级会话（配置 / 键位 / 系统状态 / 全屏 presentationOptions 账本）。
+    /// `applicationDidFinishLaunching` 里建；建第一个屏幕之前必须已经加载完配置
+    private(set) var session: AppSession!
+
     /// 动作落点：key 窗口的控制器，回退第一个屏幕。
     /// （历史上是唯一的主控制器；6 个测试文件按这个名字取夹具）
     var controller: MainWindowController! { screens.current }
@@ -28,9 +32,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 扩展宿主聚合器（BrowserExtensionManager.host 是 weak，必须由这里强持有）
     private var extensionHost: AppBrowserExtensionHost?
-    /// 进程内唯一的 config.toml 监听（重载后 fan-out 到全部屏幕；Phase 2 上提到 AppSession）
-    private var configWatcher: ConfigWatcher?
-    private var lastConfigContent: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // CLI / 冒烟：`open -a QuickTerm --args --open-browser [url]` 启动后开一个浏览器 pane
@@ -75,8 +76,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         extensionHost = host
         BrowserExtensionManager.shared.host = host
 
+        // 进程级会话：配置在建窗口之前就位（控制器不再各自读盘 / 各自装 watcher）。
+        // 顺序要紧：ThemeManager 与引擎必须已就绪（applyGlobalConfig 会写引擎 overlay 并触发一次热重载）
+        let session = AppSession(screens: screens, themeManager: themeManager)
+        self.session = session
+        session.loadInitialConfig()
+
         newScreen()
-        installConfigWatcher()
+        session.installConfigWatcher()
         // 配置已由控制器加载（browser-extensions 决定开关）：装好的扩展在这里异步加载。
         // 测试宿主里不加载（与 restoreState 同一策略）：用户装的扩展会跑进测试的 WebView，
         // 扩展工具条的用例也会跟着变红
@@ -87,29 +94,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    // MARK: config.toml 热重载（进程唯一 watcher → fan-out 到全部屏幕）
+    // MARK: config.toml 热重载（监听与全局部分归 AppSession，这里只留落点）
 
-    private func installConfigWatcher() {
-        lastConfigContent = (try? String(contentsOf: ConfigStore.configURL, encoding: .utf8)) ?? ""
-        configWatcher = ConfigWatcher(
-            directory: ConfigStore.configURL.deletingLastPathComponent()
-        ) { [weak self] in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self?.reloadConfigFile() }
-        }
-    }
-
-    /// 文件内容真变了才重载（编辑器保存会连发多次事件），然后广播给每个屏幕
-    func reloadConfigFile() {
-        let content = (try? String(contentsOf: ConfigStore.configURL, encoding: .utf8)) ?? ""
-        guard content != lastConfigContent else { return }
-        lastConfigContent = content
-        applyConfigToAllScreens(ConfigStore.parse(content))
-    }
-
-    /// 重载后的 fan-out：一份 settings 落到每一个屏幕
-    /// （Phase 2 拆成 applyGlobalConfig 只做一次 + 每屏 applyWindowConfig，整段上提到 AppSession）
+    /// 一次重载：`applyGlobalConfig` 只跑一次 + 每个屏幕各跑一次 `applyWindowConfig`
+    @MainActor
     func applyConfigToAllScreens(_ settings: ConfigStore.Settings) {
-        for controller in controllers { controller.applyConfig(settings) }
+        session?.apply(settings)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

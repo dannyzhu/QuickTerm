@@ -829,6 +829,32 @@ extension Ghostty {
         // QuickTerm：becomeFirstResponder / resignFirstResponder / 脱离窗口后夺回焦点
         // 都在基类 PaneView（对所有 pane 类型通用）。
 
+        /// QuickTerm：最近一次 backing 变更时采用的窗口 scale（多屏幕混合 DPI 的可观测点）。
+        /// 0 = 还没挂进任何窗口
+        private(set) var appliedBackingScale: CGFloat = 0
+
+        /// QuickTerm：`viewDidMoveToWindow` 主动补发 backing 变更的次数（测试用）。
+        /// AppKit 自己也会在插入窗口时发一次 `viewDidChangeBackingProperties`，光看
+        /// `appliedBackingScale` 分不出下面那段纠正到底跑没跑
+        private(set) var mountBackingRefreshCount = 0
+
+        /// QuickTerm：多屏幕——surface 是在 init 里建的，那时视图还不在任何窗口上，
+        /// scale_factor 只能按主显示器种（见 SurfaceConfiguration.seedScaleFactor）。挂进窗口后
+        /// 主动补一次 display id + backing 变更，让第二台显示器（不同 DPI）上的新 pane 拿到正确缩放。
+        /// AppKit 只在 backing 属性**变化**时才发 viewDidChangeBackingProperties，nil → 窗口这一步
+        /// 不保证会发（引擎 issue 2731 是同一类问题）
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            if let surface { ghostty_surface_set_display_id(surface, window.screen?.displayID ?? 0) }
+            // 异步：此刻视图刚进层级，SwiftUI 还没走完布局；等这一轮 runloop 结束再取 frame
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window === window else { return }
+                self.mountBackingRefreshCount += 1
+                self.viewDidChangeBackingProperties()
+            }
+        }
+
         override func updateTrackingAreas() {
             // To update our tracking area we just recreate it all.
             trackingAreas.forEach { removeTrackingArea($0) }
@@ -873,9 +899,13 @@ extension Ghostty {
                 CATransaction.setDisableActions(true)
                 layer?.contentsScale = window.backingScaleFactor
                 CATransaction.commit()
+                appliedBackingScale = window.backingScaleFactor   // QuickTerm：多屏幕缩放的可观测点
             }
 
             guard let surface = self.surface else { return }
+
+            // QuickTerm：零尺寸时不算缩放（0/0 = NaN 会被送进引擎）。挂进窗口那一刻可能还没布局
+            guard self.frame.width > 0, self.frame.height > 0 else { return }
 
             // Detect our X/Y scale factor so we can update our surface
             let fbFrame = self.convertToBacking(self.frame)

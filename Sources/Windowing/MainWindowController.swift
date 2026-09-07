@@ -11,9 +11,13 @@ import UniformTypeIdentifiers
 final class MainWindowController: BaseTerminalController {
     let model = WorkspaceModel()
     let ghostty: Ghostty.App
-    private(set) var keybindings = KeybindingMap()
-    let stats = SystemStatsService()
-    let themeManager: ThemeManager
+    /// 进程级会话（配置 / 键位 / 系统状态 / 全屏账本）。会话经注册表强持有本控制器，故必须 unowned
+    unowned let session: AppSession
+    /// 共享键位表：只读引用，控制器绝不自己重建（重载时 AppSession 换一份，所有屏幕同步）
+    var keybindings: KeybindingMap { session.keybindings }
+    /// 进程唯一的系统状态轮询（注入 RootView）
+    var stats: SystemStatsService { session.stats }
+    var themeManager: ThemeManager { session.themeManager }
     private var keyMonitor: Any?
     private var mouseMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
@@ -24,10 +28,16 @@ final class MainWindowController: BaseTerminalController {
     var closeAnimationEnabled: Bool = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     /// 淡出中的 pane 及其预先算好的焦点接班人（关闭开始时树还完整，接班关系才算得出）
     private var pendingCloses: [ObjectIdentifier: PendingClose] = [:]
-    /// 文件管理器程序（config `file-manager-command`，默认 yazi）
-    var fileManagerCommand = FileManagerLaunch.defaultProgram
+    /// 文件管理器程序（config `file-manager-command`，默认 yazi）——进程级设置，转发到 AppSession
+    var fileManagerCommand: String {
+        get { session.fileManagerCommand }
+        set { session.fileManagerCommand = newValue }
+    }
     /// 终端里 ⌘+点击的链接开在哪（config link-opener）：browser-pane = 浏览器 pane；system = 系统默认浏览器
-    var linkOpener = "browser-pane"
+    var linkOpener: String {
+        get { session.linkOpener }
+        set { session.linkOpener = newValue }
+    }
     /// 运行中的文件管理器 pane → 会话（退出时读 cwd 文件决定是否原位开终端；关闭不弹进程确认）
     private var fileManagerSessions: [ObjectIdentifier: FileManagerLaunch.Session] = [:]
     private struct PendingClose {
@@ -185,11 +195,11 @@ final class MainWindowController: BaseTerminalController {
     ///   - index: 屏幕序号（0 = 第一个，标题 `QuickTerm`）
     ///   - restoring: 是否读取 state.json 恢复布局（只有第一个屏幕做；Phase 3 上提到 SessionStore）
     ///   - inheritedDirectory: 新屏幕首个终端继承的 cwd（来自源窗口焦点 pane）
-    init(ghostty: Ghostty.App, themeManager: ThemeManager,
+    init(ghostty: Ghostty.App, session: AppSession,
          screen: NSScreen? = nil, index: Int = 0, restoring: Bool = true,
          inheritedDirectory: String? = nil) {
         self.ghostty = ghostty
-        self.themeManager = themeManager
+        self.session = session
         self.screenIndex = index
         self.isFirstScreen = index == 0 && restoring
         let window = HiddenTitlebarWindow(
@@ -236,11 +246,9 @@ final class MainWindowController: BaseTerminalController {
         applyAppearance()
 
         // 配置链第 4 层：config.toml（键位/工作区数/主题/[ghostty] 透传）。
-        // 文件监听与重载 fan-out 归 AppDelegate（多屏幕下只有一个 watcher；Phase 2 上提到 AppSession）
-        if isFirstScreen {
-            ConfigStore.ensureTemplateKeys()  // 已有配置文件补全新增键（注释形式，幂等）
-        }
-        applyConfig(ConfigStore.load())
+        // 读盘、模板补全、监听与全局部分（键位表 / 引擎 overlay / 浏览器全局设置）全归 AppSession；
+        // 这里只把已经加载好的那份落到本屏幕上
+        applyWindowConfig(session.settings)
 
         // 状态恢复（spec §4.8）：布局 + 各 pane cwd + 活动工作区；失败则全新开始。
         // 只有第一个屏幕恢复存档，后开的屏幕一律以一个空白终端起步（继承源窗口焦点 pane 的 cwd）
@@ -410,42 +418,17 @@ final class MainWindowController: BaseTerminalController {
     }
 
     // MARK: config.toml（配置链第 4 层，spec §4.7）
-    // 文件监听与去重在 AppDelegate；这里只负责把一份 Settings 落到本屏幕上
+    // 读盘 / 监听 / 去重 / 全局部分都在 AppSession；这里只负责把一份 Settings 落到**本屏幕**上。
+    // 判断标准：改了会影响别的屏幕的（键位表、引擎 overlay、BrowserPaneView.settings、扩展开关）
+    // 一律归 applyGlobalConfig，一次重载只做一遍
 
-    func applyConfig(_ settings: ConfigStore.Settings) {
-        keybindings = KeybindingMap(
-            workspaceCount: settings.workspaces,
-            overrides: settings.overrides,
-            unbound: settings.unbound)
-        // 空工作区提示用当前实际绑定
+    func applyWindowConfig(_ settings: ConfigStore.Settings) {
+        // 空工作区提示用当前实际绑定（键位表来自 AppSession）
         model.newTerminalCombo = keybindings.displayBindings()
             .first { $0.action == .newTerminal }?.combo ?? "Cmd+Return"
-        fileManagerCommand = settings.fileManagerCommand
-        linkOpener = settings.linkOpener
-        BrowserPaneView.settings = .init(home: settings.browserHome, search: settings.browserSearch,
-                                         userAgent: settings.browserUserAgent, inspectable: settings.browserInspectable,
-                                         tabBar: settings.browserTabBar,
-                                         tabWidth: settings.browserTabWidth, tabMinWidth: settings.browserTabMinWidth,
-                                         downloadDirectory: settings.browserDownloadDir)
-        BrowserExtensionManager.shared.isEnabled = settings.browserExtensions
         for case let browser as BrowserPaneView in allPanes { browser.applySettings() }   // UA / Inspector 热重载
         model.setWorkspaceCount(settings.workspaces)
         if let n = settings.visibleColumns { setVisibleColumns(n, persist: false) }
-        themeManager.updateFromConfig(
-            passthrough: settings.ghosttyPassthrough,
-            followEngine: settings.themeName == "ghostty",
-            panePadding: settings.panePadding,
-            paneOpacity: settings.paneOpacity,
-            inactiveBlur: settings.inactiveBlur,
-            activeOpacity: settings.activeOpacity,
-            barOpacity: settings.barOpacity,
-            dividerOpacity: settings.dividerOpacity,
-            paneGap: settings.paneGap)
-        if let name = settings.themeName, name != "ghostty",
-           let theme = themeManager.themes.first(where: { $0.name == name }),
-           theme != themeManager.current {
-            themeManager.apply(theme)
-        }
     }
 
     // MARK: 状态恢复（spec §4.8；v2 起含每工作区布局类型）
@@ -612,13 +595,10 @@ final class MainWindowController: BaseTerminalController {
         cancellables.removeAll()
         floatingDrag = nil
         resizeTarget = nil
-        // 非原生全屏的 presentationOptions 是进程级的：本窗口申请过就得还回去，否则剩下的屏幕
-        // 会一直藏着 Dock 与菜单栏，而它们自己的 savedFrame 是 nil，压根无从退出
-        // （按窗口引用计数是 Phase 2 的事）
-        if savedFrame != nil {
-            savedFrame = nil
-            NSApp.presentationOptions = []
-        }
+        // 非原生全屏的 presentationOptions 是进程级的：本窗口申请过就得还回去（按窗口记账，
+        // 只还自己那一份——别的屏幕还在全屏时 Dock 与菜单栏必须继续藏着）
+        savedFrame = nil
+        session.setSimpleFullscreen(false, for: self)
         // 与 removeFromActiveLayout / removeFromAnyWorkspace 同一份 pane 级收尾：浏览器 pane
         // 要取消进行中的下载、告诉扩展"窗口"关了（deinit 只 tearDown 标签，这些都不做）。
         // 必须赶在拆视图层级之前：WebKit 处理 didCloseWindow 时会同步回查 tab.window(for:)
@@ -1095,18 +1075,24 @@ final class MainWindowController: BaseTerminalController {
     }
 
     // MARK: 非原生全屏（精简版，spec §5.1 Ctrl+Cmd+F）
+    // 按窗口：各自的 savedFrame，进程级的 presentationOptions 交给 AppSession 记账
+    // （A 退出全屏时 B 还全屏 → 菜单栏不能放回来；关掉全屏中的屏幕只还它拿过的那一份）
 
-    private var savedFrame: NSRect?
+    /// 本屏幕退出全屏后要恢复的 frame（nil = 不在全屏）
+    private(set) var savedFrame: NSRect?
+
+    /// 本屏幕是否处于非原生全屏
+    var isSimpleFullscreen: Bool { savedFrame != nil }
 
     private func toggleSimpleFullscreen() {
         guard let window, let screen = window.screen ?? NSScreen.main else { return }
         if let frame = savedFrame {
-            NSApp.presentationOptions = []
-            window.setFrame(frame, display: true, animate: false)
             savedFrame = nil
+            session.setSimpleFullscreen(false, for: self)
+            window.setFrame(frame, display: true, animate: false)
         } else {
             savedFrame = window.frame
-            NSApp.presentationOptions = [.autoHideDock, .autoHideMenuBar]
+            session.setSimpleFullscreen(true, for: self)
             window.setFrame(screen.frame, display: true, animate: false)
         }
     }
@@ -1760,6 +1746,13 @@ extension MainWindowController: NSWindowDelegate {
     /// 关闭按钮 / performClose：有活跃 pane 时按退出确认的规则问一次
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         confirmCloseScreen()
+    }
+
+    /// key 窗口一换就按 AppSession 的账本重算进程级 presentationOptions：
+    /// AppKit 会在激活 / 窗口切换时改写它，而「有没有屏幕在全屏」只有账本知道
+    func windowDidBecomeKey(_ notification: Foundation.Notification) {
+        guard !isClosed else { return }
+        session.refreshPresentationOptions()
     }
 
     func windowWillClose(_ notification: Foundation.Notification) {
