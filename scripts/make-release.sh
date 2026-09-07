@@ -24,7 +24,7 @@ for arg in "$@"; do
   case "$arg" in
     --notarize) NOTARIZE=1 ;;
     --upload) UPLOAD=1 ;;
-    *) fail "未知参数: $arg（可用：--notarize --upload）" ;;
+    *) fail "未知参数: ${arg}（可用：--notarize --upload）" ;;
   esac
 done
 IDENTITY="${SIGN_IDENTITY:--}"
@@ -47,7 +47,7 @@ BUILD_LOG="$ROOT/build/release-build.log"
 mkdir -p "$ROOT/build"
 rm -rf "$DERIVED/Build/Products"
 xcodegen generate >/dev/null
-echo "▶ Release 构建…（日志 $BUILD_LOG）"
+echo "▶ Release 构建…（日志 ${BUILD_LOG}）"
 # generic 目标：按 ARCHS_STANDARD（arm64 x86_64）构建；不指定会落到"My Mac"只编本机架构
 if ! xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Release \
      -destination 'generic/platform=macOS' ONLY_ACTIVE_ARCH=NO \
@@ -62,18 +62,18 @@ TAG="v$VERSION"
 # 架构校验：发布包须为通用二进制（GhosttyKit 需先以 GHOSTTYKIT_TARGET=universal 构建）
 ARCHS_BUILT="$(lipo -archs "$APP/Contents/MacOS/QuickTerm")"
 for want in ${RELEASE_ARCHS:-arm64 x86_64}; do
-  case " $ARCHS_BUILT " in *" $want "*) ;; *) fail "产物缺少架构 $want（实际：$ARCHS_BUILT）。先 GHOSTTYKIT_TARGET=universal scripts/build-ghosttykit.sh" ;; esac
+  case " $ARCHS_BUILT " in *" $want "*) ;; *) fail "产物缺少架构 ${want}（实际：${ARCHS_BUILT}）。先 GHOSTTYKIT_TARGET=universal scripts/build-ghosttykit.sh" ;; esac
 done
-echo "版本 $VERSION（架构：$ARCHS_BUILT）"
+echo "版本 ${VERSION}（架构：${ARCHS_BUILT}）"
 
 if [ "$UPLOAD" = 1 ]; then
-  git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null || fail "缺本地 tag $TAG：git tag $TAG"
+  git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null || fail "缺本地 tag ${TAG}：git tag $TAG"
   [ "$(git rev-parse HEAD)" = "$(git rev-parse "$TAG^{commit}")" ] || fail "HEAD 不是 tag $TAG 指向的提交"
   git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null || fail "tag $TAG 未推送：git push origin $TAG"
 fi
 
 # ── 2. 签名（app 为静态链接、无嵌套代码；不用已弃用的 --deep）
-echo "▶ 签名（$IDENTITY）…"
+echo "▶ 签名（${IDENTITY}）…"
 if [ "$IDENTITY" = "-" ]; then
   codesign --force --sign - "$APP"
 else
