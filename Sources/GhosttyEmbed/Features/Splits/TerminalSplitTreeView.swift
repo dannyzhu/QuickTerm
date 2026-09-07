@@ -399,14 +399,22 @@ private struct TerminalSplitLeaf: View {
         let action: (TerminalSplitOperation) -> Void
 
         func validateDrop(info: DropInfo) -> Bool {
-            info.hasItemsConforming(to: [.ghosttySurfaceId])
+            // QuickTerm：跨窗口拖放明确拒绝（一个 pane 只能挂在一个窗口里）
+            guard PaneDragState.shared.allowsDrop(on: destinationSurface) else { return false }
+            return info.hasItemsConforming(to: [.ghosttySurfaceId])
         }
 
         func dropEntered(info: DropInfo) {
+            // QuickTerm：跨窗口拖放不亮落区
+            guard PaneDragState.shared.allowsDrop(on: destinationSurface) else { return }
             dropState = .dropping(.calculate(at: info.location, in: viewSize))
         }
 
         func dropUpdated(info: DropInfo) -> DropProposal? {
+            // QuickTerm：跨窗口拖放给禁止光标
+            guard PaneDragState.shared.allowsDrop(on: destinationSurface) else {
+                return DropProposal(operation: .forbidden)
+            }
             // For some reason dropUpdated is sent after performDrop is called
             // and we don't want to reset our drop zone to show it so we have
             // to guard on the state here.
@@ -422,6 +430,8 @@ private struct TerminalSplitLeaf: View {
         func performDrop(info: DropInfo) -> Bool {
             let zone = TerminalSplitDropZone.calculate(at: info.location, in: viewSize)
             dropState = .idle
+            // QuickTerm：跨窗口拖放明确拒绝
+            guard PaneDragState.shared.allowsDrop(on: destinationSurface) else { return false }
 
             // Load the dropped surface asynchronously using Transferable
             let providers = info.itemProviders(for: [.ghosttySurfaceId])

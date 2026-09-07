@@ -233,6 +233,8 @@ extension Ghostty {
             }
 
             onDragStateChanged?(true)
+            // QuickTerm：登记拖拽源（落区据此拒绝跨窗口拖放）
+            PaneDragState.shared.begin(pane: surfaceView)
             let session = beginDraggingSession(with: [item], event: event, source: self)
 
             // We need to disable this so that endedAt happens immediately for our
@@ -269,6 +271,12 @@ extension Ghostty {
             _ session: NSDraggingSession,
             movedTo screenPoint: NSPoint
         ) {
+            // QuickTerm：跨窗口拖放明确拒绝——指针停在别的终端窗口上时给禁止光标，
+            // 不是拖过去没反应（closedHand 会把 AppKit 自己的禁止标记盖掉）
+            if PaneDragState.shared.pointsAtForeignWindow(screenPoint, from: window) {
+                NSCursor.operationNotAllowed.set()
+                return
+            }
             NSCursor.closedHand.set()
         }
 
@@ -297,6 +305,7 @@ extension Ghostty {
 
             isTracking = false
             onDragStateChanged?(false)
+            PaneDragState.shared.end()   // QuickTerm：拖拽源登记出栈
         }
     }
 }

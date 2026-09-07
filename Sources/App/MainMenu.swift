@@ -53,14 +53,51 @@ enum MainMenu {
         paneMenu.addItem(wm(.equalize, title: "全部等分", key: "=", modifiers: [.command, .control], delegate: delegate))
         main.setSubmenu(paneMenu, for: paneItem)
 
-        // Window 菜单（系统标准）
+        // Window 菜单（系统标准；AppKit 会自动在末尾追加窗口列表）。
+        // 多「屏幕」只从这里驱动：一律不给快捷键（⌘N 已被系统/习惯占用，用户明确要求无键位）
         let windowItem = main.addItem(withTitle: "Window", action: nil, keyEquivalent: "")
         let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "新建屏幕",
+                           action: #selector(AppDelegate.newScreenAction(_:)), keyEquivalent: "")
+            .target = delegate
+        let newOnItem = windowMenu.addItem(withTitle: "在显示器上新建屏幕", action: nil, keyEquivalent: "")
+        let newOnMenu = NSMenu(title: "在显示器上新建屏幕")
+        newOnMenu.delegate = newScreenDisplayDelegate(for: delegate)
+        windowMenu.setSubmenu(newOnMenu, for: newOnItem)
+        let moveItem = windowMenu.addItem(withTitle: "将此屏幕移到显示器", action: nil, keyEquivalent: "")
+        let moveMenu = NSMenu(title: "将此屏幕移到显示器")
+        moveMenu.delegate = moveScreenDisplayDelegate(for: delegate)
+        windowMenu.setSubmenu(moveMenu, for: moveItem)
+        windowMenu.addItem(withTitle: "在所有桌面显示",
+                           action: #selector(AppDelegate.toggleJoinAllSpaces(_:)), keyEquivalent: "")
+            .target = delegate
+        windowMenu.addItem(withTitle: "关闭屏幕",
+                           action: #selector(AppDelegate.closeScreenAction(_:)), keyEquivalent: "")
+            .target = delegate
+        windowMenu.addItem(.separator())
         windowMenu.addItem(withTitle: "最小化", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "缩放", action: #selector(NSWindow.zoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(withTitle: "前置全部窗口",
+                           action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         main.setSubmenu(windowMenu, for: windowItem)
         NSApp.windowsMenu = windowMenu
 
         NSApp.mainMenu = main
+    }
+
+    /// 两个显示器子菜单的委托：随插拔变化，每次打开都重建（必须被强持有，NSMenu.delegate 是 weak）
+    private static var displayDelegates: [DisplayMenuDelegate] = []
+
+    private static func newScreenDisplayDelegate(for delegate: AppDelegate) -> DisplayMenuDelegate {
+        let d = DisplayMenuDelegate(mode: .newScreen, target: delegate)
+        displayDelegates.append(d)
+        return d
+    }
+
+    private static func moveScreenDisplayDelegate(for delegate: AppDelegate) -> DisplayMenuDelegate {
+        let d = DisplayMenuDelegate(mode: .moveScreen, target: delegate)
+        displayDelegates.append(d)
+        return d
     }
 
     private static func wm(_ action: WMAction, title: String, key: String,

@@ -52,9 +52,13 @@ final class MainWindowController: BaseTerminalController {
     private var floatingCursorActive = false
     /// 浮动 pane 四周可拖动缩放的边框带宽（pt）
     static let floatingEdgeBand: CGFloat = 14
-    private var configWatcher: ConfigWatcher?
-    private var lastConfigContent: String?
     private var stripPanSerial = 0
+    /// 本屏幕的序号（0 = 第一个屏幕，标题恒为 `QuickTerm`）；关掉后序号可被新屏幕复用
+    let screenIndex: Int
+    /// 第一个屏幕：只有它做状态恢复与配置模板补全（配置监听在 AppDelegate，重载后 fan-out 到全部屏幕）
+    private let isFirstScreen: Bool
+    /// 窗口已经走过 windowWillClose（监视器/观察者已拆）
+    private(set) var isClosed = false
 
     /// scrolling 每屏可见列数（2 默认；菜单循环 2→3→4；config `visible-columns` 优先）
     private(set) var visibleColumns =
@@ -176,16 +180,26 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    init(ghostty: Ghostty.App, themeManager: ThemeManager) {
+    /// - Parameters:
+    ///   - screen: 目标显示器（nil = 主显示器）；窗口在它的 visibleFrame 内居中，同屏已有窗口时层叠偏移
+    ///   - index: 屏幕序号（0 = 第一个，标题 `QuickTerm`）
+    ///   - restoring: 是否读取 state.json 恢复布局（只有第一个屏幕做；Phase 3 上提到 SessionStore）
+    ///   - inheritedDirectory: 新屏幕首个终端继承的 cwd（来自源窗口焦点 pane）
+    init(ghostty: Ghostty.App, themeManager: ThemeManager,
+         screen: NSScreen? = nil, index: Int = 0, restoring: Bool = true,
+         inheritedDirectory: String? = nil) {
         self.ghostty = ghostty
         self.themeManager = themeManager
+        self.screenIndex = index
+        self.isFirstScreen = index == 0 && restoring
         let window = HiddenTitlebarWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1024, height: 720),
             styleMask: [],  // HiddenTitlebarWindow 内部固定样式
             backing: .buffered, defer: false)
-        window.title = "QuickTerm"
+        window.title = ScreenRegistry.title(forIndex: index)
         super.init(window: window)
         window.windowController = self
+        window.delegate = self
 
         // 焦点对账兜底：布局/工作区/浮动层任何变化都会让 SwiftUI 重挂 SurfaceView，
         // 重挂后 focused 标志可能与窗口 FR 脱节（见 SurfaceView.viewWillMove(toWindow:)）
@@ -206,10 +220,10 @@ final class MainWindowController: BaseTerminalController {
             onPanelChoose: { [weak self] i in self?.choosePanelItem(i) })
             .environmentObject(themeManager))
 
-        // 主题热切换：overlay 变更 → 引擎 app 级 + 全部 surface 热重载（spec §3.2，< 200ms）
-        themeManager.onOverlayChanged = { [weak self] in
+        // 主题热切换：overlay 变更 → 全部 surface 热重载（spec §3.2，< 200ms）。
+        // 引擎 app 级 reloadConfig 由 AppDelegate 统一做一次（多屏幕下不重复 N 次）
+        themeManager.addOverlayListener(token: self) { [weak self] in
             guard let self else { return }
-            self.ghostty.reloadConfig(soft: false)
             for pane in self.allPanes {
                 if let surface = (pane as? Ghostty.SurfaceView)?.surface {
                     self.ghostty.reloadConfig(surface: surface, soft: false)
@@ -221,33 +235,30 @@ final class MainWindowController: BaseTerminalController {
         }
         applyAppearance()
 
-        // 浏览器扩展：pane 就是扩展眼里的"窗口"，管理器要能找到它们
-        BrowserExtensionManager.shared.host = self
-
-        // 配置链第 4 层：config.toml（键位/工作区数/主题/[ghostty] 透传）+ 热重载
-        ConfigStore.ensureTemplateKeys()  // 已有配置文件补全新增键（注释形式，幂等）
-        lastConfigContent = (try? String(contentsOf: ConfigStore.configURL, encoding: .utf8)) ?? ""
-        applyConfig(ConfigStore.load())
-        configWatcher = ConfigWatcher(
-            directory: ConfigStore.configURL.deletingLastPathComponent()
-        ) { [weak self] in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self?.reloadConfigFile() }
+        // 配置链第 4 层：config.toml（键位/工作区数/主题/[ghostty] 透传）。
+        // 文件监听与重载 fan-out 归 AppDelegate（多屏幕下只有一个 watcher；Phase 2 上提到 AppSession）
+        if isFirstScreen {
+            ConfigStore.ensureTemplateKeys()  // 已有配置文件补全新增键（注释形式，幂等）
         }
+        applyConfig(ConfigStore.load())
 
-        // 状态恢复（spec §4.8）：布局 + 各 pane cwd + 活动工作区；失败则全新开始
+        // 状态恢复（spec §4.8）：布局 + 各 pane cwd + 活动工作区；失败则全新开始。
+        // 只有第一个屏幕恢复存档，后开的屏幕一律以一个空白终端起步（继承源窗口焦点 pane 的 cwd）
         // 视图尚未被 SwiftUI 挂载：直接 makeFirstResponder 返回 true 却什么都不做（AppKit 报
         // "different window ((null))"），用 Ghostty.moveFocus（等待挂载后再设）
-        if !AppDelegate.isRunningTests, restoreState() {
+        if isFirstScreen, !AppDelegate.isRunningTests, restoreState() {
             for case let browser as BrowserPaneView in allPanes { applyBrowserTheme(browser) }   // 恢复的浏览器 pane 也套主题
             if let focused = focusedPane { requestFocus(to: focused) }
         } else {
-            let first = newSurface(inheritingFrom: nil)
+            let first = newSurface(workingDirectory: inheritedDirectory)
             model.layout = .scrolling(ScrollingStrip(pane: first, widthFactor: columnFactor))
             requestFocus(to: first)
         }
-        window.center()
+        place(on: screen)
         window.makeKeyAndOrderFront(nil)
 
+        // 引擎发的这三个通知都以 SurfaceView 为 object 且按 object: nil 注册：
+        // 多屏幕下每个控制器都会收到，处理函数开头一律先判归属（见 ghosttyDidCloseSurface 等）
         // 进程退出 / close 动作 → 移除 pane
         NotificationCenter.default.addObserver(
             self, selector: #selector(ghosttyDidCloseSurface(_:)),
@@ -288,11 +299,19 @@ final class MainWindowController: BaseTerminalController {
         ) { [weak self] event in
             guard let self else { return event }
             if event.type == .flagsChanged {
+                // ⌘ 状态是进程级的：不管事件落在哪个窗口都得更新（NSAlert / sheet / popover 成为 key
+                // 时事件不属于任何终端窗口，漏掉就会让拖拽源浮层残留——抓手光标、拖选文本变成拖 pane）。
+                // N 个控制器写同一个值，幂等；只在真变了时候写，省掉多余的 @Published 通知
                 let held = event.modifierFlags.contains(.command)
-                ModifierState.shared.commandHeld = held
+                if ModifierState.shared.commandHeld != held { ModifierState.shared.commandHeld = held }
+                // 光标复位只归事件所属窗口的控制器
+                guard event.window == nil || event.window === self.window else { return event }
                 if !held, self.floatingDrag == nil { self.resetFloatingCursor() }
                 return event
             }
+            // 多屏幕：会话内的鼠标事件只认本窗口的（另一个屏幕上的拖动不得驱动本控制器的会话）
+            if self.floatingDrag != nil || self.resizeTarget != nil,
+               event.window !== self.window { return event }
             // 拖动会话按鼠标键收尾，不按修饰键：先松 ⌘ 再松左键也必须正常结束，否则残留会话会劫持
             // 下一次 ⌘ 拖动（平铺 pane 的 DnD 拖不动、光标挂死）
             if self.floatingDrag != nil, let handled = self.floatingSessionEvent(event) {
@@ -391,13 +410,7 @@ final class MainWindowController: BaseTerminalController {
     }
 
     // MARK: config.toml（配置链第 4 层，spec §4.7）
-
-    private func reloadConfigFile() {
-        let content = (try? String(contentsOf: ConfigStore.configURL, encoding: .utf8)) ?? ""
-        guard content != lastConfigContent else { return }
-        lastConfigContent = content
-        applyConfig(ConfigStore.parse(content))
-    }
+    // 文件监听与去重在 AppDelegate；这里只负责把一份 Settings 落到本屏幕上
 
     func applyConfig(_ settings: ConfigStore.Settings) {
         keybindings = KeybindingMap(
@@ -450,6 +463,9 @@ final class MainWindowController: BaseTerminalController {
     }
 
     func saveState() {
+        // 已经 teardown 的屏幕（模型被清空过）绝不写盘：否则关掉最后一个屏幕触发退出时
+        // 会用一份空布局覆盖掉用户的存档
+        guard !isClosed else { return }
         flushPendingCloses()   // 淡出中的 pane 不进存档
         let state = PersistedState(
             layouts: model.layouts, floatings: model.floatings, activeIndex: model.activeIndex)
@@ -496,6 +512,132 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
+    // MARK: 窗口放置与屏幕生命周期（多屏幕，spec v9 §1.2）
+
+    /// 同一显示器上已有的 QuickTerm 屏幕窗口（层叠偏移用）
+    private static func siblingWindows(excluding window: NSWindow, on screen: NSScreen?) -> [NSWindow] {
+        NSApp.windows.filter {
+            $0 !== window && $0.isVisible && $0.windowController is MainWindowController
+                && (screen == nil || $0.screen === screen)
+        }
+    }
+
+    /// 放置窗口：给定显示器时在其 visibleFrame 内居中，同屏已有窗口则层叠偏移，最后一律 constrainFrameRect。
+    /// 未指定显示器且是本进程第一个窗口时保持历史行为（window.center()）
+    private func place(on screen: NSScreen?) {
+        guard let window else { return }
+        let siblings = Self.siblingWindows(excluding: window, on: screen ?? NSScreen.main)
+        guard let target = screen ?? NSScreen.main else { window.center(); return }
+        guard screen != nil || !siblings.isEmpty else { window.center(); return }
+        let visible = target.visibleFrame
+        var frame = window.frame
+        frame.size.width = min(frame.width, visible.width)
+        frame.size.height = min(frame.height, visible.height)
+        // 居中 + 层叠偏移（同屏第 n 个窗口向右下偏 n×24pt，第 7 个回到起点）
+        let step = CGFloat(siblings.count % 6) * 24
+        frame.origin = CGPoint(x: visible.midX - frame.width / 2 + step,
+                               y: visible.midY - frame.height / 2 - step)
+        frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
+        frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
+        window.setFrame(window.constrainFrameRect(frame, to: target), display: false)
+    }
+
+    /// 把本屏幕搬到另一台显示器：保持窗口大小（超出则收），按在原屏可见区里的相对位置落点
+    func move(to screen: NSScreen) {
+        guard let window, window.screen !== screen else { return }
+        let visible = screen.visibleFrame
+        // 全屏中窗口自己贴满旧显示器：真正要搬的是退出全屏后要恢复的那个 frame
+        var frame = savedFrame ?? window.frame
+        frame.size.width = min(frame.width, visible.width)
+        frame.size.height = min(frame.height, visible.height)
+        let source = (window.screen ?? NSScreen.main)?.visibleFrame
+        if let source, source.width > frame.width || source.height > frame.height {
+            let rx = source.width > frame.width ? (frame.minX - source.minX) / (source.width - frame.width) : 0.5
+            let ry = source.height > frame.height ? (frame.minY - source.minY) / (source.height - frame.height) : 0.5
+            frame.origin = CGPoint(x: visible.minX + rx * max(visible.width - frame.width, 0),
+                                   y: visible.minY + ry * max(visible.height - frame.height, 0))
+        } else {
+            frame.origin = CGPoint(x: visible.midX - frame.width / 2, y: visible.midY - frame.height / 2)
+        }
+        let placed = window.constrainFrameRect(frame, to: screen)
+        if savedFrame != nil {
+            // 全屏中：窗口跟着贴合新显示器，退出全屏时也要落在新显示器上（否则一退全屏就跳回去）
+            savedFrame = placed
+            window.setFrame(screen.frame, display: true)
+        } else {
+            window.setFrame(placed, display: true)
+        }
+    }
+
+    /// 「在所有桌面显示」：Spaces 无法用公开 API 指定，能提供的只有 canJoinAllSpaces
+    var joinsAllSpaces: Bool {
+        get { window?.collectionBehavior.contains(.canJoinAllSpaces) ?? false }
+        set {
+            guard let window else { return }
+            var behavior = window.collectionBehavior
+            if newValue {
+                behavior.insert(.canJoinAllSpaces)
+                behavior.remove(.moveToActiveSpace)
+            } else {
+                behavior.remove(.canJoinAllSpaces)
+            }
+            window.collectionBehavior = behavior
+        }
+    }
+
+    /// 关闭这个屏幕前的确认（复用退出确认的计数与文案）；无活跃 pane 直接放行
+    func confirmCloseScreen() -> Bool {
+        flushPendingCloses()
+        let open = model.allPanes.count
+        guard AppDelegate.shouldConfirmQuit(openPaneCount: open), !AppDelegate.isRunningTests else { return true }
+        let alert = NSAlert()
+        alert.messageText = "关闭这个屏幕？"
+        alert.informativeText = "还有 \(open) 个终端打开着，关闭会结束其中的进程。"
+        alert.addButton(withTitle: "关闭")
+        alert.addButton(withTitle: "取消")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// 拆掉一切会在窗口关掉后仍然活着的东西。窗口关闭时显式调用（不依赖 deinit 顺序）：
+    /// 监视器 / 通知 / 主题监听的闭包留着就会吊住控制器，弱引用用例会红
+    private func teardown() {
+        guard !isClosed else { return }
+        isClosed = true
+        flushPendingCloses()
+        NotificationCenter.default.removeObserver(self)
+        themeManager.removeOverlayListener(token: self)
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor); self.keyMonitor = nil }
+        if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor); self.mouseMonitor = nil }
+        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor); self.scrollMonitor = nil }
+        cancellables.removeAll()
+        floatingDrag = nil
+        resizeTarget = nil
+        // 非原生全屏的 presentationOptions 是进程级的：本窗口申请过就得还回去，否则剩下的屏幕
+        // 会一直藏着 Dock 与菜单栏，而它们自己的 savedFrame 是 nil，压根无从退出
+        // （按窗口引用计数是 Phase 2 的事）
+        if savedFrame != nil {
+            savedFrame = nil
+            NSApp.presentationOptions = []
+        }
+        // 与 removeFromActiveLayout / removeFromAnyWorkspace 同一份 pane 级收尾：浏览器 pane
+        // 要取消进行中的下载、告诉扩展"窗口"关了（deinit 只 tearDown 标签，这些都不做）。
+        // 必须赶在拆视图层级之前：WebKit 处理 didCloseWindow 时会同步回查 tab.window(for:)
+        for pane in model.allPanes {
+            forgetFileManagerSession(pane)
+            (pane as? BrowserPaneView)?.paneWillClose()
+        }
+        // 显式拆掉视图层级：pane 由 SwiftUI 的视图树强持有，窗口对象被 AppKit 多留一会儿
+        // 就会让这个屏幕里的 shell 一直活着。关屏幕就该结束里面的进程
+        window?.contentView = nil
+        model.layouts = model.layouts.map { _ in .empty }
+        model.floatings = model.floatings.map { _ in [] }
+        model.scratchpadVisible = false
+        model.scratchpadSurface = nil
+        // 保底：没登记在 allPanes 里的会话（正常应为空，上面的循环已经逐个清过）
+        for session in fileManagerSessions.values { FileManagerLaunch.cleanup(session) }
+        fileManagerSessions.removeAll()
+    }
+
     private func paneUnderPointer(_ event: NSEvent) -> PaneView? {
         guard let content = window?.contentView else { return nil }
         var v = content.hitTest(content.convert(event.locationInWindow, from: nil))
@@ -533,6 +675,7 @@ final class MainWindowController: BaseTerminalController {
     required init?(coder: NSCoder) { fatalError("not supported") }
 
     deinit {
+        // 正常路径已在 windowWillClose 的 teardown 里拆干净；这里是没走关闭流程时的保底
         NotificationCenter.default.removeObserver(self)
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
@@ -1261,7 +1404,7 @@ final class MainWindowController: BaseTerminalController {
     }
 
     /// 最近激活的浏览器 pane（全部工作区，含浮动；淡出中的不算）——扩展宿主用
-    private func mostRecentBrowserPaneAnywhere() -> BrowserPaneView? {
+    func mostRecentBrowserPaneAnywhere() -> BrowserPaneView? {
         browserPanes.filter { !model.closingPanes.contains($0.id) }
             .max { $0.lastActivatedAt < $1.lastActivatedAt }
     }
@@ -1344,6 +1487,7 @@ final class MainWindowController: BaseTerminalController {
 
     @objc private func ghosttyChildExited(_ notification: Foundation.Notification) {
         guard let view = notification.object as? PaneView else { return }
+        guard owns(view) else { return }   // 多屏幕：object: nil 注册，别的窗口的 pane 不管
         guard paneList.contains(view) else {
             // 非活动工作区里退出（切走后 pkill / 崩溃）：直接从所在工作区移除（本通知已在引擎回调栈外）
             removeFromAnyWorkspace(view)   // 内部清会话与临时文件
@@ -1517,11 +1661,18 @@ final class MainWindowController: BaseTerminalController {
     }
 
     @objc private func ghosttyDidEqualizeSplits(_ note: Foundation.Notification) {
+        // 多屏幕：引擎以双击分隔条的那个 surface 为 object，只有它所属的窗口等分
+        guard let view = note.object as? PaneView, owns(view) else { return }
         perform(.equalize)
     }
 
+    /// 这个 pane 属于本屏幕（含非活动工作区、浮动层与 Scratchpad）
+    private func owns(_ view: PaneView) -> Bool {
+        model.allPanes.contains { $0 === view }
+    }
+
     @objc private func ghosttyDidCloseSurface(_ notification: Foundation.Notification) {
-        guard let view = notification.object as? PaneView else { return }
+        guard let view = notification.object as? PaneView, owns(view) else { return }
         if view === model.scratchpadSurface {
             model.scratchpadVisible = false
             model.scratchpadSurface = nil
@@ -1603,18 +1754,40 @@ private extension ScrollingStrip.Direction {
     }
 }
 
+// MARK: - 屏幕（窗口）生命周期
+
+extension MainWindowController: NSWindowDelegate {
+    /// 关闭按钮 / performClose：有活跃 pane 时按退出确认的规则问一次
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        confirmCloseScreen()
+    }
+
+    func windowWillClose(_ notification: Foundation.Notification) {
+        teardown()
+        // 注册表条目下一轮 runloop 再摘：本方法可能处在引擎回调栈内，
+        // 同步放弃最后一个强引用会立刻 free 仍在栈上的 surface
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            (NSApp.delegate as? AppDelegate)?.forgetScreen(self)
+        }
+    }
+}
+
 // MARK: - 浏览器扩展宿主（pane = 扩展眼里的窗口）
 
 extension MainWindowController: BrowserExtensionHost {
     /// 全部工作区（含浮动层与 scratchpad）里的浏览器 pane
     var browserPanes: [BrowserPaneView] { allPanes.compactMap { $0 as? BrowserPaneView } }
 
+    /// 本窗口里真正持 first responder 的浏览器 pane（App 级聚合宿主先问这个）
+    var firstResponderBrowserPane: BrowserPaneView? {
+        guard let window else { return nil }
+        return browserPanes.first { $0.holdsFirstResponder(of: window) }
+    }
+
     /// 持 first responder 的浏览器 pane；没有就取最近激活的那个
     var focusedBrowserPane: BrowserPaneView? {
-        if let window, let holder = browserPanes.first(where: { $0.holdsFirstResponder(of: window) }) {
-            return holder
-        }
-        return mostRecentBrowserPaneAnywhere()
+        firstResponderBrowserPane ?? mostRecentBrowserPaneAnywhere()
     }
 
     /// 扩展的 windows.create：在活动工作区新开一个浏览器 pane

@@ -65,8 +65,25 @@ final class ThemeManager: ObservableObject {
         writeOverlay()
     }
 
-    /// 引擎重载钩子（MainWindowController 注入：app + 全部 surface reload）
-    var onOverlayChanged: (() -> Void)?
+    /// 引擎重载钩子（多屏幕：AppDelegate 注册 app 级重载，每个 MainWindowController 注册自己那份
+    /// per-surface reload + 窗口外观）。单闭包时代只有最后创建的窗口会响应主题热切换。
+    private var overlayListeners: [(token: ObjectIdentifier, action: () -> Void)] = []
+
+    /// 注册 overlay 变更监听；token 为持有方（同一 token 重复注册会替换旧的）
+    func addOverlayListener(token: AnyObject, _ action: @escaping () -> Void) {
+        let id = ObjectIdentifier(token)
+        overlayListeners.removeAll { $0.token == id }
+        overlayListeners.append((id, action))
+    }
+
+    /// 注销监听（窗口关闭时必须调用：闭包留在数组里会吊住控制器）
+    func removeOverlayListener(token: AnyObject) {
+        let id = ObjectIdentifier(token)
+        overlayListeners.removeAll { $0.token == id }
+    }
+
+    /// 仅测试：当前监听数
+    var overlayListenerCount: Int { overlayListeners.count }
 
     private static let defaultsThemeKey = "quickterm.theme"
     private static let defaultsBgKey = "quickterm.backgroundIndex"
@@ -241,6 +258,6 @@ final class ThemeManager: ObservableObject {
 
     private func writeOverlay(notify: Bool = true) {
         EngineOverlay.install(extra: overlayExtra())
-        if notify { onOverlayChanged?() }
+        if notify { for listener in overlayListeners { listener.action() } }
     }
 }

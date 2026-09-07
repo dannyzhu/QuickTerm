@@ -251,15 +251,20 @@ private struct StripDropDelegate: DropDelegate {
     let destination: PaneView
     let onDrop: (PaneView, PaneView, TerminalSplitDropZone) -> Void
 
+    /// 跨窗口拖放明确拒绝：一个 pane 只能挂在一个窗口里（PaneHostView 返回同一个 NSView 实例），
+    /// 源与目标不同窗口时不认领——落区不亮、光标带禁止标记，不做静默失败
     func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [.ghosttySurfaceId])
+        guard PaneDragState.shared.allowsDrop(on: destination) else { return false }
+        return info.hasItemsConforming(to: [.ghosttySurfaceId])
     }
 
     func dropEntered(info: DropInfo) {
+        guard PaneDragState.shared.allowsDrop(on: destination) else { return }
         zone = .calculate(at: info.location, in: viewSize)
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard PaneDragState.shared.allowsDrop(on: destination) else { return DropProposal(operation: .forbidden) }
         guard zone != nil else { return DropProposal(operation: .forbidden) }
         zone = .calculate(at: info.location, in: viewSize)
         return DropProposal(operation: .move)
@@ -270,6 +275,7 @@ private struct StripDropDelegate: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         let dropZone = TerminalSplitDropZone.calculate(at: info.location, in: viewSize)
         zone = nil
+        guard PaneDragState.shared.allowsDrop(on: destination) else { return false }
         guard let provider = info.itemProviders(for: [.ghosttySurfaceId]).first else { return false }
         _ = provider.loadTransferable(type: PaneView.self) { [weak destination] result in
             if case .success(let source) = result {
