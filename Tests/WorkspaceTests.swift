@@ -1031,4 +1031,40 @@ extension WorkspaceTests {
             }
         }
     }
+
+    /// 双指横滑：鼠标下是**激活的**浏览器 pane → 事件交给网页（横向滚动 / 前进后退手势）；
+    /// 终端持焦、或浏览器 pane 只是被路过 → 照旧平移画布
+    func testFocusedBrowserPaneClaimsHorizontalScroll() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        let ws = c.model.layouts.count - 1
+        c.model.switchTo(ws)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty)
+        let prevSettings = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = prevSettings }
+        BrowserPaneView.settings.home = "about:blank"
+        c.perform(.newTerminal)
+        let a = try XCTUnwrap(c.paneList.first)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        c.perform(.newBrowser)
+        let b = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView } as? BrowserPaneView)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        let window = try XCTUnwrap(c.window)
+        XCTAssertTrue(b.holdsFirstResponder(of: window))
+        XCTAssertTrue(c.browserPaneClaimingScroll(under: b.webView) === b, "激活的浏览器 pane 吃横滑")
+        func descendants(_ v: NSView) -> [NSView] { v.subviews.flatMap { [$0] + descendants($0) } }
+        let strip = try XCTUnwrap(descendants(b).first { $0 is BrowserTabBarView })
+        XCTAssertTrue(c.browserPaneClaimingScroll(under: strip) === b, "标签条 / 地址栏也算在 pane 内")
+        XCTAssertNil(c.browserPaneClaimingScroll(under: a), "终端上不归网页")
+
+        _ = window.makeFirstResponder(a.focusTarget)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        XCTAssertTrue(a.holdsFirstResponder(of: window))
+        XCTAssertNil(c.browserPaneClaimingScroll(under: b.webView), "没激活的浏览器 pane 只是被路过：照旧平移画布")
+
+        c.closePane(b, confirmIfNeeded: false, animated: false)
+        c.closePane(a, confirmIfNeeded: false, animated: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+    }
 }

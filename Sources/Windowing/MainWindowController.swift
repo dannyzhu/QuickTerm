@@ -363,6 +363,10 @@ final class MainWindowController: BaseTerminalController {
                bar.isOverflowing {
                 return event
             }
+            // 激活的浏览器 pane 自己吃双指横滑（网页横向滚动 / 前进后退手势），不平移画布
+            if let hit = content.hitTest(p), self.browserPaneClaimingScroll(under: hit) != nil {
+                return event
+            }
             if case .scrolling = self.model.layout,
                abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY),
                abs(event.scrollingDeltaX) > 0.5 || event.phase == .ended || event.momentumPhase == .ended {
@@ -375,6 +379,15 @@ final class MainWindowController: BaseTerminalController {
             }
             return event
         }
+    }
+
+    /// 鼠标下的视图属于某个**持有键盘焦点**的浏览器 pane 时返回它：这时的滚轮 / 双指横滑归网页，
+    /// 不做画布平移。没激活的浏览器 pane 照旧平移画布（只是路过）
+    func browserPaneClaimingScroll(under view: NSView) -> BrowserPaneView? {
+        guard let window,
+              let pane = sequence(first: view, next: { $0.superview }).compactMap({ $0 as? BrowserPaneView }).first,
+              pane.holdsFirstResponder(of: window) else { return nil }
+        return pane
     }
 
     // MARK: config.toml（配置链第 4 层，spec §4.7）

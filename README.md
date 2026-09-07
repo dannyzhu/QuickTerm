@@ -104,7 +104,7 @@ Switching layouts keeps every pane in order (columns become right-splits, stacks
 | `⌘` + right-drag | Resize: column width in scrolling, nearest divider in dwindle, the pane itself if floating |
 | `⌘` + click a link in a terminal | Opens it in a browser pane — a new tab in the most recently focused browser pane of the workspace, or a new browser pane beside the terminal if there is none (`link-opener = "system"` restores the default browser) |
 | Scroll wheel over the status bar | Cycle workspaces |
-| Two-finger horizontal swipe | Pan the scrolling canvas |
+| Two-finger horizontal swipe | Pan the scrolling canvas. Over the **focused** browser pane the swipe goes to the page instead (horizontal scroll / back-forward gesture) |
 | Double-click empty status bar | Zoom window to the visible screen area |
 | Click clock / speaker / workspace pill | Toggle date format / mute / jump to workspace |
 

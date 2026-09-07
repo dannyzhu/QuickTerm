@@ -104,7 +104,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `⌘` + 右键拖 | 调大小：scrolling 改列宽，dwindle 调就近分隔条，浮动 pane 改自身 |
 | `⌘` + 点击终端里的链接 | 在浏览器 pane 里打开——当前工作区最近激活的浏览器 pane 开新标签，没有就在终端旁新开一个（`link-opener = "system"` 恢复系统浏览器） |
 | 顶栏上滚滚轮 | 循环工作区 |
-| 双指横滑 | 平移 scrolling 画布 |
+| 双指横滑 | 平移 scrolling 画布。鼠标在**激活的**浏览器 pane 上时交给网页（横向滚动 / 前进后退手势） |
 | 顶栏空白处双击 | 窗口 zoom 铺满可视区 |
 | 点时钟 / 喇叭 / 工作区胶囊 | 切日期格式 / 静音 / 跳到该工作区 |
 
