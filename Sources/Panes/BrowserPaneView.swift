@@ -342,6 +342,9 @@ final class BrowserPaneView: PaneView {
     init(id: UUID = UUID(), url: URL?) {
         super.init(id: id, frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         buildChrome()
+        // 扩展是启动时异步加载的（pane 可能先建好）：装 / 卸 / 启停之后重挂注入脚本
+        NotificationCenter.default.addObserver(self, selector: #selector(extensionsDidChange),
+                                               name: .browserExtensionsDidChange, object: nil)
         extensionController?.didOpenWindow(self)   // 先有窗口再有标签
         _ = addTab(url: url ?? Self.settings.homeURL, activate: true)
     }
@@ -390,8 +393,25 @@ final class BrowserPaneView: PaneView {
         // 网页里嵌的扩展 iframe：tabs.* 等改走后台转发（直接调会被 WebKit 杀掉页面进程）。扩展配置（扩展页开的
         // window.open 弹窗跑在扩展进程里，直接调没问题）不注入；window.open 给回来的 configuration 与开窗方共用
         // 同一个 userContentController，别重复追加
-        guard !extensionPage, !content.userScripts.contains(where: { $0 === BrowserExtensionCompat.frameUserScript }) else { return }
+        guard !extensionPage else { return }
+        // externally_connectable：网页侧的 chrome.runtime 别名（内容随已装扩展变，按源码首行标记去重）
+        if let external = manager.externalMessagingUserScript,
+           !content.userScripts.contains(where: { $0.source.hasPrefix(BrowserExtensionCompat.externalMessagingMarker) }) {
+            content.addUserScript(external)
+        }
+        guard !content.userScripts.contains(where: { $0 === BrowserExtensionCompat.frameUserScript }) else { return }
         content.addUserScript(BrowserExtensionCompat.frameUserScript)
+    }
+
+    /// 装 / 卸 / 启停扩展之后重挂各标签的注入脚本：externally_connectable 的地址清单变了，
+    /// 而 WKUserScript 只能整体清空重加。已经打开的页面不受影响（下次导航才生效，与 Chrome 装扩展一样）。
+    /// 扩展自己的页面（配置来自 context.webViewConfiguration）不碰
+    @objc private func extensionsDidChange() {
+        for tab in tabs where tab.extensionContext == nil {
+            let configuration = tab.webView.configuration
+            configuration.userContentController.removeAllUserScripts()
+            prepareForExtensions(configuration)
+        }
     }
 
     // MARK: - 标签管理

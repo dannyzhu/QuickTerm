@@ -356,6 +356,43 @@ final class BrowserExtensionTests: XCTestCase {
                        + "url=\(webView.url?.absoluteString ?? "nil") loading=\(webView.isLoading)")
     }
 
+    /// 装 / 卸 / 启停扩展后各标签会 `removeAllUserScripts()` 再重挂我们自己的注入脚本
+    /// （externally_connectable 垫片的地址清单会变）。WebKit 给扩展内容脚本用的是它自己的通道，
+    /// 不在这个 userContentController 里——清空之后内容脚本必须照常注入，否则已开着的标签
+    /// 从此再也跑不了任何扩展的内容脚本
+    @MainActor
+    func testRemovingUserScriptsKeepsExtensionContentScripts() throws {
+        let store = try Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store) }
+        let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
+        let fixture = try Self.makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        try Self.installSynchronously(fixture, id: "abcdefghijklmnopabcdefghijklmnop", into: manager)
+
+        let configuration = WKWebViewConfiguration()
+        configuration.webExtensionController = manager.controller
+        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 300),
+                                configuration: configuration)
+        let window = NSWindow(contentRect: webView.frame, styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.contentView = webView
+        defer { window.contentView = nil }
+        let url = try XCTUnwrap(URL(string: "http://example.test/index.html"))
+        func loadAndWaitForContentScript(_ what: String) {
+            webView.loadHTMLString("<html><head><title>before</title></head><body>hi</body></html>",
+                                   baseURL: url)
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline, webView.title != "EXT-OK" {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            }
+            XCTAssertEqual(webView.title, "EXT-OK", what)
+        }
+        loadAndWaitForContentScript("基线：内容脚本注入")
+        // 模拟扩展集合变化后的重挂
+        configuration.userContentController.removeAllUserScripts()
+        loadAndWaitForContentScript("removeAllUserScripts 之后内容脚本仍应注入")
+    }
+
     // MARK: - 扩展自己的页面（选项页）
 
     /// `webkit-extension://` 的主帧只能在 `context.webViewConfiguration` 建的 WebView 里加载：

@@ -25,6 +25,11 @@ import WebKit
 ///    `frameScript`，把这些命名空间换成经 `runtime.sendMessage` 转给后台的代理；后台的垫片（本文件的 compat.js）收到
 ///    `__quickterm_relay` 消息后代为调用、回传结果。只接受来自扩展自己 origin 的请求。
 ///
+/// 5. `externally_connectable`（网页给扩展发消息）：WebKit 实现了这条通道，但只挂在网页的 `browser.runtime` 上，
+///    网页里没有 `chrome`。Chrome 生态的站点一律先看 `"chrome" in window` 再 `chrome.runtime.sendMessage(id, …)`，
+///    握手就此静默失败（userstyles.org 这样把登录 token 递给 Stylish，扩展永远显示未登录）。给匹配扩展
+///    `externally_connectable.matches` 的网页注入一层最小别名，见 `externalMessagingScript`。
+///
 /// 改写是幂等的：manifest 里 `__quickterm` 记着原始 `background` 与垫片版本，版本一致就不再动。
 /// 扩展更新（重装）会整目录替换，随之重新生成。
 enum BrowserExtensionCompat {
@@ -299,6 +304,104 @@ enum BrowserExtensionCompat {
     """
 
     static let frameUserScript = WKUserScript(source: frameScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+
+    // MARK: - externally_connectable：网页 → 扩展的消息通道
+
+    /// 网页侧垫片源码的首行标记：同一个 userContentController 里认得出"这是外部消息垫片"
+    /// （内容随已装扩展变化，不能像 frameUserScript 那样按对象同一性去重）
+    static let externalMessagingMarker = "// QuickTerm externally_connectable"
+
+    /// manifest 里 `externally_connectable.matches`：允许给这个扩展发消息的网页地址（Chrome match pattern）。
+    /// 没声明 / 形状不对 → 空。读的是装进 store 后的 manifest：改写只动 `background`，这个键原样保留
+    static func externallyConnectableMatches(in directory: URL) -> [String] {
+        guard let data = try? Data(contentsOf: directory.appendingPathComponent("manifest.json")),
+              let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let block = manifest["externally_connectable"] as? [String: Any],
+              let matches = block["matches"] as? [Any] else { return [] }
+        return matches.compactMap { $0 as? String }.filter { !$0.isEmpty }
+    }
+
+    /// 网页侧的 `chrome.runtime` 垫片（page world、全部框架、document start）。
+    ///
+    /// WebKit **实现了** externally_connectable（后台的 `runtime.onMessageExternal` 会照常收到消息），
+    /// 但只把入口挂在网页的 `browser.runtime.{sendMessage,connect}` 上——网页里根本没有 `chrome`。
+    /// Chrome 生态的站点判断"扩展装没装 / 把 token 递给扩展"用的都是 `"chrome" in window` +
+    /// `chrome.runtime.sendMessage(<扩展 id>, msg, cb)`，于是那条握手在 QuickTerm 里静默失败
+    /// （userstyles.org 把登录 token 这样递给 Stylish，扩展因此一直显示未登录、没有样式）。
+    ///
+    /// 这里只补最小的一层别名：`chrome.runtime.sendMessage` / `connect` 直接转给 `browser.runtime`，
+    /// 真正的投递与鉴权仍是 WebKit 自己做的（发给没声明本页的扩展只会拿到 undefined）。
+    /// 只在**至少一个已装扩展声明了 externally_connectable 且本框架地址匹配**时才定义，
+    /// 且绝不覆盖页面上已有的 `chrome`；除消息外不暴露任何 API。
+    static func externalMessagingScript(matches: [String]) -> String {
+        let list = (try? JSONSerialization.data(withJSONObject: matches, options: [.withoutEscapingSlashes]))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        return #"""
+        \#(externalMessagingMarker)（按已装扩展的 externally_connectable 生成，勿手改）
+        (() => {
+          const g = globalThis;
+          // 页面上已经有 chrome（真 Chrome、或别的注入）：一概不动
+          if (typeof g.chrome !== "undefined") return;
+          const runtime = g.browser && g.browser.runtime;
+          if (!runtime || typeof runtime.sendMessage !== "function") return;
+          const PATTERNS = \#(list);
+          const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const glob = (value) => new RegExp("^" + value.split("*").map(escapeRe).join("[\\s\\S]*") + "$");
+          // Chrome match pattern：<scheme>://<host><path>，scheme 的 * 只代表 http/https，host 的 *. 含自身
+          const parse = (pattern) => {
+            if (pattern === "<all_urls>") return { scheme: "*", host: "*", path: /^[\s\S]*$/ };
+            const m = /^(\*|[a-zA-Z][a-zA-Z0-9+.-]*):\/\/(\*|(?:\*\.)?[^/*]*)(\/[\s\S]*)$/.exec(pattern);
+            return m ? { scheme: m[1].toLowerCase(), host: m[2].toLowerCase(), path: glob(m[3]) } : null;
+          };
+          let here;
+          try { here = new URL(location.href); } catch (_) { return; }
+          const scheme = here.protocol.replace(/:$/, "").toLowerCase();
+          const host = here.hostname.toLowerCase();
+          const path = here.pathname + here.search;
+          const matches = PATTERNS.some((pattern) => {
+            const p = parse(pattern);
+            if (!p) return false;
+            if (p.scheme === "*" ? (scheme !== "http" && scheme !== "https") : p.scheme !== scheme) return false;
+            if (p.host !== "*") {
+              if (p.host.startsWith("*.")) {
+                const base = p.host.slice(2);
+                if (host !== base && !host.endsWith("." + base)) return false;
+              } else if (p.host !== host) return false;
+            }
+            return p.path.test(path);
+          });
+          if (!matches) return;
+          // Chrome 给普通网页的 runtime 也只有 sendMessage / connect（没有 id、没有 onMessage），这里照此对齐
+          const api = {
+            sendMessage: function sendMessage(...args) {
+              const callback = typeof args[args.length - 1] === "function" ? args.pop() : null;
+              let promise;
+              try { promise = Promise.resolve(runtime.sendMessage.apply(runtime, args)); }
+              catch (error) { promise = Promise.reject(error); }
+              if (!callback) return promise;   // 无回调 = Promise 形式（Chrome MV3 语义）
+              promise.then((value) => callback(value), () => callback(undefined));
+              return undefined;
+            },
+          };
+          if (typeof runtime.connect === "function") {
+            api.connect = function connect(...args) { return runtime.connect.apply(runtime, args); };
+          }
+          // 站点常写 `if (chrome.runtime.lastError)`：Chrome 里没出错时读到 undefined
+          try { Object.defineProperty(api, "lastError", { get: () => undefined, configurable: true }); } catch (_) {}
+          try {
+            Object.defineProperty(g, "chrome", { value: { runtime: api }, writable: true, configurable: true, enumerable: true });
+          } catch (_) {}
+        })();
+        """#
+    }
+
+    /// 当前应注入网页的外部消息垫片；没有任何扩展声明 externally_connectable → nil（什么都不注入）
+    static func externalMessagingUserScript(matches: [String]) -> WKUserScript? {
+        let unique = Array(Set(matches)).sorted()
+        guard !unique.isEmpty else { return nil }
+        return WKUserScript(source: externalMessagingScript(matches: unique),
+                            injectionTime: .atDocumentStart, forMainFrameOnly: false)
+    }
 
     /// JS 字符串字面量（JSON 编码的字符串在 JS 里是合法字面量）
     static func jsString(_ s: String) -> String {

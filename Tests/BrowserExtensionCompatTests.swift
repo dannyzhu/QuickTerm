@@ -295,6 +295,180 @@ final class BrowserExtensionCompatTests: XCTestCase {
         func openBrowserWindow(url: URL?) -> BrowserPaneView? { nil }
     }
 
+    // MARK: - externally_connectable（网页 → 扩展）
+
+    /// 地址清单来自扩展自己的 manifest；没声明 externally_connectable 的扩展一个模式都不贡献
+    func testExternallyConnectableMatchesComeFromManifest() throws {
+        let declared = try Self.makeExtension(background: nil, files: [:], manifest: [
+            "externally_connectable": ["matches": ["https://*.example.test/*", "*://localhost/*", "", 7]],
+        ])
+        defer { try? FileManager.default.removeItem(at: declared) }
+        XCTAssertEqual(BrowserExtensionCompat.externallyConnectableMatches(in: declared),
+                       ["https://*.example.test/*", "*://localhost/*"], "只取非空字符串")
+        // 垫片改写之后仍然读得到（apply 只动 background）
+        XCTAssertTrue(try BrowserExtensionCompat.apply(to: declared))
+        XCTAssertEqual(BrowserExtensionCompat.externallyConnectableMatches(in: declared),
+                       ["https://*.example.test/*", "*://localhost/*"])
+
+        let plain = try Self.makeExtension(background: nil, files: [:])
+        defer { try? FileManager.default.removeItem(at: plain) }
+        XCTAssertEqual(BrowserExtensionCompat.externallyConnectableMatches(in: plain), [])
+        let malformed = try Self.makeExtension(background: nil, files: [:],
+                                               manifest: ["externally_connectable": ["matches": "everything"]])
+        defer { try? FileManager.default.removeItem(at: malformed) }
+        XCTAssertEqual(BrowserExtensionCompat.externallyConnectableMatches(in: malformed), [])
+        XCTAssertEqual(BrowserExtensionCompat.externallyConnectableMatches(in: plain.appendingPathComponent("nope")), [])
+
+        XCTAssertNil(BrowserExtensionCompat.externalMessagingUserScript(matches: []), "没人声明就不注入")
+        let script = try XCTUnwrap(BrowserExtensionCompat.externalMessagingUserScript(matches: ["b://x/*", "a://y/*", "b://x/*"]))
+        XCTAssertTrue(script.source.hasPrefix(BrowserExtensionCompat.externalMessagingMarker))
+        XCTAssertTrue(script.source.contains("[\"a://y/*\",\"b://x/*\"]"), "去重 + 排序：\(script.source.prefix(400))")
+        XCTAssertEqual(script.injectionTime, .atDocumentStart)
+        XCTAssertFalse(script.isForMainFrameOnly, "子框架也要（匹配的 iframe 同样能给扩展发消息）")
+    }
+
+    /// 网页侧垫片的匹配规则：只在 externally_connectable 命中的地址上定义 chrome，且绝不覆盖页面已有的 chrome
+    @MainActor
+    func testExternalMessagingScriptOnlyDefinesChromeOnMatchingPages() async throws {
+        let script = BrowserExtensionCompat.externalMessagingScript(matches: ["https://*.userstyles.test/*",
+                                                                              "*://localhost/*"])
+        let webView = WKWebView(frame: .init(x: 0, y: 0, width: 10, height: 10))
+        let cases: [(String, Bool)] = [
+            ("https://userstyles.test/styles/1", true),
+            ("https://www.userstyles.test/", true),
+            ("https://evil-userstyles.test/", false),
+            ("http://userstyles.test/", false),          // 模式写死 https
+            ("http://localhost/x?y=1", true),
+            ("https://example.test/", false),
+        ]
+        for (url, expected) in cases {
+            let out = try await Self.evaluate(inPage: webView, at: url, load: "<html><body>p</body></html>", """
+            globalThis.browser = { runtime: { sendMessage: () => Promise.resolve("stub"), connect: () => ({}) } };
+            \(script)
+            return { chrome: typeof globalThis.chrome,
+                     send: typeof (globalThis.chrome && chrome.runtime && chrome.runtime.sendMessage),
+                     connect: typeof (globalThis.chrome && chrome.runtime && chrome.runtime.connect),
+                     lastError: String(globalThis.chrome && chrome.runtime.lastError) };
+            """)
+            let result = try XCTUnwrap(out as? [String: Any], url)
+            XCTAssertEqual(result["chrome"] as? String, expected ? "object" : "undefined", url)
+            XCTAssertEqual(result["send"] as? String, expected ? "function" : "undefined", url)
+            if expected {
+                XCTAssertEqual(result["connect"] as? String, "function", url)
+                XCTAssertEqual(result["lastError"] as? String, "undefined", "没出错时 lastError 是 undefined")
+            }
+        }
+        // 页面自己已经有 chrome：一个字节都不动
+        let kept = try await Self.evaluate(inPage: webView, at: "https://userstyles.test/x", load: "<html><body>p</body></html>", """
+        globalThis.browser = { runtime: { sendMessage: () => Promise.resolve("stub") } };
+        globalThis.chrome = { marker: true };
+        \(script)
+        return { marker: chrome.marker === true, runtime: typeof chrome.runtime };
+        """)
+        let result = try XCTUnwrap(kept as? [String: Any])
+        XCTAssertEqual(result["marker"] as? Bool, true, "不覆盖页面已有的 chrome")
+        XCTAssertEqual(result["runtime"] as? String, "undefined")
+    }
+
+    /// 真跑：匹配 externally_connectable 的网页用 `chrome.runtime.sendMessage(<id>, …)` 发消息，
+    /// 后台的 onMessageExternal 收到（sender 正确）并回复；不匹配的网页上根本没有 chrome
+    @MainActor
+    func testExternallyConnectablePageMessagesBackground() async throws {
+        let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
+            "bg.js": """
+            chrome.runtime.onMessageExternal.addListener((message, sender, reply) => {
+              chrome.storage.local.set({ external: {
+                message, url: sender && sender.url, origin: sender && sender.origin,
+                id: String(sender && sender.id), tab: typeof (sender && sender.tab),
+              } });
+              if (message && message.ping === "async") { setTimeout(() => reply({ pong: message.ping }), 10); return true; }
+              reply({ pong: message && message.ping });
+              return true;
+            });
+            """,
+        ], manifest: [
+            "host_permissions": ["http://example.test/*"],
+            "externally_connectable": ["matches": ["http://example.test/*"]],
+        ])
+        defer { try? FileManager.default.removeItem(at: manager.storeDirectory) }
+        let host = Host()
+        manager.host = host
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        defer { pane.paneWillClose() }
+        host.panes = [pane]
+        let tab = try XCTUnwrap(pane.activeTab)
+        XCTAssertTrue(tab.webView.configuration.userContentController.userScripts
+            .contains { $0.source.hasPrefix(BrowserExtensionCompat.externalMessagingMarker) },
+            "已装扩展声明了 externally_connectable：普通标签带上网页侧垫片")
+        _ = await Self.loadBackground(item.context)
+
+        tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
+        let out = try await Self.evaluate(inPage: tab.webView, at: "http://example.test/", load: nil, """
+        const out = { chrome: typeof chrome, send: typeof (globalThis.chrome && chrome.runtime && chrome.runtime.sendMessage) };
+        if (out.send === "function") {
+          try { out.promise = await chrome.runtime.sendMessage(id, { ping: "sync" }); } catch (e) { out.promise = "ERR " + e.message; }
+          try { out.callback = await new Promise((r) => chrome.runtime.sendMessage(id, { ping: "async" }, r)); } catch (e) { out.callback = "ERR " + e.message; }
+        }
+        return out;
+        """, arguments: ["id": item.context.uniqueIdentifier])
+        let result = try XCTUnwrap(out as? [String: Any])
+        XCTAssertEqual(result["chrome"] as? String, "object", "网页上补出了 chrome")
+        XCTAssertEqual((result["promise"] as? [String: Any])?["pong"] as? String, "sync",
+                       "Promise 形式拿到后台的回复：\(result)")
+        XCTAssertEqual((result["callback"] as? [String: Any])?["pong"] as? String, "async",
+                       "回调形式 + 异步 sendResponse（return true）：\(result)")
+        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
+
+        let stored = try await Self.storageValue(item, key: "external")
+        let external = try XCTUnwrap(stored as? [String: Any], "后台的 onMessageExternal 收到了消息")
+        XCTAssertEqual(external["url"] as? String, "http://example.test/", "sender.url 是发消息的网页")
+        XCTAssertEqual(external["origin"] as? String, "http://example.test")
+
+        // 同一个标签换到不匹配的地址：垫片什么都不定义
+        tab.webView.loadHTMLString("<html><body>other</body></html>", baseURL: URL(string: "http://other.test/")!)
+        let outside = try await Self.evaluate(inPage: tab.webView, at: "http://other.test/", load: nil,
+                                              "return { chrome: typeof chrome };")
+        XCTAssertEqual((outside as? [String: Any])?["chrome"] as? String, "undefined",
+                       "externally_connectable 之外的网页拿不到 chrome")
+    }
+
+    /// 扩展是启动后异步装上的：已经开着的标签在 browserExtensionsDidChange 之后要补上网页侧垫片
+    @MainActor
+    func testOpenTabsPickUpBridgeAfterInstall() async throws {
+        let store = try Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store) }
+        let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        defer { pane.paneWillClose() }
+        let marker = BrowserExtensionCompat.externalMessagingMarker
+        let scripts = { pane.activeTab?.webView.configuration.userContentController.userScripts ?? [] }
+        XCTAssertFalse(scripts().contains { $0.source.hasPrefix(marker) }, "还没装扩展：不注入")
+
+        let fixture = try Self.makeExtension(background: nil, files: [:],
+                                             manifest: ["externally_connectable": ["matches": ["https://x.test/*"]]])
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let item = try await manager.install(directory: fixture, id: Self.freshID(), source: .local)
+        XCTAssertTrue(scripts().contains { $0.source.hasPrefix(marker) && $0.source.contains("https://x.test/*") },
+                      "装上之后已开着的标签也带上了垫片")
+        XCTAssertEqual(scripts().filter { $0.source.hasPrefix(marker) }.count, 1, "重挂不会叠加")
+        XCTAssertTrue(scripts().contains { $0 === BrowserExtensionCompat.frameUserScript }, "其它注入脚本照旧")
+
+        manager.setEnabled(false, for: item)
+        XCTAssertFalse(scripts().contains { $0.source.hasPrefix(marker) }, "停用之后撤掉")
+        manager.remove(item)
+        XCTAssertFalse(scripts().contains { $0.source.hasPrefix(marker) })
+    }
+
     /// 旧版本装的扩展（目录里没垫片）：启动加载时补上
     @MainActor
     func testLoadInstalledAppliesShimToExistingDirectories() async throws {
@@ -388,6 +562,23 @@ final class BrowserExtensionCompatTests: XCTestCase {
     private static func storageValue(_ item: BrowserExtensionManager.Installed, key: String, timeout: Double = 10) async throws -> Any? {
         try await evaluate(item, "const v = await new Promise(r => chrome.storage.local.get([key], r)); return v[key] === undefined ? null : v[key];",
                            arguments: ["key": key], timeout: timeout)
+    }
+
+    /// 在一个**网页**（page world）里跑一段 async 脚本：`load` 非空时先把它当作 `at` 地址的内容加载，
+    /// 然后等到那个地址加载完再求值（换页之后不能求值在旧页面上）
+    @MainActor
+    private static func evaluate(inPage webView: WKWebView, at url: String, load html: String?, _ script: String,
+                                 arguments: [String: Any] = [:], timeout: Double = 15) async throws -> Any? {
+        if let html { webView.loadHTMLString(html, baseURL: URL(string: url)!) }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            guard !webView.isLoading, webView.url?.absoluteString == url else { continue }
+            let value = try? await webView.callAsyncJavaScript(script, arguments: arguments, in: nil as WKFrameInfo?,
+                                                               contentWorld: WKContentWorld.page)
+            if let value, !(value is NSNull) { return value }
+        }
+        return nil
     }
 
     /// 在扩展自己的页面（page.html）里跑一段 async 脚本，轮询到返回非空为止

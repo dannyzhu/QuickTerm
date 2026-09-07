@@ -320,6 +320,25 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
   manifest 里的 worker 路径带 `..` 的一律不包装（`../../x.js` 不能让我们往扩展目录外写）；判断只看字符串，别拿
   `standardizedFileURL` / `resolvingSymlinksInPath` 比前缀——目标文件还不存在时 /var 与 /private/var 只解析一边，前缀对不上。
 
+- **`externally_connectable`（网页给扩展发消息）WebKit 是实现了的，但网页侧只挂在 `browser` 上**（2026-09-07，
+  Stylish 一直显示未登录的根因）：合成扩展实测，普通 http 网页里 `typeof chrome === "undefined"`（连对象都没有），
+  而 `typeof browser === "object"`、`Object.keys(browser) === ["runtime"]`，`browser.runtime` 上只有原型方法
+  `sendMessage` / `connect`（`Object.keys` 是空的），没有 `id` / `lastError` / `onMessage`——正好是 Chrome 给普通网页的
+  那一份。`browser.runtime.sendMessage("<扩展 id>", msg)` 真会打到后台的 `chrome.runtime.onMessageExternal`
+  （`onConnectExternal` 同理），`return true` + 异步 `sendResponse` 也正常，sender 带 `url` / `origin`。
+  可 Chrome 生态的站点判断"扩展在不在"清一色是 `"chrome" in window` + `chrome.runtime.sendMessage(id, msg, cb)`：
+  userstyles.org 登录后就是这样把 Firebase token 递给 Stylish 的，`chrome` 不存在 → 静默什么都没发生 → 扩展永远未登录、
+  "No Styles Installed"。修法只需一层别名，不用自己造桥：`BrowserExtensionCompat.externalMessagingScript` 生成的
+  page world 用户脚本（document start、全部框架），在地址命中某个已装扩展 `externally_connectable.matches` 时补出
+  `chrome.runtime.sendMessage` / `connect`（转给 `browser.runtime`，无回调返回 Promise、有回调按 Chrome 语义调回调），
+  已有 `chrome` 时一概不动。注意 WebKit 把这两个网页侧 stub **无条件**挂在每个页面上（没有任何扩展声明
+  externally_connectable 时也在），投递本身才鉴权——发给不匹配的来源只会静默 resolve `undefined`（不报错、后台收不到），
+  所以匹配判断只是"别在无关站点上凭空多出 `chrome` 这个指纹"，不是安全边界。
+- **内容脚本里 `chrome.runtime.getURL()` 返回 `webkit-masked-url://hidden/`**（2026-09-07）：拿它当 `<script src>`
+  注入 web_accessible_resource 照样能加载执行（落在页面主世界），但字符串是被屏蔽的，`document.querySelectorAll("script")`
+  读回来也是它——扩展如果拿自己的 WAR URL 做字符串比较就会失灵。另外 MV3 的 `"world": "MAIN"` 内容脚本 WebKit 认，
+  隔离世界与主世界互相看不见彼此的全局变量（与 Chrome 一致）。
+
 ## WKDownload 进度 UI（2026-09-06）
 
 - **连接就失败的下载不会走 `decideDestinationUsing`**：目的地是收到响应之后才谈的，`http://127.0.0.1:9/`

@@ -128,7 +128,7 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
         didSet {
             guard isEnabled != oldValue else { return }
             syncLoadedContexts()
-            NotificationCenter.default.post(name: .browserExtensionsDidChange, object: self)
+            notifyExtensionsChanged()
         }
     }
 
@@ -216,7 +216,7 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
         }
         installed = Self.sorted(result)
         saveRecords()
-        NotificationCenter.default.post(name: .browserExtensionsDidChange, object: self)
+        notifyExtensionsChanged()
     }
 
     /// 套 WebKit 兼容垫片（见 BrowserExtensionCompat）。失败只记日志：扩展照常加载，只是没垫片
@@ -293,7 +293,7 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
         item.record.enabled = enabled
         if enabled, isEnabled { load(item) } else { unload(item) }
         saveRecords()
-        NotificationCenter.default.post(name: .browserExtensionsDidChange, object: self)
+        notifyExtensionsChanged()
     }
 
     /// 固定 / 取消固定到工具条（Chrome 的「Pin to toolbar」）
@@ -301,7 +301,7 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
         guard item.record.pinned != pinned else { return }
         item.record.pinned = pinned
         saveRecords()
-        NotificationCenter.default.post(name: .browserExtensionsDidChange, object: self)
+        notifyExtensionsChanged()
     }
 
     func remove(_ item: Installed) {
@@ -309,11 +309,33 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
         try? FileManager.default.removeItem(at: directory(for: item.id))
         installed.removeAll { $0 === item }
         saveRecords()
-        NotificationCenter.default.post(name: .browserExtensionsDidChange, object: self)
+        notifyExtensionsChanged()
     }
 
     func directory(for id: String) -> URL {
         storeDirectory.appendingPathComponent(id, isDirectory: true)
+    }
+
+    // MARK: - 网页侧 externally_connectable 垫片
+
+    /// 注入到普通网页的 `chrome.runtime` 别名（见 BrowserExtensionCompat.externalMessagingScript）。
+    /// 地址清单来自各扩展 manifest 里的 `externally_connectable.matches`：一个都没声明就是 nil，什么都不注入
+    private(set) var externalMessagingUserScript: WKUserScript?
+
+    /// 扩展集合 / 启停变化后重算网页侧垫片
+    private func refreshExternalMessagingScript() {
+        let matches = isEnabled
+            ? installed.filter(\.enabled).flatMap {
+                BrowserExtensionCompat.externallyConnectableMatches(in: directory(for: $0.id))
+            }
+            : []
+        externalMessagingUserScript = BrowserExtensionCompat.externalMessagingUserScript(matches: matches)
+    }
+
+    /// 安装 / 移除 / 启停之后的统一出口：先把网页侧垫片算好，再广播（pane 收到后重挂注入脚本）
+    private func notifyExtensionsChanged() {
+        refreshExternalMessagingScript()
+        NotificationCenter.default.post(name: .browserExtensionsDidChange, object: self)
     }
 
     func installedExtension(withID id: String) -> Installed? {
@@ -462,7 +484,7 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
         let item = try await makeInstalled(record: record, directory: destination)
         installed = Self.sorted(installed + [item])
         saveRecords()
-        NotificationCenter.default.post(name: .browserExtensionsDidChange, object: self)
+        notifyExtensionsChanged()
         return item
     }
 
