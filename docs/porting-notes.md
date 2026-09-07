@@ -369,3 +369,42 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
   目的地一起算作占用。
 - **pane 关闭时进行中的下载明确取消**（`paneWillClose`）：下载列表是 pane 私有的，`WKDownload.delegate`
   又是弱引用（pane 走了自动置空），不取消就是一堆没有界面、没有代理的传输在后台跑。
+
+
+## scrolling 条带的视口对齐（2026-09-07）
+
+- **"揭示新列"不能挂在焦点上**：`insertNewPane` 只改 `model.layout`，视口滚动由 `ScrollingStripView`
+  按焦点决定；而焦点是**异步**落地的（`PaneView.moveFocus` 要等新 pane 挂进窗口才 `makeFirstResponder`，
+  浏览器 pane 的 FR 还要再经内部 WKWebView 慢一拍，实测 0.10s vs 终端 0.05s），
+  `.onChange(of: layoutSignature)` 触发时焦点通常**还在原 pane 上**。于是新列的揭示完全依赖
+  "焦点最终落地并让 PreferenceKey 的聚合值发生变化"这一条链路——中间任何一环被吃掉（悬停焦点抢走、
+  焦点往返被合并进同一次 SwiftUI 更新因而聚合值没变、旧 pane 残留 `focused` 标志），视口就停在上一个
+  焦点的位置，新列卡在视口右缘外：**看起来像"新建的浏览器宽度不对"（焦点边框是它的，内容被窗口裁掉），
+  其实列宽、pane 帧、offset 公式全都是对的**。修法是**按身份揭示**：视图记住上一轮的 pane id 集合，
+  结构变化时优先滚到"这一轮新出现的 pane"，与焦点何时落地无关（`ScrollingStripView.revealTarget()`）。
+- **同一个 `focused` 标志，两条路径必须挑同一个 pane**：`FocusedStripPaneKey.reduce` 是**末位胜出**，
+  而按标志线性扫描的 `first { $0.focused }` 是**首位胜出**。视图重挂期间两个 pane 可能同时挂着 `focused`
+  （AppKit 不发 resign，见上文），两条路径就会各滚各的、且之后再也不纠正。判定一律**先看窗口真 FR**
+  （`holdsFirstResponder`），退化时取末位，与 reduce 对齐。
+- **`layoutSignature` 刻意不含 `widthFactor`**（免得右键拖拽调宽逐帧把视口劫持回焦点列），代价是
+  **列宽变了没人重排视口**：切"每屏可见列数" / Cmd+Ctrl+= 之后列变窄、总宽从溢出变成填满，旧 offset
+  就把整条带推到视口外（实测 5 列全部被左缘裁掉）。补一条只**夹取**不跟焦点的 `clampOffset`，由列宽数组
+  本身触发（窗口改大小同理）。
+- **视口对齐的回调不能挂在 zoom 分支里**：`ScrollingStripView` 的主体是
+  `if let zoomed = strip.zoomedPane { … } else { HStack … }`，zoom 一开一关就把 `else` 整支拆掉重建；
+  而**所有结构操作都顺手清 zoom**（`insertingColumnRight`/`dropping`/`mergingOrSplitting`/`swapping`），
+  于是"Cmd+F 之后 Cmd+B（或 ⌘点链接）"的**解除 zoom 与插列落在同一次 SwiftUI 更新**里：
+  重建出来的 HStack 只会走 `onAppear`（把刚插进来的 pane 也记成"早就见过"），`onChange` 又不对刚创建的
+  视图触发（没写 `initial: true`），按身份揭示整条失效、退回只靠焦点的老路。
+  所以 `onAppear` 认身份、`onChange(of: layoutSignature)` 揭示、`onChange(of: widths)` 夹取、
+  换工作区归零这几条**一律挂在 zoom 分支外面**（`ZStack` 上），只有 `onPreferenceChange`（焦点）与
+  `onChange(of: pan)`（平移）留在 HStack 上——它们只在条带铺开时才有意义。
+- **夹取在手势进行中不能带动画**：⌘+右键拖拽调宽是**逐事件**写 `widthFactor`，条带停在右端时每个事件都会
+  触发一次 `clampOffset`；带 0.15s easeOut 的话每帧重设动画，视口拖着尾巴、末列右缘漏空、内容还反着手指
+  方向滑。判据用**列数有没有变**：变了才是插/删列（动画兜底），没变就是纯宽度手势，直接
+  `Transaction.disablesAnimations` 赋值跟手（与 `applyPan` 进行中的处理一致）。
+- **回归测试要能"没有焦点也断言"**：只走 `perform(.newBrowser)` 的用例在测试宿主里是绿的——没有真鼠标，
+  焦点 0.1s 内就落地并把视口救回来了。真正卡得住的写法是**只插列、不请求焦点**，再断言新列完整落在
+  视口内（`testInsertedColumnIsRevealedWithoutFocusLanding`；未修复时实测 pane 位于 x 993.5…1314，
+  视口右缘 1020）。zoom 路径另有一条
+  （`testInsertedColumnIsRevealedAfterZoomWithoutFocusLanding`：先 Cmd+F 再只插列不请求焦点）。

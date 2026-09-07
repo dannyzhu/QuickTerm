@@ -664,6 +664,218 @@ extension WorkspaceTests {
         XCTAssertEqual(factors(), [f, f, f])
     }
 
+    /// 条带几何断言：pane 视图宽度 = 模型列宽 − 2×pane-gap，且整列完整落在视口内
+    @MainActor
+    private func assertFillsColumnInsideViewport(
+        _ c: MainWindowController, _ pane: PaneView, _ label: String,
+        file: StaticString = #filePath, line: UInt = #line) throws {
+        // pane 内边距与外圈留白同值，且都跟着 gaps 开关走（PaneChrome / RootView）
+        let gap = c.themeManager.gapsEnabled ? c.themeManager.paneGap : 0
+        let outer = gap
+        let content = try XCTUnwrap(c.window?.contentView, "窗口内容区", file: file, line: line)
+        let viewport = content.bounds.width - 2 * outer   // 条带视口 = 内容区宽 − 外圈留白
+        guard case .scrolling(let strip) = c.model.layout else {
+            return XCTFail("布局应为 scrolling", file: file, line: line)
+        }
+        let pos = try XCTUnwrap(strip.position(of: pane), "\(label) 不在条带里", file: file, line: line)
+        let widths = strip.columnWidths(viewport: viewport, gap: 0)
+        let rect = pane.convert(pane.bounds, to: nil)     // 窗口坐标
+        XCTAssertEqual(rect.width, widths[pos.col] - 2 * gap, accuracy: 1.0,
+                       "\(label) 宽度应 = 列宽 \(widths[pos.col]) − 2×gap，实为 \(rect)",
+                       file: file, line: line)
+        XCTAssertGreaterThanOrEqual(rect.minX, outer - 1.0,
+                                    "\(label) 被视口左缘裁掉：\(rect)", file: file, line: line)
+        XCTAssertLessThanOrEqual(rect.maxX, outer + viewport + 1.0,
+                                 "\(label) 被视口右缘裁掉：\(rect)", file: file, line: line)
+    }
+
+    /// 回归（用户报告「新建浏览器，宽度不对」：新浏览器 pane 亮着焦点边框却被窗口右缘裁掉）：
+    /// scrolling 里新建的 pane —— 浏览器与终端一视同仁 —— 必须
+    /// ①视图宽度 = 模型列宽 − 2×pane-gap（NSViewRepresentable 不得被内部 fittingSize 撑开），
+    /// ②所在列完整落在视口内（新列由条带滚动揭示出来）。窄列一并覆盖：浏览器 pane 的 fittingSize
+    /// （工具条 + 地址栏 200pt 下限）远大于列宽时也不许撑出列外。
+    @MainActor
+    func testNewPaneInScrollingFillsColumnAndIsRevealed() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        XCTAssertTrue(c.model.layout.isEmpty)
+        c.model.layout = .empty   // 前面的用例可能把这块工作区留成（空的）dwindle
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        let prevVisible = c.visibleColumns
+        let prevSettings = BrowserPaneView.settings
+        BrowserPaneView.settings.home = "about:blank"   // 不联网
+        c.setVisibleColumns(3, persist: false)
+        var created: [PaneView] = []
+        defer {
+            for p in created { c.closePane(p, confirmIfNeeded: false, animated: false) }
+            c.setVisibleColumns(prevVisible, persist: false)
+            BrowserPaneView.settings = prevSettings
+            c.model.switchTo(home)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        }
+        func spawn(_ action: WMAction) throws -> PaneView {
+            let before = Set(c.paneList.map(ObjectIdentifier.init))
+            c.perform(action)
+            // 揭示动画 0.15s + 弹入 0.2s + 焦点落地（浏览器经 WKWebView 更慢）
+            RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+            let p = try XCTUnwrap(c.paneList.first { !before.contains(ObjectIdentifier($0)) })
+            created.append(p)
+            return p
+        }
+
+        // 每屏 3 列：第 4 列起溢出，新列只能靠滚动揭示
+        for _ in 0..<3 { _ = try spawn(.newTerminal) }
+        let browser = try spawn(.newBrowser)
+        XCTAssertTrue(browser is BrowserPaneView, "Cmd+B 应新建浏览器 pane")
+        try assertFillsColumnInsideViewport(c, browser, "新建浏览器")
+        let terminal = try spawn(.newTerminal)   // 对照组：同一位置的新终端
+        try assertFillsColumnInsideViewport(c, terminal, "新建终端（对照）")
+
+        // 窄列：5 个 pane 摊在「每屏 6 列」上（填充模式，全部可见），列宽远小于浏览器 fittingSize
+        c.setVisibleColumns(6, persist: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        XCTAssertLessThan(browser.frame.width, browser.fittingSize.width,
+                          "窄列断言要有意义：列宽必须小于浏览器 pane 的 fittingSize")
+        for (i, p) in c.paneList.enumerated() {
+            try assertFillsColumnInsideViewport(c, p, "窄列 pane #\(i)")
+        }
+    }
+
+    /// 回归：新插进条带的列必须被**揭示**出来，与「焦点何时落到新 pane」无关。
+    /// 焦点是异步的（PaneView.moveFocus 等挂载；浏览器 pane 的 FR 是内部 WKWebView，还慢一拍，
+    /// 且可能被悬停焦点/重挂抢走）——只按焦点对齐时新列会停在视口右缘外。
+    /// 这里刻意不给新 pane 焦点：条带仍须按身份把它滚进来。
+    @MainActor
+    func testInsertedColumnIsRevealedWithoutFocusLanding() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        XCTAssertTrue(c.model.layout.isEmpty)
+        c.model.layout = .empty   // 前面的用例可能把这块工作区留成（空的）dwindle
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        let prevVisible = c.visibleColumns
+        c.setVisibleColumns(3, persist: false)
+        var created: [PaneView] = []
+        defer {
+            for p in created { c.closePane(p, confirmIfNeeded: false, animated: false) }
+            c.setVisibleColumns(prevVisible, persist: false)
+            c.model.switchTo(home)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        }
+        for _ in 0..<3 {
+            let before = Set(c.paneList.map(ObjectIdentifier.init))
+            c.perform(.newTerminal)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+            created.append(try XCTUnwrap(c.paneList.first { !before.contains(ObjectIdentifier($0)) }))
+        }
+        let window = try XCTUnwrap(c.window)
+        let anchor = try XCTUnwrap(c.focusedPane)
+        guard case .scrolling(let strip) = c.model.layout else { return XCTFail("布局应为 scrolling") }
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        created.append(pane)
+        // 只改布局，不请求焦点（模拟焦点迟到/被抢走）
+        c.model.layout = .scrolling(strip.insertingColumnRight(
+            of: anchor, pane: pane, widthFactor: c.columnFactor))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        XCTAssertFalse(pane.holdsFirstResponder(of: window), "本例前提：焦点没落到新 pane")
+        try assertFillsColumnInsideViewport(c, pane, "无焦点插入的浏览器列")
+    }
+
+    /// 回归：**zoom 中插列**（Cmd+F 之后 Cmd+B / ⌘点链接）同样要按身份揭示。
+    /// 结构操作顺手清 zoom（insertingColumnRight），于是「解除 zoom」与「插进一列」落在同一次
+    /// SwiftUI 更新里，条带的 HStack 被整条重建：揭示逻辑若挂在 zoom 分支内部，重建只走 onAppear
+    /// （把刚插进来的 pane 也认成早就见过的），onChange 又不对刚创建的视图触发——新列没人滚进来。
+    @MainActor
+    func testInsertedColumnIsRevealedAfterZoomWithoutFocusLanding() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        XCTAssertTrue(c.model.layout.isEmpty)
+        c.model.layout = .empty   // 前面的用例可能把这块工作区留成（空的）dwindle
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        let prevVisible = c.visibleColumns
+        c.setVisibleColumns(3, persist: false)
+        var created: [PaneView] = []
+        defer {
+            for p in created { c.closePane(p, confirmIfNeeded: false, animated: false) }
+            c.setVisibleColumns(prevVisible, persist: false)
+            c.model.switchTo(home)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        }
+        for _ in 0..<3 {
+            let before = Set(c.paneList.map(ObjectIdentifier.init))
+            c.perform(.newTerminal)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+            created.append(try XCTUnwrap(c.paneList.first { !before.contains(ObjectIdentifier($0)) }))
+        }
+        let window = try XCTUnwrap(c.window)
+        let anchor = try XCTUnwrap(c.focusedPane)
+        c.perform(.toggleZoom)   // Cmd+F：只剩焦点 pane 挂着，条带的 HStack 被拆掉
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        guard case .scrolling(let strip) = c.model.layout else { return XCTFail("布局应为 scrolling") }
+        XCTAssertNotNil(strip.zoomedID, "本例前提：条带处于 zoom")
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        created.append(pane)
+        // 只改布局（顺手解除 zoom），不请求焦点（模拟焦点迟到/被悬停抢走）
+        c.model.layout = .scrolling(strip.insertingColumnRight(
+            of: anchor, pane: pane, widthFactor: c.columnFactor))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.8))
+        guard case .scrolling(let after) = c.model.layout else { return XCTFail("布局应为 scrolling") }
+        XCTAssertNil(after.zoomedID, "插列清 zoom")
+        XCTAssertFalse(pane.holdsFirstResponder(of: window), "本例前提：焦点没落到新 pane")
+        try assertFillsColumnInsideViewport(c, pane, "zoom 中插入的浏览器列")
+    }
+
+    /// 回归：条带停在右端时逐事件调宽（⌘+右键拖拽）不许把视口甩到内容外——
+    /// 列宽变化必须触发夹取（layoutSignature 刻意不含 widthFactor，没人替它重排），末列始终贴视口右缘。
+    /// 注意：这条**测不出**"夹取有没有带动画"——SwiftUI 动画期间 NSView 的 frame 已经是终值，
+    /// 逐事件动画造成的拖尾只在屏幕上看得见（实测把 animated 写死 true 本例照样绿）。
+    /// 不带动画的理由见 ScrollingStripView.clampOffset。
+    @MainActor
+    func testResizeDragKeepsStripClampedAtRightEnd() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        XCTAssertTrue(c.model.layout.isEmpty)
+        c.model.layout = .empty
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        let prevVisible = c.visibleColumns
+        c.setVisibleColumns(3, persist: false)
+        var created: [PaneView] = []
+        defer {
+            for p in created { c.closePane(p, confirmIfNeeded: false, animated: false) }
+            c.setVisibleColumns(prevVisible, persist: false)
+            c.model.switchTo(home)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        }
+        for _ in 0..<4 {   // 每屏 3 列 → 4 列溢出，末列揭示后条带贴在右端
+            let before = Set(c.paneList.map(ObjectIdentifier.init))
+            c.perform(.newTerminal)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+            created.append(try XCTUnwrap(c.paneList.first { !before.contains(ObjectIdentifier($0)) }))
+        }
+        let last = try XCTUnwrap(created.last)
+        try assertFillsColumnInsideViewport(c, last, "末列（调宽前）")
+        let content = try XCTUnwrap(c.window?.contentView)
+        let gap = c.themeManager.gapsEnabled ? c.themeManager.paneGap : 0
+        let viewport = content.bounds.width - 2 * gap
+        let rightEdge = gap + viewport
+        XCTAssertEqual(last.convert(last.bounds, to: nil).maxX + gap, rightEdge,
+                       accuracy: 1.5, "前提：末列贴着视口右缘（条带在右端）")
+        // 模拟一串收窄的拖拽事件（resizeByDrag 是逐事件写 widthFactor）
+        for _ in 0..<5 {
+            guard case .scrolling(let strip) = c.model.layout else { return XCTFail("布局应为 scrolling") }
+            c.model.layout = .scrolling(strip.resizingWidth(of: last, delta: -0.05))
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        // 只等一次布局提交（远短于 0.15s 动画）：夹取跟手就已经到位
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        try assertFillsColumnInsideViewport(c, last, "末列（逐事件调宽后）")
+        XCTAssertEqual(last.convert(last.bounds, to: nil).maxX + gap, rightEdge,
+                       accuracy: 1.5, "收窄后末列仍贴右缘：视口逐事件跟手夹取，不留空档")
+    }
+
     /// 终端 ⌘+点击链接：没有浏览器 pane → 新开；已有 → 最近激活的那个里开新标签；多个 → 最近聚焦的；
     /// 非 http(s) 与 link-opener = system 不接管
     @MainActor
