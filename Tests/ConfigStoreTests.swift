@@ -53,17 +53,19 @@ final class ConfigStoreTests: XCTestCase {
     @MainActor
     func testPersistedStateRoundTrip() throws {
         let c = try XCTUnwrap((NSApp.delegate as? AppDelegate)?.controller)
-        let state = MainWindowController.PersistedState(
-            layouts: c.model.layouts, activeIndex: c.model.activeIndex)
+        let state = PersistedState(windows: [
+            WindowState(layouts: c.model.layouts, activeIndex: c.model.activeIndex)
+        ])
         let data = try JSONEncoder().encode(state)
-        let decoded = try JSONDecoder().decode(MainWindowController.PersistedState.self, from: data)
-        XCTAssertEqual(decoded.version, 4)
+        let decoded = try JSONDecoder().decode(PersistedState.self, from: data)
+        XCTAssertEqual(decoded.version, 5)
         if !c.model.allPanes.isEmpty {
             XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("\"kind\":\"terminal\""), "v4 叶子带 kind")
         }
-        XCTAssertEqual(decoded.layouts.count, c.model.layouts.count)
-        XCTAssertEqual(decoded.activeIndex, c.model.activeIndex)
-        XCTAssertEqual(decoded.layouts[c.model.activeIndex].paneList.count,
+        let window = try XCTUnwrap(decoded.windows.first)
+        XCTAssertEqual(window.layouts.count, c.model.layouts.count)
+        XCTAssertEqual(window.activeIndex, c.model.activeIndex)
+        XCTAssertEqual(window.layouts[c.model.activeIndex].paneList.count,
                        c.paneList.count, "布局（含 pane 数）应完整往返")
     }
 }

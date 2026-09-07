@@ -2,17 +2,61 @@ import AppKit
 
 /// 多「屏幕」的创建 / 放置 / 关闭 / 迁移，以及 Window 菜单的动作落点（spec v9 §1.1–§1.3）。
 /// 「屏幕」= 一个窗口 + 一组自己的工作区；只能从菜单栏驱动（没有快捷键——⌘N 已被占用）。
+/// （整段 `@MainActor`：窗口与 `SessionStore` 都是主线程独占的）
+@MainActor
 extension AppDelegate {
-    /// 新建一个屏幕。新屏幕的首个终端继承源窗口焦点 pane 的 cwd（与新建终端同规则）
+    /// 新建一个屏幕。新屏幕的首个终端继承源窗口焦点 pane 的 cwd（与新建终端同规则）。
+    /// `restoring = true` 时不开起步终端——调用方（`restoreSession`）随后灌入存档
     @discardableResult
-    func newScreen(on screen: NSScreen? = nil, inheritingFrom pane: PaneView? = nil) -> MainWindowController {
+    func newScreen(on screen: NSScreen? = nil, inheritingFrom pane: PaneView? = nil,
+                   restoring: Bool = false, id: UUID = UUID(),
+                   restoredFrame: CGRect? = nil) -> MainWindowController {
         let index = screens.nextIndex()
         let controller = MainWindowController(
             ghostty: ghostty, session: session,
-            screen: screen, index: index, restoring: !screens.didCreateFirstScreen,
+            screen: screen, index: index, restoring: restoring,
+            id: id, restoredFrame: restoredFrame,
             inheritedDirectory: pane?.workingDirectory)
         screens.add(controller)
+        session.sessionStore.scheduleSave()
         return controller
+    }
+
+    /// 一键复原（用户 2026-09-08）：还原每个「屏幕」、它的 pane 与布局、每个终端 pane 的目录、
+    /// 每个浏览器 pane 已打开的网页；显示器 / frame / 全屏 / 「在所有桌面显示」一并还原。
+    /// 没有存档 / 损坏 / 全空 → 保持 1.5.x 行为：一个新屏幕 + 一个终端
+    func restoreSession() {
+        guard !Self.isRunningTests, let state = session.sessionStore.load() else {
+            newScreen()
+            return
+        }
+        restoreSession(from: state)
+    }
+
+    /// 纯编排（读盘 / 测试宿主的判断留在上面那层，用例可以直接喂一份 `PersistedState`）：
+    /// 逐窗口解析显示器 → 建屏 → 灌档 → 按存档的叠放次序与 key 屏幕置前。返回建出来的控制器
+    @discardableResult
+    func restoreSession(from state: PersistedState) -> [MainWindowController] {
+        var restored: [MainWindowController] = []
+        for windowState in state.windows {
+            // 显示器没了不丢窗口：回退主屏，frame 再收进它的可见区
+            let screen = SessionStore.resolveScreen(for: windowState.display)
+            let controller = newScreen(on: screen, restoring: true, id: windowState.id,
+                                       restoredFrame: windowState.frame)
+            if !controller.restore(from: windowState) { controller.ensureStarterPane() }
+            restored.append(controller)
+        }
+        guard let first = restored.first else { return [newScreen()] }
+        // 叠放次序：存档里靠后的先 orderFront，最后是 key 屏幕——三个以上屏幕挤在同一台显示器上时
+        // 谁压着谁才能复原（存档没有这份次序 = 老档 → 按存档顺序，与之前的行为一致）
+        let key = restored.first { $0.windowID == state.keyWindowID } ?? first
+        let rank = (state.stackingOrder ?? []).enumerated()
+            .reduce(into: [UUID: Int]()) { $0[$1.element] = $1.offset }
+        let others = restored.filter { $0 !== key }
+            .sorted { (rank[$0.windowID] ?? Int.max) > (rank[$1.windowID] ?? Int.max) }
+        for controller in others { controller.window?.orderFront(nil) }
+        key.window?.makeKeyAndOrderFront(nil)
+        return restored
     }
 
     /// 关闭一个屏幕（有活跃 pane 时先确认）。返回是否真的关了。
@@ -23,8 +67,9 @@ extension AppDelegate {
         guard controller.confirmCloseScreen() else { return false }
         // 关掉最后一个屏幕 = 程序退出：先存档，因为 windowWillClose 的 teardown 会清空模型，
         // 之后 applicationWillTerminate 就没有布局可存了
-        if !Self.isRunningTests, screens.controllers.count == 1 { controller.saveState() }
+        if screens.controllers.count == 1 { session.sessionStore.saveNow() }
         window.close()   // → windowWillClose：拆监视器/观察者，下一轮 runloop 摘注册表
+        session.sessionStore.scheduleSave()
         return true
     }
 
@@ -32,6 +77,7 @@ extension AppDelegate {
     func moveScreen(_ controller: MainWindowController, to screen: NSScreen) {
         controller.move(to: screen)
         controller.window?.makeKeyAndOrderFront(nil)
+        session.sessionStore.scheduleSave()   // 换了显示器：下次启动要开回这一台
     }
 
     /// 窗口已经关闭：摘掉注册表里的强引用（由 windowWillClose 在下一轮 runloop 调用）
@@ -60,6 +106,7 @@ extension AppDelegate {
     @objc func toggleJoinAllSpaces(_ sender: NSMenuItem) {
         guard let controller = screens.key ?? screens.primary else { return }
         controller.joinsAllSpaces.toggle()
+        session.sessionStore.scheduleSave()
     }
 
     @objc func closeScreenAction(_ sender: Any?) {

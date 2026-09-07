@@ -8,7 +8,7 @@ import AppKit
 /// 只有明确"主窗口语义"的路径（CLI `--open-browser`、退出时存档）才用 `primary`。
 final class ScreenRegistry {
     private(set) var controllers: [MainWindowController] = []
-    /// 进程内是否已经建过第一个屏幕（只有它读 state.json；关掉后再新建不会二次恢复）
+    /// 进程内是否已经建过第一个屏幕（存档恢复归 `SessionStore`，这里只记录事实）
     private(set) var didCreateFirstScreen = false
 
     /// 第一个屏幕（标题恒为 `QuickTerm`；存档 / CLI 的落点）

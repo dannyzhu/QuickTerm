@@ -94,6 +94,22 @@ Switching layouts keeps every pane in order (columns become right-splits, stacks
 
 `Cmd+S` opens the Scratchpad — one global terminal that overlays any workspace (70% × 60%, centred). Click outside to hide it.
 
+### Screens (multiple windows)
+
+A *screen* is a QuickTerm window with its own workspaces, status bar, floating layer and Scratchpad — put one on each display and they work independently. Everything lives in the **Window** menu (no keybindings, since you rarely need it):
+
+| Item | What it does |
+|---|---|
+| 新建屏幕 / New screen | Opens a screen on the current display, inheriting the focused pane's directory |
+| 在显示器上新建屏幕 ▸ | Same, on a display you pick (the submenu is rebuilt each time it opens, so hot-plugged and virtual displays show up) |
+| 将此屏幕移到显示器 ▸ | Moves the current screen to another display (the window has no title bar to drag) |
+| 在所有桌面显示 | Makes this screen appear on every Space |
+| 关闭屏幕 | Closes it (asks first if processes are still running); closing the last one quits |
+
+The session is restored on the next launch: every screen, on the display it was on, with its workspaces, layouts, floating panes, each terminal's directory and each browser pane's open tabs. State is written continuously (debounced), not only at quit, and the archive is `state.json` v5 — an older QuickTerm will refuse to read it, so the first launch of this version leaves a `state.pre-v5.json` copy beside it.
+
+Two honest limits, both from macOS itself: **a window cannot be sent to a specific Space** (no public API — new screens open on the Space you are on, and Mission Control drags are remembered by macOS but not restorable by us), and non-native fullscreen hides the Dock and menu bar **on every display** while any screen is fullscreen, because `presentationOptions` is process-wide.
+
 ### Mouse
 
 | Gesture | Effect |
@@ -263,7 +279,7 @@ One quirk of Ghostty's loader: files pulled in through `config-file` includes ar
 | `~/.config/quickterm/themes/<name>/{colors.toml, backgrounds/}` | Your own themes; same name as a built-in overrides it |
 | `~/.config/quickterm/backgrounds/` | Your own wallpapers, available in every theme |
 | `~/.config/ghostty/config` | Your Ghostty config, reused as-is |
-| `~/Library/Application Support/QuickTerm/` | `engine-overlay.conf` and `state.json` (restored layouts) |
+| `~/Library/Application Support/QuickTerm/` | `engine-overlay.conf` and `state.json` (v5: screens, layouts, terminal cwd, browser tabs; `state.pre-v5.json` is the pre-upgrade backup) |
 
 ## Troubleshooting
 

@@ -435,6 +435,7 @@ final class BrowserPaneView: PaneView {
         }
         if activate { selectTab(at: tabs.count - 1) } else { rebuildTabBar() }
         extensionBar.reload()
+        archiveDidChange.send()   // 标签集合变了：排一次防抖存档
         return tab
     }
 
@@ -528,6 +529,7 @@ final class BrowserPaneView: PaneView {
         extensionBar.reload()
         if hadFocus { window?.makeFirstResponder(webView) }
         objectWillChange.send()
+        archiveDidChange.send()   // 活动标签变了（切换 / 关标签）：排一次防抖存档
     }
 
     /// 相对切换（Ctrl+Tab / Ctrl+Shift+Tab），首尾回绕
@@ -865,6 +867,7 @@ final class BrowserPaneView: PaneView {
     private func urlDidChange() {
         if !editingAddress { addressField.stringValue = effectiveURL?.absoluteString ?? "" }
         objectWillChange.send()
+        archiveDidChange.send()   // 「已打开的网页」变了：排一次防抖存档
     }
 
     private func progressDidChange() {

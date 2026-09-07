@@ -19,6 +19,9 @@ final class AppSession {
     /// 注入每个屏幕的 RootView。每屏一个的时代 N 个窗口就是 N 份轮询
     let stats = SystemStatsService()
 
+    /// 会话存档（多屏幕 v5）：读盘 / 迁移 / 防抖写盘的唯一入口
+    let sessionStore: SessionStore
+
     /// 最近一次生效的配置（新屏幕创建时直接拿它，不再各自读盘）
     private(set) var settings = ConfigStore.Settings()
 
@@ -42,9 +45,48 @@ final class AppSession {
     /// 当前处于非原生全屏的屏幕（按窗口引用计数的账本，见下方 MARK）
     private var fullscreenOwners = Set<ObjectIdentifier>()
 
-    init(screens: ScreenRegistry, themeManager: ThemeManager) {
+    /// 显示器配置变化（插拔 / 唤醒 / 改分辨率）的防抖：一次插拔会连发好几条通知
+    static let screenChangeDebounce: TimeInterval = 0.5
+    private var screenParametersObserver: Any?
+    private var pendingScreenReflow: DispatchWorkItem?
+
+    init(screens: ScreenRegistry, themeManager: ThemeManager, stateURL: URL? = nil) {
         self.screens = screens
         self.themeManager = themeManager
+        self.sessionStore = SessionStore(screens: screens, url: stateURL)
+    }
+
+    deinit {
+        if let screenParametersObserver {
+            NotificationCenter.default.removeObserver(screenParametersObserver)
+        }
+    }
+
+    // MARK: 显示器热插拔（spec v9 §3.5）
+
+    /// 装上进程内唯一的显示器变化监听
+    func installScreenParametersObserver() {
+        guard screenParametersObserver == nil else { return }
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.scheduleScreenReflow()
+        }
+    }
+
+    /// 防抖 0.5s 后把每个屏幕重新贴合它当前所在的显示器
+    func scheduleScreenReflow() {
+        pendingScreenReflow?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.reflowScreens() }
+        pendingScreenReflow = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.screenChangeDebounce, execute: item)
+    }
+
+    /// 逐屏重新约束（目标显示器没了 → AppKit 已经把窗口挪到别处，按它当前所在屏收）+ 排一次存档
+    func reflowScreens() {
+        pendingScreenReflow = nil
+        for controller in screens.controllers { controller.reflowForScreenChange() }
+        sessionStore.scheduleSave()
     }
 
     // MARK: 配置链第 4 层（config.toml，spec §4.7）

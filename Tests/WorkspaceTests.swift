@@ -205,19 +205,23 @@ extension WorkspaceTests {
         XCTAssertLessThanOrEqual(wild.rect.height, 1.0)
         XCTAssertGreaterThanOrEqual(wild.rect.origin.y, 0)
 
-        // v3 往返含浮动层；v2 JSON（无 floatings 字段）可解且浮动为空
-        let state = MainWindowController.PersistedState(
-            layouts: c.model.layouts, floatings: c.model.floatings, activeIndex: 0)
+        // v5 往返含浮动层；v2 JSON（无 floatings 字段）经迁移仍可解且浮动为空
+        let state = PersistedState(windows: [
+            WindowState(layouts: c.model.layouts, floatings: c.model.floatings, activeIndex: 0)
+        ])
         let data = try JSONEncoder().encode(state)
-        let decoded = try JSONDecoder().decode(MainWindowController.PersistedState.self, from: data)
-        XCTAssertEqual(decoded.version, 4)
-        XCTAssertEqual(decoded.floatings?.count, c.model.floatings.count)
+        let decoded = try JSONDecoder().decode(PersistedState.self, from: data)
+        XCTAssertEqual(decoded.version, 5)
+        XCTAssertEqual(decoded.windows.first?.floatings?.count, c.model.floatings.count)
 
-        var v2 = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let legacy = LegacyPersistedState(
+            layouts: c.model.layouts, floatings: c.model.floatings, activeIndex: 0)
+        var v2 = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(legacy)) as! [String: Any]
         v2["version"] = 2
         v2.removeValue(forKey: "floatings")
         let v2data = try JSONSerialization.data(withJSONObject: v2)
-        let decodedV2 = try JSONDecoder().decode(MainWindowController.PersistedState.self, from: v2data)
+        let decodedV2 = try JSONDecoder().decode(LegacyPersistedState.self, from: v2data)
         XCTAssertNil(decodedV2.floatings, "v2 存档兼容：浮动层缺省")
     }
 }
@@ -1102,7 +1106,9 @@ extension WorkspaceTests {
         XCTAssertFalse(a.focused, "单焦点不变量")
 
         // 存档：叶子 kind=browser + url
-        let state = MainWindowController.PersistedState(layouts: c.model.layouts, floatings: c.model.floatings, activeIndex: ws)
+        let state = PersistedState(windows: [
+            WindowState(layouts: c.model.layouts, floatings: c.model.floatings, activeIndex: ws)
+        ])
         let json = String(decoding: try JSONEncoder().encode(state), as: UTF8.self)
         XCTAssertTrue(json.contains("\"kind\":\"browser\""))
         XCTAssertTrue(json.contains("about:blank"))

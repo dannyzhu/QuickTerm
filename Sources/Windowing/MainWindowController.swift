@@ -21,6 +21,8 @@ final class MainWindowController: BaseTerminalController {
     private var keyMonitor: Any?
     private var mouseMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
+    /// 每个 pane 一条「存档内容变化」订阅（见 `resubscribePaneSaves`），随 pane 集合增删
+    private var paneSaveSubscriptions: [ObjectIdentifier: AnyCancellable] = [:]
     private var lastSplitAnimationAt: Date?
     /// 关闭动效时长（与创建动效同源）；到点后才真正从布局移除、释放 surface
     static let closeAnimationDuration: TimeInterval = 0.28
@@ -65,8 +67,8 @@ final class MainWindowController: BaseTerminalController {
     private var stripPanSerial = 0
     /// 本屏幕的序号（0 = 第一个屏幕，标题恒为 `QuickTerm`）；关掉后序号可被新屏幕复用
     let screenIndex: Int
-    /// 第一个屏幕：只有它做状态恢复与配置模板补全（配置监听在 AppDelegate，重载后 fan-out 到全部屏幕）
-    private let isFirstScreen: Bool
+    /// 本屏幕在存档里的稳定身份（跨启动不变；`PersistedState.keyWindowID` 指的就是它）
+    let windowID: UUID
     /// 窗口已经走过 windowWillClose（监视器/观察者已拆）
     private(set) var isClosed = false
 
@@ -193,15 +195,18 @@ final class MainWindowController: BaseTerminalController {
     /// - Parameters:
     ///   - screen: 目标显示器（nil = 主显示器）；窗口在它的 visibleFrame 内居中，同屏已有窗口时层叠偏移
     ///   - index: 屏幕序号（0 = 第一个，标题 `QuickTerm`）
-    ///   - restoring: 是否读取 state.json 恢复布局（只有第一个屏幕做；Phase 3 上提到 SessionStore）
+    ///   - restoring: true = 由 `SessionStore` 随后灌入存档（本控制器不自己开起步终端、也不自己读盘）
+    ///   - id: 存档里的窗口身份（恢复时沿用旧 id，新建时随机）
+    ///   - restoredFrame: 存档里的窗口 frame（会被收进目标显示器的可见区）
     ///   - inheritedDirectory: 新屏幕首个终端继承的 cwd（来自源窗口焦点 pane）
     init(ghostty: Ghostty.App, session: AppSession,
-         screen: NSScreen? = nil, index: Int = 0, restoring: Bool = true,
+         screen: NSScreen? = nil, index: Int = 0, restoring: Bool = false,
+         id: UUID = UUID(), restoredFrame: CGRect? = nil,
          inheritedDirectory: String? = nil) {
         self.ghostty = ghostty
         self.session = session
         self.screenIndex = index
-        self.isFirstScreen = index == 0 && restoring
+        self.windowID = id
         let window = HiddenTitlebarWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1024, height: 720),
             styleMask: [],  // HiddenTitlebarWindow 内部固定样式
@@ -216,8 +221,17 @@ final class MainWindowController: BaseTerminalController {
         for publisher in [model.$layouts.map { _ in () }.eraseToAnyPublisher(),
                           model.$floatings.map { _ in () }.eraseToAnyPublisher(),
                           model.$activeIndex.map { _ in () }.eraseToAnyPublisher()] {
-            publisher.dropFirst().sink { [weak self] in self?.scheduleFocusReconcile() }
-                .store(in: &cancellables)
+            publisher.dropFirst().sink { [weak self] in
+                guard let self else { return }
+                self.scheduleFocusReconcile()
+                // 布局 / 浮动层 / 活动工作区任何变化都排一次防抖存档（1.5.x 只在退出时存一次，
+                // 崩溃或强制退出会丢掉整个会话）
+                self.session.sessionStore.scheduleSave()
+                // pane 集合可能变了：重订阅每个 pane 的「存档内容变化」（终端 cwd / 浏览器网页）。
+                // @Published 在 willSet 发布——此刻 model.layouts 还是旧值，必须等它落定再读
+                DispatchQueue.main.async { [weak self] in self?.resubscribePaneSaves() }
+            }
+            .store(in: &cancellables)
         }
 
         window.contentView = NSHostingView(rootView: RootView(
@@ -250,19 +264,13 @@ final class MainWindowController: BaseTerminalController {
         // 这里只把已经加载好的那份落到本屏幕上
         applyWindowConfig(session.settings)
 
-        // 状态恢复（spec §4.8）：布局 + 各 pane cwd + 活动工作区；失败则全新开始。
-        // 只有第一个屏幕恢复存档，后开的屏幕一律以一个空白终端起步（继承源窗口焦点 pane 的 cwd）
+        // 状态恢复（spec §4.8 / v9 §3）：读盘与迁移全归 `SessionStore`——它建完控制器后调
+        // `restore(from:)` 灌入布局（restoring = true）。这里只负责「不恢复」的那条路：
+        // 一个空白终端起步（继承源窗口焦点 pane 的 cwd）。
         // 视图尚未被 SwiftUI 挂载：直接 makeFirstResponder 返回 true 却什么都不做（AppKit 报
         // "different window ((null))"），用 Ghostty.moveFocus（等待挂载后再设）
-        if isFirstScreen, !AppDelegate.isRunningTests, restoreState() {
-            for case let browser as BrowserPaneView in allPanes { applyBrowserTheme(browser) }   // 恢复的浏览器 pane 也套主题
-            if let focused = focusedPane { requestFocus(to: focused) }
-        } else {
-            let first = newSurface(workingDirectory: inheritedDirectory)
-            model.layout = .scrolling(ScrollingStrip(pane: first, widthFactor: columnFactor))
-            requestFocus(to: first)
-        }
-        place(on: screen)
+        if !restoring { ensureStarterPane(inheriting: inheritedDirectory) }
+        place(on: screen, restoredFrame: restoredFrame)
         window.makeKeyAndOrderFront(nil)
 
         // 引擎发的这三个通知都以 SurfaceView 为 object 且按 object: nil 注册：
@@ -431,43 +439,104 @@ final class MainWindowController: BaseTerminalController {
         if let n = settings.visibleColumns { setVisibleColumns(n, persist: false) }
     }
 
-    // MARK: 状态恢复（spec §4.8；v2 起含每工作区布局类型）
+    // MARK: 状态存取（spec §4.8 / v9 §3；读盘与迁移在 `SessionStore`，这里只管一个窗口的那一片）
 
-    private static var stateURL: URL {
-        EngineOverlay.url.deletingLastPathComponent().appendingPathComponent("state.json")
+    /// 本屏幕的存档切片（`SessionStore.snapshot()` 逐个窗口调用）。
+    /// **纯读取**：存档现在由防抖定时器触发，快照绝不能改动屏幕上的东西——
+    /// 淡出中的 pane 只从副本里滤掉（不 flush，否则会把正在播放的关闭动效截断）
+    func windowState() -> WindowState {
+        var layouts = model.layouts
+        var floatings = model.floatings
+        let closing = model.closingPanes
+        if !closing.isEmpty {
+            for i in layouts.indices {
+                for pane in layouts[i].paneList where closing.contains(pane.id) {
+                    switch layouts[i] {
+                    case .scrolling(let strip):
+                        layouts[i] = .scrolling(strip.removing(pane))
+                    case .dwindle(let tree):
+                        guard let node = tree.root?.node(view: pane) else { continue }
+                        layouts[i] = .dwindle(tree.removing(node))
+                    }
+                }
+            }
+            for i in floatings.indices { floatings[i].removeAll { closing.contains($0.pane.id) } }
+        }
+        // 全屏中窗口自己贴满显示器：要存的是退出全屏后要恢复的那个 frame
+        return WindowState(
+            id: windowID,
+            layouts: layouts,
+            floatings: floatings,
+            activeIndex: model.activeIndex,
+            visibleColumns: visibleColumns,
+            display: DisplayRef(screen: window?.screen),
+            frame: savedFrame ?? window?.frame,
+            isFullscreen: isSimpleFullscreen,
+            joinAllSpaces: joinsAllSpaces,
+            focusedPaneID: focusedPane.flatMap { closing.contains($0.id) ? nil : $0.id })
     }
 
-    struct PersistedState: Codable {
-        var version = 4   // v4：叶子带 kind（terminal/browser）；v2/v3 无 kind = 终端
-        var layouts: [WorkspaceLayout]
-        /// v3 起；v2 存档缺省为空浮动层
-        var floatings: [[FloatingPane]]?
-        var activeIndex: Int
-    }
-
-    func saveState() {
-        // 已经 teardown 的屏幕（模型被清空过）绝不写盘：否则关掉最后一个屏幕触发退出时
-        // 会用一份空布局覆盖掉用户的存档
+    /// 每个 pane 一条「存档内容变化」订阅（终端 cwd 走 `$pwd`，浏览器走 `archiveDidChange`）。
+    /// 布局事件之外 `cd` / 打开网页也要能进档——否则崩溃 / 强制退出后复原的是上一次布局变化时的目录与网页。
+    /// pane 集合变化（新建 / 恢复 / 拖入 / 关闭）都会经布局 sink 走到这里，重订阅即可
+    private func resubscribePaneSaves() {
         guard !isClosed else { return }
-        flushPendingCloses()   // 淡出中的 pane 不进存档
-        let state = PersistedState(
-            layouts: model.layouts, floatings: model.floatings, activeIndex: model.activeIndex)
-        if let data = try? JSONEncoder().encode(state) {
-            try? data.write(to: Self.stateURL, options: .atomic)
+        let live = model.allPanes
+        let ids = Set(live.map(ObjectIdentifier.init))
+        paneSaveSubscriptions = paneSaveSubscriptions.filter { ids.contains($0.key) }
+        for pane in live where paneSaveSubscriptions[ObjectIdentifier(pane)] == nil {
+            let changes: AnyPublisher<Void, Never>
+            if let terminal = pane as? Ghostty.SurfaceView {
+                // dropFirst：订阅那一刻的当前值不是「变化」；removeDuplicates：多数 shell 每个提示符都发一次 OSC 7
+                changes = terminal.$pwd.dropFirst().removeDuplicates().map { _ in () }.eraseToAnyPublisher()
+            } else {
+                changes = pane.archiveDidChange.eraseToAnyPublisher()
+            }
+            paneSaveSubscriptions[ObjectIdentifier(pane)] = changes.sink { [weak self] in
+                self?.session.sessionStore.scheduleSave()
+            }
         }
     }
 
-    /// 恢复上次布局（每 pane 按存档 cwd 重开 shell）；旧版本/损坏存档 → false 全新开始
-    private func restoreState() -> Bool {
-        guard let data = try? Data(contentsOf: Self.stateURL),
-              let state = try? JSONDecoder().decode(PersistedState.self, from: data),
-              (2...4).contains(state.version) else { return false }
-        let floatings = state.floatings ?? Array(repeating: [], count: state.layouts.count)
-        guard !(state.layouts.allSatisfy(\.isEmpty) && floatings.allSatisfy(\.isEmpty)) else { return false }
+    /// 起步 pane：没有任何 pane 时开一个终端（新建屏幕，以及存档为空的兜底）
+    func ensureStarterPane(inheriting directory: String? = nil) {
+        guard model.allPanes.isEmpty else { return }
+        let first = newSurface(workingDirectory: directory)
+        model.layout = .scrolling(ScrollingStrip(pane: first, widthFactor: columnFactor))
+        requestFocus(to: first)
+    }
+
+    /// 灌入一份存档（每 pane 按存档 cwd 重开 shell、每个浏览器 pane 重开它的标签页）；
+    /// 空存档 → false（调用方开一个空白终端）
+    @discardableResult
+    func restore(from state: WindowState) -> Bool {
+        // 列宽归一要用最终的列因子：可见列数必须先落（此时布局还空，不会触发重排）。
+        // config.toml 明确写了 `visible-columns` 时以配置为准——配置层永远压过存档
+        if session.settings.visibleColumns == nil, let columns = state.visibleColumns {
+            setVisibleColumns(columns, persist: false)
+        }
+        let restored = applyArchive(layouts: state.layouts, floatings: state.floatings,
+                                    activeIndex: state.activeIndex)
+        guard restored else { return false }
+        for case let browser as BrowserPaneView in allPanes { applyBrowserTheme(browser) }   // 恢复的浏览器 pane 也套主题
+        // 存档里的焦点 pane 优先（只在活动工作区里找：别把焦点交给一个没挂载的工作区）；
+        // 旧档 / 找不到 → 退回第一块 pane（与 v4 行为一致）
+        let target = state.focusedPaneID.flatMap { id in paneList.first { $0.id == id } } ?? focusedPane
+        if let target { requestFocus(to: target) }
+        joinsAllSpaces = state.joinAllSpaces
+        if state.isFullscreen, !isSimpleFullscreen { toggleSimpleFullscreen() }
+        return true
+    }
+
+    /// 布局/浮动层/活动工作区三件套的落地（v2–v5 共用；含历史列宽归一与浮动层补齐）
+    private func applyArchive(layouts: [WorkspaceLayout], floatings rawFloatings: [[FloatingPane]]?,
+                              activeIndex: Int) -> Bool {
+        let floatings = rawFloatings ?? Array(repeating: [], count: layouts.count)
+        guard !(layouts.allSatisfy(\.isEmpty) && floatings.allSatisfy(\.isEmpty)) else { return false }
         // 旧状态归一：0.49（露边 2% 时代）/ 0.44（露边 6% 时代）是历史默认列宽，
         // 归到当前列因子；用户手动调过的宽度原样保留
         let legacyDefaults = [0.49, 0.44]
-        model.layouts = state.layouts.map { layout in
+        model.layouts = layouts.map { layout in
             guard case .scrolling(var strip) = layout else { return layout }
             for i in strip.columns.indices
             where legacyDefaults.contains(where: { abs(strip.columns[i].widthFactor - $0) < 0.001 }) {
@@ -481,7 +550,7 @@ final class MainWindowController: BaseTerminalController {
                 repeating: [], count: model.layouts.count - model.floatings.count))
         }
         model.setWorkspaceCount(max(model.layouts.count, 1))
-        model.activeIndex = min(max(state.activeIndex, 0), model.layouts.count - 1)
+        model.activeIndex = min(max(activeIndex, 0), model.layouts.count - 1)
         return true
     }
 
@@ -506,9 +575,19 @@ final class MainWindowController: BaseTerminalController {
     }
 
     /// 放置窗口：给定显示器时在其 visibleFrame 内居中，同屏已有窗口则层叠偏移，最后一律 constrainFrameRect。
-    /// 未指定显示器且是本进程第一个窗口时保持历史行为（window.center()）
-    private func place(on screen: NSScreen?) {
+    /// 未指定显示器且是本进程第一个窗口时保持历史行为（window.center()）。
+    /// `restoredFrame`（存档恢复）优先：原样落回去，只按目标显示器的可见区收一收
+    private func place(on screen: NSScreen?, restoredFrame: CGRect? = nil) {
         guard let window else { return }
+        if let restoredFrame {
+            guard let target = screen ?? NSScreen.main else {
+                window.setFrame(restoredFrame, display: false)
+                return
+            }
+            let fitted = SessionStore.constrain(restoredFrame, into: target.visibleFrame)
+            window.setFrame(window.constrainFrameRect(fitted, to: target), display: false)
+            return
+        }
         let siblings = Self.siblingWindows(excluding: window, on: screen ?? NSScreen.main)
         guard let target = screen ?? NSScreen.main else { window.center(); return }
         guard screen != nil || !siblings.isEmpty else { window.center(); return }
@@ -593,6 +672,7 @@ final class MainWindowController: BaseTerminalController {
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor); self.mouseMonitor = nil }
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor); self.scrollMonitor = nil }
         cancellables.removeAll()
+        paneSaveSubscriptions.removeAll()
         floatingDrag = nil
         resizeTarget = nil
         // 非原生全屏的 presentationOptions 是进程级的：本窗口申请过就得还回去（按窗口记账，
@@ -1084,7 +1164,7 @@ final class MainWindowController: BaseTerminalController {
     /// 本屏幕是否处于非原生全屏
     var isSimpleFullscreen: Bool { savedFrame != nil }
 
-    private func toggleSimpleFullscreen() {
+    func toggleSimpleFullscreen() {
         guard let window, let screen = window.screen ?? NSScreen.main else { return }
         if let frame = savedFrame {
             savedFrame = nil
@@ -1095,6 +1175,23 @@ final class MainWindowController: BaseTerminalController {
             session.setSimpleFullscreen(true, for: self)
             window.setFrame(screen.frame, display: true, animate: false)
         }
+        session.sessionStore.scheduleSave()
+    }
+
+    /// 显示器热插拔 / 分辨率变化后重新贴合（spec v9 §3.5；由 `AppSession` 防抖后逐屏调用）：
+    /// 目标显示器没了就用当前所在屏（AppKit 已经把窗口挪过去了），全屏窗口重贴满新屏。
+    /// 绝不因为解析失败而动布局——位置可以将就，内容不能丢
+    func reflowForScreenChange() {
+        guard !isClosed, let window, let screen = window.screen ?? NSScreen.main else { return }
+        if isSimpleFullscreen {
+            // 退出全屏后要恢复的 frame 也得收进新屏，否则一退全屏就跑到屏幕外
+            savedFrame = SessionStore.constrain(savedFrame ?? window.frame, into: screen.visibleFrame)
+            if window.frame != screen.frame { window.setFrame(screen.frame, display: true) }
+            return
+        }
+        let fitted = window.constrainFrameRect(
+            SessionStore.constrain(window.frame, into: screen.visibleFrame), to: screen)
+        if fitted != window.frame { window.setFrame(fitted, display: true) }
     }
 
     // MARK: 浮动面板（Walker 风格）
@@ -1753,6 +1850,18 @@ extension MainWindowController: NSWindowDelegate {
     func windowDidBecomeKey(_ notification: Foundation.Notification) {
         guard !isClosed else { return }
         session.refreshPresentationOptions()
+        session.sessionStore.scheduleSave()   // keyWindowID 变了：下次启动焦点落在正确的屏幕上
+    }
+
+    /// 窗口移动 / 缩放结束 → 存档（拖动途中不写：live resize 每帧都发通知）
+    func windowDidMove(_ notification: Foundation.Notification) {
+        guard !isClosed else { return }
+        session.sessionStore.scheduleSave()
+    }
+
+    func windowDidEndLiveResize(_ notification: Foundation.Notification) {
+        guard !isClosed else { return }
+        session.sessionStore.scheduleSave()
     }
 
     func windowWillClose(_ notification: Foundation.Notification) {

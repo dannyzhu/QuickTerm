@@ -48,6 +48,11 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
     /// 键盘焦点实际落到的视图（终端 = 自己；浏览器 = WKWebView）
     var focusTarget: NSView { self }
 
+    /// 「会进存档的内容变了」——浏览器 pane 的网址 / 标签集合。
+    /// 控制器订阅它排一次防抖存档，好让崩溃 / 强制退出后也能复原到最后打开的网页；
+    /// 终端 pane 的 cwd 由控制器直接观察 `SurfaceView.$pwd`（OSC 7），不走这里
+    let archiveDidChange = PassthroughSubject<Void, Never>()
+
     /// ⌘ 拖拽源浮层 / 浮动会话把"纯点击"转交给 pane 时的目标：指针下的视图必须是焦点视图或其后代
     /// （终端 = surface、浏览器 = 网页），否则 nil——落在浏览器工具条等 AppKit 控件上不能直接调
     /// mouseDown（NSControl 会进入等待抬起的跟踪循环，而真正的抬起已经过去了）

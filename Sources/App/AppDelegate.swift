@@ -82,8 +82,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.session = session
         session.loadInitialConfig()
 
-        newScreen()
+        // 一键复原：存档里的每个屏幕（含显示器 / frame / 全屏）；没有存档就一个新屏幕
+        restoreSession()
         session.installConfigWatcher()
+        session.installScreenParametersObserver()
         // 配置已由控制器加载（browser-extensions 决定开关）：装好的扩展在这里异步加载。
         // 测试宿主里不加载（与 restoreState 同一策略）：用户装的扩展会跑进测试的 WebView，
         // 扩展工具条的用例也会跟着变红
@@ -124,11 +126,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        if !Self.isRunningTests {
-            // Phase 1：存档仍是单窗口 v4（primary），行为与 1.5.x 一致；
-            // 多窗口存档是 Phase 3 的 SessionStore
-            screens.primary?.saveState()  // spec §4.8：退出保存布局与 cwd
-        }
+        // spec §4.8 / v9 §3.4：退出时同步写一次（防抖那份可能还没到点）——
+        // 布局、每个终端 pane 的目录、每个浏览器 pane 的标签页、窗口所在显示器与 frame
+        session?.sessionStore.saveNow()
     }
 }
 

@@ -408,3 +408,27 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
   视口内（`testInsertedColumnIsRevealedWithoutFocusLanding`；未修复时实测 pane 位于 x 993.5…1314，
   视口右缘 1020）。zoom 路径另有一条
   （`testInsertedColumnIsRevealedAfterZoomWithoutFocusLanding`：先 Cmd+F 再只插列不请求焦点）。
+
+## 多窗口（「屏幕」，2026-09-08）
+
+- **NSEvent 本地监视器是进程级的**：每个控制器装一份，N 个窗口就有 N 份，每次事件都会全部跑一遍。keyDown /
+  scrollWheel 早就有 `event.window === window` 守卫，`.flagsChanged` 与拖动会话分支必须补上。
+- **`object: nil` 的 NotificationCenter 观察者会跨窗口执行**：引擎的 close-surface / child-exited 与「全部等分」
+  在单窗口下无所谓，多窗口时会让另一个屏幕一起等分、或对不属于自己的 pane 调 paneWillClose。观察者开头按
+  `model.allPanes` 判归属。
+- **单闭包回调撑不住多窗口**：`ThemeManager.onOverlayChanged` 这类 `var callback: (() -> Void)?` 会被后建的窗口
+  覆盖，先建的窗口从此收不到主题热切换。改成按 token 的多监听。
+- **关窗口的释放时序**：`windowWillClose` 里先 teardown（监视器 / 观察者 / Combine / 每个 pane 的 paneWillClose），
+  但**下一轮 runloop** 才从注册表摘除控制器——引擎回调可能还在栈上，提前释放 surface 会 UAF。teardown 会清空模型，
+  所以「关最后一个屏幕」必须先存档再关，否则退出时写出去的是空布局。
+- **`NSApp.presentationOptions` 是进程级的**：非原生全屏要按窗口记账 + 引用计数，key 窗口切换时重新贴合；
+  「任一窗口全屏时所有显示器的菜单栏都隐藏」是 API 决定的，消不掉。
+- **`NSScreen` 实例不能持久化也不能长期持有**：显示器配置一变就重建。菜单项里存
+  `CGDisplayCreateUUIDFromDisplayID` 的 UUID 字符串，用时再解析；恢复位置按 UUID → localizedName → 主屏三级回退，
+  并一律 `constrainFrameRect` 进目标屏可见区——显示器没了只影响位置，绝不丢窗口和布局。
+- **持续写盘要防「写空」**：任何「模型已清空 / 控制器已 teardown / 窗口全关」的时刻都可能被防抖定时器撞上。
+  写盘前过滤已关闭的控制器，快照为空直接不写，退出走同步写。
+- **版本探测要精确匹配**：`case current...` 这种开区间会把未来版本的存档当成当前版本读（未知 pane kind 解码失败
+  还会被「宽松解码」整窗丢掉），再被下一次防抖写盘覆盖。只认相同版本，其余按外来文件备份后重开。
+- **终端 pane 的 cwd 只有 shell 发过 OSC 7 才有**：恢复出来的 pane 在用户敲第一条命令前 `pwd` 是 nil，持续写盘
+  会把存档里原本正确的目录覆盖成 null。编码时回退到创建时的 `workingDirectory`。

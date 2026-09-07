@@ -26,6 +26,12 @@ extension Ghostty {
         // changed with escape codes.
         @Published var pwd: String?
 
+        // QuickTerm: the working directory this surface was created with (archive restore,
+        // inherited cwd, file-manager panes). `pwd` stays nil until the shell emits OSC 7 at
+        // its first prompt, so this is the archive fallback -- a debounced save must never
+        // downgrade a directory we already know to null.
+        private let initialWorkingDirectory: String?
+
         // The cell size of this surface. This is set by the core when the
         // surface is first created and any time the cell size changes (i.e.
         // when the font size changes). This is used to allow windows to be
@@ -174,7 +180,9 @@ extension Ghostty {
 
         override class var kind: PaneKind { .terminal }
         override var paneTitle: String { title }
-        override var workingDirectory: String? { pwd }
+        // QuickTerm: before the shell reports OSC 7, inherit the directory we started it with
+        // rather than nil (which would silently open a new terminal in $HOME).
+        override var workingDirectory: String? { pwd ?? initialWorkingDirectory }
         override var wantsConfirmClose: Bool { needsConfirmQuit }
         override func encodePayload(to encoder: Encoder) throws { try encode(to: encoder) }
 
@@ -264,6 +272,7 @@ extension Ghostty {
 
         init(_ app: ghostty_app_t, baseConfig: SurfaceConfiguration? = nil, uuid: UUID? = nil) {
             self.markedText = NSMutableAttributedString()
+            self.initialWorkingDirectory = baseConfig?.workingDirectory
 
             // Our initial config always is our application wide config.
             if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
@@ -1865,7 +1874,9 @@ extension Ghostty {
 
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
-            try container.encode(pwd, forKey: .pwd)
+            // QuickTerm: fall back to the configured start directory while the shell has not
+            // reported OSC 7 yet, so a save that lands during shell startup keeps the cwd.
+            try container.encode(pwd ?? initialWorkingDirectory, forKey: .pwd)
             try container.encode(id.uuidString, forKey: .uuid)
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)

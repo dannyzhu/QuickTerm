@@ -94,6 +94,22 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 
 `Cmd+S` 唤出 Scratchpad —— 一个跨工作区的全局终端，居中覆盖（70% × 60%），点击外部隐藏。
 
+### 屏幕（多窗口）
+
+一个「屏幕」就是一个 QuickTerm 窗口，有自己的工作区、状态栏、浮动层和 Scratchpad——每台显示器摆一个，互不干扰。入口全在 **Window 菜单**（不占快捷键，这类操作本来就少）：
+
+| 菜单项 | 作用 |
+|---|---|
+| 新建屏幕 | 在当前显示器上开一个，继承焦点 pane 的目录 |
+| 在显示器上新建屏幕 ▸ | 同上，但由你选显示器（子菜单每次打开时重建，热插拔与虚拟显示器都能跟上） |
+| 将此屏幕移到显示器 ▸ | 把当前屏幕搬到另一台显示器（窗口没有标题栏可拖，所以靠这个） |
+| 在所有桌面显示 | 让这个屏幕出现在所有桌面 |
+| 关闭屏幕 | 关掉它（还有进程在跑会先确认）；关掉最后一个 = 退出 |
+
+**一键复原**：下次启动会还原每个屏幕、它原来所在的显示器，以及各自的工作区、布局、浮动 pane、每个终端 pane 的目录、每个浏览器 pane 打开的标签页。存档是持续写的（防抖），不再只在退出时写一次；格式为 `state.json` v5——老版本 QuickTerm 读不了它，所以本版首次启动会在旁边留一份 `state.pre-v5.json` 备份。
+
+两条来自 macOS 本身的限制：**窗口无法被程序放到指定的虚拟桌面（Space）**——公开 API 没有这个能力，新屏幕只会开在你当前所在的桌面，你用 Mission Control 拖过去之后 macOS 会记住，但重启后我们无法复原；另外只要有任一屏幕处于非原生全屏，Dock 与菜单栏会在**所有显示器**上隐藏，因为 `presentationOptions` 是进程级的。
+
 ### 鼠标
 
 | 手势 | 效果 |
@@ -263,7 +279,7 @@ Ghostty 加载器有个特点：经 `config-file` 包含进来的文件是在第
 | `~/.config/quickterm/themes/<name>/{colors.toml, backgrounds/}` | 自定义主题；与内置同名时覆盖内置 |
 | `~/.config/quickterm/backgrounds/` | 自选壁纸，全主题共用 |
 | `~/.config/ghostty/config` | 你的 Ghostty 配置，原样复用 |
-| `~/Library/Application Support/QuickTerm/` | `engine-overlay.conf` 与 `state.json`（布局存档） |
+| `~/Library/Application Support/QuickTerm/` | `engine-overlay.conf` 与 `state.json`（v5：屏幕、布局、终端目录、浏览器标签；`state.pre-v5.json` 是升级前的备份） |
 
 ## 故障排查
 
