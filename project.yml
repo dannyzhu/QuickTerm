@@ -44,8 +44,8 @@ targets:
     settings:
       base:
         # 版本号唯一来源（scripts/make-release.sh 从构建产物的 Info.plist 读取）
-        MARKETING_VERSION: "1.5.4"
-        CURRENT_PROJECT_VERSION: "10"
+        MARKETING_VERSION: "1.5.5"
+        CURRENT_PROJECT_VERSION: "11"
         OTHER_LDFLAGS: "-lc++"
         PRODUCT_BUNDLE_IDENTIFIER: dev.danny.quickterm
         ENABLE_HARDENED_RUNTIME: false
