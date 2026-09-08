@@ -411,6 +411,35 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
   已有 `chrome` 时一概不动。注意 WebKit 把这两个网页侧 stub **无条件**挂在每个页面上（没有任何扩展声明
   externally_connectable 时也在），投递本身才鉴权——发给不匹配的来源只会静默 resolve `undefined`（不报错、后台收不到），
   所以匹配判断只是"别在无关站点上凭空多出 `chrome` 这个指纹"，不是安全边界。
+- **网页 WebView 的 UA 伪装会漏进网页里嵌的扩展 iframe**（2026-09-08，Stylish 侧栏"已登录却仍显示 Login"的根因）：
+  `browser.user_agent` 默认给网页伪装成 Safari（`BrowserPaneView.Settings.safariUserAgent`），
+  而扩展的后台 worker / 扩展自己的页面拿到的是 WebKit 的默认 UA（`…AppleWebKit/605.1.15 (KHTML, like Gecko)`，
+  没有 `Version/…` `Safari/…`）。网页里那个 `webkit-extension://…/index.html` iframe 跑在网页的 WebView 里，
+  于是**同一个扩展的两半以为自己在两个浏览器里**；Chrome 下不存在这种分裂（扩展的框架报的一直是浏览器自己的 UA）。
+  真实后果：Stylish 面板里的 firebase-auth 用 UA 判断 `_shouldInitProactively`（`ua.includes("safari/") && !chrome/`），
+  Safari 分支下 auth 初始化要 `await` 那个 gapi popup/redirect resolver，而 MV3 构建里加载远程脚本的 `_loadJS`
+  是个**空实现**（MV3 不许远程代码）——`gapi` 永远不会回调那个 `iframefcb…`，promise 永远不 settle：
+  `_initializationPromise` 一直挂着 → `onAuthStateChanged` 一次都不触发 → 面板的 `getCurrentUser()` 永不 resolve。
+  面板那边 `userState` 原子的默认值是 null，写它的只有一个没有 `.catch`、没有重试的 `lf.getUser().then(...)`，
+  且"退回后台 GET_USER"只在 `sf.getUser()` **resolve 成假值**时才走——所以现象是永久、静默的"Login"，
+  而样式照常注入、面板的"My Styles"也正常（那两样走 storage / IndexedDB，不碰 auth）。
+  用打了埋点的真实扩展副本证实：扩展页面 `init:proactive=false` → 746ms 内 `onAuthStateChanged fired user`；
+  同一份代码在网页里的 iframe 里 `init:proactive=true` → `init:resolver start` 之后 30s 一个事件都没有。
+  修法两处：① 扩展自己的页面开成标签时不套那份伪装（`applySettings(to:extensionPage:)`）——
+  `window.open` / `target=_blank` 这条路上 WebKit 把开窗方的 configuration 递回来，"这个弹窗属于哪个扩展"
+  只有开窗方知道，得由 `addTab(…, inheriting:)` 在 `install` **之前**传进去（事后再赋值就晚了，UA 已经盖上）；
+  ② 网页 WebView 里注入 `BrowserExtensionCompat.userAgentUserScript`（document start、全部框架），
+  在 `webkit-extension:` 框架里把 `navigator.userAgent` / `appVersion` 换回 WebKit 自己那份
+  （`BrowserPaneView.webKitUserAgent`：兜底是 macOS 上 WKWebView 的默认 UA，第一个 pane 起来时用一个干净的
+  WKWebView 实测一次，不同就覆盖并广播 `browserExtensionsDidChange` 让各标签重挂脚本）。网页照旧看到伪装；
+  HTTP 请求头仍是伪装那份（扩展看不到自己的请求头，够用）。
+  回归用例：`testEmbeddedExtensionFrameKeepsTheBrowserUserAgent`、`testExtensionPageTabKeepsTheBrowserUserAgent`。
+  **还没做的**：网页里的扩展 iframe 拿不到扩展的 CORS 豁免（探针实测：`host_permissions` 在那里不起作用，
+  JSON POST 会被 preflight，响应没有 `Access-Control-Allow-Origin` 就以 `TypeError: Load failed` 失败，
+  尽管请求其实已经发出去、服务器也回了；后台 worker 与扩展自己的顶层页面则有豁免）。Google 的 auth 端点
+  自带 CORS 头，所以登录这条链不受影响；Stylish 的 CDN 配置（`assets.userstyles.org`，无 CORS 头）在面板里
+  确实取不到，退回内置的 `LOCAL_CONFIG_JSON`。要补的话就照 IndexedDB 桥那样，把 fetch/XHR 也转给后台代发。
+
 - **内容脚本里 `chrome.runtime.getURL()` 返回 `webkit-masked-url://hidden/`**（2026-09-07）：拿它当 `<script src>`
   注入 web_accessible_resource 照样能加载执行（落在页面主世界），但字符串是被屏蔽的，`document.querySelectorAll("script")`
   读回来也是它——扩展如果拿自己的 WAR URL 做字符串比较就会失灵。另外 MV3 的 `"world": "MAIN"` 内容脚本 WebKit 认，

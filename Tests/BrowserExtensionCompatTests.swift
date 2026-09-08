@@ -1314,6 +1314,170 @@ final class BrowserExtensionCompatTests: XCTestCase {
                        "升级事务里 abort()：后台那边一个操作都没重放，库也没建出来：\(out)")
     }
 
+    // MARK: - 扩展框架里的 UA
+
+    /// 网页里嵌的扩展 iframe 报的 UA 必须与扩展的另一半（后台 / 扩展自己的页面）一致——
+    /// 网页那份 Safari 伪装不能漏进扩展自己的框架（漏进去时 firebase-auth 这类库会只在 iframe 里
+    /// 走 Safari 专属分支，且那条分支在 MV3 构建里永远不 settle）。网页自己照旧看到伪装
+    @MainActor
+    func testEmbeddedExtensionFrameKeepsTheBrowserUserAgent() async throws {
+        let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
+            "bg.js": """
+            chrome.storage.local.set({ backgroundUA: (typeof navigator === "undefined" ? "" : navigator.userAgent) || "" });
+            """,
+            "cs.js": """
+            const f = document.createElement("iframe"); f.src = chrome.runtime.getURL("frame.html"); document.body.appendChild(f);
+            chrome.storage.local.set({ pageUA: navigator.userAgent });
+            """,
+            "frame.html": "<html><head><script src=\"frame.js\"></script></head><body>F</body></html>\n",
+            "frame.js": """
+            chrome.storage.local.set({ frameUA: navigator.userAgent, frameAppVersion: navigator.appVersion });
+            """,
+        ], manifest: [
+            "host_permissions": ["http://example.test/*"],
+            "content_scripts": [["matches": ["http://example.test/*"], "js": ["cs.js"], "run_at": "document_end"]],
+            "web_accessible_resources": [["resources": ["frame.html", "frame.js"], "matches": ["http://example.test/*"]]],
+        ])
+        defer { try? FileManager.default.removeItem(at: manager.storeDirectory) }
+        let host = Host()
+        manager.host = host
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        BrowserPaneView.settings.userAgent = "safari"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView?.addSubview(pane); pane.frame = window.contentView!.bounds; window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        defer { pane.paneWillClose() }
+        host.panes = [pane]
+        let tab = try XCTUnwrap(pane.activeTab)
+        XCTAssertTrue(tab.webView.configuration.userContentController.userScripts
+            .contains { $0.source.hasPrefix(BrowserExtensionCompat.userAgentMarker) }, "普通标签的配置里带 UA 垫片")
+        _ = await Self.loadBackground(item.context)
+        tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
+
+        let storedFrameUA = try await Self.storageValue(item, key: "frameUA")
+        let frameUA = try XCTUnwrap(storedFrameUA as? String, "iframe 里的脚本跑完")
+        let storedPageUA = try await Self.storageValue(item, key: "pageUA")
+        let pageUA = try XCTUnwrap(storedPageUA as? String)
+        let evaluated = try await Self.evaluate(item, "return navigator.userAgent;")
+        let extensionPageUA = try XCTUnwrap(evaluated as? String)
+        XCTAssertEqual(pageUA, BrowserPaneView.Settings.safariUserAgent, "网页自己照旧拿到伪装的 UA")
+        XCTAssertEqual(frameUA, extensionPageUA, "扩展 iframe 与扩展自己的页面报同一个 UA：\(frameUA)")
+        XCTAssertNotEqual(frameUA, pageUA, "扩展 iframe 不该跟着网页拿到伪装")
+        if let backgroundUA = try await Self.storageValue(item, key: "backgroundUA") as? String, !backgroundUA.isEmpty {
+            XCTAssertEqual(frameUA, backgroundUA, "扩展 iframe 与后台报同一个 UA")
+        }
+        let storedAppVersion = try await Self.storageValue(item, key: "frameAppVersion")
+        let appVersion = try XCTUnwrap(storedAppVersion as? String)
+        XCTAssertEqual(appVersion, String(frameUA.dropFirst("Mozilla/".count)), "appVersion 跟着一起换")
+        // 兜底值与实测值都对得上时这条才有意义：脚本里写死的 UA 就是扩展另一半看到的那份
+        XCTAssertEqual(BrowserPaneView.webKitUserAgent, extensionPageUA, "实测到的 WebKit UA 与扩展页面一致")
+    }
+
+    /// 扩展自己的页面开成标签（选项页 / tabs.create(runtime.getURL(…))）：同样不套网页那份 UA 伪装
+    @MainActor
+    func testExtensionPageTabKeepsTheBrowserUserAgent() async throws {
+        let (manager, item) = try await Self.installed(background: nil, files: [:])
+        defer { try? FileManager.default.removeItem(at: manager.storeDirectory) }
+        let host = Host()
+        manager.host = host
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        BrowserPaneView.settings.userAgent = "safari"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView?.addSubview(pane); pane.frame = window.contentView!.bounds; window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        defer { pane.paneWillClose() }
+        host.panes = [pane]
+        let webTab = try XCTUnwrap(pane.activeTab)
+        XCTAssertEqual(webTab.webView.customUserAgent, BrowserPaneView.Settings.safariUserAgent, "普通标签照旧伪装")
+        let extensionTab = pane.addTab(url: item.context.baseURL.appendingPathComponent("page.html"), activate: true)
+        XCTAssertNotNil(extensionTab.extensionContext, "扩展页面标签用的是扩展的配置")
+        // 设成 nil 之后 WebKit 的 getter 读回空串：只要不是那份伪装就行
+        XCTAssertTrue(extensionTab.webView.customUserAgent?.isEmpty ?? true, "扩展自己的页面不套网页那份伪装")
+        pane.applySettings()
+        XCTAssertTrue(extensionTab.webView.customUserAgent?.isEmpty ?? true, "配置热重载之后也不套")
+        XCTAssertEqual(webTab.webView.customUserAgent, BrowserPaneView.Settings.safariUserAgent)
+        // 真跑一遍：页面里读到的 UA 与扩展自己的页面一致，不是伪装那份
+        let evaluated = try await Self.evaluate(item, "return navigator.userAgent;")
+        let extensionPageUA = try XCTUnwrap(evaluated as? String)
+        var tabUA: String?
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline, tabUA == nil {
+            try await Task.sleep(nanoseconds: 200_000_000)
+            guard !extensionTab.webView.isLoading, extensionTab.webView.url != nil else { continue }
+            tabUA = try? await extensionTab.webView.callAsyncJavaScript("return navigator.userAgent;", arguments: [:],
+                                                                       in: nil as WKFrameInfo?, contentWorld: .page) as? String
+        }
+        XCTAssertEqual(tabUA, extensionPageUA, "扩展页面标签里读到的 UA 与扩展自己的页面一致")
+    }
+
+    /// 扩展页面用 window.open / target=_blank 再开一个扩展页面：WebKit 把开窗方的 configuration 递回来，
+    /// 新标签的扩展绑定必须在 install 之前就位——否则这半边会被当成网页套上 UA 伪装，和扩展另一半又分裂了。
+    /// 网页开的弹窗照旧伪装
+    @MainActor
+    func testExtensionPagePopupKeepsTheBrowserUserAgent() async throws {
+        let (manager, item) = try await Self.installed(background: nil, files: [:])
+        defer { try? FileManager.default.removeItem(at: manager.storeDirectory) }
+        let host = Host()
+        manager.host = host
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        BrowserPaneView.settings.userAgent = "safari"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView?.addSubview(pane); pane.frame = window.contentView!.bounds; window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        defer { pane.paneWillClose() }
+        host.panes = [pane]
+        let webTab = try XCTUnwrap(pane.activeTab)
+        let pageURL = item.context.baseURL.appendingPathComponent("page.html")
+        let opener = pane.addTab(url: pageURL, activate: true)
+        XCTAssertNotNil(opener.extensionContext)
+
+        // WebKit 在 createWebViewWith 里递回来的就是开窗方的 configuration（弹窗与开窗方同进程同扩展）
+        let popup = try XCTUnwrap(pane.webView(opener.webView, createWebViewWith: opener.webView.configuration,
+                                               for: WKNavigationAction(), windowFeatures: WKWindowFeatures()))
+        let popupTab = try XCTUnwrap(pane.tabs.last)
+        XCTAssertTrue(popupTab.webView === popup, "返回的就是新标签的 WebView")
+        XCTAssertTrue(popupTab.extensionContext === item.context, "弹窗跟着开窗方记在同一个扩展名下")
+        XCTAssertTrue(popup.customUserAgent?.isEmpty ?? true, "扩展页开的扩展弹窗不套网页那份伪装")
+
+        // 网页开的弹窗照旧伪装（同一条路径，只是开窗方不是扩展页）
+        let webPopup = try XCTUnwrap(pane.webView(webTab.webView, createWebViewWith: webTab.webView.configuration,
+                                                  for: WKNavigationAction(), windowFeatures: WKWindowFeatures()))
+        XCTAssertNil(try XCTUnwrap(pane.tabs.last).extensionContext, "网页开的弹窗不属于任何扩展")
+        XCTAssertEqual(webPopup.customUserAgent, BrowserPaneView.Settings.safariUserAgent, "网页开的弹窗照旧伪装")
+
+        // 真跑一遍：弹窗里读到的 UA 与扩展自己的页面一致
+        let evaluated = try await Self.evaluate(item, "return navigator.userAgent;")
+        let extensionPageUA = try XCTUnwrap(evaluated as? String)
+        popup.load(URLRequest(url: pageURL))
+        var popupUA: String?
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline, popupUA == nil {
+            try await Task.sleep(nanoseconds: 200_000_000)
+            guard !popup.isLoading, popup.url != nil else { continue }
+            popupUA = try? await popup.callAsyncJavaScript("return navigator.userAgent;", arguments: [:],
+                                                           in: nil as WKFrameInfo?, contentWorld: .page) as? String
+        }
+        XCTAssertEqual(popupUA, extensionPageUA, "扩展弹窗里读到的 UA 与扩展自己的页面一致")
+    }
+
     final class Host: BrowserExtensionHost {
         var panes: [BrowserPaneView] = []
         var browserPanes: [BrowserPaneView] { panes }

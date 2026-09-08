@@ -366,6 +366,55 @@ final class BrowserPaneView: PaneView {
         for tab in tabs { tearDown(tab) }
     }
 
+    // MARK: - WebKit 自己的 UA
+
+    /// 不带我们那份网页伪装的 UA——扩展的后台 / worker / 扩展页面看到的就是它。
+    /// 兜底值是 macOS 上 WKWebView 的默认 UA（WebKit 把系统版本写死在里面）；第一个 pane 起来时实测一次，
+    /// 实测值不同就覆盖并让各标签重挂注入脚本（WebKit 换了版本、或将来加上 applicationNameForUserAgent 都跟得上）
+    private(set) static var webKitUserAgent =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
+    private static var userAgentProbe: UserAgentProbe?
+    private static var didCaptureUserAgent = false
+
+    static func captureWebKitUserAgent() {
+        guard !didCaptureUserAgent else { return }
+        didCaptureUserAgent = true
+        let probe = UserAgentProbe()
+        userAgentProbe = probe
+        probe.measure { measured in
+            userAgentProbe = nil
+            guard !measured.isEmpty, measured != webKitUserAgent else { return }
+            webKitUserAgent = measured
+            // 已经开着的标签重挂注入脚本（脚本里的 UA 是生成时写死的）
+            NotificationCenter.default.post(name: .browserExtensionsDidChange, object: nil)
+        }
+    }
+
+    /// 干净配置（不挂 controller、不设 customUserAgent）里量一次 `navigator.userAgent`。
+    /// 空 WebView 上直接求值不可靠（没有页面），先加载一个空文档再问
+    private final class UserAgentProbe: NSObject, WKNavigationDelegate {
+        private let webView = WKWebView(frame: .zero)
+        private var completion: ((String) -> Void)?
+
+        func measure(_ completion: @escaping (String) -> Void) {
+            self.completion = completion
+            webView.navigationDelegate = self
+            webView.loadHTMLString("<html></html>", baseURL: nil)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { read() }
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { read() }
+
+        private func read() {
+            guard completion != nil else { return }
+            webView.evaluateJavaScript("navigator.userAgent") { [weak self] value, _ in
+                guard let self, let completion else { return }
+                self.completion = nil
+                completion(value as? String ?? "")
+            }
+        }
+    }
+
     private func makeConfiguration() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         config.processPool = Self.processPool
@@ -382,6 +431,7 @@ final class BrowserPaneView: PaneView {
     private func prepareForExtensions(_ configuration: WKWebViewConfiguration, extensionPage: Bool = false) {
         let manager = BrowserExtensionManager.current
         guard manager.isEnabled else { return }
+        Self.captureWebKitUserAgent()
         configuration.webExtensionController = manager.controller
         let content = configuration.userContentController
         let world = BrowserExtensionWebStore.contentWorld
@@ -398,6 +448,11 @@ final class BrowserPaneView: PaneView {
         if let external = manager.externalMessagingUserScript,
            !content.userScripts.contains(where: { $0.source.hasPrefix(BrowserExtensionCompat.externalMessagingMarker) }) {
             content.addUserScript(external)
+        }
+        // 网页里嵌的扩展 iframe 跟着网页 WebView 拿到我们给网页的 UA 伪装（Chrome 下扩展的框架报的一直是
+        // 浏览器自己的 UA）：把这种框架里的 navigator.userAgent 换回 WebKit 自己那份，见 userAgentScript
+        if !content.userScripts.contains(where: { $0.source.hasPrefix(BrowserExtensionCompat.userAgentMarker) }) {
+            content.addUserScript(BrowserExtensionCompat.userAgentUserScript(Self.webKitUserAgent))
         }
         guard !content.userScripts.contains(where: { $0 === BrowserExtensionCompat.frameUserScript }) else { return }
         content.addUserScript(BrowserExtensionCompat.frameUserScript)
@@ -416,12 +471,15 @@ final class BrowserPaneView: PaneView {
 
     // MARK: - 标签管理
 
-    /// 新标签（url 为 nil = 首页）。webView 参数：window.open 时 WebKit 要求用它给的 configuration 创建
+    /// 新标签（url 为 nil = 首页）。webView 参数：window.open 时 WebKit 要求用它给的 configuration 创建；
+    /// 这时"配置属于哪个扩展"只有开窗方知道，由 inheriting 传进来
     @discardableResult
-    func addTab(url: URL?, activate: Bool, webView given: BrowserWebView? = nil) -> Tab {
+    func addTab(url: URL?, activate: Bool, webView given: BrowserWebView? = nil,
+                inheriting inherited: WKWebExtensionContext? = nil) -> Tab {
         // 扩展自己的页面（webkit-extension://…，如选项页 / tabs.create(runtime.getURL(…))）必须用
-        // context.webViewConfiguration 建 WebView，普通配置的主帧加载会被 WebKit 拒掉
-        let context = given == nil ? url.flatMap(extensionContext(for:)) : nil
+        // context.webViewConfiguration 建 WebView，普通配置的主帧加载会被 WebKit 拒掉。
+        // 扩展页开的弹窗还在同一个扩展里：绑定要在 install（据它决定套不套网页那份 UA 伪装）之前就位
+        let context = given == nil ? url.flatMap(extensionContext(for:)) : inherited
         let webView = given ?? makeWebView(extensionContext: context)
         let tab = Tab(webView: webView)
         tab.pane = self
@@ -460,7 +518,7 @@ final class BrowserPaneView: PaneView {
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
         webView.translatesAutoresizingMaskIntoConstraints = false
-        applySettings(to: webView)
+        applySettings(to: webView, extensionPage: tab.extensionContext != nil)
         // 透明背景：透出 QuickTerm 的壁纸 / 磨砂层（页面自己画背景的地方不受影响）。
         // drawsBackground 走私有 setter（_setDrawsBackground:）：先探测，避免将来被移除时 KVC 抛异常崩在创建/恢复
         if webView.responds(to: Selector(("_setDrawsBackground:"))) {
@@ -784,13 +842,16 @@ final class BrowserPaneView: PaneView {
 
     /// 配置热重载：UA / Inspector / 标签条（config.toml 保存即生效，含已打开的 pane 与标签）
     func applySettings() {
-        for tab in tabs { applySettings(to: tab.webView) }
+        for tab in tabs { applySettings(to: tab.webView, extensionPage: tab.extensionContext != nil) }
         rebuildTabBar()
         extensionBar.reload()
     }
 
-    private func applySettings(to webView: WKWebView) {
-        webView.customUserAgent = Self.settings.effectiveUserAgent
+    /// 扩展自己的页面（选项页 / `tabs.create(runtime.getURL(…))`）不套网页那份 UA 伪装：
+    /// 扩展的后台与 worker 看到的是 WebKit 自己的 UA，页面这半边要跟它一致——不然同一个扩展的两半
+    /// 看到两个不同的浏览器，库会在其中一半走上另一条分支（见 BrowserExtensionCompat.userAgentScript）
+    private func applySettings(to webView: WKWebView, extensionPage: Bool) {
+        webView.customUserAgent = extensionPage ? nil : Self.settings.effectiveUserAgent
         webView.isInspectable = Self.settings.inspectable
     }
 
@@ -1300,11 +1361,11 @@ extension BrowserPaneView: WKUIDelegate {
         let source = tab(for: webView)
         prepareForExtensions(configuration, extensionPage: source?.extensionContext != nil)
         let popup = BrowserWebView(frame: .zero, configuration: configuration)
-        // 来源是当前标签才前台打开；后台标签（定时 window.open 等）的弹窗在后台开，不打断用户输入
-        let tab = addTab(url: nil, activate: source === activeTab, webView: popup)
-        // WebKit 给的 configuration 继承了开窗方的扩展绑定：新标签的"当前配置属于谁"要跟着记，
-        // 否则第一次跨界导航判断会错
-        tab.extensionContext = source?.extensionContext
+        // 来源是当前标签才前台打开；后台标签（定时 window.open 等）的弹窗在后台开，不打断用户输入。
+        // WebKit 给的 configuration 继承了开窗方的扩展绑定：新标签的"当前配置属于谁"要跟着记，否则
+        // 第一次跨界导航判断会错、且扩展页开的扩展弹窗会被当成网页套上 UA 伪装（与扩展另一半不一致）
+        _ = addTab(url: nil, activate: source === activeTab, webView: popup,
+                   inheriting: source?.extensionContext)
         return popup
     }
 

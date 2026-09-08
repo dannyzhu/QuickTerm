@@ -1126,6 +1126,46 @@ enum BrowserExtensionCompat {
 
     static let frameUserScript = WKUserScript(source: frameScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
 
+    // MARK: - 扩展框架里的 User-Agent
+
+    /// 首行标记：同一个 userContentController 里认得出这段（内容随实测到的 UA 变，不能按对象同一性去重）
+    static let userAgentMarker = "// QuickTerm extension frame user agent"
+
+    /// 网页里嵌的扩展 iframe（`webkit-extension://…` 框架跑在网页的 WebView 里）跟着网页拿到我们给站点的 UA
+    /// 伪装（`browser.user_agent`，默认 Safari），而同一个扩展的后台 / worker / 扩展页面拿到的是 WebKit 自己的 UA。
+    /// Chrome 下不存在这种分裂：扩展的框架报的一直是浏览器自己的 UA，页面侧的 UA 覆盖也进不到扩展的框架里。
+    /// 后果是**同一个扩展的两半以为自己在两个浏览器里**，库会只在 iframe 那半边走上另一条分支——真实案例：
+    /// Stylish 的侧栏在 Safari UA 下让 firebase-auth 打开"proactive"初始化，去 await 那个只在浏览器里才有意义的
+    /// gapi popup/redirect resolver；而这个 MV3 构建里加载远程脚本的 `_loadJS` 是个空实现（MV3 不许远程代码），
+    /// 那个 promise 于是永远不 settle：`onAuthStateChanged` 一次都不触发、`getCurrentUser()` 永远挂着，
+    /// 面板顶着默认值显示"未登录"（登录记录明明在 IndexedDB 里、样式也照常注入）。
+    /// 修法：这种框架里把 `navigator.userAgent` / `appVersion` 换回 WebKit 自己那份，和扩展的另一半对齐。
+    /// 只改扩展自己 origin 的框架，网页照旧看到伪装（HTTP 请求头仍是伪装那份——扩展自己看不到自己的请求头）
+    static func userAgentScript(_ userAgent: String) -> String {
+        """
+        \(userAgentMarker)
+        (() => {
+          if (location.protocol !== "webkit-extension:") return;
+          const ua = \(jsString(userAgent));
+          if (!ua || navigator.userAgent === ua) return;
+          const define = (target, name, value) => {
+            try {
+              Object.defineProperty(target, name, { get: () => value, configurable: true, enumerable: true });
+              return navigator[name] === value;
+            } catch (_) { return false; }
+          };
+          // 实例上盖住原型的 getter；WebKit 哪天不让在实例上定义了，就改原型
+          if (!define(navigator, "userAgent", ua)) define(Navigator.prototype, "userAgent", ua);
+          const appVersion = ua.replace(/^Mozilla\\//, "");
+          if (!define(navigator, "appVersion", appVersion)) define(Navigator.prototype, "appVersion", appVersion);
+        })();
+        """
+    }
+
+    static func userAgentUserScript(_ userAgent: String) -> WKUserScript {
+        WKUserScript(source: userAgentScript(userAgent), injectionTime: .atDocumentStart, forMainFrameOnly: false)
+    }
+
     // MARK: - externally_connectable：网页 → 扩展的消息通道
 
     /// 网页侧垫片源码的首行标记：同一个 userContentController 里认得出"这是外部消息垫片"
