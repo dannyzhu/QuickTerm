@@ -303,9 +303,11 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
     `Received an invalid message WebExtensionContext_TabsQuery from WebContent process`——`log show` 反而查不到）。
     Stylish 点图标是往当前页注入一个 `webkit-extension://<id>/index.html` iframe，里面的 React 应用一上来就
     `tabs.query`。用合成扩展逐个 API 二分：从这种 iframe 里调 `tabs.* / windows.* / action.* / scripting.* /
-    alarms.* / contextMenus.* / cookies.*` 都会被杀；`runtime.sendMessage`（promise 形式能拿到回复，回调形式拿不到）、
-    `runtime.connect`（端口立刻断）、`runtime.getManifest`、`storage.*`、`i18n`、`permissions` 与各种 `onXxx.addListener`
-    都正常。修法：网页 WebView 里注入 `BrowserExtensionCompat.frameUserScript`（document start、全部框架、page world），
+    alarms.* / contextMenus.* / cookies.*` 都会被杀；`runtime.sendMessage`、`runtime.connect`、`runtime.getManifest`、
+    `storage.*`、`i18n`、`permissions` 与各种 `onXxx.addListener` 都正常（**2026-09-08 更正**：这里原先记着"回调形式
+    拿不到回复""connect 端口立刻断"，用合成扩展重测都不成立——回调形式在同步 `sendResponse`、`return true` + 延迟
+    `sendResponse`、监听器返回 Promise 三种后台写法下都会触发，端口也能一来一回。当时多半是被真正的病根，
+    即下面那条存储分区，带偏了）。修法：网页 WebView 里注入 `BrowserExtensionCompat.frameUserScript`（document start、全部框架、page world），
     在 `webkit-extension:` 框架里把这些命名空间换成经 `runtime.sendMessage({__quickterm_relay})` 转给后台的代理，
     后台垫片代为调用后回传，只接受 sender.url 是扩展自己 origin 的请求。坑：WebKit 的命名空间对象
     （`chrome.tabs`）上 `Object.defineProperty` 静默无效，方法也都在原型上（`Object.keys` 看不到），只能整个
@@ -319,6 +321,48 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
   解析过符号链接的绝对 URL，store 目录本身是链接（放 Dropbox）时和 `directory.path` 前缀对不上、列表整个空掉。
   manifest 里的 worker 路径带 `..` 的一律不包装（`../../x.js` 不能让我们往扩展目录外写）；判断只看字符串，别拿
   `standardizedFileURL` / `resolvingSymlinksInPath` 比前缀——目标文件还不存在时 /var 与 /private/var 只解析一边，前缀对不上。
+
+- **网页里嵌的扩展 iframe，IndexedDB 是 WebKit 按顶层站点分区的另一份空库**（2026-09-08，Stylish 侧栏"Login /
+  Current Website 0 / No Styles Installed"的根因）：同一个 `webkit-extension://<id>` origin，service worker 与扩展
+  进程页面共用同一份 IndexedDB（互相读得到、`indexedDB.databases()` 都列得出），而网页里那个 iframe 打开同名库
+  拿到的是**空的另一份**——`databases()` 返回 `[]`，`navigator.storage` 是 undefined，`document.requestStorageAccess()`
+  直接被拒（"The request is not allowed by the user agent…"），`localStorage` 同样各存各的。`chrome.storage.*` 不受
+  影响（那是扩展 API），消息通道也完全正常，所以现象极具误导性：后台有 token、有样式，样式也照常注入页面，
+  面板却显示未登录 + 一条样式都没有。Stylish 的侧栏正好两样都直接读 IndexedDB——已装样式在 `stylishMV3/styles`，
+  登录态在 Firebase Auth 的 `firebaseLocalStorageDb`。
+  修法：`frameScript` 在这种框架里把整个 `indexedDB` 换成一层门面（`BrowserExtensionCompat.frameIndexedDBScript`），
+  每次请求经 `runtime.sendMessage({__quickterm_idb: …})` 交给后台垫片（`backgroundIndexedDBScript`）在扩展真正的
+  分区里执行（后台的 service worker 里 `indexedDB` 与 `indexedDB.databases()` 都在）。几处必须踩对的地方：
+  - **门面要能通过 `instanceof`**：`idb` 这类包装库（Stylish / Firebase 都在用）靠 `value instanceof IDBRequest /
+    IDBDatabase / IDBObjectStore / IDBIndex / IDBCursor / IDBTransaction` 决定怎么包，认不出就整条链断掉。
+    做法是 `Object.setPrototypeOf(门面类.prototype, 原生构造器.prototype)`——原生原型自己链到 `EventTarget.prototype`，
+    `addEventListener` / `dispatchEvent` 照常能用（实例是真的 `EventTarget`：class 里 `extends EventTarget`）。
+  - **接完原型要把只读 getter 覆写成可写数据属性**：`IDBDatabase.prototype.name` 之类是 getter-only，
+    class 构造器（严格模式）里 `this.name = …` 会直接抛 TypeError；在自己的原型上 `defineProperty(…, { writable: true })`
+    占个位就好。
+  - **事务撑不过一次消息往返**：IDB 事务在 microtask 队列排空、没有待处理请求时就自动提交，转发必然跨宏任务，
+    所以一次调用 = 后台一个独立事务（同一事务里的多个请求不再原子、`abort()` 回滚不了已执行的），
+    `versionchange` 事务改成"iframe 侧录制 createObjectStore / createIndex / put …，一起交给后台在它自己的
+    `onupgradeneeded` 里重放"，游标则由后台一次跑完、把结果拍平送回来（上限 5000 条）在 iframe 侧当快照走。
+  - **不带版本号的 `open(name)` 也得先问 `databases()`**：库不存在时原生会 `upgradeneeded(0→1)`，直接
+    `indexedDB.open(name)` 转给后台的话，后台会凭空建一个 v1 空库、`upgradeneeded` 被吞掉，扩展建表的回调
+    永远不跑——之后每次 `transaction("store")` 都是 NotFoundError，而且那个空 v1 库还留在扩展真正的分区里，
+    后续 `open(name, 2)` 看到的 `oldVersion` 也从 0 变成了 1（升级 switch 会跳过建表分支）。
+  - **快照走完 ≠ 迭代结束**：后台多取一条来判断是不是被截断（`rows.length > limit`，正好 limit 条不算），
+    iframe 侧走到被截断的快照末尾时明确报错，不能 `success(null)`——那等于把剩下的记录悄悄抹掉。
+  - **反向游标的 `continue(key)`**：快照是降序的，要找第一条 `<= key` 的；照正向那套 `>= 0` 比较的话
+    第一条候选就满足，`continue(key)` 退化成 `continue()`（不跳），或者反过来提前报迭代结束。
+  - **桥只在后台真挂上了垫片时才装**：没有 `background` / 只有 `background.page`（HTML，不改写）/
+    `service_worker` 路径越界 / 垫片写入失败（`applyCompatShim` 有意只记日志）这几种扩展，
+    `__quickterm-compat.js` 根本没被后台加载，桥没有执行端，装上去只会让每次 IDB 调用都以
+    "no response from the extension background"失败——比不装还糟。`frameScript` 先用
+    `runtime.getManifest().background` 看有没有改写痕迹（实测 WKWebExtension 的 `getManifest()` 返回的是
+    改写后的 manifest），没有就留着原生那份分区库；manifest 读不上来时按"挂了"算（宁可保住桥）。
+  - **值按 JSON 语义过通道**：`Date` 会变字符串、`undefined` 会丢、循环引用整条回复变 undefined，
+    所以键 / 值 / `IDBKeyRange` 两侧共用一份编解码（`valueCodecScript`）；`Blob` / `File` / `ArrayBuffer` 过不去。
+  `localStorage` 同样被分区，但它是同步 API，没法这样转发（后台是 worker，那里根本没有 localStorage），
+  仍是每个顶层站点各一份。垫片版本号（`BrowserExtensionCompat.version`）跟着 +1，已装扩展下次启动自动重生成，
+  不用重装。
 
 - **`externally_connectable`（网页给扩展发消息）WebKit 是实现了的，但网页侧只挂在 `browser` 上**（2026-09-07，
   Stylish 一直显示未登录的根因）：合成扩展实测，普通 http 网页里 `typeof chrome === "undefined"`（连对象都没有），

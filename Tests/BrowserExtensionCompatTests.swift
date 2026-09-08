@@ -288,6 +288,600 @@ final class BrowserExtensionCompatTests: XCTestCase {
         XCTAssertNotNil(fromContentScript["error"], "网页来源的转发请求被拒：\(fromContentScript)")
     }
 
+    /// 网页里嵌的扩展 iframe：IndexedDB 被 WebKit 按顶层站点分区（读到的是另一份空库），桥接后与后台 / 扩展进程
+    /// 页面共用同一份数据——后台写的读得到、自己写的后台立刻看得到，索引 / 游标 / 建库升级也照常
+    @MainActor
+    func testEmbeddedExtensionFrameSharesIndexedDBWithBackground() async throws {
+        let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
+            "bg.js": """
+            const openDB = (name, version, upgrade) => new Promise((resolve, reject) => {
+              const request = indexedDB.open(name, version);
+              if (upgrade) request.onupgradeneeded = () => upgrade(request.result, request.transaction);
+              request.onsuccess = () => resolve(request.result);
+              request.onerror = () => reject(request.error);
+            });
+            const done = (tx) => new Promise((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); });
+            const all = (store) => new Promise((resolve, reject) => {
+              const request = store.getAll();
+              request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+            });
+            let shared;
+            const ready = (async () => {
+              shared = await openDB("shared", 1, (db) => {
+                const store = db.createObjectStore("items", { keyPath: "id" });
+                store.createIndex("by-tag", "tag", { unique: false });
+              });
+              const tx = shared.transaction("items", "readwrite");
+              tx.objectStore("items").put({ id: 1, tag: "a", text: "from-bg" });
+              await done(tx);
+              chrome.storage.local.set({ ready: true });
+            })();
+            chrome.runtime.onMessage.addListener((message, sender, reply) => {
+              if (!message || message.probe !== "read") return false;
+              (async () => {
+                await ready;
+                const items = await all(shared.transaction("items", "readonly").objectStore("items"));
+                const made = await openDB("made-by-frame");
+                const inMade = made.objectStoreNames.contains("s")
+                  ? await all(made.transaction("s", "readonly").objectStore("s")) : "missing";
+                made.close();
+                const fresh = await openDB("fresh-no-version");
+                const inFresh = fresh.objectStoreNames.contains("s")
+                  ? await all(fresh.transaction("s", "readonly").objectStore("s")) : "missing";
+                fresh.close();
+                reply({ items, inMade, inFresh });
+              })();
+              return true;
+            });
+            """,
+            "cs.js": """
+            const frame = document.createElement("iframe");
+            frame.src = chrome.runtime.getURL("frame.html");
+            document.body.appendChild(frame);
+            """,
+            "frame.html": "<html><head><script src=\"frame.js\"></script></head><body>F</body></html>\n",
+            "frame.js": """
+            const openDB = (name, version, upgrade) => new Promise((resolve, reject) => {
+              const request = indexedDB.open(name, version);
+              if (upgrade) request.onupgradeneeded = () => upgrade(request.result, request.transaction);
+              request.onsuccess = () => resolve(request.result);
+              request.onerror = () => reject(request.error);
+              out.requestIsNative = request instanceof IDBRequest;
+            });
+            const wait = (request) => new Promise((resolve, reject) => {
+              request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+            });
+            const out = { bridged: indexedDB.open !== IDBFactory.prototype.open };
+            (async () => {
+              try {
+                await new Promise((resolve) => {
+                  const tick = () => chrome.storage.local.get(["ready"], (v) => (v && v.ready ? resolve() : setTimeout(tick, 50)));
+                  tick();
+                });
+                out.databases = (await indexedDB.databases()).map((d) => d.name + "@" + d.version).sort();
+                const db = await openDB("shared");
+                out.dbIsNative = db instanceof IDBDatabase;
+                out.version = db.version;
+                out.stores = Array.from(db.objectStoreNames);
+                out.read = await wait(db.transaction("items", "readonly").objectStore("items").getAll());
+                // 自己写一条：后台那边要立刻看得到
+                const write = db.transaction("items", "readwrite");
+                out.txIsNative = write instanceof IDBTransaction;
+                write.objectStore("items").put({ id: 2, tag: "b", text: "from-frame" });
+                await new Promise((resolve, reject) => { write.oncomplete = () => resolve(); write.onerror = () => reject(write.error); });
+                out.count = await wait(db.transaction("items", "readonly").objectStore("items").count());
+                out.byIndex = (await wait(db.transaction("items", "readonly").objectStore("items").index("by-tag").getAll("a"))).map((r) => r.id);
+                out.byKey = (await wait(db.transaction("items", "readonly").objectStore("items").get(2))).text;
+                out.range = (await wait(db.transaction("items", "readonly").objectStore("items").getAll(IDBKeyRange.lowerBound(2)))).map((r) => r.id);
+                // 游标
+                out.cursor = await new Promise((resolve, reject) => {
+                  const ids = [];
+                  const request = db.transaction("items", "readonly").objectStore("items").openCursor();
+                  request.onsuccess = () => {
+                    const cursor = request.result;
+                    if (!cursor) { resolve(ids); return; }
+                    out.cursorIsNative = cursor instanceof IDBCursor;
+                    ids.push(cursor.value.id);
+                    cursor.continue();
+                  };
+                  request.onerror = () => reject(request.error);
+                });
+                // 从 iframe 里新建一个库（升级事务：建表 + 写入都要重放到后台那份）
+                const made = await openDB("made-by-frame", 1, (fresh) => {
+                  fresh.createObjectStore("s", { keyPath: "id" }).put({ id: 7, text: "made-in-frame" });
+                });
+                out.made = await wait(made.transaction("s", "readonly").objectStore("s").getAll());
+                // 不带版本号 open 一个还不存在的库：原生会 upgradeneeded(0→1)，桥不能悄悄建个空库了事
+                out.freshUpgrades = [];
+                const freshDB = await new Promise((resolve, reject) => {
+                  const request = indexedDB.open("fresh-no-version");
+                  request.onupgradeneeded = (event) => {
+                    out.freshUpgrades.push(event.oldVersion + "->" + event.newVersion);
+                    request.result.createObjectStore("s", { keyPath: "id" }).put({ id: 9, text: "no-version" });
+                  };
+                  request.onsuccess = () => resolve(request.result);
+                  request.onerror = () => reject(request.error);
+                });
+                out.freshVersion = freshDB.version;
+                out.freshStores = Array.from(freshDB.objectStoreNames);
+                out.freshRead = await wait(freshDB.transaction("s", "readonly").objectStore("s").getAll());
+                // 再 open 一次（库已经在了）：不该再触发升级
+                out.freshAgain = [];
+                await new Promise((resolve, reject) => {
+                  const request = indexedDB.open("fresh-no-version");
+                  request.onupgradeneeded = (event) => out.freshAgain.push(event.oldVersion + "->" + event.newVersion);
+                  request.onsuccess = () => resolve(request.result);
+                  request.onerror = () => reject(request.error);
+                });
+                out.fromBackground = await chrome.runtime.sendMessage({ probe: "read" });
+              } catch (e) { out.error = String((e && e.message) || e); }
+              chrome.storage.local.set({ fromFrame: out });
+            })();
+            """,
+        ], manifest: [
+            "host_permissions": ["http://example.test/*"],
+            "content_scripts": [["matches": ["http://example.test/*"], "js": ["cs.js"], "run_at": "document_end"]],
+            "web_accessible_resources": [["resources": ["frame.html", "frame.js"], "matches": ["http://example.test/*"]]],
+        ])
+        defer { try? FileManager.default.removeItem(at: manager.storeDirectory) }
+        let host = Host()
+        manager.host = host
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        defer { pane.paneWillClose() }
+        host.panes = [pane]
+        let tab = try XCTUnwrap(pane.activeTab)
+        let loaded = await Self.loadBackground(item.context)
+        XCTAssertEqual(loaded, "OK")
+        tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
+
+        let stored = try await Self.storageValue(item, key: "fromFrame", timeout: 30)
+        let out = try XCTUnwrap(stored as? [String: Any], "iframe 里的脚本跑完")
+        XCTAssertNil(out["error"], "iframe 里没抛错：\(out)")
+        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
+        XCTAssertEqual(out["bridged"] as? Bool, true, "iframe 里的 indexedDB 已换成桥")
+        // 门面要能通过 instanceof：idb 这类包装库全靠它认路
+        for key in ["requestIsNative", "dbIsNative", "txIsNative", "cursorIsNative"] {
+            XCTAssertEqual(out[key] as? Bool, true, "\(key)：\(out)")
+        }
+        XCTAssertEqual(out["version"] as? Int, 1)
+        XCTAssertEqual(out["stores"] as? [String], ["items"])
+        XCTAssertTrue((out["databases"] as? [String] ?? []).contains("shared@1"), "databases() 是后台那份：\(out)")
+        let read = try XCTUnwrap(out["read"] as? [[String: Any]])
+        XCTAssertEqual(read.count, 1, "读到后台写的记录：\(out)")
+        XCTAssertEqual(read.first?["text"] as? String, "from-bg")
+        XCTAssertEqual(out["count"] as? Int, 2)
+        XCTAssertEqual(out["byIndex"] as? [Int], [1], "索引查询")
+        XCTAssertEqual(out["byKey"] as? String, "from-frame", "按主键取自己刚写的")
+        XCTAssertEqual(out["range"] as? [Int], [2], "IDBKeyRange 过得去")
+        XCTAssertEqual(out["cursor"] as? [Int], [1, 2], "游标")
+        XCTAssertEqual((out["made"] as? [[String: Any]])?.first?["text"] as? String, "made-in-frame",
+                       "iframe 里新建的库（升级事务重放到后台）")
+        XCTAssertEqual(out["freshUpgrades"] as? [String], ["0->1"],
+                       "不带版本号 open 一个不存在的库：照原生的 upgradeneeded(0→1) 来：\(out)")
+        XCTAssertEqual(out["freshVersion"] as? Int, 1)
+        XCTAssertEqual(out["freshStores"] as? [String], ["s"], "建表回调真的跑了")
+        XCTAssertEqual((out["freshRead"] as? [[String: Any]])?.first?["text"] as? String, "no-version")
+        XCTAssertEqual(out["freshAgain"] as? [String], [], "库已经在了就不再触发升级")
+        let fromBackground = try XCTUnwrap(out["fromBackground"] as? [String: Any])
+        let items = try XCTUnwrap(fromBackground["items"] as? [[String: Any]])
+        XCTAssertEqual(items.compactMap { $0["id"] as? Int }.sorted(), [1, 2], "后台看得到 iframe 写的那条：\(fromBackground)")
+        XCTAssertEqual((fromBackground["inMade"] as? [[String: Any]])?.first?["id"] as? Int, 7,
+                       "iframe 建的库在后台那份分区里：\(fromBackground)")
+        XCTAssertEqual((fromBackground["inFresh"] as? [[String: Any]])?.first?["id"] as? Int, 9,
+                       "不带版本号建的那个库也在后台那份分区里：\(fromBackground)")
+
+        // 普通网页（不是扩展框架）一点都不碰
+        let plain = try await Self.evaluate(inPage: tab.webView, at: "http://example.test/", load: nil, """
+        return { chrome: typeof globalThis.chrome, native: indexedDB.open === IDBFactory.prototype.open,
+                 factory: indexedDB instanceof IDBFactory };
+        """)
+        let plainOut = try XCTUnwrap(plain as? [String: Any])
+        XCTAssertEqual(plainOut["native"] as? Bool, true, "普通框架的 indexedDB 还是原生的：\(plainOut)")
+        XCTAssertEqual(plainOut["chrome"] as? String, "undefined", "普通框架里也没多出 chrome")
+    }
+
+    /// 真实面板（Stylish）读库用的是 `idb` 那类包装库：它靠 `instanceof IDBRequest / IDBDatabase / IDBTransaction`
+    /// 认路、靠事务的 `complete` 事件给 `tx.done`、靠 `tx.objectStoreNames` 给 `tx.store`。
+    /// 这里把 idb 的核心（wrap / Proxy 陷阱 / openDB / db.getAll 快捷方法）照搬进 iframe 跑一遍
+    @MainActor
+    func testEmbeddedExtensionFrameWorksWithIdbStyleWrapper() async throws {
+        let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
+            "bg.js": """
+            const request = indexedDB.open("wrapped", 1);
+            request.onupgradeneeded = () => request.result.createObjectStore("items", { keyPath: "id" });
+            request.onsuccess = () => {
+              const tx = request.result.transaction("items", "readwrite");
+              tx.objectStore("items").put({ id: 1, text: "from-bg" });
+              tx.oncomplete = () => chrome.storage.local.set({ ready: true });
+            };
+            """,
+            "cs.js": """
+            const frame = document.createElement("iframe");
+            frame.src = chrome.runtime.getURL("frame.html");
+            document.body.appendChild(frame);
+            """,
+            "frame.html": "<html><head><script src=\"frame.js\"></script></head><body>F</body></html>\n",
+            "frame.js": """
+            // ---- idb v7 的核心（照抄结构，删掉游标 / 撤销缓存等与本用例无关的部分）
+            const transformCache = new WeakMap(), reverseCache = new WeakMap(), doneMap = new WeakMap();
+            const unwrap = (value) => reverseCache.get(value);
+            const shortcuts = { get: false, getAll: false, count: false, put: true, delete: true };
+            const traps = {
+              get(target, prop, receiver) {
+                if (target instanceof IDBDatabase && !(prop in target) && prop in shortcuts) {
+                  const write = shortcuts[prop];
+                  return async function (storeName, ...args) {
+                    const tx = this.transaction(storeName, write ? "readwrite" : "readonly");
+                    const result = await Promise.all([tx.store[prop](...args), write && tx.done]);
+                    return result[0];
+                  };
+                }
+                if (target instanceof IDBTransaction) {
+                  if (prop === "done") return doneMap.get(target);
+                  if (prop === "store") return receiver.objectStoreNames[1] ? undefined : receiver.objectStore(receiver.objectStoreNames[0]);
+                }
+                return wrap(target[prop]);
+              },
+              set(target, prop, value) { target[prop] = value; return true; },
+              has(target, prop) {
+                if (target instanceof IDBDatabase && prop in shortcuts) return true;
+                if (target instanceof IDBTransaction && (prop === "done" || prop === "store")) return true;
+                return prop in target;
+              },
+            };
+            function transform(value) {
+              if (typeof value === "function") {
+                return function (...args) { return wrap(value.apply(unwrap(this), args)); };
+              }
+              if (value instanceof IDBTransaction && !doneMap.has(value)) {
+                doneMap.set(value, new Promise((resolve, reject) => {
+                  value.addEventListener("complete", () => resolve());
+                  value.addEventListener("error", () => reject(value.error));
+                  value.addEventListener("abort", () => reject(value.error));
+                }));
+              }
+              if ([IDBDatabase, IDBObjectStore, IDBIndex, IDBCursor, IDBTransaction].some((type) => value instanceof type)) {
+                return new Proxy(value, traps);
+              }
+              return value;
+            }
+            function wrap(value) {
+              if (value instanceof IDBRequest) {
+                const promise = new Promise((resolve, reject) => {
+                  const stop = () => { value.removeEventListener("success", ok); value.removeEventListener("error", bad); };
+                  const ok = () => { resolve(wrap(value.result)); stop(); };
+                  const bad = () => { reject(value.error); stop(); };
+                  value.addEventListener("success", ok);
+                  value.addEventListener("error", bad);
+                });
+                reverseCache.set(promise, value);
+                return promise;
+              }
+              if (transformCache.has(value)) return transformCache.get(value);
+              const transformed = transform(value);
+              if (transformed !== value) { transformCache.set(value, transformed); reverseCache.set(transformed, value); }
+              return transformed;
+            }
+            const openDB = (name, version, upgrade) => {
+              const request = indexedDB.open(name, version);
+              const promise = wrap(request);
+              if (upgrade) request.addEventListener("upgradeneeded", (event) => upgrade(wrap(request.result), event.oldVersion, event.newVersion, wrap(request.transaction)));
+              return promise;
+            };
+            // ---- 用它读写
+            (async () => {
+              const out = {};
+              try {
+                await new Promise((resolve) => {
+                  const tick = () => chrome.storage.local.get(["ready"], (v) => (v && v.ready ? resolve() : setTimeout(tick, 50)));
+                  tick();
+                });
+                const db = await openDB("wrapped", 1);
+                out.read = (await db.getAll("items")).map((row) => row.text);
+                await db.put("items", { id: 2, text: "from-frame" });
+                const tx = db.transaction("items", "readwrite");
+                tx.store.put({ id: 3, text: "in-transaction" });
+                await tx.done;
+                out.after = (await db.getAll("items")).map((row) => row.id);
+                // 包装库自己新建的库（走升级回调）
+                const fresh = await openDB("wrapped-fresh", 1, (upgrading) => { upgrading.createObjectStore("s", { keyPath: "id" }); });
+                await fresh.put("s", { id: 9, text: "fresh" });
+                out.fresh = (await fresh.getAll("s")).map((row) => row.text);
+              } catch (e) { out.error = String((e && e.message) || e); }
+              chrome.storage.local.set({ wrapped: out });
+            })();
+            """,
+        ], manifest: [
+            "host_permissions": ["http://example.test/*"],
+            "content_scripts": [["matches": ["http://example.test/*"], "js": ["cs.js"], "run_at": "document_end"]],
+            "web_accessible_resources": [["resources": ["frame.html", "frame.js"], "matches": ["http://example.test/*"]]],
+        ])
+        defer { try? FileManager.default.removeItem(at: manager.storeDirectory) }
+        let host = Host()
+        manager.host = host
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        defer { pane.paneWillClose() }
+        host.panes = [pane]
+        let tab = try XCTUnwrap(pane.activeTab)
+        let loaded = await Self.loadBackground(item.context)
+        XCTAssertEqual(loaded, "OK")
+        tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
+
+        let stored = try await Self.storageValue(item, key: "wrapped", timeout: 30)
+        let out = try XCTUnwrap(stored as? [String: Any], "iframe 里的脚本跑完")
+        XCTAssertNil(out["error"], "包装库跑通：\(out)")
+        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
+        XCTAssertEqual(out["read"] as? [String], ["from-bg"], "包装库读到后台写的记录")
+        XCTAssertEqual(out["after"] as? [Int], [1, 2, 3], "db.put 与 tx.done 都成立")
+        XCTAssertEqual(out["fresh"] as? [String], ["fresh"], "包装库的 upgrade 回调建库")
+    }
+
+    /// 游标是后台一次跑完的快照：反向游标的 `continue(key)` 要按降序找（不能拿正向那套比较），
+    /// 超过上限（5000）时走到快照末尾必须明确报错——报"迭代结束"等于把剩下的记录悄悄抹掉
+    @MainActor
+    func testEmbeddedExtensionFrameCursorDirectionAndSnapshotLimit() async throws {
+        let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
+            "bg.js": """
+            const openDB = (name, version, upgrade) => new Promise((resolve, reject) => {
+              const request = indexedDB.open(name, version);
+              if (upgrade) request.onupgradeneeded = () => upgrade(request.result, request.transaction);
+              request.onsuccess = () => resolve(request.result);
+              request.onerror = () => reject(request.error);
+            });
+            (async () => {
+              const db = await openDB("cursors", 1, (fresh) => {
+                fresh.createObjectStore("small", { keyPath: "id" });
+                fresh.createObjectStore("big", { keyPath: "id" });
+              });
+              const tx = db.transaction(["small", "big"], "readwrite");
+              for (const id of [10, 20, 30, 40, 50]) tx.objectStore("small").put({ id });
+              const big = tx.objectStore("big");
+              for (let i = 1; i <= 5002; i += 1) big.put({ id: i });
+              await new Promise((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); });
+              chrome.storage.local.set({ ready: true });
+            })();
+            """,
+            "cs.js": """
+            const frame = document.createElement("iframe");
+            frame.src = chrome.runtime.getURL("frame.html");
+            document.body.appendChild(frame);
+            """,
+            "frame.html": "<html><head><script src=\"frame.js\"></script></head><body>F</body></html>\n",
+            "frame.js": """
+            const walk = (request) => new Promise((resolve) => {
+              let count = 0;
+              request.onsuccess = () => {
+                const cursor = request.result;
+                if (!cursor) { resolve({ count, ended: "null" }); return; }
+                count += 1;
+                cursor.continue();
+              };
+              request.onerror = () => resolve({ count, ended: "error",
+                                                message: String(request.error && request.error.message) });
+            });
+            const out = {};
+            (async () => {
+              try {
+                await new Promise((resolve) => {
+                  const tick = () => chrome.storage.local.get(["ready"], (v) => (v && v.ready ? resolve() : setTimeout(tick, 50)));
+                  tick();
+                });
+                const db = await new Promise((resolve, reject) => {
+                  const request = indexedDB.open("cursors");
+                  request.onsuccess = () => resolve(request.result);
+                  request.onerror = () => reject(request.error);
+                });
+                // 反向游标：continue(key) 落在 <= key 的最大那条（50 → 30，不是 40）；没有更小的就结束
+                out.prev = await new Promise((resolve, reject) => {
+                  const seen = [];
+                  const request = db.transaction("small", "readonly").objectStore("small").openCursor(null, "prev");
+                  request.onsuccess = () => {
+                    const cursor = request.result;
+                    if (!cursor) { resolve(seen); return; }
+                    seen.push(cursor.key);
+                    if (seen.length === 1) cursor.continue(35);
+                    else if (seen.length === 2) cursor.continue();
+                    else cursor.continue(5);
+                  };
+                  request.onerror = () => reject(request.error);
+                });
+                // 5002 条 > 上限：走到第 5000 条之后要拿到错误
+                out.overflow = await walk(db.transaction("big", "readonly").objectStore("big").openCursor());
+                // 正好 5000 条（上限本身）：照常走完
+                out.exact = await walk(db.transaction("big", "readonly").objectStore("big")
+                                         .openKeyCursor(IDBKeyRange.upperBound(5000)));
+              } catch (e) { out.error = String((e && e.message) || e); }
+              chrome.storage.local.set({ cursors: out });
+            })();
+            """,
+        ], manifest: [
+            "host_permissions": ["http://example.test/*"],
+            "content_scripts": [["matches": ["http://example.test/*"], "js": ["cs.js"], "run_at": "document_end"]],
+            "web_accessible_resources": [["resources": ["frame.html", "frame.js"], "matches": ["http://example.test/*"]]],
+        ])
+        defer { try? FileManager.default.removeItem(at: manager.storeDirectory) }
+        let host = Host()
+        manager.host = host
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        defer { pane.paneWillClose() }
+        host.panes = [pane]
+        let tab = try XCTUnwrap(pane.activeTab)
+        let loaded = await Self.loadBackground(item.context)
+        XCTAssertEqual(loaded, "OK")
+        tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
+
+        let stored = try await Self.storageValue(item, key: "cursors", timeout: 90)
+        let out = try XCTUnwrap(stored as? [String: Any], "iframe 里的脚本跑完")
+        XCTAssertNil(out["error"], "iframe 里没抛错：\(out)")
+        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
+        XCTAssertEqual(out["prev"] as? [Int], [50, 30, 20], "反向游标的 continue(key) 按降序找：\(out)")
+        let overflow = try XCTUnwrap(out["overflow"] as? [String: Any])
+        XCTAssertEqual(overflow["count"] as? Int, 5000, "快照上限：\(overflow)")
+        XCTAssertEqual(overflow["ended"] as? String, "error", "被截断时不能报「迭代结束」：\(overflow)")
+        XCTAssertTrue((overflow["message"] as? String ?? "").contains("truncated"), "错误说清原因：\(overflow)")
+        let exact = try XCTUnwrap(out["exact"] as? [String: Any])
+        XCTAssertEqual(exact["count"] as? Int, 5000)
+        XCTAssertEqual(exact["ended"] as? String, "null", "正好等于上限的那次是真的走完了：\(exact)")
+    }
+
+    /// 后台没挂上垫片的扩展（这里是压根没有 background）：桥的执行端不存在，装了桥每次 IDB 调用都会失败，
+    /// 所以那种框架里要留着原生的 indexedDB（按顶层站点分区，但自己读写自己是自洽的）。
+    /// tabs.* 那套转发不受影响——从这种框架直接调它们会被 WebKit 杀掉页面进程，转发不通也好过被杀
+    @MainActor
+    func testFrameKeepsNativeIndexedDBWhenBackgroundHasNoShim() async throws {
+        let (manager, item) = try await Self.installed(background: nil, files: [
+            "cs.js": """
+            const frame = document.createElement("iframe");
+            frame.src = chrome.runtime.getURL("frame.html");
+            document.body.appendChild(frame);
+            """,
+            "frame.html": "<html><head><script src=\"frame.js\"></script></head><body>F</body></html>\n",
+            "frame.js": """
+            const out = { wrapped: !!chrome[Symbol.for("QuickTerm.relayed")],
+                          bridged: indexedDB.open !== IDBFactory.prototype.open };
+            (async () => {
+              try {
+                const db = await new Promise((resolve, reject) => {
+                  const request = indexedDB.open("local-only", 1);
+                  request.onupgradeneeded = () => request.result.createObjectStore("s", { keyPath: "id" });
+                  request.onsuccess = () => resolve(request.result);
+                  request.onerror = () => reject(request.error);
+                });
+                const tx = db.transaction("s", "readwrite");
+                tx.objectStore("s").put({ id: 1, text: "local" });
+                await new Promise((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); });
+                out.read = await new Promise((resolve, reject) => {
+                  const request = db.transaction("s", "readonly").objectStore("s").getAll();
+                  request.onsuccess = () => resolve(request.result);
+                  request.onerror = () => reject(request.error);
+                });
+              } catch (e) { out.error = String((e && e.message) || e); }
+              chrome.storage.local.set({ fromFrame: out });
+            })();
+            """,
+        ], manifest: [
+            "host_permissions": ["http://example.test/*"],
+            "content_scripts": [["matches": ["http://example.test/*"], "js": ["cs.js"], "run_at": "document_end"]],
+            "web_accessible_resources": [["resources": ["frame.html", "frame.js"], "matches": ["http://example.test/*"]]],
+        ])
+        defer { try? FileManager.default.removeItem(at: manager.storeDirectory) }
+        let directory = manager.directory(for: item.id)
+        XCTAssertNil(try Self.manifest(directory)["background"], "没有 background 的扩展不会凭空多出一个")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent(BrowserExtensionCompat.compatFile).path),
+                       "没有后台就没有垫片文件——桥没有执行端")
+        let host = Host()
+        manager.host = host
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        defer { pane.paneWillClose() }
+        host.panes = [pane]
+        let tab = try XCTUnwrap(pane.activeTab)
+        tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
+
+        let stored = try await Self.storageValue(item, key: "fromFrame", timeout: 30)
+        let out = try XCTUnwrap(stored as? [String: Any], "iframe 里的脚本跑完")
+        XCTAssertNil(out["error"], "原生 indexedDB 照常能用：\(out)")
+        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
+        XCTAssertEqual(out["wrapped"] as? Bool, true, "根对象还是换过的（tabs.* 那套转发照旧）")
+        XCTAssertEqual(out["bridged"] as? Bool, false, "没有执行端就不装桥：\(out)")
+        XCTAssertEqual((out["read"] as? [[String: Any]])?.first?["text"] as? String, "local", "原生那份读写自洽")
+    }
+
+    /// 网页里嵌的扩展 iframe 里，Chrome 那几种 API 形状都要能用：runtime.sendMessage / storage.local.get 的
+    /// 回调形式与 Promise 形式、同步与异步（`return true` + 延迟 sendResponse）的后台监听
+    @MainActor
+    func testEmbeddedExtensionFrameKeepsCallbackAndPromiseShapes() async throws {
+        let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
+            "bg.js": """
+            chrome.storage.local.set({ seed: "SEEDED" });
+            chrome.runtime.onMessage.addListener((message, sender, reply) => {
+              if (!message || !message.probe) return false;
+              if (message.probe === "sync") { reply({ ok: "sync" }); return true; }
+              if (message.probe === "async") { setTimeout(() => reply({ ok: "async" }), 20); return true; }
+              return false;
+            });
+            """,
+            "cs.js": """
+            const frame = document.createElement("iframe");
+            frame.src = chrome.runtime.getURL("frame.html");
+            document.body.appendChild(frame);
+            """,
+            "frame.html": "<html><head><script src=\"frame.js\"></script></head><body>F</body></html>\n",
+            "frame.js": """
+            const guard = (promise) => Promise.race([
+              promise.catch((e) => "ERR " + ((e && e.message) || e)),
+              new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 5000)),
+            ]);
+            const pick = (value) => (value && value.ok) || String(value);
+            (async () => {
+              const out = {};
+              out.callbackSync = pick(await guard(new Promise((r) => chrome.runtime.sendMessage({ probe: "sync" }, r))));
+              out.callbackAsync = pick(await guard(new Promise((r) => chrome.runtime.sendMessage({ probe: "async" }, r))));
+              out.promiseSync = pick(await guard(chrome.runtime.sendMessage({ probe: "sync" })));
+              out.promiseAsync = pick(await guard(chrome.runtime.sendMessage({ probe: "async" })));
+              out.storageCallback = String(await guard(new Promise((r) => chrome.storage.local.get(["seed"], (v) => r(v && v.seed)))));
+              out.storagePromise = String((await guard(chrome.storage.local.get(["seed"]))).seed);
+              out.lastError = String(!chrome.runtime.lastError);
+              out.relayCallback = await guard(new Promise((r) => chrome.tabs.query({}, (tabs) => r(Array.isArray(tabs) ? tabs.length : "bad"))));
+              out.relayPromise = (await guard(chrome.tabs.query({}))).length;
+              chrome.storage.local.set({ shapes: out });
+            })();
+            """,
+        ], manifest: [
+            "host_permissions": ["http://example.test/*"],
+            "content_scripts": [["matches": ["http://example.test/*"], "js": ["cs.js"], "run_at": "document_end"]],
+            "web_accessible_resources": [["resources": ["frame.html", "frame.js"], "matches": ["http://example.test/*"]]],
+        ])
+        defer { try? FileManager.default.removeItem(at: manager.storeDirectory) }
+        let host = Host()
+        manager.host = host
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        defer { pane.paneWillClose() }
+        host.panes = [pane]
+        let tab = try XCTUnwrap(pane.activeTab)
+        let loaded = await Self.loadBackground(item.context)
+        XCTAssertEqual(loaded, "OK")
+        tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
+
+        let stored = try await Self.storageValue(item, key: "shapes", timeout: 30)
+        let out = try XCTUnwrap(stored as? [String: Any], "iframe 里的脚本跑完")
+        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
+        XCTAssertEqual(out["callbackSync"] as? String, "sync", "回调形式 + 同步 sendResponse：\(out)")
+        XCTAssertEqual(out["callbackAsync"] as? String, "async", "回调形式 + 异步 sendResponse：\(out)")
+        XCTAssertEqual(out["promiseSync"] as? String, "sync")
+        XCTAssertEqual(out["promiseAsync"] as? String, "async")
+        XCTAssertEqual(out["storageCallback"] as? String, "SEEDED", "storage 的回调形式")
+        XCTAssertEqual(out["storagePromise"] as? String, "SEEDED")
+        XCTAssertEqual(out["lastError"] as? String, "true",
+                       "没出错时 runtime.lastError 是假值（WebKit 在这种框架里给的是 null，不是 undefined）")
+        XCTAssertEqual(out["relayCallback"] as? Int, 1, "转发的 tabs.query（回调形式）")
+        XCTAssertEqual(out["relayPromise"] as? Int, 1, "转发的 tabs.query（Promise 形式）")
+    }
+
     final class Host: BrowserExtensionHost {
         var panes: [BrowserPaneView] = []
         var browserPanes: [BrowserPaneView] { panes }
@@ -532,7 +1126,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
     }
 
     @MainActor
-    private static func installed(background: [String: Any], files: [String: String], id: String = freshID(),
+    private static func installed(background: [String: Any]?, files: [String: String], id: String = freshID(),
                                   manifest extra: [String: Any] = [:]) async throws
         -> (BrowserExtensionManager, BrowserExtensionManager.Installed) {
         let store = try makeStore()
