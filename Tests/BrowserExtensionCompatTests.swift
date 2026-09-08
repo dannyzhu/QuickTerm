@@ -882,6 +882,438 @@ final class BrowserExtensionCompatTests: XCTestCase {
         XCTAssertEqual(out["relayPromise"] as? Int, 1, "转发的 tabs.query（Promise 形式）")
     }
 
+    /// Firebase Auth 的 `persistence/indexed_db` 就是这个形状：`fbase_key` 当 keyPath、每个操作一个新事务、
+    /// 事件一律走 `addEventListener`、可用性探测（open → put → delete）、以及定时轮询看别的上下文写了什么。
+    /// 后台（service worker）先把登录记录写进扩展真正的分区，网页里嵌的面板 iframe 要能原样读回来。
+    @MainActor
+    func testEmbeddedExtensionFrameRunsFirebaseStyleAuthPersistence() async throws {
+        let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
+            "bg.js": """
+            const DB = "authdb", STORE = "authstore", KEYPATH = "fbase_key";
+            const KEY = "firebase:authUser:TESTKEY:[DEFAULT]";
+            const open = () => new Promise((resolve, reject) => {
+              const request = indexedDB.open(DB, 1);
+              request.onupgradeneeded = () => request.result.createObjectStore(STORE, { keyPath: KEYPATH });
+              request.onsuccess = () => resolve(request.result);
+              request.onerror = () => reject(request.error);
+            });
+            const wait = (r) => new Promise((resolve, reject) => {
+              r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error);
+            });
+            const put = async (key, value) => {
+              const db = await open();
+              await wait(db.transaction([STORE], "readwrite").objectStore(STORE).put({ [KEYPATH]: key, value }));
+              db.close();
+            };
+            const ready = put(KEY, { uid: "u-1", email: "a@example.test",
+                                     stsTokenManager: { accessToken: "tok", expirationTime: 1 } })
+              .then(() => chrome.storage.local.set({ ready: true }));
+            chrome.runtime.onMessage.addListener((message, sender, reply) => {
+              if (!message || !message.probe) return false;
+              (async () => {
+                await ready;
+                if (message.probe === "seed2") { await put("second", { uid: "u-2" }); reply({ ok: true }); return; }
+                const db = await open();
+                const rows = await wait(db.transaction([STORE], "readonly").objectStore(STORE).getAll());
+                db.close();
+                reply({ rows });
+              })();
+              return true;
+            });
+            """,
+            "cs.js": """
+            const frame = document.createElement("iframe");
+            frame.src = chrome.runtime.getURL("frame.html");
+            document.body.appendChild(frame);
+            """,
+            "frame.html": "<html><head><script src=\"frame.js\"></script></head><body>F</body></html>\n",
+            "frame.js": """
+            const DB = "authdb", STORE = "authstore", KEYPATH = "fbase_key";
+            const KEY = "firebase:authUser:TESTKEY:[DEFAULT]", SAK = "firebase:__sak";
+            // firebase-auth 的 DBPromise：只用 addEventListener，不碰 on<type>
+            const promisify = (request) => new Promise((resolve, reject) => {
+              request.addEventListener("success", () => resolve(request.result));
+              request.addEventListener("error", () => reject(request.error));
+            });
+            const openDatabase = () => new Promise((resolve, reject) => {
+              const request = indexedDB.open(DB, 1);
+              request.addEventListener("upgradeneeded", () => {
+                try { request.result.createObjectStore(STORE, { keyPath: KEYPATH }); } catch (e) { reject(e); }
+              });
+              request.addEventListener("error", () => reject(request.error));
+              request.addEventListener("success", () => resolve(request.result));
+            });
+            const store = (db, rw) => db.transaction([STORE], rw ? "readwrite" : "readonly").objectStore(STORE);
+            const putObject = (db, key, value) => promisify(store(db, true).put({ [KEYPATH]: key, value }));
+            const deleteObject = (db, key) => promisify(store(db, true).delete(key));
+            const getObject = async (db, key) => {
+              const data = await promisify(store(db, false).get(key));
+              return data === undefined ? null : data.value;
+            };
+            const out = {};
+            (async () => {
+              try {
+                await new Promise((resolve) => {
+                  const tick = () => chrome.storage.local.get(["ready"], (v) => (v && v.ready ? resolve() : setTimeout(tick, 50)));
+                  tick();
+                });
+                // _isAvailable()：open → put → delete，一路不许抛
+                out.available = await (async () => {
+                  try {
+                    if (!indexedDB) return false;
+                    const probe = await openDatabase();
+                    await putObject(probe, SAK, "1");
+                    await deleteObject(probe, SAK);
+                    probe.close();
+                    return true;
+                  } catch (e) { out.availableError = String((e && e.message) || e); }
+                  return false;
+                })();
+                const db = await openDatabase();
+                out.version = db.version;
+                out.user = (await getObject(db, KEY) || {}).uid;
+                out.keys = await promisify(store(db, false).getAllKeys());
+                out.sakGone = await getObject(db, SAK);
+                // 事务的 complete（idb / firebase 都靠它知道写落盘了）
+                out.txComplete = await new Promise((resolve) => {
+                  const tx = db.transaction([STORE], "readonly");
+                  tx.objectStore(STORE).get(KEY);
+                  tx.addEventListener("complete", () => resolve("complete"));
+                  tx.addEventListener("abort", () => resolve("abort"));
+                });
+                // close() 之后再开事务：InvalidStateError
+                const closable = await openDatabase();
+                closable.close();
+                try { closable.transaction([STORE], "readonly"); out.afterClose = "no throw"; }
+                catch (e) { out.afterClose = e.name; }
+                // 别的上下文（后台）写进来的记录，轮询要看得到
+                await chrome.runtime.sendMessage({ probe: "seed2" });
+                out.polled = await (async () => {
+                  for (let i = 0; i < 20; i += 1) {
+                    const keys = await promisify(store(db, false).getAllKeys());
+                    if (keys.length === 2) return keys.slice().sort();
+                    await new Promise((r) => setTimeout(r, 100));
+                  }
+                  return "timeout";
+                })();
+                // 面板自己写一条，后台要立刻看得到
+                await putObject(db, "from-frame", { uid: "u-3" });
+                const back = await chrome.runtime.sendMessage({ probe: "read" });
+                out.fromBackground = (back.rows || []).map((row) => row[KEYPATH]).sort();
+              } catch (e) { out.error = String((e && e.message) || e); }
+              chrome.storage.local.set({ firebase: out });
+            })();
+            """,
+        ], manifest: [
+            "host_permissions": ["http://example.test/*"],
+            "content_scripts": [["matches": ["http://example.test/*"], "js": ["cs.js"], "run_at": "document_end"]],
+            "web_accessible_resources": [["resources": ["frame.html", "frame.js"], "matches": ["http://example.test/*"]]],
+        ])
+        defer { try? FileManager.default.removeItem(at: manager.storeDirectory) }
+        let host = Host()
+        manager.host = host
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        defer { pane.paneWillClose() }
+        host.panes = [pane]
+        let tab = try XCTUnwrap(pane.activeTab)
+        let loaded = await Self.loadBackground(item.context)
+        XCTAssertEqual(loaded, "OK")
+        tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
+
+        let stored = try await Self.storageValue(item, key: "firebase", timeout: 45)
+        let out = try XCTUnwrap(stored as? [String: Any], "iframe 里的脚本跑完")
+        XCTAssertNil(out["error"], "iframe 里没抛错：\(out)")
+        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
+        XCTAssertEqual(out["available"] as? Bool, true, "可用性探测（open → put → delete）：\(out)")
+        XCTAssertEqual(out["version"] as? Int, 1)
+        XCTAssertEqual(out["user"] as? String, "u-1", "后台写的登录记录，面板 iframe 读得到：\(out)")
+        XCTAssertEqual(out["keys"] as? [String], ["firebase:authUser:TESTKEY:[DEFAULT]"], "getAllKeys：\(out)")
+        XCTAssertNil(out["sakGone"] as? String, "探测用的那条删干净了：\(out)")
+        XCTAssertEqual(out["txComplete"] as? String, "complete", "事务的 complete 事件")
+        XCTAssertEqual(out["afterClose"] as? String, "InvalidStateError", "close() 之后 transaction() 抛 InvalidStateError")
+        XCTAssertEqual(out["polled"] as? [String], ["firebase:authUser:TESTKEY:[DEFAULT]", "second"],
+                       "轮询能看到后台后来写的那条：\(out)")
+        XCTAssertEqual(out["fromBackground"] as? [String],
+                       ["firebase:authUser:TESTKEY:[DEFAULT]", "from-frame", "second"],
+                       "面板写的那条后台立刻看得到：\(out)")
+    }
+
+    /// 事务语义：同一轮里发出的请求在后台是**一个真事务**——`abort()` 回滚、任一请求出错整批回滚，
+    /// 事件顺序（成功的先 success → 出错那个 error → 事务 error → 其余 AbortError → abort）跟原生一致；
+    /// 另外别处升级库时还开着的连接要收到 `versionchange`
+    @MainActor
+    func testEmbeddedExtensionFrameTransactionsAreAtomic() async throws {
+        let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
+            "bg.js": """
+            const open = (name, version, upgrade) => new Promise((resolve, reject) => {
+              const request = indexedDB.open(name, version);
+              if (upgrade) request.onupgradeneeded = () => upgrade(request.result, request.transaction);
+              request.onsuccess = () => resolve(request.result);
+              request.onerror = () => reject(request.error);
+            });
+            const wait = (r) => new Promise((resolve, reject) => {
+              r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error);
+            });
+            const ready = (async () => {
+              const db = await open("atomic", 1, (d) => d.createObjectStore("items", { keyPath: "id" }));
+              await wait(db.transaction("items", "readwrite").objectStore("items").put({ id: 9, from: "bg" }));
+              db.close();
+              const vc = await open("bgvc", 1, (d) => d.createObjectStore("a"));
+              vc.close();
+              chrome.storage.local.set({ ready: true });
+            })();
+            chrome.runtime.onMessage.addListener((message, sender, reply) => {
+              if (!message || !message.probe) return false;
+              (async () => {
+                await ready;
+                if (message.probe === "upgrade") {
+                  const db = await open("bgvc", 2, (d) => d.createObjectStore("b"));
+                  db.close();
+                  reply({ version: 2 });
+                  return;
+                }
+                const db = await open("atomic");
+                const keys = await wait(db.transaction("items", "readonly").objectStore("items").getAllKeys());
+                db.close();
+                reply({ keys });
+              })();
+              return true;
+            });
+            """,
+            "cs.js": """
+            const frame = document.createElement("iframe");
+            frame.src = chrome.runtime.getURL("frame.html");
+            document.body.appendChild(frame);
+            """,
+            "frame.html": "<html><head><script src=\"frame.js\"></script></head><body>F</body></html>\n",
+            "frame.js": """
+            const open = (name, version, upgrade) => new Promise((resolve, reject) => {
+              const request = indexedDB.open(name, version);
+              if (upgrade) request.onupgradeneeded = () => upgrade(request.result, request.transaction);
+              request.onsuccess = () => resolve(request.result);
+              request.onerror = () => reject(request.error);
+            });
+            const wait = (r) => new Promise((resolve, reject) => {
+              r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error);
+            });
+            const tick = (ms) => new Promise((r) => setTimeout(r, ms));
+            const out = {};
+            (async () => {
+              try {
+                await new Promise((resolve) => {
+                  const t = () => chrome.storage.local.get(["ready"], (v) => (v && v.ready ? resolve() : setTimeout(t, 50)));
+                  t();
+                });
+                const db = await open("atomic");
+                // 1) abort() 回滚同一轮里发出的写
+                {
+                  const events = [];
+                  const tx = db.transaction("items", "readwrite");
+                  const s = tx.objectStore("items");
+                  const a = s.put({ id: 1 });
+                  const b = s.put({ id: 2 });
+                  a.addEventListener("error", () => events.push("a:" + a.error.name));
+                  b.addEventListener("error", () => events.push("b:" + b.error.name));
+                  tx.addEventListener("error", () => events.push("tx:error"));
+                  tx.addEventListener("abort", () => events.push("tx:abort"));
+                  tx.addEventListener("complete", () => events.push("tx:complete"));
+                  tx.abort();
+                  await tick(300);
+                  out.abortEvents = events;
+                  out.afterAbort = await wait(db.transaction("items", "readonly").objectStore("items").getAllKeys());
+                }
+                // 2) 一个请求出错 → 整批回滚，事件顺序照原生
+                {
+                  const order = [];
+                  const tx = db.transaction("items", "readwrite");
+                  const s = tx.objectStore("items");
+                  const a = s.put({ id: 1 });
+                  const b = s.add({ id: 9 });        // 主键已存在 → ConstraintError
+                  const c = s.put({ id: 3 });
+                  a.addEventListener("success", () => order.push("a:ok"));
+                  a.addEventListener("error", () => order.push("a:" + a.error.name));
+                  b.addEventListener("success", () => order.push("b:ok"));
+                  b.addEventListener("error", () => order.push("b:" + b.error.name));
+                  c.addEventListener("success", () => order.push("c:ok"));
+                  c.addEventListener("error", () => order.push("c:" + c.error.name));
+                  tx.addEventListener("error", () => order.push("tx:error"));
+                  tx.addEventListener("abort", () => order.push("tx:abort"));
+                  tx.addEventListener("complete", () => order.push("tx:complete"));
+                  await tick(400);
+                  out.failOrder = order;
+                  out.txError = tx.error && tx.error.name;
+                  out.afterFail = await wait(db.transaction("items", "readonly").objectStore("items").getAllKeys());
+                  out.fromBackground = (await chrome.runtime.sendMessage({ probe: "read" })).keys;
+                }
+                // 3) 正常一批：全部按序 success，事务 complete
+                {
+                  const seen = [];
+                  const tx = db.transaction("items", "readwrite");
+                  const s = tx.objectStore("items");
+                  for (const id of [11, 12, 13]) {
+                    const r = s.put({ id });
+                    r.addEventListener("success", () => seen.push(r.result));
+                  }
+                  out.batchComplete = await new Promise((resolve) => {
+                    tx.addEventListener("complete", () => resolve("complete"));
+                    tx.addEventListener("abort", () => resolve("abort"));
+                  });
+                  out.batchKeys = seen;
+                }
+                // 4) 本框架里另一个连接升级：还开着的那个收到 versionchange
+                {
+                  const first = await open("framevc", 1, (d) => d.createObjectStore("a"));
+                  let seen = "none";
+                  first.addEventListener("versionchange", (e) => {
+                    seen = e.oldVersion + "->" + String(e.newVersion);
+                    first.close();
+                  });
+                  const second = await open("framevc", 2, (d) => d.createObjectStore("b"));
+                  second.close();
+                  await tick(200);
+                  out.localVersionChange = seen;
+                }
+                // 5) 后台升级的库：面板下一次请求时补发 versionchange
+                {
+                  const stale = await open("bgvc");
+                  out.staleVersion = stale.version;
+                  let seen = "none";
+                  stale.onversionchange = (e) => { seen = e.oldVersion + "->" + String(e.newVersion); };
+                  await chrome.runtime.sendMessage({ probe: "upgrade" });
+                  await wait(stale.transaction("a", "readonly").objectStore("a").count());
+                  await tick(200);
+                  out.remoteVersionChange = seen;
+                }
+                // 6) 同步抛出的请求（get(undefined) → DataError）：整批回滚，排在它前面的写不能报 success
+                {
+                  const order = [];
+                  const tx = db.transaction("items", "readwrite");
+                  const s = tx.objectStore("items");
+                  const a = s.put({ id: 77 });
+                  let threw = "none";
+                  let b = null;
+                  try { b = s.get(undefined); } catch (e) { threw = e.name; }
+                  a.addEventListener("success", () => order.push("a:ok"));
+                  a.addEventListener("error", () => order.push("a:" + a.error.name));
+                  if (b) {
+                    b.addEventListener("success", () => order.push("b:ok"));
+                    b.addEventListener("error", () => order.push("b:" + b.error.name));
+                  }
+                  tx.addEventListener("error", () => order.push("tx:error"));
+                  tx.addEventListener("abort", () => order.push("tx:abort"));
+                  tx.addEventListener("complete", () => order.push("tx:complete"));
+                  await tick(400);
+                  out.syncThrowOrder = order;
+                  out.afterSyncThrow = await wait(db.transaction("items", "readonly").objectStore("items").getAllKeys());
+                }
+                // 7) 游标跟一个必然失败的写同批：游标请求照原生收 AbortError，而不是"迭代完了、0 条"
+                {
+                  const order = [];
+                  const tx = db.transaction("items", "readwrite");
+                  const s = tx.objectStore("items");
+                  const c = s.openCursor();
+                  const bad = s.add({ id: 9 });     // 主键已存在 → ConstraintError
+                  c.addEventListener("success", () => order.push("c:ok:" + String(c.result && c.result.key)));
+                  c.addEventListener("error", () => order.push("c:" + c.error.name));
+                  bad.addEventListener("error", () => order.push("bad:" + bad.error.name));
+                  tx.addEventListener("error", () => order.push("tx:error"));
+                  tx.addEventListener("abort", () => order.push("tx:abort"));
+                  await tick(400);
+                  out.cursorInFailedBatch = order;
+                }
+                // 8) 删库：还开着的连接照原生收到 versionchange（newVersion 为 null）
+                {
+                  const doomed = await open("dropme", 1, (d) => d.createObjectStore("a"));
+                  let seen = "none";
+                  doomed.addEventListener("versionchange", (e) => {
+                    seen = e.oldVersion + "->" + String(e.newVersion);
+                    doomed.close();
+                  });
+                  await new Promise((resolve, reject) => {
+                    const r = indexedDB.deleteDatabase("dropme");
+                    r.onsuccess = () => resolve();
+                    r.onerror = () => reject(r.error);
+                  });
+                  await tick(200);
+                  out.deleteVersionChange = seen;
+                }
+                // 9) 升级事务里 abort()：录下来的操作一个都不重放，open 请求以 AbortError 失败
+                {
+                  out.abortedUpgrade = await new Promise((resolve) => {
+                    const r = indexedDB.open("abortup", 1);
+                    r.onupgradeneeded = () => { r.result.createObjectStore("s"); r.transaction.abort(); };
+                    r.onsuccess = () => resolve("success:v" + r.result.version);
+                    r.onerror = () => resolve("error:" + (r.error && r.error.name));
+                  });
+                  const list = await indexedDB.databases();
+                  out.abortedUpgradeExists = (list || []).some((e) => e.name === "abortup");
+                }
+              } catch (e) { out.error = String((e && e.message) || e); }
+              chrome.storage.local.set({ atomic: out });
+            })();
+            """,
+        ], manifest: [
+            "host_permissions": ["http://example.test/*"],
+            "content_scripts": [["matches": ["http://example.test/*"], "js": ["cs.js"], "run_at": "document_end"]],
+            "web_accessible_resources": [["resources": ["frame.html", "frame.js"], "matches": ["http://example.test/*"]]],
+        ])
+        defer { try? FileManager.default.removeItem(at: manager.storeDirectory) }
+        let host = Host()
+        manager.host = host
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        defer { pane.paneWillClose() }
+        host.panes = [pane]
+        let tab = try XCTUnwrap(pane.activeTab)
+        let loaded = await Self.loadBackground(item.context)
+        XCTAssertEqual(loaded, "OK")
+        tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
+
+        let stored = try await Self.storageValue(item, key: "atomic", timeout: 45)
+        let out = try XCTUnwrap(stored as? [String: Any], "iframe 里的脚本跑完")
+        XCTAssertNil(out["error"], "iframe 里没抛错：\(out)")
+        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
+        XCTAssertEqual(out["afterAbort"] as? [Int], [9], "abort() 把同一轮里发出的写回滚掉了：\(out)")
+        XCTAssertEqual(out["abortEvents"] as? [String], ["a:AbortError", "b:AbortError", "tx:abort"],
+                       "abort()：待处理的请求各收一个 AbortError，然后事务 abort：\(out)")
+        XCTAssertEqual(out["failOrder"] as? [String],
+                       ["a:ok", "b:ConstraintError", "tx:error", "c:AbortError", "tx:abort"],
+                       "出错时的事件顺序跟原生一致：\(out)")
+        XCTAssertEqual(out["txError"] as? String, "ConstraintError")
+        XCTAssertEqual(out["afterFail"] as? [Int], [9], "出错的那批整个回滚（id 1 / 3 都没落盘）：\(out)")
+        XCTAssertEqual(out["fromBackground"] as? [Int], [9], "后台看到的也是回滚之后的：\(out)")
+        XCTAssertEqual(out["batchComplete"] as? String, "complete", "正常一批照常提交")
+        XCTAssertEqual(out["batchKeys"] as? [Int], [11, 12, 13], "一批请求按发出顺序结束，各自拿到自己的结果")
+        XCTAssertEqual(out["localVersionChange"] as? String, "1->2",
+                       "本框架里另一个连接升级时，还开着的连接收到 versionchange：\(out)")
+        XCTAssertEqual(out["staleVersion"] as? Int, 1)
+        XCTAssertEqual(out["remoteVersionChange"] as? String, "1->2",
+                       "后台升级过的库：面板下一次请求时补发 versionchange：\(out)")
+        XCTAssertEqual(out["syncThrowOrder"] as? [String],
+                       ["b:DataError", "tx:error", "a:AbortError", "tx:abort"],
+                       "同步抛出的请求让整批回滚：排在它前面的写收 AbortError，不能报 success：\(out)")
+        XCTAssertEqual(out["afterSyncThrow"] as? [Int], [9, 11, 12, 13],
+                       "同步抛出的那批整个回滚（id 77 没落盘）：\(out)")
+        XCTAssertEqual(out["cursorInFailedBatch"] as? [String],
+                       ["bad:ConstraintError", "tx:error", "c:AbortError", "tx:abort"],
+                       "跟失败的写同批的游标收 AbortError，而不是 success(null)：\(out)")
+        XCTAssertEqual(out["deleteVersionChange"] as? String, "1->null",
+                       "删库前给还开着的连接发 versionchange(newVersion=null)：\(out)")
+        XCTAssertEqual(out["abortedUpgrade"] as? String, "error:AbortError",
+                       "升级事务里 abort()：open 请求以 AbortError 失败：\(out)")
+        XCTAssertEqual(out["abortedUpgradeExists"] as? Bool, false,
+                       "升级事务里 abort()：后台那边一个操作都没重放，库也没建出来：\(out)")
+    }
+
     final class Host: BrowserExtensionHost {
         var panes: [BrowserPaneView] = []
         var browserPanes: [BrowserPaneView] { panes }

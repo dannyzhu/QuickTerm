@@ -340,10 +340,37 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
   - **接完原型要把只读 getter 覆写成可写数据属性**：`IDBDatabase.prototype.name` 之类是 getter-only，
     class 构造器（严格模式）里 `this.name = …` 会直接抛 TypeError；在自己的原型上 `defineProperty(…, { writable: true })`
     占个位就好。
-  - **事务撑不过一次消息往返**：IDB 事务在 microtask 队列排空、没有待处理请求时就自动提交，转发必然跨宏任务，
-    所以一次调用 = 后台一个独立事务（同一事务里的多个请求不再原子、`abort()` 回滚不了已执行的），
-    `versionchange` 事务改成"iframe 侧录制 createObjectStore / createIndex / put …，一起交给后台在它自己的
+  - **事务撑不过一次消息往返，但"一批"撑得过**：IDB 事务在 microtask 队列排空、没有待处理请求时就自动提交，
+    转发必然跨宏任务，所以后台那边的事务只能是短命的。第一版做成"一次调用 = 后台一个独立事务"，代价是
+    事务语义整个塌掉——合成扩展实测（同一段探针分别在后台原生 IDB 与桥接 iframe 里跑）：一个 readwrite 事务里
+    `put ×2` 之后 `tx.abort()`，原生剩 0 条、桥接剩 2 条；`put({id:1})` 后面跟一个必然 ConstraintError 的
+    `add({id:9})`，原生整个事务回滚（只剩 9）、桥接留下 `[1, 9]`。
+    现在的做法是**按批**：iframe 侧的 `BridgeTransaction` 不再逐个请求发消息，而是把同一个 microtask 里发出的
+    请求攒进 `_queue`，微任务末尾一次性 `{ op: "batch", ops: [...] }` 送给后台，后台 `runBatch` 在**一个真事务**里
+    按序发出这些请求（请求的 `onerror` 不 `preventDefault`，照原生让事务中止），回复里带上"错在第几个"
+    + 出错之前那些请求的结果。iframe 侧照原生的顺序补事件：出错之前的照常 `success` → 出错那个 `error` →
+    事务 `error` → 还没结束的请求各一个 `AbortError` → 事务 `abort`。`abort()` 则直接作废还没发出的那批
+    （什么都不送给后台），升级事务里 `abort()` 同样一个录制下来的操作都不重放、`open` 请求以 `AbortError` 失败。
+    回复里除了"错在第几个"还要带一份 **`done` 掩码**：整批回滚时排在它前面的请求未必真跑完了——游标的请求
+    `continue()` 之后排到事务队尾，同步抛出时前面那些请求更是一个都还没回来——而 `results` 里的空洞过消息通道
+    就变成 `null`，跟"结果真的是 null"分不开。没跑完的那些照原生留着收 `AbortError`，不能报 `success`。
+    **剩下的差别**：跨事件回调再发的请求已经是下一批 = 后台的下一个事务，所以
+    "读到结果再决定写什么"这种写法在桥上不是一个原子事务；`abort()` 也拦不住已经在路上的那批；
+    请求 `error` 事件里 `preventDefault()` 让事务继续的写法不支持（后台早已中止）；
+    升级事务里从某个录制写入的 `success` 回调里 `abort()` 也晚了（那批操作已经在路上）；
+    `upgradeneeded` 回调**抛异常**拦不住（`dispatchEvent` 不会把监听器里的异常抛回调用处），只有显式 `abort()` 算数。
+    `versionchange` 事务仍是"iframe 侧录制 createObjectStore / createIndex / put …，一起交给后台在它自己的
     `onupgradeneeded` 里重放"，游标则由后台一次跑完、把结果拍平送回来（上限 5000 条）在 iframe 侧当快照走。
+  - **`versionchange` 后台推不到网页里的扩展 iframe**：实测后台 `chrome.runtime.sendMessage({...})` 广播
+    **到不了**这种 iframe（iframe 里 `chrome.runtime.onMessage` 注册得上、但永远收不到，后台那边的 Promise
+    也拿不到回复）。`runtime.connect` 端口能反向推，但一是长连接会把 MV3 的 service worker 永久吊着，
+    二是我们的端口会进到扩展自己的 `onConnect` 监听里。所以只做两件能做的：本框架里另一个连接升级 / 删库时
+    照原生给还开着的门面连接发 `versionchange`（`announceVersionChange`，弱引用登记——firebase-auth 每次操作
+    都新开连接且从不 `close()`，强引用会一直堆着）；后台那边的版本变了则由每次 `batch` 回复里带的 `version`
+    补发一次。**做不到的**：像原生那样"连接不 close 就挡住别处的升级"——后台没有 iframe 的生命周期信号，
+    真挡住的话一个崩掉 / 已经导航走的框架会把库永久锁死。
+  - **游标快照只解码一次**：`send()` 已经把整个回复过了 `decode`，`BridgeCursor` 里不能再 `decode(row.key)`
+    一遍——`decode` 见到一个真的 `Date` 实例会当普通对象遍历，`Date` 记录会变成 `{}`。
   - **不带版本号的 `open(name)` 也得先问 `databases()`**：库不存在时原生会 `upgradeneeded(0→1)`，直接
     `indexedDB.open(name)` 转给后台的话，后台会凭空建一个 v1 空库、`upgradeneeded` 被吞掉，扩展建表的回调
     永远不跑——之后每次 `transaction("store")` 都是 NotFoundError，而且那个空 v1 库还留在扩展真正的分区里，
@@ -363,6 +390,12 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
   `localStorage` 同样被分区，但它是同步 API，没法这样转发（后台是 worker，那里根本没有 localStorage），
   仍是每个顶层站点各一份。垫片版本号（`BrowserExtensionCompat.version`）跟着 +1，已装扩展下次启动自动重生成，
   不用重装。
+  回归用例：`testEmbeddedExtensionFrameSharesIndexedDBWithBackground`（读写 / 索引 / 游标 / 升级事务 / 不带版本号
+  的 open）、`testEmbeddedExtensionFrameWorksWithIdbStyleWrapper`（`idb` 包装库靠的 `instanceof` + `tx.done`）、
+  `testEmbeddedExtensionFrameRunsFirebaseStyleAuthPersistence`（firebase-auth 的 `persistence/indexed_db` 形状：
+  `fbase_key` keyPath、只用 `addEventListener`、可用性探测 open→put→delete、轮询、`close()` 后
+  `InvalidStateError`）、`testEmbeddedExtensionFrameTransactionsAreAtomic`（`abort()` 与请求出错的回滚、
+  事件顺序、`versionchange`）。
 
 - **`externally_connectable`（网页给扩展发消息）WebKit 是实现了的，但网页侧只挂在 `browser` 上**（2026-09-07，
   Stylish 一直显示未登录的根因）：合成扩展实测，普通 http 网页里 `typeof chrome === "undefined"`（连对象都没有），

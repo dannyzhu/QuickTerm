@@ -34,15 +34,16 @@ import WebKit
 ///    service worker 用的那份（`navigator.storage` 在那里是 undefined，`document.requestStorageAccess()` 一律被拒）。
 ///    消息通道、`chrome.storage.*` 都是通的，所以现象很迷惑：后台明明有数据，侧栏面板却显示"未登录 / 没有数据"
 ///    （Stylish 的面板直接从 IndexedDB 读已装样式与 Firebase 登录态）。修法：`frameScript` 在这种框架里把整个
-///    `indexedDB` 换成一层门面（`frameIndexedDBScript`），每次请求经 `runtime.sendMessage` 交给后台垫片
-///    （`backgroundIndexedDBScript`）在扩展真正的分区里执行。`localStorage` 同样被分区，但它是同步 API，
+///    `indexedDB` 换成一层门面（`frameIndexedDBScript`），请求经 `runtime.sendMessage` 交给后台垫片
+///    （`backgroundIndexedDBScript`）在扩展真正的分区里执行——同一个 microtask 里发出的那批请求一起送、
+///    在后台一个真事务里跑完，事务的原子性（出错回滚、abort() 回滚）才跟原生对得上。`localStorage` 同样被分区，但它是同步 API，
 ///    没法这样转发——只能仍是每个顶层站点各一份。
 ///
 /// 改写是幂等的：manifest 里 `__quickterm` 记着原始 `background` 与垫片版本，版本一致就不再动。
 /// 扩展更新（重装）会整目录替换，随之重新生成。
 enum BrowserExtensionCompat {
     /// 垫片版本：脚本内容或改写规则变了就 +1，已装扩展下次启动会重新生成
-    static let version = 4
+    static let version = 5
     static let compatFile = "__quickterm-compat.js"
     static let wrapperFile = "__quickterm-background.js"
     static let manifestKey = "__quickterm"
@@ -235,7 +236,8 @@ enum BrowserExtensionCompat {
     /// 后台侧的 IndexedDB 执行端（垫片里注册；只服务扩展自己 origin 的请求）
     static let backgroundIndexedDBScript = """
       // 网页里嵌的扩展 iframe 拿到的 IndexedDB 是按顶层站点分区的空库（见 frameScript）：代为在扩展自己的分区里执行。
-      // 每个请求一个独立事务——转发是异步的，IDB 事务撑不过一次消息往返
+      // 转发是异步的、IDB 事务撑不过一次消息往返，所以事务的粒度是「一批」：iframe 侧把同一个 microtask 里
+      // 攒下的请求一次送来，这里在一个真事务里按序跑完（见 runBatch）
       const handles = new Map();
       const dropHandle = (name) => {
         const db = handles.get(name);
@@ -295,22 +297,64 @@ enum BrowserExtensionCompat {
           }
         }
       };
-      // 一个事务里跑一次请求，等到事务真的 complete 再回结果（写入才算落盘）
-      const runTransaction = (db, store, mode, body) => new Promise((resolve, reject) => {
+      const errorInfo = (error) => ({
+        message: String((error && error.message) || error || "QuickTerm indexedDB bridge: the request failed"),
+        name: (error && error.name) || "UnknownError",
+      });
+      // iframe 侧攒在同一个 microtask 里的请求 = 后台一个真事务：请求按序发出，任一个出错就整批回滚
+      // （不 preventDefault，照原生让事务中止），回复里带上"错在第几个"，iframe 侧照原生顺序补事件。
+      // 事务撑不过消息往返，所以能做到原子的只有"一批"——iframe 侧在事件回调里再发的请求是下一个事务
+      const runBatch = (db, storeNames, mode, ops) => new Promise((resolve, reject) => {
         let tx;
-        try { tx = db.transaction([store], mode); } catch (error) { reject(error); return; }
+        try { tx = db.transaction(storeNames, mode); } catch (error) { reject(error); return; }
+        const results = new Array(ops.length);
+        // 「这个请求真的跑完了吗」：整批中止时 results 里没跑完的那些是空洞（游标的请求会排到队尾、
+        // 同步抛出时前面的请求一个都还没回来），空洞过消息通道变成 null，跟"结果就是 null"分不开
+        const done = new Array(ops.length).fill(false);
+        let broke = null;   // { index, error }：第一个出错的请求
         let settled = false;
-        let value;
-        const fail = (error) => {
+        tx.oncomplete = () => { if (!settled) { settled = true; resolve({ results, version: db.version }); } };
+        tx.onabort = () => {
           if (settled) return;
           settled = true;
-          reject(error || new Error("QuickTerm indexedDB bridge: the transaction failed"));
+          if (broke) resolve({ results: results.slice(0, broke.index), done: done.slice(0, broke.index),
+                               failed: broke.index, error: errorInfo(broke.error), version: db.version });
+          else reject(tx.error || new Error("QuickTerm indexedDB bridge: the transaction was aborted"));
         };
-        tx.onabort = () => fail(tx.error);
-        tx.onerror = () => fail(tx.error);
-        tx.oncomplete = () => { if (!settled) { settled = true; resolve(value); } };
-        try { body(tx, (result) => { value = result; }, fail); }
-        catch (error) { try { tx.abort(); } catch (_) {} fail(error); }
+        const issue = (index, op) => {
+          const store = tx.objectStore(String(op.store));
+          const target = op.index === null || op.index === undefined ? store : store.index(String(op.index));
+          const args = decode(op.args) || [];
+          if (op.kind === "cursor") {
+            // 游标撑不过消息往返：后台一次跑完，把结果拍平送回去，iframe 侧在这份快照上走 continue()
+            const keysOnly = op.method === "openKeyCursor";
+            const limit = Math.max(1, Math.min(Number(op.limit) || 1000, 10000));
+            const rows = [];
+            const request = keysOnly ? target.openKeyCursor.apply(target, args) : target.openCursor.apply(target, args);
+            request.onerror = () => { if (!broke) broke = { index, error: request.error }; };
+            request.onsuccess = () => {
+              const cursor = request.result;
+              if (!cursor) { results[index] = { rows, truncated: false }; done[index] = true; return; }
+              rows.push({ key: cursor.key, primaryKey: cursor.primaryKey, value: keysOnly ? undefined : cursor.value });
+              // 多取一条才分得清"正好 limit 条"和"还有更多"：iframe 侧要靠这个区分走完与被截断
+              if (rows.length <= limit) { cursor.continue(); return; }
+              rows.length = limit;
+              results[index] = { rows, truncated: true }; done[index] = true;
+            };
+            return;
+          }
+          const fn = target[String(op.method)];
+          if (typeof fn !== "function") throw new Error("QuickTerm indexedDB bridge: " + op.method + " is not available");
+          const request = fn.apply(target, args);
+          request.onsuccess = () => { results[index] = request.result; done[index] = true; };
+          request.onerror = () => { if (!broke) broke = { index, error: request.error }; };
+        };
+        for (let i = 0; i < ops.length; i += 1) {
+          // 同步抛出（参数不合法、没有这个索引…）原生是在调用处抛、事务照跑；这里调用处早已返回，
+          // 只能当成"这个请求失败了"，跟着中止整批
+          try { issue(i, ops[i]); }
+          catch (error) { broke = { index: i, error }; try { tx.abort(); } catch (_) {} break; }
+        }
       });
       const idbCall = async (payload) => {
         const p = payload || {};
@@ -376,42 +420,17 @@ enum BrowserExtensionCompat {
           handles.set(name, db);
           return schemaOf(db);
         }
-        if (p.op === "call" || p.op === "cursor") {
+        if (p.op === "batch") {
           const db = await openPlain(name);
-          const store = String(p.store);
-          const mode = p.mode === "readwrite" ? "readwrite" : "readonly";
-          const index = p.index === null || p.index === undefined ? null : String(p.index);
-          const method = String(p.method);
-          const args = decode(p.args) || [];
-          if (p.op === "call") {
-            return await runTransaction(db, store, mode, (tx, keep, fail) => {
-              const target = index ? tx.objectStore(store).index(index) : tx.objectStore(store);
-              const fn = target[method];
-              if (typeof fn !== "function") throw new Error("QuickTerm indexedDB bridge: " + method + " is not available");
-              const request = fn.apply(target, args);
-              request.onsuccess = () => keep(request.result);
-              request.onerror = () => fail(request.error);
-            });
+          const ops = Array.isArray(p.ops) ? p.ops : [];
+          // 事务只锁这一批真的碰到的 store（iframe 侧 transaction() 声明的那份可能更宽）
+          const names = [];
+          for (const op of ops) {
+            const store = String(op && op.store);
+            if (names.indexOf(store) === -1) names.push(store);
           }
-          // 游标撑不过消息往返：后台一次跑完，把结果拍平送回去，iframe 侧在这份快照上走 continue()
-          const limit = Math.max(1, Math.min(Number(p.limit) || 1000, 10000));
-          const keysOnly = method === "openKeyCursor";
-          const rows = [];
-          await runTransaction(db, store, mode, (tx, keep, fail) => {
-            const target = index ? tx.objectStore(store).index(index) : tx.objectStore(store);
-            const request = keysOnly ? target.openKeyCursor.apply(target, args) : target.openCursor.apply(target, args);
-            request.onerror = () => fail(request.error);
-            request.onsuccess = () => {
-              const cursor = request.result;
-              if (!cursor) return;
-              rows.push({ key: cursor.key, primaryKey: cursor.primaryKey, value: keysOnly ? undefined : cursor.value });
-              // 多取一条才分得清"正好 limit 条"和"还有更多"：iframe 侧要靠这个区分走完与被截断
-              if (rows.length <= limit) cursor.continue();
-            };
-          });
-          const truncated = rows.length > limit;
-          if (truncated) rows.length = limit;
-          return { rows, truncated };
+          if (!names.length) return { results: [], version: db.version };
+          return await runBatch(db, names, p.mode === "readwrite" ? "readwrite" : "readonly", ops);
         }
         throw new Error("QuickTerm indexedDB bridge: unknown operation " + String(p.op));
       };
@@ -610,19 +629,20 @@ enum BrowserExtensionCompat {
             this._truncated = !!truncated;
             this._load(0);
           }
+          // 快照是 send() 统一解码过的，这里不能再 decode 一次（Date 再解一次会变成 {}）
           _load(at) {
             const row = this._rows[at];
             this._at = at;
-            this.key = row ? decode(row.key) : undefined;
-            this.primaryKey = row ? decode(row.primaryKey) : undefined;
-            if (!this._keysOnly) this.value = row ? decode(row.value) : undefined;
+            this.key = row ? row.key : undefined;
+            this.primaryKey = row ? row.primaryKey : undefined;
+            if (!this._keysOnly) this.value = row ? row.value : undefined;
           }
           // continue(key)：正向游标找第一条 >= key 的，反向（prev*）游标的快照是降序的，要找第一条 <= key 的
           _seek(key, from) {
             const back = String(this.direction).indexOf("prev") === 0;
             for (let i = from; i < this._rows.length; i += 1) {
               try {
-                const order = native.cmp(decode(this._rows[i].key), key);
+                const order = native.cmp(this._rows[i].key, key);
                 if (back ? order <= 0 : order >= 0) return i;
               } catch (_) { return i; }
             }
@@ -633,22 +653,19 @@ enum BrowserExtensionCompat {
           _step(next) {
             const request = this.request;
             const transaction = request.transaction;
-            transaction._pending += 1;
-            Promise.resolve().then(() => {
-              transaction._pending -= 1;
-              if (next < this._rows.length) { this._load(next); succeed(request, this); }
-              else if (this._truncated) {
+            return transaction._localStep(request, () => {
+              if (next < this._rows.length) { this._load(next); succeed(request, this); return; }
+              if (this._truncated) {
                 // 快照被截断了：走到末尾不能报"迭代结束"（那是把剩下的记录悄悄抹掉），明确失败
                 const error = failure("QuickTerm indexedDB bridge: the cursor snapshot was truncated at "
                                       + this._rows.length + " rows", "UnknownError");
                 transaction.error = error;
                 failRequest(request, error);
                 transaction._finish("error");
+                return;
               }
-              else succeed(request, null);
-              transaction._schedule();
+              succeed(request, null);
             });
-            return request;
           }
           continue(key) { return this._step(key === undefined ? this._at + 1 : this._seek(key, this._at + 1)); }
           continuePrimaryKey(key) { return this.continue(key); }
@@ -737,12 +754,17 @@ enum BrowserExtensionCompat {
         inherit(BridgeObjectStore, globalThis.IDBObjectStore,
                 ["transaction", "name", "keyPath", "autoIncrement", "indexNames"]);
 
+        // 事务撑不过一次消息往返，但**同一个 microtask 里发出的那批请求**可以：攒起来一次送给后台，
+        // 后台在一个真事务里按序跑完。于是「一个请求出错 → 整个事务回滚」「abort() 回滚还没跑的」
+        // 都跟原生一致。在事件回调里接着发的请求排的是下一批（= 后台的下一个事务），见 porting-notes
         class BridgeTransaction extends EventTarget {
           constructor(db, storeNames, mode, manual) {
             super();
             this.db = db; this.mode = mode; this.error = null; this.durability = "default";
             this.objectStoreNames = nameList(storeNames.map(String));
             this.oncomplete = null; this.onerror = null; this.onabort = null;
+            this._live = new Set();     // 还没结束的请求（排队中 + 已发出）
+            this._queue = []; this._inflight = false; this._flushing = false;
             this._pending = 0; this._finished = false; this._ops = null;
             if (!manual) this._schedule();
           }
@@ -754,51 +776,150 @@ enum BrowserExtensionCompat {
             return new BridgeObjectStore(this, info);
           }
           abort() { this._finish("abort"); }
-          commit() { this._schedule(); }
+          commit() { this._flush(); this._schedule(); }
           // 原生事务在"所有请求都结束、且这一轮没有新请求"时自动提交：这里用一个 microtask 做同样的判断
           _schedule() {
             Promise.resolve().then(() => {
-              if (!this._finished && this._pending === 0 && !this._ops) this._finish("complete");
+              if (this._finished || this._ops || this._inflight) return;
+              if (this._pending === 0 && !this._queue.length) this._finish("complete");
             });
           }
+          // 原生的收尾顺序：出错那个请求的 error 冒泡成事务的 error → 还没结束的请求各收一个 AbortError → abort
           _finish(type) {
             if (this._finished) return;
             this._finished = true;
+            const stranded = Array.from(this._live);
+            this._live.clear(); this._queue.length = 0; this._pending = 0;
             if (type === "complete") { fire(this, "complete", new Event("complete")); return; }
             if (type === "error") fire(this, "error", new Event("error"));
+            const aborted = failure("The transaction was aborted", "AbortError");
+            for (const entry of stranded) {
+              if (entry.settled) continue;
+              entry.settled = true;
+              failRequest(entry.request, aborted);
+            }
             fire(this, "abort", new Event("abort"));
+          }
+          _enqueue(entry) {
+            this._live.add(entry); this._pending += 1; this._queue.push(entry);
+            if (!this._flushing) {
+              this._flushing = true;
+              Promise.resolve().then(() => { this._flushing = false; this._flush(); });
+            }
+            return entry.request;
+          }
+          _settle(entry) {
+            if (entry.settled || this._finished) return false;
+            entry.settled = true; this._live.delete(entry); this._pending -= 1;
+            return true;
+          }
+          // 一次只有一批在路上：同一个事务里的请求要按发出的顺序结束
+          _flush() {
+            if (this._finished || this._inflight || !this._queue.length) return;
+            const batch = this._queue;
+            this._queue = [];
+            this._inflight = true;
+            send({ op: "batch", name: this.db.name, mode: this.mode === "readonly" ? "readonly" : "readwrite",
+                   ops: batch.map((entry) => entry.op) })
+              .then((data) => { this._inflight = false; this._deliver(batch, data || {}); },
+                    (error) => {
+                      this._inflight = false;
+                      this.error = error;
+                      for (const entry of batch) { if (this._settle(entry)) failRequest(entry.request, error); }
+                      this._finish("error");
+                    });
+          }
+          // 原生的顺序：出错之前的请求照常 success，出错那个 error，然后事务 error + abort
+          _deliver(batch, data) {
+            const results = data.results || [];
+            const done = Array.isArray(data.done) ? data.done : null;   // 只有中止的回复带它；提交了的那批全都跑完了
+            const failedAt = typeof data.failed === "number" ? data.failed : -1;
+            const delivered = failedAt < 0 ? batch.length : Math.min(failedAt, batch.length);
+            for (let i = 0; i < delivered; i += 1) {
+              if (this._finished) return;   // 某个 success 回调里 abort() 了
+              const entry = batch[i];
+              // 排在出错那个之前、但后台回滚时它还没跑完（游标还在迭代 / 同步抛出时前面的都还没回来）：
+              // 不能报 success，留在 _live 里由 _finish("error") 照原生发 AbortError
+              if (done && done[i] !== true) continue;
+              if (!this._settle(entry)) continue;
+              succeed(entry.request, entry.wrap ? entry.wrap(results[i]) : results[i]);
+            }
+            if (this._finished) return;
+            // 后台报回来的版本比本连接新 = 别处升级过了：事件推到下一个 microtask 发，别插在事务事件中间
+            if (data.version !== this.db.version) Promise.resolve().then(() => this.db._noteVersion(data.version));
+            if (failedAt < 0) { this._flush(); this._schedule(); return; }
+            const error = failure((data.error && data.error.message) || "The request failed",
+                                  data.error && data.error.name);
+            const entry = batch[failedAt];
+            if (entry && this._settle(entry)) { this.error = error; failRequest(entry.request, error); }
+            this._finish("error");
           }
           _request(store, indexName, method, args, write) {
             if (this._finished) throw failure("The transaction has finished", "TransactionInactiveError");
             if (write && this.mode === "readonly") throw failure("The transaction is read-only", "ReadOnlyError");
             const request = new BridgeRequest(store, this);
-            this._pending += 1;
-            send({ op: "call", name: this.db.name, store: store.name, index: indexName,
-                   mode: this.mode === "readonly" ? "readonly" : "readwrite", method, args: encode(args) })
-              .then((result) => { this._pending -= 1; succeed(request, result); this._schedule(); },
-                    (error) => { this._pending -= 1; this.error = error; failRequest(request, error); this._finish("error"); });
-            return request;
+            return this._enqueue({ request, settled: false,
+                                   op: { kind: "call", store: store.name, index: indexName, method, args: encode(args) } });
           }
           _cursor(store, indexName, method, args) {
             if (this._finished) throw failure("The transaction has finished", "TransactionInactiveError");
             const request = new BridgeRequest(store, this);
             const direction = typeof args[1] === "string" ? args[1] : "next";
-            this._pending += 1;
-            send({ op: "cursor", name: this.db.name, store: store.name, index: indexName,
-                   mode: this.mode === "readonly" ? "readonly" : "readwrite", method, args: encode(args), limit: 5000 })
-              .then((data) => {
-                this._pending -= 1;
-                const rows = (data && data.rows) || [];
-                succeed(request, rows.length ? new BridgeCursor(request, store, indexName, direction, rows,
-                                                                method === "openKeyCursor", !!(data && data.truncated)) : null);
-                this._schedule();
-              },
-                    (error) => { this._pending -= 1; this.error = error; failRequest(request, error); this._finish("error"); });
+            const entry = { request, settled: false,
+                            op: { kind: "cursor", store: store.name, index: indexName, method,
+                                  args: encode(args), limit: 5000 } };
+            entry.wrap = (data) => {
+              const rows = (data && data.rows) || [];
+              return rows.length ? new BridgeCursor(request, store, indexName, direction, rows,
+                                                    method === "openKeyCursor", !!(data && data.truncated)) : null;
+            };
+            return this._enqueue(entry);
+          }
+          // 游标在本地快照上走一步：不发消息，但要像一个请求那样撑住事务
+          _localStep(request, body) {
+            const entry = { request, settled: false };
+            this._live.add(entry); this._pending += 1;
+            Promise.resolve().then(() => {
+              if (!this._settle(entry)) return;
+              body();
+              if (this._finished) return;
+              this._flush(); this._schedule();
+            });
             return request;
           }
         }
         inherit(BridgeTransaction, globalThis.IDBTransaction,
                 ["db", "mode", "error", "durability", "objectStoreNames", "oncomplete", "onerror", "onabort"]);
+
+        const versionChangeEvent = (type, oldVersion, newVersion) => {
+          try { return new IDBVersionChangeEvent(type, { oldVersion, newVersion }); }
+          catch (_) {
+            const event = new Event(type);
+            try { event.oldVersion = oldVersion; event.newVersion = newVersion; } catch (__) {}
+            return event;
+          }
+        };
+
+        // 开着的门面连接：别的地方（本框架、后台、别的标签）升级 / 删库时，照原生给它们发 versionchange。
+        // 弱引用存——有的库（firebase-auth）每次操作都新开一个连接、从不 close()，强引用会一直堆着
+        const connections = new Set();
+        const weakRef = (value) => {
+          try { return new WeakRef(value); } catch (_) { return { deref: () => value }; }
+        };
+        const trackConnection = (db) => {
+          if (connections.size > 64) {
+            for (const ref of Array.from(connections)) { if (!ref.deref()) connections.delete(ref); }
+          }
+          db._ref = weakRef(db);
+          connections.add(db._ref);
+        };
+        const announceVersionChange = (name, newVersion) => {
+          for (const ref of Array.from(connections)) {
+            const db = ref.deref();
+            if (!db) { connections.delete(ref); continue; }
+            if (db.name === String(name)) db._noteVersion(newVersion);
+          }
+        };
 
         class BridgeDatabase extends EventTarget {
           constructor(schema) {
@@ -807,7 +928,18 @@ enum BrowserExtensionCompat {
             this._stores = new Map((schema.stores || []).map((store) => [store.name, store]));
             this.objectStoreNames = nameList(Array.from(this._stores.keys()).sort());
             this.onversionchange = null; this.onclose = null; this.onerror = null; this.onabort = null;
-            this._upgrade = null; this._closed = false;
+            this._upgrade = null; this._closed = false; this._noticed = undefined; this._ref = null;
+            trackConnection(this);
+          }
+          // 后台那份库的版本变了（升级 / 删库）：原生此时给还开着的连接发 versionchange，
+          // 由它自己决定 close()。这里做不到"挡住升级"（后台没有 iframe 的生命周期），只能照发事件；
+          // 同一个变更只发一次，version 保持连接自己那份（原生的旧连接也停在旧版本）
+          _noteVersion(version) {
+            const next = version === null ? null : (typeof version === "number" ? version : undefined);
+            if (next === undefined || this._closed) return;
+            if (next === this.version || next === this._noticed) return;
+            this._noticed = next;
+            fire(this, "versionchange", versionChangeEvent("versionchange", this.version, next));
           }
           transaction(storeNames, mode) {
             if (this._closed) throw failure("The database connection is closed", "InvalidStateError");
@@ -818,7 +950,7 @@ enum BrowserExtensionCompat {
             }
             return new BridgeTransaction(this, names, mode === "readwrite" || mode === "versionchange" ? mode : "readonly");
           }
-          close() { this._closed = true; }
+          close() { this._closed = true; if (this._ref) connections.delete(this._ref); }
           createObjectStore(name, options) {
             const upgrade = this._upgrade;
             if (!upgrade) throw failure("createObjectStore is only allowed during an upgrade", "InvalidStateError");
@@ -842,22 +974,15 @@ enum BrowserExtensionCompat {
         inherit(BridgeDatabase, globalThis.IDBDatabase,
                 ["name", "version", "objectStoreNames", "onversionchange", "onclose", "onerror", "onabort"]);
 
-        const versionChangeEvent = (oldVersion, newVersion) => {
-          try { return new IDBVersionChangeEvent("upgradeneeded", { oldVersion, newVersion }); }
-          catch (_) {
-            const event = new Event("upgradeneeded");
-            try { event.oldVersion = oldVersion; event.newVersion = newVersion; } catch (__) {}
-            return event;
-          }
-        };
-
         class BridgeFactory {
           open(name, version) {
             const request = new BridgeOpenRequest();
             const dbName = String(name);
             send({ op: "open", name: dbName, version: version === undefined ? null : Number(version) })
               .then((info) => {
-                if (!info || !info.upgrade) return info;
+                if (!info || !info.upgrade) { announceVersionChange(dbName, info && info.version); return info; }
+                // 本框架里还开着的同名连接：原生此刻就收到 versionchange（升级的那个连接自己不算）
+                announceVersionChange(dbName, info.version);
                 // 需要升级：本地放一个"录制"版本的 versionchange 事务，让扩展照常建库，再把这些操作交给后台重放
                 const db = new BridgeDatabase({ name: dbName, version: info.version, stores: info.stores || [] });
                 const transaction = new BridgeTransaction(db, Array.from(db.objectStoreNames), "versionchange", true);
@@ -865,7 +990,14 @@ enum BrowserExtensionCompat {
                 db._upgrade = transaction;
                 request.result = db;
                 request.transaction = transaction;
-                fire(request, "upgradeneeded", versionChangeEvent(info.oldVersion, info.version));
+                fire(request, "upgradeneeded", versionChangeEvent("upgradeneeded", info.oldVersion, info.version));
+                // 回调里 abort() 了升级事务：原生此时版本不动、open 请求以 AbortError 失败——
+                // 录下来的那些操作一个都不能交给后台重放（后台的 op:"open" 什么都没改，现在收手还来得及）
+                if (transaction._finished) {
+                  db._upgrade = null; transaction._ops = null; request.transaction = null;
+                  db.close();
+                  throw failure("The version change transaction was aborted", "AbortError");
+                }
                 return send({ op: "upgrade", name: dbName, version: info.version, ops: transaction._ops })
                   .then((schema) => {
                     db._upgrade = null;
@@ -882,6 +1014,7 @@ enum BrowserExtensionCompat {
           }
           deleteDatabase(name) {
             const request = new BridgeOpenRequest();
+            announceVersionChange(name, null);   // 原生：删库前给还开着的连接发 versionchange（newVersion 为 null）
             send({ op: "deleteDatabase", name: String(name) })
               .then(() => succeed(request, undefined), (error) => failRequest(request, error));
             return request;
@@ -904,10 +1037,12 @@ enum BrowserExtensionCompat {
     ///    保留原样——注册监听不会触发那条 IPC。已知取舍：回调形式拿不到 runtime.lastError；带函数的参数
     ///    （scripting.executeScript 的 func）过不了消息序列化；后台若对所有消息都同步 reply，会抢在转发结果之前。
     /// 2. 把 `indexedDB` 换成经后台执行的门面（见文件头第 6 条）：这种框架里的 IndexedDB 被 WebKit 按顶层站点
-    ///    分区，读到的是另一份空库。已知取舍：一次调用 = 后台一个独立事务（同一个事务里的多个请求不再是原子的，
-    ///    abort() 也回滚不了已经执行的），升级事务里只能建表 / 建索引 / 写入（读不了，操作录下来交给后台重放），
+    ///    分区，读到的是另一份空库。已知取舍：事务的粒度是"同一个 microtask 里发出的那一批"——那一批在后台是
+    ///    一个真事务（一个请求出错整批回滚、abort() 回滚还没发出的），跨事件回调再发的请求是下一个事务；
+    ///    升级事务里只能建表 / 建索引 / 写入（读不了，操作录下来交给后台重放），
     ///    游标是后台一次跑完的快照（上限 5000 条；超出时走到快照末尾明确报错，不假装迭代正常结束），
-    ///    值按 JSON 语义过通道（Date 与 IDBKeyRange 单独编码，Blob / File / ArrayBuffer 过不去）。
+    ///    值按 JSON 语义过通道（Date 与 IDBKeyRange 单独编码，Blob / File / ArrayBuffer 过不去），
+    ///    `versionchange` 只在本框架自己发起升级 / 删库、或下一次请求发现后台那份版本变了时补发（后台推不到这种框架）。
     ///    `runtime.sendMessage` 本身在这种框架里是通的（回调、Promise、connect 端口都实测过），所以桥只加在存储这一层。
     ///    桥只在**后台真的挂上了垫片**（manifest.background 有改写痕迹）时才装：执行端不在的话每次调用都会失败，
     ///    那还不如留着原生那份分区库。
