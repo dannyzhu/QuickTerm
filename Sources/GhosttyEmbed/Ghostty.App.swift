@@ -753,10 +753,12 @@ extension Ghostty {
 
             // QuickTerm：终端里 ⌘+点击的网页链接先交给窗口控制器（在浏览器 pane 里打开；
             // link-opener = system 或非 http(s) 时控制器不接管，落到下面的系统打开）
-            if action.kind != .text, let target, target.tag == GHOSTTY_TARGET_SURFACE,
-               let surface = target.target.surface, let surfaceView = self.surfaceView(from: surface),
-               surfaceView.controller?.openLink(url, from: surfaceView) == true {
-                return true
+            if action.kind != .text {
+                var origin: PaneView?
+                if let target, target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface {
+                    origin = self.surfaceView(from: surface)
+                }
+                if routeLink(url, from: origin) { return true }
             }
 
             switch action.kind {
@@ -777,8 +779,37 @@ extension Ghostty {
             }
 
             // Open with the default application for the URL
-            NSWorkspace.shared.open(url)
+            systemOpener(url)
             return true
+        }
+
+        /// 系统默认应用出口（测试可替换；生产恒为 NSWorkspace）
+        nonisolated(unsafe) static var systemOpener: (URL) -> Void = { NSWorkspace.shared.open($0) }
+
+        /// 把链接交给一个**还活着的**窗口控制器。
+        ///
+        /// 先问 pane 自己的控制器（多屏幕：链接归它那块屏幕），它解析不出来（SwiftUI 重建层级期间
+        /// pane 会短暂脱离窗口，`window == nil`）再退到 key / main 窗口，最后退到任何一个终端窗口。
+        /// 这样只要 link-opener 不是 system，http(s) 链接就绝不会漏成"系统默认浏览器打开"——
+        /// 控制器自己对非 http(s) 与 system 模式返回 false，那两种情况照旧落到系统打开。
+        static func routeLink(_ url: URL, from origin: PaneView?) -> Bool {
+            let owner = origin?.controller
+            var candidates: [BaseTerminalController] = []
+            func add(_ controller: BaseTerminalController?) {
+                guard let controller, controller.acceptsPaneOperations,
+                      !candidates.contains(where: { $0 === controller }) else { return }
+                candidates.append(controller)
+            }
+            add(owner)
+            add(NSApp.keyWindow?.windowController as? BaseTerminalController)
+            add(NSApp.mainWindow?.windowController as? BaseTerminalController)
+            for window in NSApp.windows { add(window.windowController as? BaseTerminalController) }
+            for controller in candidates {
+                // 锚点 pane 只对它自己的控制器有意义（别的屏幕不认这个 pane）
+                let anchor = controller === owner ? origin : nil
+                if controller.openLink(url, from: anchor) { return true }
+            }
+            return false
         }
 
         private static func undo(_ app: ghostty_app_t, target: ghostty_target_s) -> Bool {

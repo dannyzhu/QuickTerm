@@ -275,6 +275,16 @@ final class BrowserPaneView: PaneView {
 
     override func paneDidBecomeFirstResponder() {
         super.paneDidBecomeFirstResponder()
+        makeCurrentForExtensions()
+    }
+
+    /// 让扩展世界把本 pane 当成"当前窗口"。
+    ///
+    /// `WKWebExtensionContext.focusedWindow` 是**缓存值**，只有 `didFocusWindow(_:)` 会改它，
+    /// WebKit 不会回头问代理。`tabs.query({active:true,currentWindow:true})` 查的就是它——缓存漂了，
+    /// 扩展的消息就发到别的 pane（甚至别的屏幕）的标签上去，看起来就是"点了图标没反应"。
+    /// 所以除了取得键盘焦点，点工具条按钮（不改 first responder）、窗口成为 key 时也要报一次
+    func makeCurrentForExtensions() {
         lastActivatedAt = Date()
         extensionController?.didFocusWindow(self)
     }
@@ -314,12 +324,21 @@ final class BrowserPaneView: PaneView {
         for item in downloads.items where item.isActive { downloads.cancel(item) }
         downloadPopoverHost?.performClose(nil)
         extensionController?.didCloseWindow(self)
+        // 关掉的正是扩展眼里的"当前窗口"时，focusedWindow 会一直空着（`currentWindow` 的查询落空，
+        // 扩展图标从此点了没反应）：下一轮 runloop 把"当前窗口"交给还活着的浏览器 pane
+        DispatchQueue.main.async { [weak self] in
+            guard let next = BrowserExtensionManager.current.host?.focusedBrowserPane,
+                  next !== self else { return }
+            next.makeCurrentForExtensions()
+        }
     }
 
     /// 请求关掉整个 pane（最后一个标签被关 / 扩展 windows.remove / 页面 window.close）。
-    /// pane 在非活动工作区时未挂窗口、controller 为 nil：先记下，挂回窗口再补发
+    /// pane 在非活动工作区 / 层级重建期间没挂窗口：先记下，挂回窗口再补发。
+    /// 这里必须看**当下**有没有挂在窗口上——`controller` 会兜底给出最近一次的控制器（链接路由要它），
+    /// 而 `closePane` 只认活动工作区里的 pane，拿兜底的控制器去关会是个静默的空操作
     func requestPaneClose() {
-        if let controller {
+        if window != nil, let controller {
             controller.requestClosePane(self)
         } else {
             pendingCloseRequest = true
@@ -803,6 +822,9 @@ final class BrowserPaneView: PaneView {
                 guard let self, let tab else { return }
                 if tab === self.activeTab { self.urlDidChange() }
                 self.extensionController?.didChangeTabProperties(.URL, for: tab)
+                // 扩展动作是按标签算的（图标 / 是否可用都跟着 URL 变）：导航后不重读的话
+                // 工具条按钮会停在上一页的状态上，`isEnabled == false` 的按钮会静默吃掉点击
+                if tab === self.activeTab { self.extensionBar.reload() }
             },
             webView.observe(\.title, options: [.new]) { [weak self, weak tab] wv, _ in
                 guard let self, let tab else { return }

@@ -158,6 +158,74 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
         controller = WKWebExtensionController(configuration: configuration)
         super.init()
         controller.delegate = self
+        // 扩展后台（MV3 的 service worker）加载失败以前完全是静默的：WebKit 只把错误记进
+        // context.errors，我们从不读——用户看到的只是"扩展图标点了没反应"。这里订阅出来记日志
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(contextErrorsDidUpdate(_:)),
+            name: WKWebExtensionContext.errorsDidUpdateNotification, object: nil)
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    /// 已经报过的错（WebKit 每次把历史错误整份给你，去重免得刷屏）
+    private var reportedErrorKeys: Set<String> = []
+
+    /// 测试钩子：记录新出现的扩展错误（生产恒为 nil）
+    nonisolated(unsafe) static var errorRecorderForTesting: ((String, NSError) -> Void)?
+
+    /// 测试钩子：记录一次「点图标」确实派发到了这里（生产恒为 nil）。
+    /// 唤醒后台的那步就在本方法里，UI 绕过它直接 `context.performAction(for:)` 就是这个 bug 的原样
+    nonisolated(unsafe) static var actionDispatchRecorderForTesting: ((String, BrowserPaneView.Tab?) -> Void)?
+
+    @objc private func contextErrorsDidUpdate(_ note: Foundation.Notification) {
+        guard let context = note.object as? WKWebExtensionContext,
+              let item = installed.first(where: { $0.context === context }) else { return }
+        reportNewErrors(of: item)
+    }
+
+    /// 把 context 上新出现的错误记进日志（并喂给测试钩子）。返回新错误的条数
+    @discardableResult
+    func reportNewErrors(of item: Installed) -> Int {
+        var count = 0
+        for error in item.context.errors {
+            let ns = error as NSError
+            let key = "\(item.id)|\(ns.domain)|\(ns.code)|\(ns.localizedDescription)"
+            guard !reportedErrorKeys.contains(key) else { continue }
+            reportedErrorKeys.insert(key)
+            count += 1
+            let detail = "\(ns.domain)#\(ns.code) \(ns.localizedDescription)"
+            Self.logger.warning("扩展运行时错误 id=\(item.id, privacy: .public) \(detail, privacy: .public)")
+            Self.errorRecorderForTesting?(item.id, ns)
+        }
+        return count
+    }
+
+    /// 点扩展图标（工具条按钮 / 拼图菜单的「打开」）：先把后台内容叫醒再执行动作。
+    ///
+    /// MV3 的后台 service worker 空闲约 30 秒就被 WebKit 回收，而 `performAction(for:)` 并不保证
+    /// 把它叫回来——叫不醒时 `action.onClicked` 根本不会跑，图标就是个哑巴（用户报的
+    /// 「Stylish 的小图标用一段时间后点了没反应」）。这里显式 load 一次：能起来就照常派发，
+    /// 起不来至少把错误落到日志里（以前这些失败没有任何痕迹）。
+    /// 没有后台内容的扩展（纯 popup）直接派发，不多绕一圈。
+    func performAction(of item: Installed, tab: BrowserPaneView.Tab?) {
+        Self.actionDispatchRecorderForTesting?(item.id, tab)
+        guard item.context.isLoaded else { return }
+        guard item.webExtension.hasBackgroundContent else {
+            item.context.performAction(for: tab)
+            return
+        }
+        item.context.loadBackgroundContent { [weak self] error in
+            MainActor.assumeIsolated {
+                if let error {
+                    let why = error.localizedDescription
+                    Self.logger.warning("扩展后台唤醒失败 id=\(item.id, privacy: .public) error=\(why, privacy: .public)")
+                    self?.reportNewErrors(of: item)
+                }
+                // 失败也照样派发：有 popup 的扩展仍然该弹出来
+                guard item.context.isLoaded else { return }
+                item.context.performAction(for: tab)
+            }
+        }
     }
 
     /// 持久 controller 标识：存在 `<store>/controller-id`，重启后扩展的 storage 才认得回来

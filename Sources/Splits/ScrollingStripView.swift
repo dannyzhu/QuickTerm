@@ -223,7 +223,9 @@ struct ScrollingPaneCell: View {
                     }
                 }
                 .overlay {
-                    if modifierState.commandHeld {
+                    // 拖拽进行中也保持挂载：先松 ⌘ 再松左键时不能把活着的 NSDraggingSource 拆掉，
+                    // 否则 draggingSession(endedAt:) 落不到在窗口里的视图，PaneDragState 收不了尾
+                    if modifierState.commandHeld || dragSourceDragging {
                         Ghostty.SurfaceDragSource(
                             surfaceView: surfaceView,
                             isDragging: $dragSourceDragging,

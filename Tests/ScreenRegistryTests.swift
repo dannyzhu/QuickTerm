@@ -36,6 +36,31 @@ final class ScreenRegistryTests: XCTestCase {
 
     // MARK: 注册表与放置
 
+    /// 脱离窗口的 pane 认得的是**它自己那块屏幕**的控制器（不是当下 key 的那个），
+    /// 屏幕关掉之后不得再拿它复活：⌘+点击的链接要落在正确的屏幕上
+    func testDetachedPaneResolvesItsOwnScreenController() throws {
+        var orphan: PaneView?
+        try withSecondScreen { app, primary, second in
+            let content = try XCTUnwrap(second.window?.contentView)
+            let pane = PaneView(frame: NSRect(x: 0, y: 0, width: 10, height: 10))
+            orphan = pane
+            content.addSubview(pane)
+            spin(0.1)
+            XCTAssertTrue(pane.controller === second)
+            pane.removeFromSuperview()
+            primary.window?.makeKeyAndOrderFront(nil)
+            spin(0.1)
+            XCTAssertNil(pane.window, "前提：已脱离窗口")
+            XCTAssertTrue(pane.controller === second,
+                          "脱离窗口时认自己那块屏幕，绝不认当下 key 的窗口")
+            app.closeScreen(second)
+            spin()
+            XCTAssertNil(pane.controller, "屏幕已关掉的控制器不得被复活")
+        }
+        XCTAssertNotNil(orphan)
+    }
+
+
     func testNewScreenRegistersSecondWindow() throws {
         try withSecondScreen { app, primary, second in
             XCTAssertEqual(app.controllers.count, 2, "新建屏幕后注册表应有两个控制器")

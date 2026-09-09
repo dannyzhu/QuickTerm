@@ -970,6 +970,128 @@ extension WorkspaceTests {
         XCTAssertEqual(pane.leftReleaseCountForTesting, release0 + 1, "没有配对按下的抬起不转发")
     }
 
+    /// ⌘ 拖拽源浮层盖满整个 pane，但它是 pane 的**兄弟**子树：不转交的话滚轮顺着浮层自己的
+    /// 响应链走进 SwiftUI 容器，终端 / 网页永远收不到——用户报的"抓手光标不消失，而且终端滚不动了"
+    @MainActor
+    func testDragSourceOverlayForwardsScrollToSurface() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty)
+        c.perform(.newTerminal)
+        let pane = try XCTUnwrap(c.paneList.first as? Ghostty.SurfaceView)
+        defer { c.closePane(pane, confirmIfNeeded: false, animated: false) }
+        let window = try XCTUnwrap(c.window)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        ModifierState.shared.commandHeld = true
+        defer { ModifierState.shared.sync(.init()) }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        func findOverlay(_ v: NSView) -> NSView? {
+            if String(describing: type(of: v)) == "SurfaceDragSourceView" { return v }
+            for sub in v.subviews { if let hit = findOverlay(sub) { return hit } }
+            return nil
+        }
+        let overlay = try XCTUnwrap(window.contentView.flatMap(findOverlay), "⌘ 按住时应挂上拖拽源浮层")
+        let center = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.midY), to: nil)
+        let event = try scrollEvent(at: center, in: window)
+        XCTAssertEqual(event.locationInWindow.x, center.x, accuracy: 1, "合成滚轮事件落在 pane 中心")
+        XCTAssertEqual(event.locationInWindow.y, center.y, accuracy: 1)
+        let before = pane.scrollCountForTesting
+        overlay.scrollWheel(with: event)
+        XCTAssertEqual(pane.scrollCountForTesting, before + 1, "浮层把滚轮转交给 surface，不能吃掉")
+        // ⌘ 一松（哪怕抬起落在别的 app 上，靠 sync 自愈）浮层就该消失，抓手光标随之消失
+        ModifierState.shared.sync(.init())
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        XCTAssertNil(window.contentView.flatMap(findOverlay), "⌘ 释放后浮层必须摘掉")
+    }
+
+    /// `commandHeld` 只有本地监视器一个写者，看不见落在别的 app 上的 ⌘ 抬起
+    /// （⌘+Tab / ⌘+Space / 截图 / ⌘+H）：必须能自愈，否则浮层永远挂着
+    @MainActor
+    func testModifierStateSelfHealsOnDeactivationAndSync() throws {
+        let previous = ModifierState.shared.commandHeld
+        defer { ModifierState.shared.commandHeld = previous }
+        ModifierState.shared.commandHeld = true
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertFalse(ModifierState.shared.commandHeld, "app 失活时无条件清零（⌘ 的抬起会落在别的 app）")
+        ModifierState.shared.sync(.command)
+        XCTAssertTrue(ModifierState.shared.commandHeld, "按事件自带的修饰键重建")
+        ModifierState.shared.sync([.shift, .option])
+        XCTAssertFalse(ModifierState.shared.commandHeld, "任何鼠标 / 滚轮事件都能把漏掉的抬起补回来")
+    }
+
+    /// 终端 pane 在 SwiftUI 重建层级期间会短暂脱离窗口（window == nil）。引擎的 open_url 回调
+    /// 若此刻解析不出控制器，⌘+点击的 http 链接就被甩给系统默认浏览器——用户报的
+    /// "有时会打开系统默认浏览器，而不是 pane 浏览器"
+    @MainActor
+    func testDetachedPaneKeepsControllerSoLinksNeverLeakToSystem() throws {
+        let c = try controller
+        let home = c.model.activeIndex
+        c.model.switchTo(c.model.layouts.count - 1)
+        defer { c.model.switchTo(home) }
+        XCTAssertTrue(c.model.layout.isEmpty)
+        let prevSettings = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = prevSettings }
+        BrowserPaneView.settings.home = "about:blank"
+        let prevOpener = c.linkOpener
+        defer { c.linkOpener = prevOpener }
+        c.linkOpener = "browser-pane"
+        var systemOpened: [URL] = []
+        let prevSystemOpener = Ghostty.App.systemOpener
+        defer { Ghostty.App.systemOpener = prevSystemOpener }
+        Ghostty.App.systemOpener = { systemOpened.append($0) }
+
+        // 挂一个 pane 进窗口再摘掉：正是重建层级那一瞬间的状态（superview 有、window 没有）
+        let content = try XCTUnwrap(c.window?.contentView)
+        let orphan = PaneView(frame: NSRect(x: 0, y: 0, width: 10, height: 10))
+        content.addSubview(orphan)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        XCTAssertTrue(orphan.controller === c, "挂在窗口里时解析出本窗口的控制器")
+        orphan.removeFromSuperview()
+        XCTAssertNil(orphan.window, "前提：已脱离窗口")
+        XCTAssertTrue(orphan.controller === c, "脱离窗口后仍认得最近一次的控制器")
+
+        let link = URL(string: "http://127.0.0.1:9/detached")!
+        XCTAssertTrue(Ghostty.App.routeLink(link, from: orphan), "脱离窗口的 pane 也要被接管")
+        XCTAssertTrue(systemOpened.isEmpty, "http 链接绝不能漏给系统默认浏览器")
+        let browser = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView } as? BrowserPaneView)
+        XCTAssertEqual(browser.activeTab?.lastRequestedURL, link, "落在 QuickTerm 自己的浏览器 pane 里")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+
+        // 连来源 pane 都没有（target 解析不出 surface）时，退到 key / 任意终端窗口，同样不漏
+        let link2 = URL(string: "http://127.0.0.1:9/nosurface")!
+        XCTAssertTrue(Ghostty.App.routeLink(link2, from: nil))
+        XCTAssertTrue(systemOpened.isEmpty)
+        // 非 http(s) 与 link-opener = system 照旧交给系统（不接管 → 引擎调 systemOpener）
+        XCTAssertFalse(Ghostty.App.routeLink(URL(string: "mailto:a@b.c")!, from: orphan), "非 http(s) 不接管")
+        c.linkOpener = "system"
+        XCTAssertFalse(Ghostty.App.routeLink(link, from: orphan), "system 模式不接管")
+        c.linkOpener = "browser-pane"
+        for p in c.paneList { c.closePane(p, confirmIfNeeded: false, animated: false) }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+    }
+
+    /// 合成一个真实的滚轮事件（NSEvent.mouseEvent 造不出 .scrollWheel）。
+    /// windowNumber = 0 的事件里 `locationInWindow` 就是屏幕坐标：量一次差值补偿，
+    /// 免得依赖具体的显示器排布
+    private func scrollEvent(at windowPoint: NSPoint, in window: NSWindow) throws -> NSEvent {
+        func make(_ location: CGPoint) throws -> NSEvent {
+            let cg = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                                           wheelCount: 2, wheel1: -6, wheel2: 0, wheel3: 0))
+            cg.location = location
+            return try XCTUnwrap(NSEvent(cgEvent: cg))
+        }
+        let screenPoint = window.convertPoint(toScreen: windowPoint)
+        var location = CGPoint(x: screenPoint.x,
+                               y: (NSScreen.screens.first?.frame.maxY ?? 0) - screenPoint.y)
+        let probe = try make(location)
+        location = CGPoint(x: location.x + (windowPoint.x - probe.locationInWindow.x),
+                           y: location.y - (windowPoint.y - probe.locationInWindow.y))
+        return try make(location)
+    }
+
     /// 浮动 pane 的 ⌘ 会话：抬起时没拖过阈值 = 纯点击交给 pane 本体；拖过阈值 = 移动且不点击
     @MainActor
     func testCommandClickOnFloatingPaneReachesSurface() throws {

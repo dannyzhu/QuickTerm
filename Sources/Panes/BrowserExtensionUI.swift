@@ -84,7 +84,11 @@ final class BrowserExtensionToolbar: NSView {
         }
         invalidateIntrinsicContentSize()
         needsLayout = true
+        reloadCountForTesting += 1
     }
+
+    /// 测试用：`reload()` 跑过的次数（导航后必须重读，见 BrowserPaneView 的 `\.url` 观察）
+    private(set) var reloadCountForTesting = 0
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: CGFloat(actionButtons.count + 1) * Self.step, height: Self.buttonSize)
@@ -128,7 +132,22 @@ final class BrowserExtensionToolbar: NSView {
 
     @objc private func performExtensionAction(_ sender: BrowserExtensionActionButton) {
         guard let item = sender.item else { return }
-        item.context.performAction(for: pane?.activeTab)
+        perform(item)
+    }
+
+    /// 点开一个扩展动作。缓存的东西一律在点击这一刻重算：
+    /// 当前标签（按钮建好之后可能已经开 / 关 / 切过标签）、动作对象（WebKit 按标签给不同的 action）、
+    /// 以及扩展眼里的"当前窗口"（`tabs.query({currentWindow:true})` 查的是缓存值，
+    /// 点按钮不改 first responder，不报的话消息会发到别的 pane 去）
+    private func perform(_ item: BrowserExtensionManager.Installed) {
+        pane?.makeCurrentForExtensions()
+        let tab = pane?.activeTab
+        guard item.enabled, item.context.isLoaded,
+              let action = item.context.action(for: tab), action.isEnabled else { return }
+        manager.performAction(of: item, tab: tab)
+        // badge / 图标可能被动作改掉。下一轮再重建：reload() 会把按钮从视图层级里摘掉，
+        // 不能在它自己的 action 派发栈里干这事
+        DispatchQueue.main.async { [weak self] in self?.reload() }
     }
 
     /// 拼图菜单（也是 WM 动作 web-extensions 的落点）
@@ -194,7 +213,7 @@ final class BrowserExtensionToolbar: NSView {
 
     @objc private func performActionFromMenu(_ sender: NSMenuItem) {
         guard let item = sender.representedObject as? BrowserExtensionManager.Installed else { return }
-        item.context.performAction(for: pane?.activeTab)
+        perform(item)
     }
 
     @objc private func togglePinned(_ sender: NSMenuItem) {
@@ -271,7 +290,10 @@ final class BrowserExtensionActionButton: NSButton {
         image = action.icon(for: NSSize(width: 16, height: 16))
             ?? NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: item.displayName)
         toolTip = action.label.isEmpty ? item.displayName : action.label
-        isEnabled = action.isEnabled
+        // 按钮永远可点：NSButton 的 isEnabled = false 会**静默**吃掉点击，而这里的可用状态是
+        // 上一次 reload 时的快照（扩展随时会改）。停用只做视觉变淡，能不能执行在点击那一刻现算
+        isEnabled = true
+        alphaValue = action.isEnabled ? 1 : 0.45
         badge = action.badgeText
         needsDisplay = true
     }

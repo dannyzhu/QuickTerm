@@ -710,6 +710,10 @@ extension Ghostty {
             // get forwarded to the terminal as a mouse click.
             if NSApp.isActive && window.isKeyWindow {
                 window.makeFirstResponder(self)
+                // QuickTerm：按着 ⌘ 的这一下不只是"转移焦点"——它要触发 open_url（⌘+点击链接）。
+                // 吞掉的话，点一个还没聚焦的 pane 里的链接就石沉大海（⌘ 拖拽源浮层靠这次按下
+                // 记 pendingClick，抬起时才补送 PRESS/RELEASE，收不到就整个丢掉）
+                if event.modifierFlags.contains(.command) { return event }
                 suppressNextLeftMouseUp = true
                 return nil
             }
@@ -930,6 +934,8 @@ extension Ghostty {
         /// QuickTerm：测试用——真正送进引擎的左键按下 / 抬起次数（拖拽源浮层、浮动会话的点击穿透）
         private(set) var leftPressCountForTesting = 0
         private(set) var leftReleaseCountForTesting = 0
+        /// QuickTerm：测试用——真正送进引擎的滚轮次数（⌘ 拖拽源浮层不得吞掉滚轮）
+        private(set) var scrollCountForTesting = 0
 
         override func mouseDown(with event: NSEvent) {
             guard let surface = self.surface else { return }
@@ -1129,6 +1135,7 @@ extension Ghostty {
                 mods: .init(precision: precision, momentum: .init(event.momentumPhase))
             )
             surfaceModel.sendMouseScroll(scrollEvent)
+            scrollCountForTesting += 1
         }
 
         override func pressureChange(with event: NSEvent) {

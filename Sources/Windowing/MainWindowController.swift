@@ -80,6 +80,9 @@ final class MainWindowController: BaseTerminalController {
     /// 悬停即焦点（spec §4.2，忠实 Hyprland focus_follows_mouse）。
     override var focusFollowsMouse: Bool { true }
 
+    /// 屏幕关掉之后（监视器已拆、pane 已归还）不再接受 pane 操作：脱离窗口的 pane 不得据此复活本控制器
+    override var acceptsPaneOperations: Bool { !isClosed }
+
     /// 嵌入层要求的树视图（仅 dwindle 布局有意义；scrolling 返回空树）
     override var surfaceTree: SplitTree<PaneView> {
         get {
@@ -314,15 +317,15 @@ final class MainWindowController: BaseTerminalController {
                        .leftMouseDown, .leftMouseDragged, .leftMouseUp, .mouseMoved]
         ) { [weak self] event in
             guard let self else { return event }
+            // ⌘ 状态是进程级的：不管事件落在哪个窗口、哪种类型都按事件自带的修饰键重新同步
+            // （NSAlert / sheet / popover 成为 key 时事件不属于任何终端窗口；⌘ 的抬起落在别的 app 上时
+            // 本地监视器根本看不到——漏掉就会让拖拽源浮层残留：抓手光标不消失、滚轮被浮层吃掉）。
+            // N 个控制器写同一个值，幂等；只在真变了时候写，省掉多余的 @Published 通知
+            ModifierState.shared.sync(event.modifierFlags)
             if event.type == .flagsChanged {
-                // ⌘ 状态是进程级的：不管事件落在哪个窗口都得更新（NSAlert / sheet / popover 成为 key
-                // 时事件不属于任何终端窗口，漏掉就会让拖拽源浮层残留——抓手光标、拖选文本变成拖 pane）。
-                // N 个控制器写同一个值，幂等；只在真变了时候写，省掉多余的 @Published 通知
-                let held = event.modifierFlags.contains(.command)
-                if ModifierState.shared.commandHeld != held { ModifierState.shared.commandHeld = held }
                 // 光标复位只归事件所属窗口的控制器
                 guard event.window == nil || event.window === self.window else { return event }
-                if !held, self.floatingDrag == nil { self.resetFloatingCursor() }
+                if !event.modifierFlags.contains(.command), self.floatingDrag == nil { self.resetFloatingCursor() }
                 return event
             }
             // 多屏幕：会话内的鼠标事件只认本窗口的（另一个屏幕上的拖动不得驱动本控制器的会话）
@@ -379,6 +382,8 @@ final class MainWindowController: BaseTerminalController {
         // 滚轮：顶栏区域 → 循环工作区（spec §4.4）；
         // 内容区 + scrolling 布局 + 横向为主 → 平移画布（spec §4.2-bis 附带项）
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            // 滚轮也顺手同步 ⌘ 状态：错过一次抬起就"终端再也滚不动"的老账在这里也能自愈
+            ModifierState.shared.sync(event.modifierFlags)
             guard let self, let window = self.window, event.window === window,
                   let content = window.contentView else { return event }
             let p = content.convert(event.locationInWindow, from: nil)
@@ -391,15 +396,21 @@ final class MainWindowController: BaseTerminalController {
                 self.switchWorkspace(next)
                 return nil
             }
+            // ⌘ 拖拽源浮层盖着 pane 时（浮层是 pane 的兄弟子树，沿 superview 找不到 pane），
+            // 按它盖住的 pane 认领滚轮
+            func effectiveHit(_ point: NSPoint) -> NSView? {
+                let hit = content.hitTest(point)
+                return (hit as? PaneOverlaying)?.overlaidPane ?? hit
+            }
             // 溢出的浏览器标签条自己吃横向滚轮（监视器跑在视图派发之前，否则永远轮不到它）
-            if let hit = content.hitTest(p),
+            if let hit = effectiveHit(p),
                let bar = sequence(first: hit, next: { $0.superview })
                    .compactMap({ $0 as? BrowserTabBarView }).first,
                bar.isOverflowing {
                 return event
             }
             // 激活的浏览器 pane 自己吃双指横滑（网页横向滚动 / 前进后退手势），不平移画布
-            if let hit = content.hitTest(p), self.browserPaneClaimingScroll(under: hit) != nil {
+            if let hit = effectiveHit(p), self.browserPaneClaimingScroll(under: hit) != nil {
                 return event
             }
             if case .scrolling = self.model.layout,
@@ -1851,6 +1862,9 @@ extension MainWindowController: NSWindowDelegate {
         guard !isClosed else { return }
         session.refreshPresentationOptions()
         session.sessionStore.scheduleSave()   // keyWindowID 变了：下次启动焦点落在正确的屏幕上
+        // 扩展眼里的"当前窗口"是缓存值（只有 didFocusWindow 会改）：多屏幕下换了 key 窗口却不上报，
+        // 扩展会一直把消息发到另一台显示器的 pane 上——图标看起来点了没反应
+        focusedBrowserPane?.makeCurrentForExtensions()
     }
 
     /// 窗口移动 / 缩放结束 → 存档（拖动途中不写：live resize 每帧都发通知）

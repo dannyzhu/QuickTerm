@@ -359,7 +359,9 @@ private struct TerminalSplitLeaf: View {
             .overlay {
                 // QuickTerm（spec §4.2）：按住 ⌘ 时整个 pane 成为拖拽源——
                 // 拖到目标中心=交换、边缘=分裂插入；松开 ⌘ 即消失，不影响正常鼠标操作
-                if modifierState.commandHeld {
+                // 拖拽进行中也保持挂载：先松 ⌘ 再松左键时不能把活着的 NSDraggingSource 拆掉，
+                // 否则 draggingSession(endedAt:) 落不到在窗口里的视图，PaneDragState 收不了尾
+                if modifierState.commandHeld || dragSourceDragging {
                     Ghostty.SurfaceDragSource(
                         surfaceView: surfaceView,
                         isDragging: $dragSourceDragging,

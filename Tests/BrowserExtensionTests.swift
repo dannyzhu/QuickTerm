@@ -762,6 +762,198 @@ final class BrowserExtensionTests: XCTestCase {
         XCTAssertTrue(done, "\(what)应在 \(timeout)s 内完成")
     }
 
+    // MARK: - 点扩展图标（用户报的「Stylish 的小图标用一段时间后点了没反应」）
+
+    /// 点工具条上的扩展图标**不改 first responder**，而 `tabs.query({active:true,currentWindow:true})`
+    /// 查的是 `WKWebExtensionContext.focusedWindow` 这个缓存值——不在点击那一刻上报，
+    /// 扩展的消息就发到别的 pane（甚至别的屏幕）的标签上去了，看起来就是"点了没反应"
+    @MainActor
+    func testActionClickMakesClickedPaneCurrentForExtensions() throws {
+        let store = try Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store) }
+        let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        // Stylish 那种形态：没有 popup，点图标只发 action.onClicked
+        let fixture = try Self.makeFixture(popup: false)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        try Self.installSynchronously(fixture, id: String(repeating: "a", count: 32), into: manager)
+        let item = try XCTUnwrap(manager.installed.first)
+        manager.setPinned(true, for: item)
+
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let a = BrowserPaneView(url: URL(string: "about:blank"))
+        let b = BrowserPaneView(url: URL(string: "about:blank"))
+        manager.controller.didFocusWindow(b)
+        XCTAssertTrue(item.context.focusedWindow as? BrowserPaneView === b, "前提：当前窗口是 b")
+
+        let bar = a.extensionBar
+        bar.reload()
+        let button = try XCTUnwrap(bar.actionButtonsForTesting.first, "固定的扩展应有工具条按钮")
+        XCTAssertTrue(button.isEnabled, "按钮永远可点：NSButton 的 isEnabled = false 会静默吃掉点击")
+        XCTAssertNotNil(item.context.action(for: a.activeTab), "动作按当前标签现取，不是建按钮时的缓存")
+
+        // 点击必须**经由管理器**派发：唤醒睡着的 MV3 后台就在那一步里，
+        // 老写法（直接 item.context.performAction(for:)）绕开它，图标就是个哑巴
+        var dispatched: [(id: String, tab: BrowserPaneView.Tab?)] = []
+        BrowserExtensionManager.actionDispatchRecorderForTesting = { dispatched.append(($0, $1)) }
+        defer { BrowserExtensionManager.actionDispatchRecorderForTesting = nil }
+
+        button.performClick(nil)
+        XCTAssertTrue(item.context.focusedWindow as? BrowserPaneView === a,
+                      "点谁的工具条，谁就是扩展眼里的当前窗口")
+        XCTAssertEqual(dispatched.count, 1, "点一次派发一次，且走的是管理器")
+        let sent = try XCTUnwrap(dispatched.first)
+        XCTAssertEqual(sent.id, item.id)
+        XCTAssertTrue(sent.tab === a.activeTab, "用的是被点 pane 的当前标签")
+    }
+
+    /// 点图标要把睡着的 MV3 后台叫醒：即点击必须走到 `manager.performAction`（唤醒那步在里面），
+    /// 拼图菜单的「打开」是同一条路。老写法直接 `context.performAction(for:)`，后台叫不醒 =
+    /// `action.onClicked` 不跑 = 用户看到的"点了没反应"
+    @MainActor
+    func testActionClickAndMenuGoThroughManagerSoBackgroundGetsWoken() throws {
+        let store = try Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store) }
+        let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        // 有后台 service worker 的形态（Stylish 就是这种）：派发前必须先过唤醒那一步
+        let fixture = try Self.makeFixture(popup: false, background: .throwing)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        try Self.installSynchronously(fixture, id: String(repeating: "a", count: 32), into: manager)
+        let item = try XCTUnwrap(manager.installed.first)
+        XCTAssertTrue(item.webExtension.hasBackgroundContent, "有后台内容：派发走的是唤醒分支")
+        manager.setPinned(true, for: item)
+
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        let bar = pane.extensionBar
+        bar.reload()
+
+        var dispatched: [(id: String, tab: BrowserPaneView.Tab?)] = []
+        BrowserExtensionManager.actionDispatchRecorderForTesting = { dispatched.append(($0, $1)) }
+        defer { BrowserExtensionManager.actionDispatchRecorderForTesting = nil }
+
+        try XCTUnwrap(bar.actionButtonsForTesting.first).performClick(nil)
+        XCTAssertEqual(dispatched.count, 1, "工具条按钮：经管理器派发（唤醒后台就在那里）")
+        XCTAssertTrue(try XCTUnwrap(dispatched.first).tab === pane.activeTab)
+
+        // 拼图菜单的「打开」= 点它的工具条按钮（没固定 / 放不下时的唯一入口），同样要唤醒后台
+        let entry = try XCTUnwrap(bar.buildMenu().items.first { $0.title.hasPrefix(item.displayName) })
+        let open = try XCTUnwrap(entry.submenu?.items.first { $0.title == "打开" })
+        let selector = try XCTUnwrap(open.action)
+        _ = (open.target as? NSObject)?.perform(selector, with: open)
+        XCTAssertEqual(dispatched.count, 2, "拼图菜单的「打开」走同一条路")
+        let fromMenu = try XCTUnwrap(dispatched.last)
+        XCTAssertEqual(fromMenu.id, item.id)
+        XCTAssertTrue(fromMenu.tab === pane.activeTab)
+    }
+
+    /// 扩展动作是按标签算的（图标 / 可用状态跟着 URL 走）：导航之后工具条必须重读，
+    /// 否则按钮停在上一页的快照上
+    @MainActor
+    func testNavigationReloadsExtensionToolbar() throws {
+        let store = try Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store) }
+        let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let fixture = try Self.makeFixture(popup: false)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        try Self.installSynchronously(fixture, id: String(repeating: "a", count: 32), into: manager)
+        manager.setPinned(true, for: try XCTUnwrap(manager.installed.first))
+
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        let bar = pane.extensionBar
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))   // 让首个 about:blank 落定
+        let before = bar.reloadCountForTesting
+
+        let target = try XCTUnwrap(URL(string: "https://example.test/page"))
+        pane.webView.loadHTMLString("<html><body>hi</body></html>", baseURL: target)
+        let deadline = Date().addingTimeInterval(5)
+        while bar.reloadCountForTesting == before, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        XCTAssertEqual(pane.webView.url, target, "确实导航了")
+        XCTAssertGreaterThan(bar.reloadCountForTesting, before, "导航后工具条按新标签状态重建")
+    }
+
+    /// 关掉的正是扩展眼里的"当前窗口"时，focusedWindow 不能一直空着
+    /// （空的话 `currentWindow` 查询落空，此后每次点图标都是哑的）
+    @MainActor
+    func testClosingFocusedBrowserPaneHandsCurrentWindowToSurvivor() throws {
+        let store = try Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store) }
+        let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let fixture = try Self.makeFixture(popup: false)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        try Self.installSynchronously(fixture, id: String(repeating: "a", count: 32), into: manager)
+        let item = try XCTUnwrap(manager.installed.first)
+
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let a = BrowserPaneView(url: URL(string: "about:blank"))
+        let b = BrowserPaneView(url: URL(string: "about:blank"))
+        let host = StubExtensionHost()
+        host.panes = [a, b]
+        manager.host = host
+        a.makeCurrentForExtensions()
+        XCTAssertTrue(item.context.focusedWindow as? BrowserPaneView === a)
+
+        a.paneWillClose()
+        host.panes = [b]          // 控制器随后把 a 摘掉
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        XCTAssertTrue(item.context.focusedWindow as? BrowserPaneView === b,
+                      "当前窗口交给还活着的浏览器 pane，不留空")
+    }
+
+    /// MV3 后台 service worker 叫不醒时以前完全静默（用户只看到图标点了没反应）：
+    /// 必须留下痕迹，且同一条错误只报一次
+    @MainActor
+    func testBackgroundLoadFailureIsSurfacedNotSwallowed() throws {
+        let store = try Self.makeStore()
+        defer { try? FileManager.default.removeItem(at: store) }
+        let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
+        BrowserExtensionManager.overrideForTesting = manager
+        defer { BrowserExtensionManager.overrideForTesting = nil }
+        let id = String(repeating: "a", count: 32)
+        let fixture = try Self.makeFixture(popup: false, background: .throwing)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        try Self.installSynchronously(fixture, id: id, into: manager)
+        let item = try XCTUnwrap(manager.installed.first)
+        XCTAssertTrue(item.webExtension.hasBackgroundContent, "固件确实有后台内容")
+
+        var recorded: [(String, NSError)] = []
+        BrowserExtensionManager.errorRecorderForTesting = { recorded.append(($0, $1)) }
+        defer { BrowserExtensionManager.errorRecorderForTesting = nil }
+
+        let previous = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = previous }
+        BrowserPaneView.settings.home = "about:blank"
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        manager.performAction(of: item, tab: pane.activeTab)
+        let deadline = Date().addingTimeInterval(10)
+        while recorded.isEmpty, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertFalse(recorded.isEmpty, "后台加载失败必须被记下来（以前 302 次/12h 全是静默的）")
+        XCTAssertEqual(recorded.first?.0, id)
+        let before = recorded.count
+        XCTAssertEqual(manager.reportNewErrors(of: item), 0, "同一条错误只报一次")
+        XCTAssertEqual(recorded.count, before)
+    }
+
     /// 非 async 用例里跑一次异步安装：起 Task 后转主 runloop 等它落地
     @MainActor
     private static func installSynchronously(_ directory: URL, id: String,
@@ -781,6 +973,9 @@ final class BrowserExtensionTests: XCTestCase {
         XCTAssertTrue(done, "安装应在 5s 内完成")
     }
 
+    /// 固件里后台内容的形态（`.throwing` 的 service worker 必定加载失败）
+    enum Background { case none, throwing }
+
     private static func makeStore() throws -> URL {
         let store = FileManager.default.temporaryDirectory
             .appendingPathComponent("qt-extstore-\(UUID().uuidString)", isDirectory: true)
@@ -788,13 +983,15 @@ final class BrowserExtensionTests: XCTestCase {
         return store
     }
 
-    /// 最小 MV3 扩展：内容脚本把 example.test 的标题改成 EXT-OK，另有 action + popup + 选项页
-    private static func makeFixture() throws -> URL {
+    /// 最小 MV3 扩展：内容脚本把 example.test 的标题改成 EXT-OK，另有 action + popup + 选项页。
+    /// `popup: false` 造出 Stylish 那种「点图标只发 action.onClicked」的扩展；
+    /// `background:` 挂一个 MV3 service worker（`.throwing` 的那份必定加载失败，用来验错误上报）
+    private static func makeFixture(popup: Bool = true, background: Background = .none) throws -> URL {
         let fm = FileManager.default
         let dir = fm.temporaryDirectory.appendingPathComponent("qt-extfixture-\(UUID().uuidString)",
                                                                isDirectory: true)
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        let manifest: [String: Any] = [
+        var manifest: [String: Any] = [
             "manifest_version": 3,
             "name": "QuickTerm Test Extension",
             "version": "1.0",
@@ -805,9 +1002,15 @@ final class BrowserExtensionTests: XCTestCase {
                 "js": ["content.js"],
                 "run_at": "document_end",
             ]],
-            "action": ["default_title": "QuickTerm Test", "default_popup": "popup.html"],
+            "action": popup ? ["default_title": "QuickTerm Test", "default_popup": "popup.html"]
+                            : ["default_title": "QuickTerm Test"],
             "options_page": "options.html",
         ]
+        if background == .throwing {
+            manifest["background"] = ["service_worker": "sw.js"]
+            try "throw new Error('QuickTerm test: background refuses to load');\n"
+                .write(to: dir.appendingPathComponent("sw.js"), atomically: true, encoding: .utf8)
+        }
         try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted])
             .write(to: dir.appendingPathComponent("manifest.json"))
         try "document.title = 'EXT-OK';\n".write(to: dir.appendingPathComponent("content.js"),
@@ -818,4 +1021,12 @@ final class BrowserExtensionTests: XCTestCase {
             .write(to: dir.appendingPathComponent("options.html"), atomically: true, encoding: .utf8)
         return dir
     }
+}
+
+/// 测试替身：扩展管理器的宿主（真身是 MainWindowController）
+private final class StubExtensionHost: BrowserExtensionHost {
+    var panes: [BrowserPaneView] = []
+    var browserPanes: [BrowserPaneView] { panes }
+    var focusedBrowserPane: BrowserPaneView? { panes.first }
+    @discardableResult func openBrowserWindow(url: URL?) -> BrowserPaneView? { nil }
 }

@@ -2,6 +2,13 @@ import AppKit
 import Combine
 import SwiftUI
 
+/// QuickTerm：盖在整个 pane 上的浮层（⌘ 拖拽源）对外报出它盖住的 pane。
+/// 滚轮路由（`browserPaneClaimingScroll`）沿 superview 链找 pane，浮层是 pane 的**兄弟**子树，
+/// 找不到——有了这个协议就能越过浮层认出下面的 pane
+protocol PaneOverlaying: AnyObject {
+    var overlaidPane: PaneView? { get }
+}
+
 extension Ghostty {
     /// A preference key that propagates the ID of the SurfaceView currently being dragged,
     /// or nil if no surface is being dragged.
@@ -80,7 +87,9 @@ extension Ghostty {
     /// This view manages mouse tracking and drag initiation for surface reordering.
     /// It uses a local event loop to detect drag gestures and initiates an
     /// `NSDraggingSession` when the user drags beyond the threshold distance.
-    fileprivate class SurfaceDragSourceView: NSView, NSDraggingSource {
+    fileprivate class SurfaceDragSourceView: NSView, NSDraggingSource, PaneOverlaying {
+        var overlaidPane: PaneView? { surfaceView }
+
         /// Scale factor applied to the surface snapshot for the drag preview image.
         private static let previewScale: CGFloat = 0.2
 
@@ -151,6 +160,17 @@ extension Ghostty {
             guard let target = surfaceView?.clickTarget(atWindowPoint: down.locationInWindow) else { return }
             target.mouseDown(with: down)
             target.mouseUp(with: event)
+        }
+
+        /// QuickTerm：浮层不吃滚轮——按下 / 抬起怎么转交，滚轮就怎么转交（终端 → 引擎、浏览器 → 网页）。
+        /// 浮层是个普通 NSView，不覆写的话滚轮会顺着**它自己**的响应链往上走（SwiftUI 容器），
+        /// 永远到不了同级子树里的 surface / WKWebView：⌘ 状态哪怕短暂不同步，pane 也会"滚不动"
+        override func scrollWheel(with event: NSEvent) {
+            guard let target = surfaceView?.clickTarget(atWindowPoint: event.locationInWindow) else {
+                super.scrollWheel(with: event)
+                return
+            }
+            target.scrollWheel(with: event)
         }
 
         override func updateTrackingAreas() {

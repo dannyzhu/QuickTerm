@@ -538,3 +538,61 @@ surface 从引擎表移除前有一个主线程任务跳转的窗口；此时 `w
   还会被「宽松解码」整窗丢掉），再被下一次防抖写盘覆盖。只认相同版本，其余按外来文件备份后重开。
 - **终端 pane 的 cwd 只有 shell 发过 OSC 7 才有**：恢复出来的 pane 在用户敲第一条命令前 `pwd` 是 nil，持续写盘
   会把存档里原本正确的目录覆盖成 null。编码时回退到创建时的 `workingDirectory`。
+
+## 本地 NSEvent 监视器的盲区（2026-09-09，三个 bug 的共同底色）
+
+- **`addLocalMonitorForEvents` 只看得见投递给本 app 的事件**。`ModifierState.commandHeld` 曾经只由
+  MainWindowController 的 `.flagsChanged` 分支写：⌘ 的**抬起**落在别的 app 上时（⌘+Tab、⌘+Space 起
+  Spotlight/Raycast、⌘+Shift+3/4/5 截图、⌘+H 隐藏、按着 ⌘ 点别的窗口 / Dock、锁屏、快速用户切换），
+  本地监视器永远收不到，标志就**永久卡在 true**。用户看到的是两件事，其实是同一件：
+  1. 每个平铺 pane 上都盖着 `SurfaceDragSource` 浮层，它的 `resetCursorRects` 装的是 openHand /
+     pointingHand **光标矩形**（不是一次性的 `NSCursor.set()`，所以移动鼠标不会自愈）→「小手不消失」；
+  2. 浮层是普通 NSView，不覆写 `scrollWheel` 的话滚轮顺着**浮层自己的**响应链往上走（SwiftUI 容器），
+     而终端 surface / WKWebView 是它的**兄弟**子树 → 「终端再也滚不动了」，
+     `browserPaneClaimingScroll(under:)` 沿 superview 找 pane 也同样落空。
+  修法三条，缺一不可：**失活即清零 + 回前台按 `NSEvent.modifierFlags` 重建**（不需要辅助功能授权，
+  别去装全局监视器）、**任何鼠标 / 滚轮事件顺手 `sync(event.modifierFlags)`**（浮动光标那条路早就这么
+  自愈了，平铺这条忘了）、**浮层把滚轮转交给 `clickTarget`**（状态哪怕短暂不同步也不会"滚不动"）。
+- **拖拽进行中不能按 ⌘ 状态卸掉浮层**：先松 ⌘ 再松左键是很常见的顺序，浮层就是那个活着的
+  `NSDraggingSource`，拆掉它 `draggingSession(endedAt:)` 就落不到在窗口里的视图，`PaneDragState` 收不了尾。
+  挂载条件是 `commandHeld || dragSourceDragging`。
+
+## pane 会短暂脱离窗口——`window == nil` 不等于"没有控制器"（2026-09-09）
+
+SwiftUI 重建层级期间（新建 / 关闭 pane 的动效、换工作区、zoom、Scratchpad 收起）pane 的
+`window` 会有若干轮 runloop 是 nil（`PaneView.moveFocus` 的指数退避重试、`pendingCloseRequest`、
+`openLink` 里的 `if browser.window == nil { clearZoom() }` 都是这个现象留下的补丁）。
+引擎的 `open_url` 回调原先只认 `surfaceView.controller`（= `window?.windowController`），解析不出来就
+**直接落到 `NSWorkspace.shared.open(url)`——⌘+点击的链接被甩给系统默认浏览器**（用户报的"有时打开的是
+Safari"）。而 `SurfaceDragSource.mouseUp` 与 `MainWindowController.floatingSessionEvent` 会把点击
+**合成**成 PRESS/RELEASE 直接调进 pane（不经 AppKit 的视图派发，`clickTarget` 只检查 `superview`），
+所以这条窗口期真的会被点中。
+
+- `PaneView.controller` 记住**最近一次挂进窗口时**的控制器作为兜底；控制器加
+  `acceptsPaneOperations`（MainWindowController 覆写为 `!isClosed`），关掉的屏幕不会被复活。
+  多屏幕语义因此更准：脱离窗口的 pane 认**自己那块屏幕**，不认当下 key 的窗口。
+- 但凡"只有真的挂在窗口上才有意义"的调用要显式看 `window != nil`：
+  `BrowserPaneView.requestPaneClose` 就是——`closePane` 只认活动工作区里的 pane，
+  拿兜底控制器去关是个静默的空操作，必须继续走 `pendingCloseRequest`。
+- 引擎那一侧再加一层：`Ghostty.App.routeLink` 依次问 pane 自己的控制器 → key → main → 任意终端窗口，
+  并把系统出口收敛成可替换的 `Ghostty.App.systemOpener`（测试能断言"绝不外泄"）。
+- 相邻缺陷：`SurfaceView.localEventLeftMouseDown` 会把"只为转移焦点"的那次按下吞掉，
+  按着 ⌘ 时不能吞——浮层要靠这次按下记 `pendingClick`，吞了这一下链接就石沉大海。
+
+## WKWebExtension：缓存的 focusedWindow 与静默的后台加载失败（2026-09-09）
+
+- **`WKWebExtensionContext.focusedWindow` 是缓存值**，只有 `didFocusWindow(_:)` 会改它，WebKit 不会回头
+  问代理。`chrome.tabs.query({active:true,currentWindow:true})` 查的就是它。点工具条上的扩展按钮
+  **不改 first responder**，所以以前那一下不会把自己的 pane 变成"当前窗口"——消息发到别的 pane
+  （多屏幕下甚至是另一台显示器）的标签上去，用户看到的是"图标点了没反应"。现在三处上报：
+  取得键盘焦点、**点按钮的那一刻**、以及 `windowDidBecomeKey`（多屏幕）；关掉的正是当前窗口时，
+  下一轮把它交给还活着的浏览器 pane，不留空。
+- **MV3 的后台 service worker 空闲约 30 秒就被 WebKit 回收**，`performAction(for:)` 并不保证叫得醒它。
+  纯 `action.onClicked` 的扩展（`default_popup: ""`，Stylish 就是）叫不醒 = 图标是个哑巴。
+  现在点击前显式 `loadBackgroundContent`，失败也照常派发（有 popup 的仍该弹）。
+- **WebKit 只把这些失败记进 `context.errors`，从不抛给你**：用户机器上实测 12 小时内
+  `WKWebExtensionContextErrorBackgroundContentFailedToLoad`（Code=6）**302 次**，全程零日志。
+  必须订阅 `WKWebExtensionContext.errorsDidUpdateNotification` 并去重记日志，否则这类问题无从查起。
+- **`NSButton.isEnabled = false` 会静默吃掉点击**：扩展动作的可用状态是上一次 reload 时的快照
+  （扩展随时会改，导航后不 reload 更是停在上一页的状态）。按钮一律保持可点，停用只做视觉变淡，
+  能不能执行在**点击那一刻**按当前标签现算；导航（`didChangeTabProperties(.URL)`）后补一次 reload。

@@ -84,8 +84,19 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
         return false
     }
 
+    /// 最近一次挂进窗口时所属的控制器。SwiftUI 重建层级期间 pane 会短暂脱离窗口（window == nil，
+    /// 见 moveFocus 的重试），此刻引擎回调若因为"找不到控制器"就放弃，⌘+点击的链接会被甩给
+    /// 系统默认浏览器（bug：有时点链接开的是 Safari）
+    private weak var lastKnownController: BaseTerminalController?
+
     var controller: BaseTerminalController? {
-        window?.windowController as? BaseTerminalController
+        if let live = window?.windowController as? BaseTerminalController {
+            lastKnownController = live
+            return live
+        }
+        // 脱离窗口期间的兜底；已经拆掉的屏幕不复活
+        guard let last = lastKnownController, last.acceptsPaneOperations else { return nil }
+        return last
     }
 
     /// 本 pane（或其托管视图）成为 first responder：更新标志 + 通知控制器维持单焦点不变量
@@ -127,6 +138,7 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if let owner = window?.windowController as? BaseTerminalController { lastKnownController = owner }
         guard reclaimFocusOnAttach, let window else { return }
         reclaimFocusOnAttach = false
         DispatchQueue.main.async { [weak self] in
