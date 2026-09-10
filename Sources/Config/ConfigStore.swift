@@ -30,6 +30,15 @@ enum ConfigStore {
     # browser-download-dir = "~/Downloads"   # 浏览器 pane 下载落盘目录（支持 ~；目录不存在时回退 ~/Downloads）
     # link-opener = "browser-pane"    # 终端 ⌘+点击链接：browser-pane = 在浏览器 pane 打开（有则用最近激活的，无则新开）；system = 系统浏览器
 
+    [control]
+    # 控制面（quickterm 命令行 / AI agent）。socket：~/Library/Application Support/QuickTerm/control.sock
+    # enabled = true            # false 彻底不监听
+    # mode = "ask"              # off = 不监听 | readonly = 只读 | ask = 默认（"on" 是 ask 的别名）
+    #                           # ask = 读免确认；改静默执行；破坏性按调用方确认一次
+    #                           # 没有"免确认"档：确认闸门只能靠 off / readonly 绕开
+    # expose-browser = "token"  # token | always | never：谁能读到浏览器 pane 的网址与标题
+    # send-text = false         # 向别的 pane 注入文本（Phase 4；默认关闭）
+
     [keybinds]
     # 动作 = "modifier+key"；"none" 解绑。动作清单见 Cmd+K 速查表。
     # new-terminal = "cmd+return"
@@ -133,6 +142,11 @@ enum ConfigStore {
         /// 浏览器 pane 的下载目录（支持 `~`；不是个真目录时回退 ~/Downloads）
         var browserDownloadDir: String = "~/Downloads"
         var linkOpener: String = "browser-pane"
+        /// `[control]`（控制面 / CLI）。默认**开**，模式 ask：读免确认、改静默但可见、破坏性按调用方确认一次
+        var controlEnabled: Bool = true
+        var controlMode: String = "ask"
+        var controlExposeBrowser: String = "token"
+        var controlSendText: Bool = false
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
         var ghosttyPassthrough: String = ""
@@ -218,6 +232,19 @@ enum ConfigStore {
                 if key == "browser-extensions" { settings.browserExtensions = (value.lowercased() != "false") }
                 if key == "browser-download-dir", !value.isEmpty { settings.browserDownloadDir = value }
                 if key == "link-opener", !value.isEmpty { settings.linkOpener = value }
+            case "control":
+                if key == "enabled" { settings.controlEnabled = (value.lowercased() != "false") }
+                // "on" 只是"开着"的口语说法，落到默认姿态 ask —— 绝不是"免确认"。
+                // 让它自成一档的话，用户把它当成 off 的反义词写进配置，就在毫不知情的情况下
+                // 把整个破坏性确认闸门关掉了
+                if key == "mode", ["off", "readonly", "ask", "on"].contains(value.lowercased()) {
+                    let mode = value.lowercased()
+                    settings.controlMode = (mode == "on") ? "ask" : mode
+                }
+                if key == "expose-browser", ["token", "always", "never"].contains(value.lowercased()) {
+                    settings.controlExposeBrowser = value.lowercased()
+                }
+                if key == "send-text" { settings.controlSendText = (value.lowercased() == "true") }
             case "keybinds":
                 guard let action = WMAction(rawValue: key) else { continue }
                 if value.lowercased() == "none" {

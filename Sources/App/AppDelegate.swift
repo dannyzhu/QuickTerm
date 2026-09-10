@@ -126,6 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        session?.controlServer.stop()   // 退出时把 socket 摘掉，下次启动不必去清陈旧残留
         // spec §4.8 / v9 §3.4：退出时同步写一次（防抖那份可能还没到点）——
         // 布局、每个终端 pane 的目录、每个浏览器 pane 的标签页、窗口所在显示器与 frame
         session?.sessionStore.saveNow()

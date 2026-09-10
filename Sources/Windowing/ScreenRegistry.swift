@@ -35,6 +35,34 @@ final class ScreenRegistry {
         return primary
     }
 
+    /// 最近一次成为 key 的窗口身份（`windowDidBecomeKey` 记录）。
+    /// 控制面（IPC）专用：agent 从 Terminal.app / 后台任务驱动时 `NSApp.keyWindow` 是 nil，
+    /// `current` 会静默退回第一个屏幕——每条命令都打在 1 号屏上，而且**本地测试永远复现不出来**
+    /// （本地测的时候 QuickTerm 总是最前台的）。有了它才能诚实回答"应用不在前台时的当前屏幕"
+    private(set) var lastKeyWindowID: UUID?
+
+    func recordKeyWindow(_ controller: MainWindowController) {
+        lastKeyWindowID = controller.windowID
+    }
+
+    func controller(id: UUID) -> MainWindowController? {
+        controllers.first { $0.windowID == id }
+    }
+
+    /// 1 起的屏幕序号（= 窗口标题里的数字）
+    func controller(screenNumber: Int) -> MainWindowController? {
+        controllers.first { $0.screenIndex + 1 == screenNumber }
+    }
+
+    /// 控制面的"当前屏幕"（与菜单动作的 `current` 刻意不同）：
+    /// 只有应用真的在前台时才认 key 窗口，否则用最近一次 key 的那一块，最后才退回 primary。
+    /// 顺序见 docs：显式 -t → 调用方所在 pane → 本属性 → primary
+    var controlCurrent: MainWindowController? {
+        if NSApp.isActive, let key = current { return key }
+        if let id = lastKeyWindowID, let controller = controller(id: id) { return controller }
+        return primary
+    }
+
     /// 当前屏幕优先的遍历顺序（扩展宿主聚合用）
     var orderedByKeyFirst: [MainWindowController] {
         guard let current else { return controllers }

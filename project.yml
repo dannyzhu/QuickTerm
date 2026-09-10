@@ -7,6 +7,9 @@ settings:
   base:
     SWIFT_VERSION: "5.10"
     MACOSX_DEPLOYMENT_TARGET: "15.4"
+    # 版本号唯一来源（app 与 quickterm CLI 共用；scripts/make-release.sh 从构建产物的 Info.plist 读取）
+    MARKETING_VERSION: "1.5.8"
+    CURRENT_PROJECT_VERSION: "14"
     # xcodegen 2.46 起默认打开脚本沙盒；「Bundle Ghostty Resources」要 rm/cp 到产物目录，沙盒下直接被拒
     ENABLE_USER_SCRIPT_SANDBOXING: false
 targets:
@@ -23,6 +26,12 @@ targets:
     dependencies:
       - framework: vendor/ghostty/macos/GhosttyKit.xcframework
         embed: false
+      # quickterm 控制面 CLI：随 app 构建，拷进 QuickTerm.app/Contents/SharedSupport/quickterm。
+      # **不能**放 Contents/MacOS：APFS 默认大小写不敏感，`quickterm` 会直接覆盖掉
+      # app 自己的主可执行文件 `QuickTerm`（症状是测试宿主起不来、dyld 找不到 QuickTerm.debug.dylib）
+      - target: quickterm-cli
+        copy:
+          destination: sharedSupport
       - sdk: Metal.framework
       - sdk: MetalKit.framework
       - sdk: QuartzCore.framework
@@ -43,9 +52,6 @@ targets:
           NSAllowsArbitraryLoadsInWebContent: true
     settings:
       base:
-        # 版本号唯一来源（scripts/make-release.sh 从构建产物的 Info.plist 读取）
-        MARKETING_VERSION: "1.5.8"
-        CURRENT_PROJECT_VERSION: "14"
         OTHER_LDFLAGS: "-lc++"
         PRODUCT_BUNDLE_IDENTIFIER: dev.danny.quickterm
         ENABLE_HARDENED_RUNTIME: false
@@ -62,6 +68,30 @@ targets:
           rm -rf "$TI_DST"; mkdir -p "$TI_DST"
           cp -R "$TI_SRC/" "$TI_DST/"
         basedOnDependencyAnalysis: false
+  # 控制面 CLI：纯 Foundation，**不依赖 GhosttyKit / AppKit**（否则就不是个毫秒级启动的小工具了）。
+  # 线材（Sources/Control/Wire）与 WMAction 两个 target 共用同一份源码：命令表只有一处，不可能漂移。
+  quickterm-cli:
+    type: tool
+    platform: macOS
+    sources:
+      - CLI
+      - Sources/Control/Wire
+      - Sources/Config/WMAction.swift
+    settings:
+      base:
+        PRODUCT_NAME: quickterm
+        # 模块名必须与 app target 的 `QuickTerm` 区分开：macOS 文件系统大小写不敏感，
+        # 产物目录里同时出现 quickterm.swiftmodule 与 QuickTerm.swiftmodule 会让
+        # 测试里的 `@testable import QuickTerm` 加载到错的那一个
+        PRODUCT_MODULE_NAME: QuickTermCLI
+        PRODUCT_BUNDLE_IDENTIFIER: dev.danny.quickterm.cli
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: false
+        # 版本号写进二进制的 __TEXT,__info_plist —— `quickterm version` 读它
+        GENERATE_INFOPLIST_FILE: true
+        CREATE_INFOPLIST_SECTION_IN_BINARY: true
+        SKIP_INSTALL: true
+
   QuickTermTests:
     type: bundle.unit-test
     platform: macOS

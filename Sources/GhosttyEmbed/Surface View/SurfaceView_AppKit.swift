@@ -1864,6 +1864,13 @@ extension Ghostty {
             let uuid = UUID(uuidString: try container.decode(String.self, forKey: .uuid))
             var config = Ghostty.SurfaceConfiguration()
             config.workingDirectory = try container.decode(String?.self, forKey: .pwd)
+            // QuickTerm: 复原出来的 pane 也要拿到控制面环境变量，否则重启之后
+            // pane 里的 agent 就没有 QUICKTERM_PANE / SOCKET 可用了。
+            // 这里还不知道它会落到哪块屏幕的哪个工作区（灌档在之后），所以只注入跟着 pane 走的那几个
+            if let uuid {
+                config.environmentVariables = ControlEnvironment.inject(
+                    into: config.environmentVariables, paneID: uuid, screen: nil, workspace: nil)
+            }
             let savedTitle = try container.decodeIfPresent(String.self, forKey: .title)
             let isUserSetTitle = try container.decodeIfPresent(Bool.self, forKey: .isUserSetTitle) ?? false
 

@@ -42,6 +42,13 @@ final class MainWindowController: BaseTerminalController {
     }
     /// 运行中的文件管理器 pane → 会话（退出时读 cwd 文件决定是否原位开终端；关闭不弹进程确认）
     private var fileManagerSessions: [ObjectIdentifier: FileManagerLaunch.Session] = [:]
+
+    /// 控制面（`state` / `list` / `role:` 谓词）看到的 pane 角色。
+    /// 文件管理器 pane 就是一个跑着 yazi 的终端——`kind` 仍是 terminal，靠 role 区分
+    func controlRole(of pane: PaneView) -> String? {
+        if fileManagerSessions[ObjectIdentifier(pane)] != nil { return "file-manager" }
+        return pane.kind == .terminal ? "shell" : nil
+    }
     private struct PendingClose {
         let view: PaneView
         let successor: PaneView?
@@ -1521,8 +1528,13 @@ final class MainWindowController: BaseTerminalController {
         var config = Ghostty.SurfaceConfiguration()
         config.workingDirectory = workingDirectory
         config.command = command
-        config.environmentVariables = environment
-        return Ghostty.SurfaceView(ghostty.app!, baseConfig: config)
+        // 控制面自举：QUICKTERM_SOCKET / PANE / SCREEN / WORKSPACE / TOKEN。
+        // uuid 必须先定好再注入——PANE 就是这个 uuid（`-t @self` 靠它）
+        let paneID = UUID()
+        config.environmentVariables = ControlEnvironment.inject(
+            into: environment, paneID: paneID,
+            screen: screenIndex + 1, workspace: model.activeIndex + 1)
+        return Ghostty.SurfaceView(ghostty.app!, baseConfig: config, uuid: paneID)
     }
 
     /// 把新 pane 插进活动布局（scrolling：锚点右侧新列；dwindle：按锚点空间几何分裂 + 局部进场动效）并聚焦。
@@ -1860,6 +1872,7 @@ extension MainWindowController: NSWindowDelegate {
     /// AppKit 会在激活 / 窗口切换时改写它，而「有没有屏幕在全屏」只有账本知道
     func windowDidBecomeKey(_ notification: Foundation.Notification) {
         guard !isClosed else { return }
+        session.screens.recordKeyWindow(self)   // 控制面的"当前屏幕"（应用不在前台时唯一诚实的答案）
         session.refreshPresentationOptions()
         session.sessionStore.scheduleSave()   // keyWindowID 变了：下次启动焦点落在正确的屏幕上
         // 扩展眼里的"当前窗口"是缓存值（只有 didFocusWindow 会改）：多屏幕下换了 key 窗口却不上报，

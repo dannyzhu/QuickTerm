@@ -12,6 +12,12 @@ enum MainMenu {
         appMenu.addItem(withTitle: "关于 QuickTerm",
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
+        // VS Code 的 `code` 那一招：把随包的 quickterm 软链进 PATH。绝不弹管理员密码
+        let installItem = appMenu.addItem(withTitle: "安装 quickterm 命令行工具…",
+                                          action: #selector(AppDelegate.installCLIAction(_:)),
+                                          keyEquivalent: "")
+        installItem.target = delegate
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "隐藏 QuickTerm", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: "退出 QuickTerm", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         main.setSubmenu(appMenu, for: appItem)

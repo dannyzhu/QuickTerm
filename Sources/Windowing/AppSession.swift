@@ -22,6 +22,14 @@ final class AppSession {
     /// 会话存档（多屏幕 v5）：读盘 / 迁移 / 防抖写盘的唯一入口
     let sessionStore: SessionStore
 
+    /// 控制面（CLI / AI agent）的确认闸门与服务。默认开、模式 ask；
+    /// `[control]` 变化时由 `applyGlobalConfig` 起停——所以改配置保存即生效，不必重启
+    let controlConsent: ControlConsent
+    let controlServer: ControlServer
+    /// 只有显式注入了 socket 路径（临时目录）的用例才允许真的绑定：
+    /// 测试宿主绝不能占用用户正在跑的那个 QuickTerm 的 socket（与 SessionStore.writesAllowed 同一策略）
+    private let controlAllowed: Bool
+
     /// 最近一次生效的配置（新屏幕创建时直接拿它，不再各自读盘）
     private(set) var settings = ConfigStore.Settings()
 
@@ -50,10 +58,16 @@ final class AppSession {
     private var screenParametersObserver: Any?
     private var pendingScreenReflow: DispatchWorkItem?
 
-    init(screens: ScreenRegistry, themeManager: ThemeManager, stateURL: URL? = nil) {
+    init(screens: ScreenRegistry, themeManager: ThemeManager, stateURL: URL? = nil,
+         controlSocketPath: String? = nil) {
         self.screens = screens
         self.themeManager = themeManager
         self.sessionStore = SessionStore(screens: screens, url: stateURL)
+        let consent = ControlConsent(screens: screens)
+        self.controlConsent = consent
+        self.controlServer = ControlServer(screens: screens, consent: consent,
+                                           socketPath: controlSocketPath)
+        self.controlAllowed = controlSocketPath != nil || !AppDelegate.isRunningTests
     }
 
     deinit {
@@ -141,6 +155,10 @@ final class AppSession {
                                          tabWidth: settings.browserTabWidth, tabMinWidth: settings.browserTabMinWidth,
                                          downloadDirectory: settings.browserDownloadDir)
         BrowserExtensionManager.shared.isEnabled = settings.browserExtensions
+        // 控制面：配置热重载即起停（enabled=false / mode="off" 就彻底不监听）
+        var control = ControlCommandRunner.Config(settings)
+        if !controlAllowed { control.enabled = false }
+        controlServer.apply(control)
         themeManager.updateFromConfig(
             passthrough: settings.ghosttyPassthrough,
             followEngine: settings.themeName == "ghostty",
