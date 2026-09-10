@@ -62,6 +62,7 @@ final class ControlServer {
     @MainActor
     func stop() {
         guard socket.isListening else { return }
+        ControlEventBus.shared.dropAllFollowers()   // 停服 = 每一条 events follow 都断了
         socket.stop()
         ControlEnvironment.socketPath = nil
         ioQueue.async { [weak self] in
@@ -85,6 +86,14 @@ final class ControlServer {
                                         },
                                         onClose: { [weak self] fd in
                                             self?.connections.removeValue(forKey: fd)
+                                            // 对端走了：把它挂着的 `events follow` 摘掉。
+                                            // 摘的是**连接编号**而不是 fd —— fd 号会被复用
+                                            DispatchQueue.main.async { [weak self] in
+                                                guard let self else { return }
+                                                MainActor.assumeIsolated {
+                                                    self.runner.connectionDidClose(peer.connectionID)
+                                                }
+                                            }
                                         })
             self.connections[peer.fd] = connection
             connection.resume()

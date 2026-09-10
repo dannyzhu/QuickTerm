@@ -82,6 +82,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 这样跑一个 Debug 版不会去抢用户那个 QuickTerm 的 socket，也不会覆盖他的会话存档。
         // 两个都不设时就是正常的单实例行为（Application Support 里那一份）
         let environment = ProcessInfo.processInfo.environment
+        // 配置文件也能指到别处：`[control] send-text` 这类开关只能从配置读，
+        // 冒烟一个 Debug 版时绝不该去动用户真正的 ~/.config/quickterm/config.toml。
+        // 必须在 loadInitialConfig 之前设好
+        if let path = environment["QUICKTERM_CONFIG_FILE"], !path.isEmpty {
+            ConfigStore.configURLOverride = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        }
         let session = AppSession(
             screens: screens, themeManager: themeManager,
             stateURL: environment["QUICKTERM_STATE_FILE"].flatMap {

@@ -25,6 +25,7 @@ QuickTerm 把 [Omarchy](https://omarchy.org) 的 Hyprland 平铺桌面装进一�
 - **全部可改键** —— 每个窗口管理动作都是 `config.toml` 里的一个键；`Cmd+K` 随时查实时速查表。
 - **浏览器 pane 带扩展** —— `Cmd+B` 开一个多标签的 WebKit 浏览器 pane；Chrome / Firefox 的 WebExtensions 可以直接从 Chrome Web Store 装，或从本机 Chrome 导入（macOS 15.4+）。
 - **状态恢复** —— 布局、浮动 pane、活动工作区、每个 pane 的工作目录，下次启动原样回来。
+- **可脚本化、给 agent 用的** —— 一个 Unix socket 控制面加一个 `quickterm` 命令行：读状态、用一份 JSON spec 摆好整个工作区、长轮询事件，也可以当 MCP 服务挂上去。读是免确认的，改是可见可撤销的，破坏性的会先问你（见[控制面](#控制面命令行与-ai-agent)）。
 
 ## 安装
 
@@ -218,6 +219,97 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 与 Omarchy 的两处有意偏移：调整大小用 `Cmd+Ctrl+方向`，因为 `Cmd+-`/`Cmd+=` 在所有 macOS 终端里都是字号键；`Cmd+K` 是速查表而不是"清屏"——清屏用 `Cmd+Shift+K`（`clear-terminal`，同样可改键）。
 
 macOS 菜单栏的 Shell / Pane 菜单只列了少数动作的默认快捷键；标签不随改键变化，但快捷键本身遵守 `[keybinds]`（解绑或改键后的组合不再从菜单触发）。速查表（`Cmd+K`）永远反映当前键位表。
+
+## 控制面（命令行与 AI agent）
+
+QuickTerm 在 `~/Library/Application Support/QuickTerm/` 下监听一个 Unix domain socket，并随包提供 `quickterm` 命令行。快捷键能做的，命令行都能做；在这之上还有一层名词-动词层，它的定规是**只给绝对设值，绝不 toggle**——agent 看不到状态，重试一次 toggle 会把自己撤销。
+
+```sh
+quickterm install-cli --alias qt     # 软链到 /usr/local/bin，不可写则 ~/.local/bin —— 永远不弹管理员密码
+quickterm describe --json            # 整个控制面的机器可读 schema；agent 每个会话读一次即可
+```
+
+CLI 解析、`--help`、`describe --json`、安全分级与 MCP 工具表**全部从同一张命令表生成**，所以这层表面不可能漂移。
+
+```
+quickterm state | list | get | action <wm-action> | describe | version
+quickterm pane      new | close | focus | move | swap | set | resize
+quickterm workspace goto | set-layout | equalize | clear | count
+quickterm screen    new | close | move | focus | set
+quickterm app       get | set
+quickterm spec      dump | validate | apply
+quickterm events    poll | follow
+quickterm input     send-text
+quickterm mcp
+```
+
+每个 pane 的环境里都已经有 `QUICKTERM_SOCKET` / `QUICKTERM_PANE` / `QUICKTERM_SCREEN` / `QUICKTERM_WORKSPACE` / `QUICKTERM_TOKEN` / `QUICKTERM_PANE_TOKEN`，所以 `-t @self` 零配置就能用。
+
+### 一次摆好一整个工作区
+
+要摆好一整个工作区，用 `spec apply`，别发 N 条 `pane new`：N 条命令 = N 次重排、N 次动画、N 个失败点，中途失败还会留下一个谁也说不清的半成品。spec 是一次算完、一次落地。
+
+```sh
+cat > dev.json <<'JSON'
+{ "schema": "quickterm.workspace/1", "layout": "scrolling", "visibleColumns": 3,
+  "columns": [
+    {"panes": [{"cwd": "~/proj", "cmd": "nvim ."}]},
+    {"panes": [{"cwd": "~/proj", "cmd": "npm run dev", "hold": true}, {"cwd": "~/proj"}]},
+    {"panes": [{"kind": "browser", "url": "http://localhost:3000"}]}],
+  "focus": {"column": 0, "row": 0} }
+JSON
+
+quickterm spec apply -f dev.json -t :4 --dry-run   # 只打印 diff，一个字节都不改
+quickterm spec apply -f dev.json -t :4            # 默认 --into-empty：非空工作区一律拒绝
+```
+
+`spec dump` 打印的就是那份 spec 本身（不套响应信封），所以 `dump → 改字段 → apply --reuse` 是个闭环：对得上的 pane 原地留着，跑着的 dev server 不会被重启。
+
+### `[control]` 配置
+
+```toml
+[control]
+# enabled = true            # false 彻底不监听
+# mode = "ask"              # off = 不监听 | readonly = 只读 | ask = 默认（"on" 是别名）
+# expose-browser = "token"  # token | always | never：谁能读到浏览器 pane 的网址与标题
+# send-text = false         # quickterm input send-text：把文本当键盘输入送进终端 pane
+```
+
+**刻意没有"免确认"这一档**：确认闸门只能靠 `off` / `readonly` 绕开，写错一个值也只会回落到 `ask`。
+
+### 安全姿态
+
+- 读是静默的——但**没有继承 `QUICKTERM_TOKEN` 的调用方读不到浏览器 pane 的网址与标题**（`<redacted>`）。浏览器 pane 里装着用户已登录的会话，`quickterm state` 本身就是一个外泄面。
+- 改是静默但**可见**的：状态栏闪一下（写明命令与自称来源 pane），完整记录在应用内的控制面活动日志里，布局类变更登记到 UndoManager（`Cmd+Z` 可回滚）。变更命令按来源限流；用户面前挂着模态对话框时，**所有**变更命令一律拒绝。
+- 破坏性命令（`pane close`、`workspace clear`、`screen close`、`spec apply --replace`）按 (调用进程 pid, 命令类) **在 QuickTerm 里确认一次**。确认框里的进程名与 pid 来自内核（`LOCAL_PEERPID`），抄走 token 也伪装不了。
+- `input send-text` 默认关闭，**等于在那个 shell 里打字**（可能是 root，也可能是一条活着的 ssh 会话）。打开之后：写调用方自己那个 pane 免确认（那个 tty 本来就是它自己的），但这一点要用继承来的、每 pane 一枚的 `QUICKTERM_PANE_TOKEN` **证明**——自报的 `QUICKTERM_PANE` 换不来豁免，服务端验不了它。写**任何**别的 pane 每次都要确认，**确认框里会列出要打进去的正文以及后面跟不跟回车**；控制字符一律拒绝，换行只能靠显式的 `--enter`。
+- 连接必须与 QuickTerm 同 uid（`LOCAL_PEERCRED`）；socket 0600，目录 0700。**绝不监听 TCP，也绝不做转义序列通道。**
+- **`QUICKTERM_TOKEN` 是来源证明，不是权限边界。** 每次启动只有一枚、注入每一个 pane，所以它只能回答"这条命令来自**某个** QuickTerm pane"，绝不跳过任何确认。`QUICKTERM_PANE_TOKEN` 每 pane 一枚（`HMAC(每次启动的密钥, paneID)`），能回答前者答不了的"来自**哪一个** pane"——但它同样不是权限边界，全控制面只用在一处：`send-text` 的自写豁免。
+
+真正的威胁不是这台机器上的别的用户，而是**被利用的代理**：pane 里的 agent 读到一个被投毒的网页 / README / CI 日志，然后被指使去跑 `quickterm` 命令。所以确认闸门从第一版就在，而不是留给"v2"。
+
+### MCP
+
+`quickterm mcp` 是一个 stdio MCP 服务，11 个粗粒度工具**由同一张命令表生成**（手写的那份两个版本之内必然漂移）。
+
+```sh
+claude mcp add quickterm -- /usr/local/bin/quickterm mcp
+codex mcp add quickterm -- /usr/local/bin/quickterm mcp
+quickterm mcp --list-tools | jq -r '.tools[].name'
+```
+
+工具注解（`readOnlyHint` / `destructiveHint` / `idempotentHint`）是从每条命令的安全分级**机械映射**出来的，宿主因此能自动放行读、对破坏性调用弹确认——这是在 QuickTerm 自己的闸门之外、独立的第二道闸。MCP 这一层没有任何自己的特权：每次调用走的都是同一条 socket、同一套确认与限流。
+
+### 老实说的限制
+
+- 短句柄（`t7`/`b3`）只在 QuickTerm 这一次运行期间稳定；跨重启唯一稳定的身份是 pane 的 `id`（UUID）。
+- 事件只携带结构、标题与 cwd，**绝不携带 pane 的输出内容**。"读一读那条命令打印了什么"不是控制面做的事。
+- 有些变更会推进 `seq` 却没有类型化事件（`app set theme`、`screen set --fullscreen`）：你只知道快照过期了，得重新读一次 `state`。
+- `events follow` 是给人和 shell 脚本的流；agent 应该用 `events poll --since` 长轮询。
+- MCP 工具表约 64 KB 的 schema —— 那是每次会话都要付的上下文税，而 CLI 不调用就不占一个 token。所以：交互式的一次性控制用 MCP，批量组合用 CLI。
+- `spec apply` 不搬窗口（要搬用 `screen move`）；落刀之后才失败会如实报 `partial_apply`，绝不假装什么都没发生。
+
+完整的 agent 文档（寻址语法、退出码表、经验法则）：[`docs/agents/quickterm-cli.md`](docs/agents/quickterm-cli.md)。
 
 ## 配置
 

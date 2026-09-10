@@ -23,6 +23,7 @@ quickterm install-cli --alias qt        # 软链到 /usr/local/bin，不可写�
 | `QUICKTERM_PANE` | 本 pane 的 UUID —— `-t @self` 就靠它 |
 | `QUICKTERM_SCREEN` / `QUICKTERM_WORKSPACE` | **创建时**的序号（提示值；pane 移动后不更新） |
 | `QUICKTERM_TOKEN` | 来源证明，**不是权限边界**（见下） |
+| `QUICKTERM_PANE_TOKEN` | **每 pane 一枚**、可验证的来源标记。只用在一处：`input send-text` 写自己那个 pane 时免确认 |
 
 在任意 pane 里 `env | grep QUICKTERM` 就能看到。
 
@@ -57,6 +58,21 @@ quickterm spec dump     [-t 目标] [--all] [--relocatable] [--include-ids]
 quickterm spec validate [-f 文件 | --spec JSON]
 quickterm spec apply    [-f 文件 | --spec JSON] [-t 目标]
                         [--into-empty | --replace | --reuse] [--dry-run]
+```
+
+事件与打字（Phase 4）：
+
+```
+quickterm events poll   [--since <seq>] [--timeout 5s] [--limit N] [--types a,b]
+quickterm events follow [--since <seq>] [--types a,b]
+quickterm input send-text <文本> -t 目标 [--enter]
+```
+
+MCP（Phase 5）：
+
+```
+quickterm mcp                    # stdio MCP 服务；由宿主拉起，别在终端里手敲
+quickterm mcp --list-tools       # 工具表本身（JSON）
 ```
 
 `action` 是**快捷键平价的直通车**：全部 67 个 `WMAction` 原样直达 `perform()`，
@@ -172,6 +188,78 @@ quickterm spec apply -f dev.json -t 2:4 --reuse
 - 落刀之后才失败会报 `partial_apply`（退出码 1）：工作区**已经被改过**，
   重新 `spec dump` 看一眼现状再决定怎么收拾——绝不会假装什么都没发生。
 
+## 事件：`seq` 与 `events poll`
+
+每一条成功的变更都会推进一个全局单调的 `seq`（`state` 与每条响应里回的就是它）。
+**两处的 seq 是同一条尺子**：拿变更响应回的 seq 去 poll，不会漏掉自己那条命令产生的事件。
+
+```sh
+seq=$(quickterm state --json | jq .seq)
+quickterm events poll --since "$seq" --timeout 30s     # 一次调用回答"我上次看之后发生了什么"
+```
+
+- **`events poll` 才是 agent 该用的形式**（一次请求-应答，长轮询）。
+  `events follow` 是给人和 shell 脚本的 NDJSON 流——一条永不结束的流对模型是纯负担：
+  每一条都进上下文，还得自己盯着。
+- 回来的 `seq` 就是**下一次 `--since` 该给的值**，哪怕这一批是空的（`timedOut: true` 不是错误）。
+- 缓冲是环形的：`missed: true` 意味着中间被挤掉了事件，手里的快照不完整，**重新读一次 `state`**。
+- 九种事件：`pane.opened` `pane.closed` `focus.changed` `workspace.changed` `layout.changed`
+  `screen.opened` `screen.closed` `pane.title.changed` `pane.cwd.changed`。
+- **任何事件都不携带 pane 的输出内容**——只有结构、标题与 cwd，浏览器 pane 的标题 / cwd
+  对没有 token 的调用方与 `state` 一样打码。想看输出，去那个 pane 里自己看。
+- 有些变更（`app set theme`、`screen set --fullscreen`）会推进 `seq` 却没有对应的类型化事件：
+  那时你只知道"快照过期了"，具体变了什么要重新读 `state`。
+- **回的 `data.seq` 是游标，照着它一直轮下去就不会漏。** 一批被 `--limit` 截断时它只走到
+  最后一条真的送出去的事件，同时带 `truncated: true`——看到它就拿这个 seq 立刻再轮一次，
+  不必等下一次 timeout。（`missed` 说的是另一件事：事件已经被挤出缓冲，再也拿不回来了，重读 `state`。）
+
+## 向别人的 shell 打字：`input send-text`
+
+```sh
+quickterm input send-text 'git status' -t @self --enter
+```
+
+**这条命令等于在那个 tty 上打字**——那个 shell 可能是 root，可能是一条活着的 ssh 会话。
+所以：
+
+- 默认**关闭**：`~/.config/quickterm/config.toml` 里 `[control] send-text = true` 之前一律拒绝（退出码 5）。
+- 写调用方**自己**那个 pane 免确认（那个 tty 本来就是它自己的）。判定只认**可验证的**那一枚：
+  请求带来的 `QUICKTERM_PANE_TOKEN` 要与 `-t` **真正解析到的那个 pane** 现算的 HMAC 对得上。
+  自报的 `QUICKTERM_PANE` 不参与判定（服务端验不了它），所以把它改成别人的 UUID 也换不来免确认。
+- 写**任何**别的 pane 每次都要用户确认，而且这次批准**不进缓存**；
+  确认框里会列出**要打进去的正文**（净化并截断）以及后面跟不跟回车——
+  用户批准的是"这一串字"，不是笼统的"允许打字"。
+- 控制字符一律拒绝（不是过滤，是拒绝）；**换行只能靠显式的 `--enter`**——
+  没有 `--enter` 的文本只是躺在命令行上，不会执行。
+- `-t` 是必须的：没有"往当前焦点那个 pane 里打字"这种写法。
+- 文本本身**不进活动日志**（日志只记"多少个字符 + 有没有回车"）。
+
+## MCP：`quickterm mcp`
+
+同一张命令表还生成一个 stdio 的 MCP 服务，**11 个粗粒度工具**（不是一个命令一个工具）：
+
+```sh
+claude mcp add quickterm -- /usr/local/bin/quickterm mcp     # Claude Code
+codex mcp add quickterm -- /usr/local/bin/quickterm mcp      # Codex CLI
+quickterm mcp --list-tools | jq -r '.tools[].name'           # 看一眼会暴露出去的东西
+```
+
+工具：`quickterm_describe` `quickterm_state` `quickterm_action` `quickterm_new_pane`
+`quickterm_focus` `quickterm_arrange` `quickterm_close` `quickterm_dump_spec`
+`quickterm_apply_spec` `quickterm_poll_events` `quickterm_send_text`。
+
+- 每个工具背后是命令表里的哪几条命令，写在它的 `description` 里，也在
+  `quickterm describe --json` 的 `mcpTools` 里。参数名与 CLI 一模一样（`target` / `dry-run` / …）。
+- 注解是**机械地**从安全分级映射的：`read` → `readOnlyHint`，
+  `destructive` / `sensitive` → `destructiveHint`，`idempotent` → `idempotentHint`。
+  宿主靠它自动放行读、对破坏性调用弹确认——这是 QuickTerm 自己的确认闸门之外**独立的第二道闸**。
+- MCP 这一层**没有任何自己的特权**：每次 `tools/call` 走的都是同一条 socket、同一套确认、限流与活动日志。
+- `events follow`（流）与 `install-cli`（造软链）刻意不上 MCP；`spec` 只能内联给
+  （MCP 这一侧没有 `-f`：读文件永远是调用方那一边的事）。
+- **什么时候用哪个**：交互式的一次性控制用 MCP（宿主那一层能替你把闸门做好）；
+  批量组合用 CLI —— 工具表是每次会话都要付的上下文税（约 64 KB 的 schema），
+  而 CLI 不调用就不占一个 token。
+
 ## 寻址
 
 `screen:workspace.pane`，每段可省，向右默认取上下文。
@@ -221,11 +309,18 @@ quickterm spec apply -f dev.json -t 2:4 --reuse
   批准之后落刀前还会再核一次身份——确认期间焦点被别的命令挪走了就整条 busy 掉，什么都不做。
   10 秒无人应答 → 退出码 4，去 QuickTerm 里批准后重试。
   用户面前挂着别的对话框时，**所有**变更类命令都返回 `busy`（退出码 6）。
+- **sensitive**（`input send-text`）默认**关闭**（`[control] send-text = true` 才可用）；
+  打开之后，只有写调用方自己那个 pane 免确认，而且要靠每 pane 一枚的 `QUICKTERM_PANE_TOKEN`
+  证明这一点（自报的 `QUICKTERM_PANE` 不算数）；
+  写**任何**别的 pane 每次都要确认（框里带正文），且这次批准不进缓存。
 - **interactive**（`theme-picker` `next-background` `keybind-help` `main-menu` `open-settings`
   `web-extensions`）**一律拒绝**：它们会打开需要键盘交互的面板或弹出菜单。
 - 连接必须与 QuickTerm 同 uid（`LOCAL_PEERCRED` 硬校验）；socket 0600、目录 0700。
-- **`QUICKTERM_TOKEN` 是来源证明，不是权限边界。** 环境变量可继承、可读取；
-  它只回答"这条命令来自 QuickTerm 开的 pane"，**任何"有 token 就跳过确认"的写法都是错的**。
+- **`QUICKTERM_TOKEN` 是来源证明，不是权限边界。** 每次启动只有一枚、注入每一个 pane，
+  所以它只回答"这条命令来自**某个** QuickTerm pane"，**任何"有 token 就跳过确认"的写法都是错的**。
+- **`QUICKTERM_PANE_TOKEN` 每 pane 一枚**（`HMAC(每次启动的密钥, paneID)`），
+  能回答上面那枚答不了的"来自**哪一个** pane"。它只被用在 `input send-text` 的自写豁免上，
+  同样不是权限边界：拿到它只等于"我在这个 pane 里"。
 
 真正的威胁不是别的用户，是**被利用的代理**：pane 里的 agent 读到一个被投毒的网页 /
 README / CI 日志，然后被指使去跑 `quickterm` 命令。所以确认闸门从第一版就在。
@@ -242,3 +337,11 @@ README / CI 日志，然后被指使去跑 `quickterm` 命令。所以确认闸�
 8. 退出码 7 不是错误，是"你要的状态已经成立"。只有在你**需要知道自己是否真的改了**时才加 `--fail-if-noop`。
 9. **批量组合走 `spec apply`，不要发 N 条 `pane new`**；`spec apply --replace` 之前先 `--dry-run`。
 10. 想改一份已有布局：`spec dump` → 改字段 → `spec apply --reuse`，别推倒重来（`--replace` 会把跑着的进程一起结束）。
+11. 要等一件事发生，用 `events poll --since <seq> --timeout 30s`，**别去轮询 `state`**：
+    一次调用就回答"我上次看之后发生了什么"，而轮 `state` 是每次都把整份快照塞进上下文。
+12. 事件里没有、也永远不会有 pane 的输出内容。要看输出，去那个 pane 里看（或者一开始就用
+    `pane new --cmd 'cmd > /tmp/out' --hold` 把它落到文件里）。
+13. `input send-text` 不是"运行一条命令"的 API：它是**在别人的键盘上打字**。
+    要跑东西，优先 `pane new --cmd`——那条路有明确的进程边界，也不会撞进一个正在等你输入密码的 shell。
+14. 交互式的一次性控制挂 `quickterm mcp`（宿主那一层会替你确认）；
+    批量组合直接用 CLI——工具表是每次会话都要付的上下文税，CLI 不调用就不占一个 token。

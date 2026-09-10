@@ -97,7 +97,10 @@ enum ConfigStore {
     #                           # ask = 读免确认；改静默执行；破坏性按调用方确认一次
     #                           # 没有"免确认"档：确认闸门只能靠 off / readonly 绕开
     # expose-browser = "token"  # token | always | never：谁能读到浏览器 pane 的网址与标题
-    # send-text = false         # 向别的 pane 注入文本（Phase 4；默认关闭）
+    # send-text = false         # quickterm input send-text：把文本当键盘输入送进一个终端 pane。
+    #                           # **等于在那个 shell 里打字**（可能是 root，也可能是一条 ssh 会话），
+    #                           # 所以默认关闭。打开之后：写调用方自己那个 pane 免确认，
+    #                           # 写别的 pane 每次都要确认；控制字符一律拒绝，换行只能靠 --enter
 
     [keybinds]
     # 动作 = "modifier+key"；"none" 解绑。动作清单见 Cmd+K 速查表。

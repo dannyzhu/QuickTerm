@@ -66,8 +66,10 @@ final class ControlCommandRunner {
     let screens: ScreenRegistry
     let consent: ControlConsent
     var config = Config()
-    /// 单调状态序号：每条成功的变更 +1，`state` 里回给 agent 判断快照是否过期
-    private(set) var seq = 0
+    /// 单调状态序号。**所有者是 `ControlEventBus`**：Phase 4 起每一条类型化事件都推进它，
+    /// 于是"响应里的 seq"与"事件里的 seq"天然是同一条尺子——agent 可以拿变更响应回的 seq
+    /// 直接去 `events poll --since`，中间不会漏掉自己那条命令产生的事件
+    var seq: Int { ControlEventBus.shared.seq }
     /// 一次只执行一条命令。模态的嵌套 run loop 会在用户的对话框背后抽干主队列，
     /// 那时第二条命令绝不能插进来
     private var isExecuting = false
@@ -79,8 +81,8 @@ final class ControlCommandRunner {
     /// 钉成一条结构性用例（真的弹一个 NSAlert 会把测试宿主自己卡住）
     var modalBusyProbe: () -> Bool = { NSApp.modalWindow != nil }
 
-    /// 每条成功的变更 +1
-    func seqDidMutate() { seq += 1 }
+    /// 一条变更真的落地了：先把它产生的类型化事件扫出来，一条都没有再补一次 seq
+    func seqDidMutate() { ControlEventBus.shared.settleMutation() }
 
     func dryRun(_ request: ControlRequest) -> Bool {
         request.args[ControlCommandTable.Flag.dryRun]?.boolValue ?? false
@@ -89,6 +91,13 @@ final class ControlCommandRunner {
     init(screens: ScreenRegistry, consent: ControlConsent) {
         self.screens = screens
         self.consent = consent
+    }
+
+    /// 一条连接走了。`events follow` 是唯一活得比一次请求还长的东西，
+    /// 对端消失就是它**唯一**的终止条件——没有这一步，一条流会一直往一个已经关掉的 fd 上写
+    func connectionDidClose(_ connection: UInt64) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        ControlEventBus.shared.connectionDidClose(connection)
     }
 
     var appVersion: String {
@@ -228,8 +237,44 @@ final class ControlCommandRunner {
         // 豁免绑在"这条命令真的实现了预演"上，而不是"带了这个开关"：
         // 将来再加一条不算 diff 的直通命令时，忘了实现 dry-run 最坏是接受了一个没用的开关
         // （下面 execute() 里那道闸门会直接拒），而不是悄悄拆掉确认闸门
-        let needsConsent = cls.requiresConsent && config.promptsForDestructive
+        var needsConsent = cls.requiresConsent && config.promptsForDestructive
             && !(dryRun(request) && spec.honorsMutationFlags)
+
+        // send-text 的正文**在问用户之前**就校验：一条根本送不出去的文本
+        // （控制字符、超长）不该先把用户叫起来点一次"允许"。
+        // 顺手拿到给确认框看的那份预览——它只画在屏幕上，一个字都不进日志
+        var sendTextPreview: String?
+        if spec.name == "input.send-text" {
+            let raw = request.args["text"]?.stringValue ?? ""
+            do {
+                _ = try Self.validateSendText(raw)
+            } catch let error as ControlErrorBody {
+                fail(error)
+                return
+            } catch {
+                fail(ControlErrorBody(.internalError, "\(error)"))
+                return
+            }
+            sendTextPreview = Self.sendTextPreview(raw)
+        }
+
+        // **唯一的免确认豁免，范围窄到只有一句话：调用方往它自己那个 pane 里打字。**
+        //
+        // 这不是"带了 token 就放行"——那种写法在 ControlEnvironment 的注释里被明确禁止，
+        // 而且真的写成那样就是个洞：`QUICKTERM_TOKEN` 每次启动只有**一枚**、注入**每一个** pane，
+        // 于是它只能证明"来自某个 pane"，永远证明不了"来自这个 pane"。曾经的实现把
+        // `origin.pane`（调用方自报的一串 UUID，服务端一个字都验不了）当成身份，
+        // 于是 `QUICKTERM_PANE=<别人的 uuid> quickterm input send-text … -t <别人>` 就能免确认地
+        // 往别人的 shell 里打字。
+        //
+        // 现在的判定只认**可验证的**那一枚：`QUICKTERM_PANE_TOKEN` 是每 pane 一枚的
+        // `HMAC(每次启动的密钥, paneID)`，服务端拿 `-t` **真正解析到的那个 pane** 的 id 现算一遍去比。
+        // 比中了才说明调用进程确实跑在那个 pane（或它的子进程）里——而那个 tty 本来就是它自己的，
+        // 它不经过 QuickTerm 也能往上写。比不中就走每次都问的那条路
+        // （send-text 的授权还不进缓存，见下面 cacheable）
+        if needsConsent, spec.name == "input.send-text", writesIntoOwnPane(request, target: target) {
+            needsConsent = false
+        }
 
         // **先解析目标再问**。拿调用方的原始写法（`@focused`，或者干脆什么都没写）去问，
         // 等用户答完再解析，中间那 10 秒是真的会变的：
@@ -266,7 +311,18 @@ final class ControlCommandRunner {
                                summary: Self.consentSummary(request, spec: spec, action: action,
                                                             target: target, subject: pinned),
                                originPane: originHandle(for: request),
-                               tokenPresent: request.token == ControlEnvironment.token)) { decision in
+                               originVerified: originIsProven(request),
+                               tokenPresent: request.token == ControlEnvironment.token,
+                               // send-text 的授权**绝不缓存**：往别人的 tty 里打字每一次都要问。
+                               // 破坏性命令按 (pid, 类) 缓存一次是因为"关 pane"这件事用户看得见，
+                               // 而注入的文本会在那个 shell 里执行任意东西，两次之间可以完全不同
+                               cacheable: spec.name != "input.send-text",
+                               // 正文只画给用户看：它是这次确认与上一次唯一的区别，
+                               // 不给出来的话 `echo hi` 和 `curl … | sh` 在框里长得一模一样
+                               payload: sendTextPreview,
+                               payloadLength: sendTextPreview == nil
+                                   ? nil : (request.args["text"]?.stringValue ?? "").count,
+                               payloadEnter: request.args["enter"]?.boolValue == true)) { decision in
             switch decision {
             case .allow:
                 execute()
@@ -293,6 +349,55 @@ final class ControlCommandRunner {
             return nil
         }
         return ControlHandleRegistry.shared.existingHandle(for: uuid)
+    }
+
+    /// 自报的来源 pane **被证明了吗**（`QUICKTERM_PANE_TOKEN` 与 `origin.pane` 对得上）。
+    /// 只影响确认框的措辞——"来自 pane t3"与"自称来自 pane t3"是两句不同的话，
+    /// 而用户正拿这一句做信任判断
+    func originIsProven(_ request: ControlRequest) -> Bool {
+        guard let raw = request.origin?.pane, let uuid = UUID(uuidString: raw) else { return false }
+        return ControlEnvironment.constantTimeEquals(request.origin?.paneToken,
+                                                     ControlEnvironment.paneToken(for: uuid))
+    }
+
+    /// `input send-text` 的免确认判定：**这条命令写的就是调用方自己那个 pane 吗**。
+    ///
+    /// 判定只有一条，而且两边都不是调用方能随便写的：
+    /// 拿 `-t` **真正解析到的那个 pane** 的 id 现算一遍 `HMAC(每次启动的密钥, paneID)`，
+    /// 与请求带来的 `QUICKTERM_PANE_TOKEN` 定长比较。
+    ///
+    /// 刻意**不**看 `origin.pane`：那是自报的。旧实现拿它当身份，于是
+    /// `QUICKTERM_PANE=<别人的 uuid>` 就能把任意 pane 伪装成"自己"。现在就算把 origin
+    /// 写成别人的 uuid（连 `-t @self` 也会因此解析到别人那儿），HMAC 也对不上，照样要确认。
+    ///
+    /// 解析失败、没带这枚标记、写的是别人的 pane —— 一律返回 false（false = 走确认，安全的那一侧）
+    func writesIntoOwnPane(_ request: ControlRequest, target: ControlTarget?) -> Bool {
+        guard let claim = request.origin?.paneToken, !claim.isEmpty else { return false }
+        var effective = target ?? ControlTarget()
+        if effective.pane == nil { effective.pane = .focused }
+        guard let resolved = try? makeResolver(request).resolve(effective).pane else { return false }
+        return ControlEnvironment.constantTimeEquals(claim,
+                                                     ControlEnvironment.paneToken(for: resolved.id))
+    }
+
+    /// 确认框里那一行正文预览。**净化 + 截断，绝不原样画**：
+    /// `validateSendText` 拦掉的是 C0 / DEL / C1，而 U+2028 / U+2029（AppKit 真的会在这里断行）、
+    /// 双向控制符 U+202E、零宽字符全都还能过——原样画出去，调用方就能在对话框里
+    /// 伪造出几行看着像对话框自己说的话。上限 4096 字符也不可能塞进一个 NSAlert
+    static func sendTextPreview(_ raw: String, limit: Int = 120) -> String {
+        var out = ""
+        var shown = 0
+        for scalar in raw.unicodeScalars {
+            if shown >= limit { out += "…"; break }
+            let v = scalar.value
+            let dangerous = v < 0x20 || v == 0x7F || (0x80...0x9F).contains(v)
+                || v == 0x2028 || v == 0x2029
+                || (0x200B...0x200F).contains(v) || (0x202A...0x202E).contains(v)
+                || (0x2066...0x2069).contains(v) || v == 0xFEFF
+            out += dangerous ? String(format: "<U+%04X>", v) : String(Character(scalar))
+            shown += 1
+        }
+        return out
     }
 
     /// **先解析目标再问**，并把解析结果钉住。破坏性命令的主体各不相同：
@@ -454,6 +559,18 @@ final class ControlCommandRunner {
             return
         }
 
+        // 本地命令（`install-cli`、`mcp`）根本不该出现在这条 socket 上：它们整个在调用方那一侧完成。
+        // 不明说的话，它们会掉进下面的 default 分支，收到一句"本阶段还没有实现"——
+        // 那是句假话，而 agent 会照着它去等一个永远不会来的版本
+        if spec.local {
+            completion(.failure(id: request.id, seq: seq,
+                                error: ControlErrorBody(
+                                    .unknownCommand,
+                                    "\(spec.cli) 是 quickterm 自己这一侧的命令，不经 socket 执行",
+                                    hint: "直接在终端里跑 quickterm \(spec.cli)")))
+            return
+        }
+
         let encoder = makeEncoder(request)
         let resolver = makeResolver(request)
         do {
@@ -522,7 +639,7 @@ final class ControlCommandRunner {
                 let payload = try runAction(action, target: target, resolver: resolver,
                                             precise: request.args["precise"]?.boolValue ?? false,
                                             encoder: encoder, pinned: pinned)
-                seq += 1
+                seqDidMutate()
                 completion(.success(id: request.id, seq: seq, resolved: payload.echo, data: payload.data))
 
             case "describe":
@@ -539,6 +656,14 @@ final class ControlCommandRunner {
                                         appProtocolVersion: ControlProtocol.version,
                                         socket: ControlEnvironment.socketPath, running: true)))
 
+            case "events.poll", "events.follow":
+                // **唯一一条可以不同步应答的命令**：长轮询挂在那里等，流则一直推。
+                // `isExecuting` 在本函数返回时就复位了（defer），所以挂着的 poll
+                // 不会把别的命令一起堵死——那正是"事件流是那条长命的连接"的代价与前提
+                let ctx = ControlContext(spec: spec, request: request, peer: peer, target: target,
+                                         resolver: resolver, encoder: encoder, pinned: pinned)
+                try runEvents(ctx, completion: completion)
+
             default:
                 // Phase 2 的名词-动词层：统一的 (echo, 变更信封) 形状
                 guard let group = spec.group else {
@@ -553,6 +678,7 @@ final class ControlCommandRunner {
                 case "screen": result = try runScreen(ctx)
                 case "app": result = try runApp(ctx)
                 case "spec": result = try runSpec(ctx)
+                case "input": result = try runInput(ctx)
                 default:
                     throw ControlErrorBody(.unknownCommand, "未知命令组 \(group)",
                                            candidates: ControlCommandTable.groups)

@@ -23,6 +23,10 @@ struct ControlDescribeDocument: Codable, Equatable {
     var appSettings: [AppSettingDoc]
     /// `quickterm.workspace/1` 的字段表（Phase 3：agent 靠它一次读懂 spec 怎么写）
     var specSchema: SpecSchemaDoc
+    /// 事件类型（Phase 4）。`events poll --since <seq>` 是 agent 该用的那一种
+    var events: [EventDoc]
+    /// MCP 工具表（Phase 5）——**从命令表生成**，每个工具背后是哪几条命令一并写明
+    var mcpTools: [MCPTool.Doc]
     /// 名词分组（`pane` / `workspace` / `screen` / `app`）→ 动词
     var groups: [GroupDoc]
     var envVars: [EnvDoc]
@@ -80,6 +84,11 @@ struct ControlDescribeDocument: Codable, Equatable {
         }
     }
 
+    struct EventDoc: Codable, Equatable {
+        var type: String
+        var summary: String
+    }
+
     struct GroupDoc: Codable, Equatable {
         var name: String
         var verbs: [String]
@@ -97,6 +106,20 @@ struct ControlDescribeDocument: Codable, Equatable {
         case "off": "控制面已关闭（[control] mode = \"off\"）：一律不执行"
         case "readonly": "只读模式（[control] mode = \"readonly\"）：一律拒绝，不会弹确认"
         default: "按 (调用进程 pid, 命令类) 在 QuickTerm 内确认一次；确认框里写明将被作用的那个 pane；超时 → 退出码 4"
+        }
+    }
+
+    /// 敏感命令（`input send-text`）的现行策略。同样**跟着实际 mode 与开关走**
+    static func sensitivePolicy(mode: String?) -> String {
+        switch mode {
+        case "off": "控制面已关闭（[control] mode = \"off\"）：一律不执行"
+        case "readonly": "只读模式（[control] mode = \"readonly\"）：一律拒绝"
+        default: "默认关闭：`[control] send-text = true` 之前一律拒绝（退出码 5，code=denied）。"
+            + "打开之后，只有写调用方自己那个 pane 免确认——那个 tty 本来就是它自己的；"
+            + "判定看的是每 pane 一枚、可验证的 QUICKTERM_PANE_TOKEN 与 -t 真正解析到的那个 pane 对不对得上，"
+            + "自报的 QUICKTERM_PANE 不参与判定（它验不了）。"
+            + "写**任何**别的 pane 每次都要确认，确认框里会原样列出要打进去的正文与是否跟回车，"
+            + "且这次批准不进缓存。控制字符一律拒绝；换行只能靠显式的 --enter。"
         }
     }
 
@@ -163,7 +186,7 @@ struct ControlDescribeDocument: Codable, Equatable {
             appRunning: appVersion != nil,
             socket: socket,
             mode: mode,
-            phase: 3,
+            phase: 5,
             targetGrammar: TargetGrammar(
                 lines: ControlTarget.grammarLines,
                 screen: ["<1 起序号>", "#<uuid>:", "@current", "@primary"],
@@ -184,7 +207,7 @@ struct ControlDescribeDocument: Codable, Equatable {
                 ClassDoc(name: ControlCommandClass.interactive.rawValue,
                          policy: "一律拒绝：会打开需要键盘交互的面板 / 弹出菜单"),
                 ClassDoc(name: ControlCommandClass.sensitive.rawValue,
-                         policy: "Phase 4；默认关闭，需要 [control] send-text = true"),
+                         policy: sensitivePolicy(mode: mode)),
             ],
             exitCodes: ControlExit.allCases.map {
                 ExitCodeDoc(code: $0.rawValue, name: String(describing: $0), summary: $0.summary)
@@ -197,6 +220,8 @@ struct ControlDescribeDocument: Codable, Equatable {
                 AppSettingDoc(key: $0.rawValue, scope: $0.isPerScreen ? "screen" : "app", help: $0.help)
             },
             specSchema: specSchema,
+            events: ControlEventType.allCases.map { EventDoc(type: $0.rawValue, summary: $0.summary) },
+            mcpTools: MCPToolMap.tools.map(\.doc),
             groups: ControlCommandTable.groups.map {
                 GroupDoc(name: $0, verbs: ControlCommandTable.commands(inGroup: $0).map(\.verb))
             },
@@ -207,6 +232,9 @@ struct ControlDescribeDocument: Codable, Equatable {
                 EnvDoc(name: ControlProtocol.Env.workspace, summary: "创建时所在工作区序号（提示值；pane 移动后不更新）"),
                 EnvDoc(name: ControlProtocol.Env.token,
                        summary: "来源证明，**不是权限边界**：能证明命令来自 QuickTerm 开的 pane，但绝不跳过任何确认"),
+                EnvDoc(name: ControlProtocol.Env.paneToken,
+                       summary: "每 pane 一枚、可验证的来源标记（HMAC）。只用在一处：input send-text 写"
+                           + "调用方自己那个 pane 时免确认。同样不是权限边界"),
             ],
             notes: [
                 "stdout 不是 TTY 时默认输出 JSON；错误一律是 stderr 上的 JSON，带稳定 code。",
@@ -227,7 +255,21 @@ struct ControlDescribeDocument: Codable, Equatable {
                     + "N 条命令 = N 次重排、N 次动画、N 个失败点；spec 是一次算完、一次落地。",
                 "`spec apply --replace` 之前先跑一次 `--dry-run`：它返回同样的信封，applied=false，changes 就是那份 diff。",
                 "`spec dump` 打印的就是那份 spec 本身（不套响应信封），可以直接重定向到文件再 apply 回去。",
-                "本阶段（Phase 3）有查询、action、pane/workspace/screen/app 与 spec；events / send-text 见 Phase 4。",
+                "每一条成功的变更都会推进 `seq`（响应里回的那个）；`events poll --since <seq>` 拿回这中间发生的事件。"
+                    + "两处的 seq 是同一条尺子：拿变更响应回的 seq 去 poll，不会漏掉自己那条命令产生的事件。",
+                "事件**绝不携带 pane 的输出内容**——只有结构、标题与 cwd，"
+                    + "而浏览器 pane 的标题 / cwd 对没有 token 的调用方与 `state` 一样打码。",
+                "`events poll` 是 agent 该用的形式（一次请求-应答）；`events follow` 是给人和 shell 脚本的 NDJSON 流。"
+                    + "缓冲是环形的（\(ControlEventLimits.ringCapacity) 条）：`missed: true` 意味着中间漏了，重新读一次 state。",
+                "`input send-text` 等于在那个 tty 上打字（可能是 root、可能是一条 ssh 会话）："
+                    + "默认关闭、sensitive 类、每次确认、控制字符拒绝、换行只能靠 --enter。",
+                "`quickterm mcp` 是同一张命令表生成的 MCP stdio 服务（\(MCPToolMap.tools.count) 个粗粒度工具，"
+                    + "带 readOnlyHint / destructiveHint / idempotentHint 与 outputSchema）："
+                    + "**交互式的一次性控制用 MCP**（宿主那一层能自动放行读、对破坏性调用弹确认），"
+                    + "**批量组合用 CLI**（不调用就不占上下文，而工具表是每次会话都要付的上下文税）。",
+                "MCP 这一层没有任何自己的特权：每次 tools/call 走的都是同一条 socket、同一套确认与限流。"
+                    + "`events follow`（流）与 `install-cli`（造软链）刻意不上 MCP。",
+                "全部动作与命令的说明都有中英两份（`helpZH` / `helpEN`）：describe 的输出会被原样粘进中英混排的提示里。",
             ])
     }
 }

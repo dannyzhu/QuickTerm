@@ -19,6 +19,11 @@ enum ControlProtocol {
         /// 它只能回答"这条命令来自 QuickTerm 开的 pane"，绝不能用来跳过任何确认。
         /// 任何 `if token == expected { skipConsent() }` 的写法都是错的（见 ControlConsent）。
         static let token = "QUICKTERM_TOKEN"
+        /// **每个 pane 各不相同**（`HMAC(每次启动的密钥, paneID)`），所以它能证明的正是
+        /// `QUICKTERM_TOKEN` 证明不了的那件事：这条命令来自**哪一个** pane。
+        /// 全控制面只有一处用它——`input send-text` 写调用方自己那个 pane 时免确认。
+        /// 它同样不是权限边界：拿到它只等于"我在这个 pane 里"
+        static let paneToken = "QUICKTERM_PANE_TOKEN"
     }
 }
 
@@ -147,11 +152,17 @@ struct ResolvedTarget: Codable, Equatable {
 }
 
 struct ControlRequestOrigin: Codable, Equatable {
-    /// 调用进程所在 pane（读 `QUICKTERM_PANE`）——"当前"的第一优先解释
+    /// 调用进程所在 pane（读 `QUICKTERM_PANE`）——"当前"的第一优先解释。
+    /// **这是调用方自报的，服务端一个字都验不了**：它只用来解释 `@self` 这类相对写法、
+    /// 给限流分桶、以及在确认框里写一句"自称来自"。任何安全判定都不得只凭它
     var pane: String?
     var screen: Int?
     var workspace: Int?
     var pid: Int32?
+    /// `QUICKTERM_PANE_TOKEN`：**可验证的**来源证明，每个 pane 一枚。
+    /// 服务端拿目标 pane 的 id 现算一遍 HMAC 去比，所以它证明的是
+    /// "调用进程确实跑在那个 pane（或它的子进程）里"
+    var paneToken: String?
 }
 
 struct ControlRequest: Codable {

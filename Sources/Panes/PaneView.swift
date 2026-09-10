@@ -74,6 +74,9 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
         guard self.focused != focused else { return }
         objectWillChange.send()
         self.focused = focused
+        // 焦点真相只从这一处流出（类注释就是这么写的），所以控制面的 focus.changed
+        // 也只挂在这一处——挂在 requestFocus / reconcileFocus 上会漏掉键盘与鼠标那两条路
+        ControlEventBus.noteChange()
     }
 
     /// 窗口 first responder 是本 pane 或其后代

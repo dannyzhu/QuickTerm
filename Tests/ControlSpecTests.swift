@@ -204,7 +204,7 @@ final class ControlSpecTests: XCTestCase {
     func testDescribeCarriesTheWorkspaceSchema() throws {
         let document = ControlDescribeDocument.make(cliVersion: "t", appVersion: "t",
                                                     socket: nil, mode: "ask")
-        XCTAssertEqual(document.phase, 3)
+        XCTAssertEqual(document.phase, 5)
         XCTAssertEqual(document.specSchema.workspace, SpecSchema.workspace)
         XCTAssertFalse(document.specSchema.fields.isEmpty)
         // describe 里给出的"最小可用的一份"必须真的能解析——文档与实现漂了就等于骗 agent

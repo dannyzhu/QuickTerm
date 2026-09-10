@@ -24,6 +24,19 @@ final class ControlHarness {
         if allowDestructive { consent.decisionStub = { _, reply in reply(.allow) } }
         runner = ControlCommandRunner(screens: app.screens, consent: consent)
         runner.config = ControlCommandRunner.Config()
+        // 事件总线是进程内单例：把"此刻"记成基线，否则上一条用例留下的 pane
+        // 会在这一条里变成一串莫名其妙的 pane.closed
+        ControlEventBus.shared.resetForTesting()
+    }
+
+    /// 当下的 seq（`events poll --since` 的起点）
+    var seq: Int { ControlEventBus.shared.seq }
+
+    /// `since` 之后的事件（不打码；打码由 `ControlEventTests` 单独钉）
+    func events(since: Int) -> [ControlEvent] {
+        ControlEventBus.shared.flush()
+        return ControlEventBus.shared.batch(since: since, limit: ControlEventLimits.maxBatch,
+                                            types: nil, exposesBrowser: true).events
     }
 
     var controller: MainWindowController {

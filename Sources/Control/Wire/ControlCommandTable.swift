@@ -484,6 +484,91 @@ enum ControlCommandTable {
                 "quickterm spec apply -t :5 --spec '{\"columns\":[{\"panes\":[{}]},{\"panes\":[{},{}]}]}'",
             ],
             outputSample: specApplySample),
+
+        // MARK: —— Phase 4：事件流 ——
+        // 长轮询是**主形式**：一条永不结束的流对模型来说是昂贵的（每一条都进上下文，
+        // 还得自己盯着），而 `poll --since` 一次调用就回答"我上次看之后发生了什么"。
+        // **任何事件都不携带 pane 的输出内容**——那是隐私外泄面与流控复杂度的所在地。
+
+        ControlCommandSpec(
+            group: "events", "poll",
+            summary: "长轮询：拿回 --since 之后错过的那一批事件就返回（agent 该用的形式）",
+            cls: .read, idempotent: true, acceptsTarget: false,
+            args: [
+                ControlArgSpec("since", .int,
+                               help: "上次拿到的 seq（不写 = 当前 seq，即只等接下来发生的事）"),
+                ControlArgSpec("timeout", .string, help: "没有事件时最多等多久（5s / 500ms / 2m）",
+                               defaultValue: "5s"),
+                ControlArgSpec("limit", .int,
+                               help: "一次最多回多少条（截断时回的 seq 只走到最后一条送出去的事件，"
+                                   + "且带 truncated=true：拿它立刻再轮一次，一条都不会漏）",
+                               defaultValue: String(ControlEventLimits.maxBatch)),
+                ControlArgSpec("types", .string,
+                               help: "只要这些类型（逗号分隔，如 pane.opened,focus.changed）"),
+            ],
+            examples: [
+                "quickterm events poll --since 412",
+                "quickterm events poll --since 412 --timeout 30s",
+                "quickterm events poll --types pane.opened,pane.closed --timeout 0",
+                "quickterm events poll --since $(quickterm state --json | jq .seq)",
+            ],
+            outputSample: eventsSample),
+        ControlCommandSpec(
+            group: "events", "follow",
+            summary: "NDJSON 流：连接保持打开，事件一条条推过来（给人和 shell 脚本；Ctrl-C 结束）",
+            cls: .read, idempotent: true, acceptsTarget: false,
+            args: [
+                ControlArgSpec("since", .int, help: "先补上这个 seq 之后已经发生的那一段（不写 = 只推新的）"),
+                ControlArgSpec("limit", .int,
+                               help: "每一批最多多少条（截断的部分不会丢：下一批接着推）",
+                               defaultValue: String(ControlEventLimits.maxBatch)),
+                ControlArgSpec("types", .string, help: "只要这些类型（逗号分隔）"),
+            ],
+            examples: [
+                "quickterm events follow",
+                "quickterm events follow --types focus.changed",
+                "quickterm events follow --json | jq -r '.data.events[].type'",
+            ],
+            outputSample: nil),
+
+        // MARK: —— Phase 4：向 pane 注入文本 ——
+        // 这是整个控制面里唯一一条能让别人的 shell 执行任意命令的命令。默认关闭，
+        // 打开之后仍然每次确认（往调用方自己那个 pane 写除外）。
+
+        ControlCommandSpec(
+            group: "input", "send-text",
+            summary: "把文本当作键盘输入送进一个终端 pane —— **等于在那个 shell 里打字**（默认关闭）",
+            cls: .sensitive, idempotent: false, acceptsTarget: true,
+            args: [
+                ControlArgSpec("text", .string, help: "要送的文本（控制字符一律拒绝）",
+                               required: true, positional: true),
+                ControlArgSpec("enter", .bool,
+                               help: "文本之后再送一个回车 —— **这是让它执行的唯一方式**（默认不送）"),
+            ],
+            examples: [
+                "quickterm input send-text 'git status' -t @self",
+                "quickterm input send-text 'git status' -t @self --enter",
+                "quickterm input send-text 'npm run dev' -t t7 --enter   # 别的 pane：每次都要确认",
+            ],
+            outputSample: sendTextSample),
+
+        // MARK: —— Phase 5：MCP（stdio）——
+        // 工具表**从这张命令表生成**（`MCPToolMap`）。手写一份工具描述两个版本之内必然漂移，
+        // 而漂移的代价是 agent 拿着过期 schema 得到自己解释不了的错误。
+
+        ControlCommandSpec(
+            "mcp",
+            summary: "在标准输入输出上跑一个 MCP 服务（工具表由本命令表生成；供 Claude Code / Codex 挂载）",
+            cls: .read, idempotent: true, acceptsTarget: false, local: true,
+            args: [
+                ControlArgSpec("list-tools", .bool, help: "只打印工具表（JSON）就退出，不进 stdio 循环"),
+            ],
+            examples: [
+                "quickterm mcp                       # 由 MCP 宿主拉起，别在终端里手敲",
+                "quickterm mcp --list-tools          # 看一眼会暴露出去的工具与它们的注解",
+                "quickterm mcp --list-tools | jq -r '.tools[].name'",
+            ],
+            outputSample: nil),
     ]
 
     /// 名词分组的出现顺序（`--help` 与 `describe` 用同一份）
@@ -556,6 +641,8 @@ enum ControlCommandTable {
         var name: String
         var cls: ControlCommandClass
         var helpZH: String
+        /// 英文说明。**中英两份并列**：describe 的输出会被原样粘进中英混排的 agent 提示里
+        var helpEN: String
         var browserOnly: Bool
         var terminalOnly: Bool
         var workspace: Int?
@@ -571,6 +658,7 @@ enum ControlCommandTable {
                 name: action.rawValue,
                 cls: cls,
                 helpZH: action.help,
+                helpEN: action.helpEN,
                 browserOnly: action.browserOnly,
                 terminalOnly: action.terminalOnly,
                 workspace: action.workspaceIndex.map { $0 + 1 },
@@ -648,6 +736,25 @@ enum ControlCommandTable {
        "changes":[{"path":"1:2.panes","from":"2 个","to":"4 个（新建 3，关掉 1，留用 1）"}],
        "spec":{"mode":"reuse","scope":"workspace","created":["t9","t10","b4"],
                "reused":["t3"],"closed":["t4"]}}}
+    """
+
+    /// `events poll` / `events follow` 的一批。`data.seq` 就是**下一次 `--since` 该给的值**
+    /// （被 `--limit` 截断时它只走到最后一条真的送出去的事件，同时带 `truncated:true`）
+    static let eventsSample = """
+    {"ok":true,"seq":420,"data":{"schema":"quickterm.events/1","seq":420,"oldest":301,
+     "events":[
+      {"seq":418,"ts":"2026-09-10T09:12:03.221Z","type":"pane.opened","pane":"t9","paneID":"C40D…",
+       "kind":"terminal","screen":1,"workspace":2,"cwd":"/Users/danny/proj"},
+      {"seq":419,"ts":"2026-09-10T09:12:03.402Z","type":"focus.changed","pane":"t9","screen":1,"workspace":2},
+      {"seq":420,"ts":"2026-09-10T09:12:07.118Z","type":"layout.changed","screen":1,"workspace":2,
+       "layout":"dwindle"}]}}
+    """
+
+    static let sendTextSample = """
+    {"ok":true,"seq":421,"resolved":{"screen":1,"workspace":2,"pane":"t7"},
+     "data":{"command":"input.send-text","applied":true,"changed":true,"dryRun":false,
+       "changes":[{"path":"1:2.t7","from":"(键盘输入)","to":"12 个字符 + 回车"}],
+       "pane":{"handle":"t7","kind":"terminal","screen":1,"workspace":2}}}
     """
 
     static let getSample = """

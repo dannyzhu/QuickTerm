@@ -68,6 +68,9 @@ final class AppSession {
         self.controlServer = ControlServer(screens: screens, consent: consent,
                                            socketPath: controlSocketPath)
         self.controlAllowed = controlSocketPath != nil || !AppDelegate.isRunningTests
+        // 事件总线挂上注册表，并把"此刻"记成基线：不这么做的话，第一次扫描会把
+        // 已经存在的每一块屏幕、每一个 pane 都当成"刚刚新建"报一遍
+        ControlEventBus.shared.attach(screens: screens)
     }
 
     deinit {

@@ -25,6 +25,7 @@ QuickTerm puts the feel of [Omarchy](https://omarchy.org)'s Hyprland desktop ins
 - **Everything rebindable** — every window-manager action is a key in `config.toml`; `Cmd+K` shows the live cheat sheet.
 - **Browser panes with extensions** — `Cmd+B` opens a tabbed WebKit browser pane; Chrome/Firefox WebExtensions install straight from the Chrome Web Store or import from your local Chrome (macOS 15.4+).
 - **State restore** — layouts, floating panes, active workspace and each pane's working directory come back on launch.
+- **Scriptable, agent-ready** — a Unix-socket control plane and a `quickterm` CLI: query state, compose a whole workspace from one JSON spec, long-poll for events, or mount it as an MCP server. Reads are free, mutations are visible and undoable, destructive ones ask you first (see [Control plane](#control-plane-cli-and-ai-agents)).
 
 ## Install
 
@@ -218,6 +219,97 @@ Every action below can be rebound in `config.toml` (see [Configuration](#configu
 Two deliberate deviations from Omarchy: resizing uses `Cmd+Ctrl+arrows` because `Cmd+-`/`Cmd+=` are font-size keys in every macOS terminal, and `Cmd+K` is the cheat sheet rather than "clear screen" — clearing is `Cmd+Shift+K` (`clear-terminal`, rebindable like everything else).
 
 The Shell and Pane menus in the macOS menu bar show the default shortcuts for a few actions; the labels don't follow rebinds, but the shortcuts themselves obey `[keybinds]` (an unbound or rebound combo no longer fires from the menu). The cheat sheet (`Cmd+K`) always reflects the live map.
+
+## Control plane (CLI and AI agents)
+
+QuickTerm listens on a Unix-domain socket in `~/Library/Application Support/QuickTerm/` and ships a `quickterm` command line that speaks to it. Everything a keybinding can do, a command can do — plus a curated noun-verb layer whose defining rule is **absolute setters, never toggles**, because an agent cannot observe state cheaply and a retried toggle silently undoes itself.
+
+```sh
+quickterm install-cli --alias qt     # symlinks into /usr/local/bin, or ~/.local/bin — never asks for an admin password
+quickterm describe --json            # the whole surface as machine schema; agents read this once per session
+```
+
+The CLI parser, `--help`, `describe --json`, the security classes and the MCP tool list are all generated from one command table, so the surface cannot drift.
+
+```
+quickterm state | list | get | action <wm-action> | describe | version
+quickterm pane      new | close | focus | move | swap | set | resize
+quickterm workspace goto | set-layout | equalize | clear | count
+quickterm screen    new | close | move | focus | set
+quickterm app       get | set
+quickterm spec      dump | validate | apply
+quickterm events    poll | follow
+quickterm input     send-text
+quickterm mcp
+```
+
+Inside any pane, `QUICKTERM_SOCKET` / `QUICKTERM_PANE` / `QUICKTERM_SCREEN` / `QUICKTERM_WORKSPACE` / `QUICKTERM_TOKEN` / `QUICKTERM_PANE_TOKEN` are already in the environment, so `-t @self` works with no configuration.
+
+### Laying out a workspace in one call
+
+To arrange a whole workspace, use `spec apply` rather than a loop of `pane new`: N commands mean N relayouts, N animations and N failure points, and a failure halfway leaves a workspace nobody can describe. A spec is computed once and assigned once.
+
+```sh
+cat > dev.json <<'JSON'
+{ "schema": "quickterm.workspace/1", "layout": "scrolling", "visibleColumns": 3,
+  "columns": [
+    {"panes": [{"cwd": "~/proj", "cmd": "nvim ."}]},
+    {"panes": [{"cwd": "~/proj", "cmd": "npm run dev", "hold": true}, {"cwd": "~/proj"}]},
+    {"panes": [{"kind": "browser", "url": "http://localhost:3000"}]}],
+  "focus": {"column": 0, "row": 0} }
+JSON
+
+quickterm spec apply -f dev.json -t :4 --dry-run   # prints the diff, changes nothing
+quickterm spec apply -f dev.json -t :4            # --into-empty is the default: refuses a non-empty workspace
+```
+
+`spec dump` prints the document itself (no response envelope), so `dump → edit → apply --reuse` round-trips: panes that still match are left alone, so a running dev server is not restarted.
+
+### `[control]` configuration
+
+```toml
+[control]
+# enabled = true            # false: do not listen at all
+# mode = "ask"              # off | readonly | ask ("on" is an alias for ask)
+# expose-browser = "token"  # token | always | never — who may read browser pane URLs and titles
+# send-text = false         # quickterm input send-text: typing into a terminal pane
+```
+
+There is deliberately **no "never ask" mode**: the confirmation gate can only be bypassed by turning the control plane `off` or `readonly`, and an unrecognised value falls back to `ask`.
+
+### Security posture
+
+- Reads are silent — but **browser pane URLs and titles are redacted** for callers that did not inherit `QUICKTERM_TOKEN`. Browser panes hold logged-in sessions, so `quickterm state` is itself a disclosure surface.
+- Mutations are silent but **visible**: the status bar flashes the command and its claimed origin pane, everything is recorded in QuickTerm's control activity log, and layout changes register an undo entry (`Cmd+Z`). Mutations are rate-limited per caller, and every mutating command is refused while a modal dialog is up.
+- Destructive commands (`pane close`, `workspace clear`, `screen close`, `spec apply --replace`) ask the user **inside QuickTerm**, once per (calling pid, command class). The process name and pid in the dialog come from the kernel (`LOCAL_PEERPID`), so a copied token cannot fake them.
+- `input send-text` is off by default and is arbitrary code execution in whatever shell is there — possibly root, possibly a live ssh session. Once enabled, writing into the caller's own pane needs no prompt (that tty is already its own), and the caller has to *prove* that with the per-pane `QUICKTERM_PANE_TOKEN` it inherited — the self-reported `QUICKTERM_PANE` buys nothing, because the server cannot verify it. **Every other pane prompts every single time**, and the dialog shows the exact text that would be typed and whether a newline follows. Control characters are refused, and a newline requires an explicit `--enter`.
+- Connections must come from the same uid (`LOCAL_PEERCRED`); the socket is `0600` inside a `0700` directory. There is no TCP listener and no escape-sequence channel, ever.
+- **`QUICKTERM_TOKEN` is proof of origin, not a permission boundary.** There is one per app launch, injected into every pane, so it answers "this came from *some* QuickTerm pane" and never skips a confirmation. `QUICKTERM_PANE_TOKEN` is one per pane (`HMAC(per-launch key, paneID)`) and answers the question the first one cannot — *which* pane — but it too is not a boundary: it is used in exactly one place, the `send-text` self-write exemption.
+
+The real threat is not another user on the machine — it is a **confused deputy**: an agent running in a pane reads a poisoned web page, README or CI log and is told to run `quickterm` commands. That is why the gate ships in the first version rather than a later one.
+
+### MCP
+
+`quickterm mcp` is a stdio MCP server whose 11 coarse tools are generated from the same command table (a hand-written one would drift silently).
+
+```sh
+claude mcp add quickterm -- /usr/local/bin/quickterm mcp
+codex mcp add quickterm -- /usr/local/bin/quickterm mcp
+quickterm mcp --list-tools | jq -r '.tools[].name'
+```
+
+Tool annotations (`readOnlyHint` / `destructiveHint` / `idempotentHint`) are mapped mechanically from each command's security class, so the host can auto-approve reads and prompt on destructive calls — a second gate, independent of QuickTerm's own. The MCP layer has no privileges of its own: every call goes through the same socket, the same consent and the same rate limits.
+
+### Honest limits
+
+- Short handles (`t7`, `b3`) are stable only for one run of QuickTerm; the only identity that survives a restart is the pane `id` (a UUID).
+- Events carry structure, titles and cwd — **never pane output**. Reading what a command printed is not something the control plane does.
+- Some changes bump `seq` without a typed event (`app set theme`, `screen set --fullscreen`): you learn your snapshot is stale, then re-read `state`.
+- `events follow` is a stream for humans and shell scripts; agents should long-poll with `events poll --since`.
+- The MCP tool list is roughly 64 KB of schema — that is the per-session context tax the CLI does not charge, which is why the docs say MCP for interactive one-offs, CLI for bulk composition.
+- `spec apply` never moves windows (use `screen move`), and a failure after the first cut reports `partial_apply` rather than pretending nothing happened.
+
+Full agent-facing documentation, including the addressing grammar and the exit-code table: [`docs/agents/quickterm-cli.md`](docs/agents/quickterm-cli.md).
 
 ## Configuration
 

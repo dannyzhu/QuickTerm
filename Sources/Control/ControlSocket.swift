@@ -23,7 +23,14 @@ final class ControlSocket {
         let uid: uid_t
         let pid: pid_t
         let processName: String
+        /// 本进程内单调递增的连接编号。**不能用 fd 代替**：fd 号会被复用，
+        /// 一条刚关掉的连接与紧接着 accept 到的新连接可以是同一个数字，
+        /// 于是"对端走了，把它的 events follow 摘掉"会摘掉别人的流
+        var connectionID: UInt64 = 0
     }
+
+    /// 连接编号的发号器（只在 accept 队列上自增）
+    nonisolated(unsafe) private static var connectionCounter: UInt64 = 0
 
     enum SocketError: Error, CustomStringConvertible {
         case pathTooLong(String)
@@ -170,10 +177,12 @@ final class ControlSocket {
                 if errno == EINTR { continue }
                 return   // EAGAIN / EWOULDBLOCK：这轮收完了
             }
-            guard let peer = Self.peerIdentity(of: client) else {
+            guard var peer = Self.peerIdentity(of: client) else {
                 close(client)
                 continue
             }
+            Self.connectionCounter &+= 1
+            peer.connectionID = Self.connectionCounter
             // 同 uid 硬校验：这是唯一一道**不可绕过**的身份检查
             guard Self.accepts(peer) else {
                 Self.logger.error("拒绝 uid \(peer.uid) 的控制连接（本进程 uid \(getuid())）")

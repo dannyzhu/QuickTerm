@@ -23,9 +23,46 @@ enum Render {
         if let pane = object["pane"]?.objectValue { return paneDetail(pane) }
         if let actions = object["actions"]?.arrayValue { return actionTable(actions) }
         if let settings = object["settings"]?.arrayValue { return settingsTable(settings) }
+        if object["schema"]?.stringValue == "quickterm.events/1" { return events(object, reply: reply) }
         if object["action"] != nil { return actionResult(object, reply: reply) }
         if object["cli"] != nil { return version(object) }
         return summaryLine(reply)
+    }
+
+    /// `events poll` 的人类输出
+    static func events(_ object: [String: JSONValue], reply: ControlReply) -> String {
+        var out = eventLines(reply)
+        if out.isEmpty {
+            out.append(object["timedOut"]?.boolValue == true
+                ? "（等到点了，没有新事件）" : "（没有新事件）")
+        }
+        if object["missed"]?.boolValue == true {
+            out.append("⚠️ 有事件已经被挤出缓冲（oldest=\(object["oldest"]?.intValue ?? 0)）：重新读一次 state")
+        }
+        if object["truncated"]?.boolValue == true {
+            out.append("⚠️ 这一批被 --limit 截断了，缓冲里还压着更多：拿下面这个 --since 立刻再轮一次")
+        }
+        out.append("下一次： --since \(object["seq"]?.intValue ?? reply.seq ?? 0)")
+        return out.joined(separator: "\n")
+    }
+
+    /// 一批事件 → 每条一行（`events follow` 的流式输出也用它）
+    static func eventLines(_ reply: ControlReply) -> [String] {
+        guard let events = reply.data?["events"]?.arrayValue else { return [] }
+        return events.compactMap { entry in
+            guard let e = entry.objectValue else { return nil }
+            var line = "\(e["seq"]?.intValue ?? 0)  \(e["ts"]?.stringValue ?? "")  "
+                + (e["type"]?.stringValue ?? "?")
+            if let screen = e["screen"]?.intValue {
+                line += "  \(screen)"
+                if let workspace = e["workspace"]?.intValue { line += ":\(workspace)" }
+            }
+            if let pane = e["pane"]?.stringValue { line += ".\(pane)" }
+            if let layout = e["layout"]?.stringValue { line += "  layout=\(layout)" }
+            if let title = e["title"]?.stringValue { line += "  「\(title)」" }
+            if let cwd = e["cwd"]?.stringValue { line += "  \(cwd)" }
+            return line
+        }
     }
 
     static func summaryLine(_ reply: ControlReply) -> String {

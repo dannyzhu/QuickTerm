@@ -120,7 +120,7 @@ final class ControlWireTests: XCTestCase {
         XCTAssertEqual(raw["schema"] as? String, "quickterm.describe/1")
         XCTAssertEqual(raw["protocolVersion"] as? Int, ControlProtocol.version)
         XCTAssertEqual(raw["appRunning"] as? Bool, true)
-        XCTAssertEqual(raw["phase"] as? Int, 3)
+        XCTAssertEqual(raw["phase"] as? Int, 5)
 
         // 命令：与命令表一一对应，且每条都有 summary / cls / examples
         let commands = try XCTUnwrap(raw["commands"] as? [[String: Any]])
@@ -146,7 +146,7 @@ final class ControlWireTests: XCTestCase {
         XCTAssertEqual(Set(env.compactMap { $0["name"] as? String }),
                        [ControlProtocol.Env.socket, ControlProtocol.Env.pane,
                         ControlProtocol.Env.screen, ControlProtocol.Env.workspace,
-                        ControlProtocol.Env.token])
+                        ControlProtocol.Env.token, ControlProtocol.Env.paneToken])
 
         // 动作：67 个一个不少
         let actions = try XCTUnwrap(raw["actions"] as? [[String: Any]])

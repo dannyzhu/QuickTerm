@@ -213,10 +213,22 @@ final class ControlStateTests: XCTestCase {
         XCTAssertNil(ControlEnvironment.inject(into: [:], paneID: UUID(), screen: nil,
                                                workspace: nil)[ControlProtocol.Env.socket])
         ControlEnvironment.socketPath = "/tmp/x.sock"
-        let live = ControlEnvironment.inject(into: [:], paneID: UUID(), screen: nil, workspace: nil)
+        let mine = UUID()
+        let live = ControlEnvironment.inject(into: [:], paneID: mine, screen: nil, workspace: nil)
         XCTAssertEqual(live[ControlProtocol.Env.socket], "/tmp/x.sock")
         XCTAssertEqual(live[ControlProtocol.Env.token], ControlEnvironment.token)
         XCTAssertEqual(ControlEnvironment.token.count, 64, "32 字节随机 → 64 位 hex")
+
+        // 每 pane 一枚的那个标记：**每个 pane 都不一样**，而且只有拿到 paneID 是推不出来的
+        // （密钥只留在进程里）。它是 send-text 自写豁免唯一的依据，所以这一条是结构性的
+        let paneToken = try XCTUnwrap(live[ControlProtocol.Env.paneToken])
+        XCTAssertEqual(paneToken, ControlEnvironment.paneToken(for: mine))
+        XCTAssertEqual(paneToken.count, 64, "HMAC-SHA256 → 64 位 hex")
+        let other = ControlEnvironment.inject(into: [:], paneID: UUID(), screen: nil, workspace: nil)
+        XCTAssertNotEqual(other[ControlProtocol.Env.paneToken], paneToken,
+                          "两个 pane 的来源标记必须不同，否则它证明不了「哪一个」")
+        XCTAssertNotEqual(paneToken, ControlEnvironment.token,
+                          "别把全局 token 与每 pane 一枚的标记混成同一个值")
         ControlEnvironment.socketPath = socketPath
     }
 

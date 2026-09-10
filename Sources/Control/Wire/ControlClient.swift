@@ -46,7 +46,8 @@ struct ControlClient {
 
     func close() { Darwin.close(fd) }
 
-    func send(_ request: ControlRequest) throws -> ControlReply {
+    /// 写一行 NDJSON 请求（不读回应）
+    func write(_ request: ControlRequest) throws {
         let line = try ControlJSON.line(request)
         try line.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
@@ -58,6 +59,37 @@ struct ControlClient {
                 throw ClientError.system("写入 socket 失败：\(String(cString: strerror(errno)))")
             }
         }
+    }
+
+    /// `events follow`：写一次请求，然后一直读，每读到一行就交给 `onReply`。
+    /// 对端关掉（QuickTerm 退出 / 服务停了）就正常返回——**流的终止只有这一种**，
+    /// 客户端这边从不主动断（用户按 Ctrl-C 才结束这个进程）
+    func stream(_ request: ControlRequest, onReply: (ControlReply) -> Void) throws {
+        try write(request)
+        var buffer = Data()
+        var chunk = [UInt8](repeating: 0, count: 16 * 1024)
+        while true {
+            let n = read(fd, &chunk, chunk.count)
+            if n > 0 {
+                buffer.append(contentsOf: chunk[0..<n])
+                while let index = buffer.firstIndex(of: 0x0A) {
+                    let lineData = buffer.subdata(in: buffer.startIndex..<index)
+                    buffer.removeSubrange(buffer.startIndex...index)
+                    guard !lineData.isEmpty else { continue }
+                    guard let reply = try? ControlJSON.decoder.decode(ControlReply.self, from: lineData)
+                    else { continue }
+                    onReply(reply)
+                }
+                continue
+            }
+            if n == 0 { return }                  // 对端关闭：流结束
+            if errno == EINTR { continue }
+            throw ClientError.system("读取 socket 失败：\(String(cString: strerror(errno)))")
+        }
+    }
+
+    func send(_ request: ControlRequest) throws -> ControlReply {
+        try write(request)
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: 16 * 1024)
         while true {

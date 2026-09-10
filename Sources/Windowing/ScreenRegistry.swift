@@ -85,10 +85,12 @@ final class ScreenRegistry {
         guard !controllers.contains(where: { $0 === controller }) else { return }
         controllers.append(controller)
         didCreateFirstScreen = true
+        ControlEventBus.noteChange()   // screen.opened
     }
 
     func remove(_ controller: MainWindowController) {
         controllers.removeAll { $0 === controller }
+        ControlEventBus.noteChange()   // screen.closed
     }
 
     /// 屏幕标题：第一个必须恰好是 `QuickTerm`（EngineSmokeTests 按标题找窗口）

@@ -139,6 +139,11 @@ final class ControlMutationTests: XCTestCase {
     func testModalGuardRefusesEveryMutatingCommand() throws {
         let pane = try harness.newTerminal()
         let handle = ControlHandleRegistry.shared.handle(for: pane)
+        // send-text 默认是关的，会先被"敏感命令默认关闭"那一道拒掉（denied），
+        // 于是根本走不到模态闸门 —— 这里要测的是闸门本身，所以先把它打开
+        var config = ControlCommandRunner.Config()
+        config.sendText = true
+        harness.runner.config = config
         harness.runner.modalBusyProbe = { true }
         defer { harness.runner.modalBusyProbe = { false } }
 
@@ -173,6 +178,7 @@ final class ControlMutationTests: XCTestCase {
         case "screen.move": return ["display": .string("1")]
         case "screen.set": return ["visible-columns": .int(2)]
         case "app.set": return ["key": .string("gaps"), "value": .string("on")]
+        case "input.send-text": return ["text": .string("echo hi")]
         default: return [:]
         }
     }

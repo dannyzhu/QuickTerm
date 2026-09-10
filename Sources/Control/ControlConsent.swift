@@ -33,8 +33,28 @@ final class ControlConsent {
         /// （见 `ControlCommandRunner.originHandle(for:)`）。
         /// 内核给的 `peerName` / `peerPID` 才是这个框里唯一可信的身份
         var originPane: String?
+        /// 来源 pane **被证明了**（`QUICKTERM_PANE_TOKEN` 与自报的 `origin.pane` 对得上）。
+        /// 只影响措辞：证明了就直说"来自 pane t3"，没证明就仍然写"自称来自"
+        var originVerified: Bool = false
         /// 请求带了本次启动生成的 token（只影响文案，不影响是否弹）
         var tokenPresent: Bool
+        /// 这次批准能不能按 (pid, 类) 缓存起来。**`input send-text` 一律 false**：
+        /// 关一个 pane 是用户看得见的一件事，缓存一次说得过去；而往别人的 tty 里注入文本
+        /// 每一次的内容都可以完全不同，"批准过一次"根本不构成对下一次的同意
+        var cacheable: Bool = true
+        /// **只画给用户看**的正文预览（`input send-text` 才有；已净化并截断）。
+        ///
+        /// 它必须在框里，因为它是这一次确认与上一次唯一的区别：命令名与目标 pane 完全相同的两次调用，
+        /// 一次是 `echo hi`，一次可以是 `curl … | sh`。没有它，用户读到的两句话一模一样，
+        /// 那就不是一次知情的同意。
+        ///
+        /// ⚠️ 它**绝不进 `summary`**：`summary` 会以 `privacy: .public` 写进统一日志，
+        /// 而"正文不进任何长期留存的记录"正是活动日志那边守着的同一条线
+        var payload: String?
+        /// 正文的**完整**字符数（预览是截断过的，用户得知道后面还有多少）
+        var payloadLength: Int?
+        /// 正文后面还跟一个回车——也就是那个 shell **真的会执行**它
+        var payloadEnter: Bool = false
     }
 
     /// 未答复的等待上限：到点返回退出码 4，agent 可以告诉用户"去 QuickTerm 里确认"，而不是干等
@@ -101,12 +121,23 @@ final class ControlConsent {
     static func makeAlert(_ request: Request) -> NSAlert {
         let alert = NSAlert()
         alert.messageText = "允许外部程序\(request.cls == .destructive ? "执行破坏性操作" : "执行敏感操作")？"
+        let origin = request.originPane.map {
+            request.originVerified ? "，来自 pane \($0)" : "，自称来自 pane \($0)"
+        } ?? ""
+        // 正文单独一段，并且明写"回车 = 它会被执行"——`--enter` 是"送文本"与"让它跑"
+        // 之间唯一的分界，用户批准的到底是哪一件，必须在框里说出来
+        let payload = request.payload.map { text in
+            "\n\n要打进去的是（共 \(request.payloadLength ?? text.count) 个字符）：\n\(text)\n"
+                + (request.payloadEnter
+                    ? "（后面跟一个回车 —— 那个 shell 会**直接执行**它）"
+                    : "（不带回车 —— 只是把字留在命令行上，不会执行）")
+        } ?? ""
         alert.informativeText = """
-        \(request.peerName)（pid \(request.peerPID)）\
-        \(request.originPane.map { "，自称来自 pane \($0)" } ?? "")\
-        要求：\(request.summary)
+        \(request.peerName)（pid \(request.peerPID)）\(origin)\
+        要求：\(request.summary)\(payload)
 
-        允许之后，本次启动内该进程的同类命令不再询问。
+        \(request.cacheable ? "允许之后，本次启动内该进程的同类命令不再询问。"
+                             : "**这一次**允许。向别的 pane 注入文本每次都会重新询问。")
         \(request.tokenPresent ? "（该调用方带着 QuickTerm 注入的来源标记——这只说明它来自某个 pane，不代表被授权。）"
                                : "（该调用方没有 QuickTerm 的来源标记。）")
         """
@@ -126,7 +157,7 @@ final class ControlConsent {
     /// 决策。`completion` 一定在主线程上被调用一次
     func evaluate(_ request: Request, completion: @escaping (Decision) -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
-        if hasGrant(pid: request.peerPID, cls: request.cls) {
+        if request.cacheable, hasGrant(pid: request.peerPID, cls: request.cls) {
             completion(.allow)
             return
         }
@@ -139,7 +170,9 @@ final class ControlConsent {
                 guard !answered else { return }
                 answered = true
                 self?.isPrompting = false
-                if decision == .allow { self?.grant(pid: request.peerPID, cls: request.cls) }
+                if decision == .allow, request.cacheable {
+                    self?.grant(pid: request.peerPID, cls: request.cls)
+                }
                 completion(decision)
             }
             return
@@ -167,7 +200,9 @@ final class ControlConsent {
             guard !answered else { return }
             answered = true
             self?.isPrompting = false
-            if decision == .allow { self?.grant(pid: request.peerPID, cls: request.cls) }
+            if decision == .allow, request.cacheable {
+                self?.grant(pid: request.peerPID, cls: request.cls)
+            }
             Self.logger.notice("控制面确认结果：\(decision.rawValue, privacy: .public)（pid \(request.peerPID)）")
             completion(decision)
         }

@@ -21,6 +21,8 @@ final class MainWindowController: BaseTerminalController {
     private var keyMonitor: Any?
     private var mouseMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
+    /// 每个 pane 一条「标题 / cwd 变化」订阅（控制面事件用），随 pane 集合增删
+    private var paneEventSubscriptions: [ObjectIdentifier: AnyCancellable] = [:]
     /// 每个 pane 一条「存档内容变化」订阅（见 `resubscribePaneSaves`），随 pane 集合增删
     private var paneSaveSubscriptions: [ObjectIdentifier: AnyCancellable] = [:]
     private var lastSplitAnimationAt: Date?
@@ -242,6 +244,18 @@ final class MainWindowController: BaseTerminalController {
                 DispatchQueue.main.async { [weak self] in self?.resubscribePaneSaves() }
             }
             .store(in: &cancellables)
+        }
+
+        // 控制面事件（Phase 4）：单独一条 sink，**不并进上面那条**——
+        // 那条每次触发都会排一次防抖存档与一次焦点对账，而关闭动效（closingPanes）
+        // 只是"这个 pane 已经不可寻址了"，不该顺带多写一次盘。
+        // 这里只报一声"有东西可能变了"，具体发生了什么由 `ControlEventBus` 与上一份快照相减得出：
+        // 每处手写 emit 必然漏，而 `perform()` 可重入又会让同一件事被报好几遍
+        for publisher in [model.$layouts.map { _ in () }.eraseToAnyPublisher(),
+                          model.$floatings.map { _ in () }.eraseToAnyPublisher(),
+                          model.$activeIndex.map { _ in () }.eraseToAnyPublisher(),
+                          model.$closingPanes.map { _ in () }.eraseToAnyPublisher()] {
+            publisher.dropFirst().sink { ControlEventBus.noteChange() }.store(in: &cancellables)
         }
 
         window.contentView = NSHostingView(rootView: RootView(
@@ -514,6 +528,23 @@ final class MainWindowController: BaseTerminalController {
                 self?.session.sessionStore.scheduleSave()
             }
         }
+        // 控制面的 pane.title.changed / pane.cwd.changed 走同一条重订阅路径：
+        // 终端的标题与 OSC 7 的 pwd 都是 @Published，浏览器 pane 的网页变化走 archiveDidChange。
+        // **事件里只会出现标题与 cwd，绝不会出现 pane 的输出内容**
+        paneEventSubscriptions = paneEventSubscriptions.filter { ids.contains($0.key) }
+        for pane in live where paneEventSubscriptions[ObjectIdentifier(pane)] == nil {
+            let changes: AnyPublisher<Void, Never>
+            if let terminal = pane as? Ghostty.SurfaceView {
+                changes = terminal.$title.dropFirst().removeDuplicates().map { _ in () }
+                    .merge(with: terminal.$pwd.dropFirst().removeDuplicates().map { _ in () })
+                    .eraseToAnyPublisher()
+            } else {
+                changes = pane.archiveDidChange.eraseToAnyPublisher()
+            }
+            paneEventSubscriptions[ObjectIdentifier(pane)] = changes.sink {
+                ControlEventBus.noteChange()
+            }
+        }
     }
 
     /// 起步 pane：没有任何 pane 时开一个终端（新建屏幕，以及存档为空的兜底）
@@ -691,6 +722,7 @@ final class MainWindowController: BaseTerminalController {
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor); self.scrollMonitor = nil }
         cancellables.removeAll()
         paneSaveSubscriptions.removeAll()
+        paneEventSubscriptions.removeAll()
         floatingDrag = nil
         resizeTarget = nil
         // 非原生全屏的 presentationOptions 是进程级的：本窗口申请过就得还回去（按窗口记账，
