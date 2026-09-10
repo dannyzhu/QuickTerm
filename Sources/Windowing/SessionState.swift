@@ -160,6 +160,13 @@ final class SessionStore {
     /// v5 首次写盘前留下的旧档副本（v5 不可降级：老版本读不懂会当损坏档，退出时用 v4 覆盖）
     var backupURL: URL { backupURL(forVersion: PersistedState.currentVersion - 1) }
 
+    /// 上一次会话的存档副本：本进程第一次写盘前留一份。
+    /// 保命用——一次坏掉的启动（比如目录权限被拒、pane 没能复原）在第一次存档时就会把
+    /// 用户的会话覆盖掉，没有这份副本就再也找不回来了
+    var previousSessionURL: URL {
+        url.deletingLastPathComponent().appendingPathComponent("state.previous.json")
+    }
+
     /// 「别的版本写的存档」的副本落点：
     /// - 老版本（< v5）一律 `state.pre-v5.json`（升级路径只会有一份）；
     /// - 更新的版本（> v5，用户从新版回滚到本版时会遇到）按版本号各存一份 `state.v<N>.json`，
@@ -183,11 +190,31 @@ final class SessionStore {
     private(set) var scheduleCount = 0
     private var pendingSave: DispatchWorkItem?
     private var didCheckBackup = false
+    /// 本进程是否已经留过「上一次会话」的副本（每个进程只留一次）
+    private var didCopyPreviousSession = false
+    /// 复原进行中：模型只有一半（屏幕建了、pane 还没灌完），这期间**绝不写盘**——
+    /// 一次半途的存档会把用户的会话截断掉。`AppDelegate.restoreSession(from:)` 括住整段
+    private(set) var isRestoring = false
 
     init(screens: ScreenRegistry, url: URL? = nil) {
         self.screens = screens
         self.url = url ?? Self.defaultURL
         self.writesAllowed = url != nil || !AppDelegate.isRunningTests
+    }
+
+    // MARK: 复原闸门
+
+    /// 复原开始：期间排下来的存档一律丢掉（`newScreen` 每建一个屏幕就排一次）。
+    /// 已经排在路上的那一个也取消——它可能在复原中途落地
+    func beginRestore() {
+        isRestoring = true
+        pendingSave?.cancel()
+        pendingSave = nil
+    }
+
+    /// 复原结束：恢复正常写盘。这里**不主动补一次存档**——盘上那份就是刚读进来的这份
+    func endRestore() {
+        isRestoring = false
     }
 
     // MARK: 读
@@ -236,7 +263,7 @@ final class SessionStore {
     /// 防抖写盘：连续变化（拖列宽、连开 pane、拖窗口）只落一次盘
     func scheduleSave() {
         scheduleCount += 1
-        guard writesAllowed else { return }
+        guard writesAllowed, !isRestoring else { return }
         pendingSave?.cancel()
         let item = DispatchWorkItem { [weak self] in self?.saveNow() }
         pendingSave = item
@@ -247,11 +274,12 @@ final class SessionStore {
     func saveNow() {
         pendingSave?.cancel()
         pendingSave = nil
-        guard writesAllowed else { return }
+        guard writesAllowed, !isRestoring else { return }
         let state = snapshot()
         // 一个窗口都没有（全关掉了 / 都 teardown 过）绝不写：否则会用空档覆盖掉用户的会话
         guard !state.windows.isEmpty else { return }
         backupForeignArchiveIfNeeded()
+        backupPreviousSessionIfNeeded()
         guard let data = try? JSONEncoder().encode(state) else { return }
         try? data.write(to: url, options: .atomic)
         writeCount += 1
@@ -286,6 +314,15 @@ final class SessionStore {
         let backup = backupURL(forVersion: version)
         guard !FileManager.default.fileExists(atPath: backup.path) else { return }
         try? data.write(to: backup, options: .atomic)
+    }
+
+    /// 本进程第一次写盘前，把盘上那份（= 这次启动读进来的那份）留成 `state.previous.json`。
+    /// 每个进程只做一次：之后的每一次防抖存档都是同一次会话的续写，覆盖它就没有意义了
+    private func backupPreviousSessionIfNeeded() {
+        guard !didCopyPreviousSession else { return }
+        didCopyPreviousSession = true
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return }
+        try? data.write(to: previousSessionURL, options: .atomic)
     }
 
     // MARK: 显示器解析与 frame 约束（spec v9 §3.3）

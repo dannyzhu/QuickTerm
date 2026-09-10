@@ -24,13 +24,46 @@ extension Ghostty {
 
         // The current pwd of the surface as defined by the pty. This can be
         // changed with escape codes.
-        @Published var pwd: String?
+        @Published var pwd: String? {
+            didSet { noteWorkingDirectoryReport() }
+        }
 
         // QuickTerm: the working directory this surface was created with (archive restore,
         // inherited cwd, file-manager panes). `pwd` stays nil until the shell emits OSC 7 at
         // its first prompt, so this is the archive fallback -- a debounced save must never
         // downgrade a directory we already know to null.
         private let initialWorkingDirectory: String?
+
+        /// QuickTerm：被 TCC 守卫挡下来的那个存档目录（见 `WorkingDirectoryGate`）。
+        /// 挡下来之后 shell 实际起在引擎的默认目录（家目录），几毫秒后就会用 OSC 7 报回来，
+        /// 把它写进存档等于**悄悄把用户存的目录改成家目录**（下次启动就再也回不去了）。
+        /// 所以：只要这个 pane 还待在引擎给的那个回退目录里，存档里就继续留原来的路径
+        private var deniedWorkingDirectory: String?
+        /// 引擎回退到哪儿了（被挡下来之后的第一次 OSC 7）。之后再报到别的目录 = 用户真的 `cd` 走了，
+        /// 那一刻就该照常存实际位置
+        private var deniedFallbackPwd: String?
+
+        /// spawn 那一刻真正交给引擎的环境变量（含控制面那几个）。只读，留给用例与排障：
+        /// 「复原出来的 pane 到底有没有拿到 QUICKTERM_SOCKET」是没法从子进程里回看的
+        private(set) var initialEnvironment: [String: String] = [:]
+
+        /// OSC 7（或显式种入）报回来一个 pwd：判断这个 pane 是不是还停在被挡下来的回退目录里
+        private func noteWorkingDirectoryReport() {
+            guard let denied = deniedWorkingDirectory, let pwd else { return }
+            guard let fallback = deniedFallbackPwd else {
+                deniedFallbackPwd = pwd
+                // 有人显式把想要的目录种回来了（文件管理器 pane / 控制面）：不存在降级
+                if pwd == denied { clearDeniedWorkingDirectory() }
+                return
+            }
+            // 从回退目录挪走了 = 用户真的 `cd` 了：从这里起照常存实际位置
+            if pwd != fallback { clearDeniedWorkingDirectory() }
+        }
+
+        private func clearDeniedWorkingDirectory() {
+            deniedWorkingDirectory = nil
+            deniedFallbackPwd = nil
+        }
 
         // The cell size of this surface. This is set by the core when the
         // surface is first created and any time the cell size changes (i.e.
@@ -273,6 +306,12 @@ extension Ghostty {
         init(_ app: ghostty_app_t, baseConfig: SurfaceConfiguration? = nil, uuid: UUID? = nil) {
             self.markedText = NSMutableAttributedString()
             self.initialWorkingDirectory = baseConfig?.workingDirectory
+            // 守卫会挡下来吗？（结果按根目录记忆，这里不会多付一次探测代价）
+            // 挡下来的话记住原路径：`encode` 存它而不是引擎的回退目录，否则用户存档里的
+            // ~/Documents / ~/Desktop / ~/Downloads 会在第一次存档时被改写成家目录
+            self.deniedWorkingDirectory = (baseConfig?.workingDirectory)
+                .flatMap { WorkingDirectoryGate.usable($0) == nil ? $0 : nil }
+            self.initialEnvironment = baseConfig?.environmentVariables ?? [:]
 
             // Our initial config always is our application wide config.
             if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
@@ -1890,7 +1929,9 @@ extension Ghostty {
             var container = encoder.container(keyedBy: CodingKeys.self)
             // QuickTerm: fall back to the configured start directory while the shell has not
             // reported OSC 7 yet, so a save that lands during shell startup keeps the cwd.
-            try container.encode(pwd ?? initialWorkingDirectory, forKey: .pwd)
+            // `deniedWorkingDirectory` 优先于 `pwd`：TCC 挡下来的那一次，`pwd` 是引擎的回退
+            // 目录（家目录），存它等于把用户存的目录抹掉。见 `noteWorkingDirectoryReport`
+            try container.encode(deniedWorkingDirectory ?? pwd ?? initialWorkingDirectory, forKey: .pwd)
             try container.encode(id.uuidString, forKey: .uuid)
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)

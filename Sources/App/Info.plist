@@ -27,6 +27,12 @@
 		<key>NSAllowsArbitraryLoadsInWebContent</key>
 		<true/>
 	</dict>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>QuickTerm 需要访问桌面，才能把终端 pane 恢复到你上次所在的目录。</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>QuickTerm 需要访问「文稿」，才能把终端 pane 恢复到你上次所在的目录。</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>QuickTerm 需要访问「下载」，才能把终端 pane 恢复到你上次所在的目录。</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT</string>
 	<key>NSPrincipalClass</key>

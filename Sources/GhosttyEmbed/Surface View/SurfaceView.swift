@@ -728,7 +728,12 @@ extension Ghostty {
             config.context = context
 
             // Use withCString to ensure strings remain valid for the duration of the closure
-            return try workingDirectory.withCString { cWorkingDir in
+            // QuickTerm：引擎会在 `ghostty_surface_new` 里同步 `openat` 这个目录。若它落在 TCC
+            // 保护的目录（~/Desktop ~/Documents ~/Downloads）而本二进制没有授权，且进程是被
+            // LaunchServices 拉起来的，那次 open 会**永远**不返回（启动挂死）。所以先过一道守卫：
+            // 探不通就当没设过 cwd。这里是 cwd 进入 libghostty 的**唯一**入口（`withCValue` 只有
+            // `SurfaceView.init` 一个调用点），复原 / 新建 / 控制面三条路一并覆盖。见 WorkingDirectoryGate
+            return try WorkingDirectoryGate.usable(workingDirectory).withCString { cWorkingDir in
                 config.working_directory = cWorkingDir
 
                 return try command.withCString { cCommand in

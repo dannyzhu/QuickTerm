@@ -97,6 +97,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 $0.isEmpty ? nil : ($0 as NSString).expandingTildeInPath
             })
         self.session = session
+        // 顺序是硬要求：先 `loadInitialConfig()`（顺带把控制 socket 绑起来），再复原。
+        // 复原里建出来的每一个 pane 都要在 spawn 那一刻拿到 QUICKTERM_SOCKET / TOKEN /
+        // PANE_TOKEN——晚绑一步就永远补不上了。见 `AppSession.applyGlobalConfig`
         session.loadInitialConfig()
 
         // 一键复原：存档里的每个屏幕（含显示器 / frame / 全屏）；没有存档就一个新屏幕

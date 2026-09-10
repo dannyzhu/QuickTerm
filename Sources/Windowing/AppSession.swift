@@ -161,6 +161,13 @@ final class AppSession {
         // 控制面：配置热重载即起停（enabled=false / mode="off" 就彻底不监听）
         var control = ControlCommandRunner.Config(settings)
         if !controlAllowed { control.enabled = false }
+        // ⚠️ 这里**必须**在启动复原之前就把 socket 绑起来，别再加什么「复原跑完再监听」的闸门：
+        // `ControlEnvironment.socketPath` 只在 `ControlServer.start()` 里赋值，而复原出来的
+        // pane 和全新启动的第一个 pane 都是在 `restoreSession()` 里**同步**建出来的——
+        // 环境变量是 spawn 那一刻烤进去的，之后再开服也补不回去。晚开一步，
+        // 整个会话里的终端就都没有 QUICKTERM_SOCKET / TOKEN / PANE_TOKEN 了。
+        // 「命令看见半个世界」不需要靠闸门防：所有命令执行都经 `DispatchQueue.main.async`，
+        // 而 `restoreSession()` 是在主线程上同步跑完的，排在后面的块一个也插不进来
         controlServer.apply(control)
         themeManager.updateFromConfig(
             passthrough: settings.ghosttyPassthrough,

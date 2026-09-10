@@ -37,6 +37,9 @@ extension AppDelegate {
     /// 逐窗口解析显示器 → 建屏 → 灌档 → 按存档的叠放次序与 key 屏幕置前。返回建出来的控制器
     @discardableResult
     func restoreSession(from state: PersistedState) -> [MainWindowController] {
+        // 灌档期间模型只有一半：一次半途的防抖存档会把用户的会话截断掉
+        session?.sessionStore.beginRestore()
+        defer { session?.sessionStore.endRestore() }
         var restored: [MainWindowController] = []
         for windowState in state.windows {
             // 显示器没了不丢窗口：回退主屏，frame 再收进它的可见区

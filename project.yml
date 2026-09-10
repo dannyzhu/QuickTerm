@@ -47,6 +47,13 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSPrincipalClass: NSApplication
         NSHumanReadableCopyright: "MIT"
+        # TCC（隐私）：终端 pane 会 chdir 到用户存档里的目录，其中三个是受保护目录。
+        # 有了这几条系统才可能弹授权窗；没有的话请求会被静默处理（见 WorkingDirectoryGate）。
+        # 注意：ad-hoc 签名（CODE_SIGN_IDENTITY "-"）下授权按 cdhash 绑定，每次重新构建都作废——
+        # 真正治本的是换成稳定的签名身份，见 docs/manual-launch-check.md
+        NSDesktopFolderUsageDescription: "QuickTerm 需要访问桌面，才能把终端 pane 恢复到你上次所在的目录。"
+        NSDocumentsFolderUsageDescription: "QuickTerm 需要访问「文稿」，才能把终端 pane 恢复到你上次所在的目录。"
+        NSDownloadsFolderUsageDescription: "QuickTerm 需要访问「下载」，才能把终端 pane 恢复到你上次所在的目录。"
         # 浏览器 pane：允许 http:// 明文页面（本地开发服务器 / 内网）
         NSAppTransportSecurity:
           NSAllowsArbitraryLoadsInWebContent: true
