@@ -87,6 +87,9 @@ switch outcome {
 case .help(let spec):
     writeOut(spec.map(Help.command) ?? Help.root(cliVersion: cliVersion))
     exit(0)
+case .groupHelp(let group):
+    writeOut(Help.group(group))
+    exit(0)
 case .command(let parsed):
     plainMode = parsed.forcePlain || (stdoutIsTTY && !parsed.forceJSON)
     if parsed.wantsHelp {

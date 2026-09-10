@@ -92,6 +92,37 @@ final class ControlConsent {
         return isPrompting
     }
 
+    /// 确认框本体。**"拒绝"是第一个按钮**，所以它是默认按钮、回车落在它上面。
+    ///
+    /// 这不是排版偏好，是一次实测事故的修正：默认按钮原本是"允许"，
+    /// 冒烟时一次落在窗口上的回车（谁都可能顺手按到）直接把一条破坏性命令批准了，
+    /// 日志里留下的是 `控制面确认结果：allow` —— 用户根本没读那个框。
+    /// 安全闸门的默认答案必须是"不"：允许要**点**，拒绝可以按回车 / Esc。
+    static func makeAlert(_ request: Request) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "允许外部程序\(request.cls == .destructive ? "执行破坏性操作" : "执行敏感操作")？"
+        alert.informativeText = """
+        \(request.peerName)（pid \(request.peerPID)）\
+        \(request.originPane.map { "，自称来自 pane \($0)" } ?? "")\
+        要求：\(request.summary)
+
+        允许之后，本次启动内该进程的同类命令不再询问。
+        \(request.tokenPresent ? "（该调用方带着 QuickTerm 注入的来源标记——这只说明它来自某个 pane，不代表被授权。）"
+                               : "（该调用方没有 QuickTerm 的来源标记。）")
+        """
+        alert.addButton(withTitle: "拒绝")   // 第一个 = 默认按钮 = 回车
+        alert.addButton(withTitle: "允许")
+        // NSAlert 默认把第一个按钮的键等价设成回车；这里显式写死，免得将来改按钮顺序时悄悄漂移。
+        // Esc 由 NSAlert 自己映射到最后一个按钮，所以"允许"还要再收回一次
+        alert.buttons.first?.keyEquivalent = "\r"
+        alert.buttons.last?.keyEquivalent = ""
+        alert.alertStyle = .warning
+        return alert
+    }
+
+    /// "允许"是第二个按钮（第一个是默认的"拒绝"）
+    static let allowResponse = NSApplication.ModalResponse.alertSecondButtonReturn
+
     /// 决策。`completion` 一定在主线程上被调用一次
     func evaluate(_ request: Request, completion: @escaping (Decision) -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
@@ -129,20 +160,7 @@ final class ControlConsent {
 
         isPrompting = true
         Self.logger.notice("控制面确认：\(request.peerName, privacy: .public)(pid \(request.peerPID)) 请求 \(request.cls.rawValue, privacy: .public) —— \(request.summary, privacy: .public)")
-        let alert = NSAlert()
-        alert.messageText = "允许外部程序\(request.cls == .destructive ? "执行破坏性操作" : "执行敏感操作")？"
-        alert.informativeText = """
-        \(request.peerName)（pid \(request.peerPID)）\
-        \(request.originPane.map { "，自称来自 pane \($0)" } ?? "")\
-        要求：\(request.summary)
-
-        允许之后，本次启动内该进程的同类命令不再询问。
-        \(request.tokenPresent ? "（该调用方带着 QuickTerm 注入的来源标记——这只说明它来自某个 pane，不代表被授权。）"
-                               : "（该调用方没有 QuickTerm 的来源标记。）")
-        """
-        alert.addButton(withTitle: "允许")
-        alert.addButton(withTitle: "拒绝")
-        alert.alertStyle = .warning
+        let alert = Self.makeAlert(request)
 
         var answered = false
         let finish: (Decision) -> Void = { [weak self] decision in
@@ -155,7 +173,7 @@ final class ControlConsent {
         }
 
         alert.beginSheetModal(for: window) { response in
-            finish(response == .alertFirstButtonReturn ? .allow : .deny)
+            finish(response == Self.allowResponse ? .allow : .deny)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.timeout) { [weak window, weak alert] in
             guard !answered else { return }

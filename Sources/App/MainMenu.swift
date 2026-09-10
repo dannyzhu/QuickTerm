@@ -17,6 +17,12 @@ enum MainMenu {
                                           action: #selector(AppDelegate.installCLIAction(_:)),
                                           keyEquivalent: "")
         installItem.target = delegate
+        // 控制面是**静默执行**的（读免确认、改不弹框）：静默的前提是事后可查。
+        // 状态栏闪一下负责"刚刚发生了什么"，这里负责"到底发生过哪些"
+        let logItem = appMenu.addItem(withTitle: "控制面活动…",
+                                      action: #selector(AppDelegate.controlActivityAction(_:)),
+                                      keyEquivalent: "")
+        logItem.target = delegate
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "隐藏 QuickTerm", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: "退出 QuickTerm", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")

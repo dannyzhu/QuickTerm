@@ -70,6 +70,49 @@ final class WorkspaceModel: ObservableObject {
         layout = next
     }
 
+    /// **绝对设值**：把任意工作区（含**非活动**工作区）切成指定布局。
+    /// `toggleLayout` 只作用于活动工作区，而且是 toggle——agent 看不到状态，重试一次就把自己撤销了。
+    /// 记忆（alternates）与 toggle 共用：pane 集合没变时原样恢复上次的那一份，
+    /// 否则退回保 pane 保序的有损转换。返回是否真的改了（已经是目标布局 = false）
+    @discardableResult
+    func setLayout(_ name: String, at index: Int,
+                   columnFactor: Double = ScrollingStrip.defaultWidth) -> Bool {
+        guard layouts.indices.contains(index), layouts[index].name != name else { return false }
+        if alternates.count != layouts.count {
+            alternates = (0..<layouts.count).map { alternates.indices.contains($0) ? alternates[$0] : nil }
+        }
+        let current = layouts[index]
+        let remembered = alternates[index]
+        let next: WorkspaceLayout
+        if let remembered, remembered.name == name, remembered.hasSamePanes(as: current) {
+            next = remembered
+        } else {
+            next = current.toggled(columnFactor: columnFactor)
+        }
+        guard next.name == name else { return false }   // 转换没给出目标布局：宁可什么都不做
+        alternates[index] = current
+        layouts[index] = next
+        return true
+    }
+
+    /// 控制面刚刚做了什么（状态栏闪一下）。`mutate` 类命令静默执行的前提就是事后可见
+    @Published var controlFlash: ControlFlash?
+    struct ControlFlash: Equatable, Identifiable {
+        let id = UUID()
+        var text: String
+    }
+    /// 闪烁停留时长
+    static let controlFlashDuration: TimeInterval = 2.5
+
+    func showControlFlash(_ text: String) {
+        let flash = ControlFlash(text: text)
+        controlFlash = flash
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.controlFlashDuration) { [weak self] in
+            guard self?.controlFlash?.id == flash.id else { return }   // 期间又来了一条：让新的那条走完自己的时长
+            self?.controlFlash = nil
+        }
+    }
+
     /// config workspaces=N（1–10）：扩容补空；缩容仅当被裁的全空（否则保留至最后非空）
     func setWorkspaceCount(_ n: Int) {
         let target = min(max(n, 1), 10)

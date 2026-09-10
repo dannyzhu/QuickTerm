@@ -34,13 +34,21 @@ final class ControlCommandRunner {
         var promptsForDestructive: Bool { allowsMutation }
     }
 
-    /// 确认闸门批准的**那一个** pane。用户读到的和这一刀落下的必须是同一个：
+    /// 确认闸门批准的**那一个**主体。用户读到的和这一刀落下的必须是同一个：
     /// 确认框挂着的十秒里，别的 mutate 命令（`focus-right` 之类，它们不需要确认）
-    /// 完全可以把焦点挪走，于是"关闭焦点 pane"关掉的就成了另一个 pane
+    /// 完全可以把焦点挪走，于是"关闭焦点 pane"关掉的就成了另一个 pane。
+    ///
+    /// Phase 2 起主体不一定是一个 pane：`workspace clear` 钉的是"这个工作区里的这几个 pane"
+    /// （集合变了也算变），`screen close` 钉的是那一块屏幕
     struct PinnedSubject {
         var controller: MainWindowController
-        var pane: PaneView
-        var handle: String
+        var workspace: Int
+        var pane: PaneView?
+        var handle: String?
+        /// `workspace clear` 用：确认时那个工作区里的 pane 集合
+        var paneIDs: Set<UUID>?
+        /// 确认框里那句话的简短版（漂移时回给调用方，让它知道当时确认的是什么）
+        var description: String
     }
 
     let screens: ScreenRegistry
@@ -51,6 +59,20 @@ final class ControlCommandRunner {
     /// 一次只执行一条命令。模态的嵌套 run loop 会在用户的对话框背后抽干主队列，
     /// 那时第二条命令绝不能插进来
     private var isExecuting = false
+    /// 按来源的变更限流（连接级那只桶盖不住"每条命令一条新连接"的 CLI）
+    var rateLimiter = ControlRateLimiter()
+    /// 当前这条命令的两个全局开关（`isExecuting` 保证同一时刻只有一条命令在跑）
+    private(set) var currentFlags: (dryRun: Bool, failIfNoop: Bool) = (false, false)
+    /// **可注入**：主线程上是否有模态挡着。用例靠它把"任何变更类命令在模态期间都被拒"
+    /// 钉成一条结构性用例（真的弹一个 NSAlert 会把测试宿主自己卡住）
+    var modalBusyProbe: () -> Bool = { NSApp.modalWindow != nil }
+
+    /// 每条成功的变更 +1
+    func seqDidMutate() { seq += 1 }
+
+    func dryRun(_ request: ControlRequest) -> Bool {
+        request.args[ControlCommandTable.Flag.dryRun]?.boolValue ?? false
+    }
 
     init(screens: ScreenRegistry, consent: ControlConsent) {
         self.screens = screens
@@ -137,6 +159,21 @@ final class ControlCommandRunner {
             return
         }
 
+        // 带这两个开关而**没有实现**它们的命令一律先拒掉，位置在限流与确认闸门**之前**：
+        // 读命令是调用方误解了语义（读本来就什么都不改）；`action` 更糟——它直通 `perform()`，
+        // 静默接受等于"预演"真的落了刀，而 `--dry-run` 还会顺手把确认闸门一起关掉
+        if !spec.honorsMutationFlags,
+           request.args[ControlCommandTable.Flag.dryRun]?.boolValue == true
+               || request.args[ControlCommandTable.Flag.failIfNoop]?.boolValue == true {
+            fail(ControlErrorBody(
+                .badRequest,
+                "--dry-run / --fail-if-noop 只对名词-动词层的变更命令有意义（\(spec.cli) 没有可预演的 diff）",
+                hint: spec.name == "action"
+                    ? "action 是快捷键直通车；要预演请用 quickterm pane close / workspace clear 这类命令"
+                    : nil))
+            return
+        }
+
         // 变更类命令：用户正被一个挡住他的对话框拦着时，绝不能在他背后动布局。
         // 有两种情况 `isExecuting` 根本盖不住：
         // (1) `NSAlert.runModal` 的嵌套 run loop 仍在抽干主队列——`closePane` 的
@@ -146,13 +183,32 @@ final class ControlCommandRunner {
         //     用户盯着"关闭焦点 pane？"点了允许，挨刀的却是另一个 pane。
         // 刻意**不用** `consent.isModalBusy`：它含任意窗口的 attachedSheet，
         // 网页里一个不关的 JS `confirm()` 就能把整个控制面永久顶成 busy（网页内容 DoS 掉 agent）
-        if cls.isMutation, NSApp.modalWindow != nil || consent.isPrompting {
+        if cls.isMutation, modalBusyProbe() || consent.isPrompting {
             fail(ControlErrorBody(.busy, "QuickTerm 正有一个对话框挂着，变更命令暂不执行",
                                   hint: "先处理掉 QuickTerm 里的对话框", retryAfterMs: 2000))
             return
         }
 
+        // 限流：变更命令按**来源**再限一次。CLI 每条命令开一条新连接，
+        // 连接级那只桶对 `for i in {1..200}; do quickterm pane new; done` 完全无效
+        if cls.isMutation, !(dryRun(request) && spec.honorsMutationFlags) {
+            let origin = request.origin?.pane.map { "pane:\($0)" } ?? "pid:\(peer.pid)"
+            if case .limited(let retry, let scope) = rateLimiter.admit(origin: origin) {
+                logRefusal(request.cmd, peer: peer, request: request, code: .rateLimited,
+                           message: "限流（\(scope)）")
+                fail(ControlErrorBody(.rateLimited, "变更太密集了（\(scope) 限流）",
+                                      hint: "把批量操作合并，或放慢重试", retryAfterMs: retry))
+                return
+            }
+        }
+
+        // `--dry-run` 什么都不改，因此**不问**：确认框问的是"要不要动手"，
+        // 而这次根本不会动手。它能读到的东西 `state` 本来就给（同一套打码规则）
+        // 豁免绑在"这条命令真的实现了预演"上，而不是"带了这个开关"：
+        // 将来再加一条不算 diff 的直通命令时，忘了实现 dry-run 最坏是接受了一个没用的开关
+        // （下面 execute() 里那道闸门会直接拒），而不是悄悄拆掉确认闸门
         let needsConsent = cls.requiresConsent && config.promptsForDestructive
+            && !(dryRun(request) && spec.honorsMutationFlags)
 
         // **先解析目标再问**。拿调用方的原始写法（`@focused`，或者干脆什么都没写）去问，
         // 等用户答完再解析，中间那 10 秒是真的会变的：
@@ -160,11 +216,7 @@ final class ControlCommandRunner {
         var pinned: PinnedSubject?
         if needsConsent {
             do {
-                let resolution = try makeResolver(request).resolve(target)
-                if let subject = resolution.pane ?? resolution.controller.focusedPane {
-                    pinned = PinnedSubject(controller: resolution.controller, pane: subject,
-                                           handle: ControlHandleRegistry.shared.handle(for: subject))
-                }
+                pinned = try pin(spec, action: action, target: target, request: request)
             } catch let error as ControlErrorBody {
                 fail(error)          // 目标本来就不合法：不必去打扰用户
                 return
@@ -190,8 +242,8 @@ final class ControlCommandRunner {
             return
         }
         consent.evaluate(.init(peerName: peer.processName, peerPID: peer.pid, cls: cls,
-                               summary: Self.consentSummary(request, action: action, target: target,
-                                                            subject: pinned),
+                               summary: Self.consentSummary(request, spec: spec, action: action,
+                                                            target: target, subject: pinned),
                                originPane: originHandle(for: request),
                                tokenPresent: request.token == ControlEnvironment.token)) { decision in
             switch decision {
@@ -212,7 +264,7 @@ final class ControlCommandRunner {
     /// 服务端一个字都没法验。没有 token 就等于连"我来自某个 pane"都没证据，
     /// 那就一个字都不写——绝不在用户做信任判断的那块屏上把自报当事实讲。
     /// 就算有 token，措辞也仍是"自称"：token 只证明来自**某个** pane，不证明是**这个**
-    private func originHandle(for request: ControlRequest) -> String? {
+    func originHandle(for request: ControlRequest) -> String? {
         guard request.token == ControlEnvironment.token else { return nil }
         guard let raw = request.origin?.pane, let uuid = UUID(uuidString: raw) else { return nil }
         // 必须是当下真活着的 pane：句柄注册表从不清理，否则会报出一个十分钟前就关掉的 pane
@@ -222,20 +274,67 @@ final class ControlCommandRunner {
         return ControlHandleRegistry.shared.existingHandle(for: uuid)
     }
 
-    /// 确认框的正文。名字里必须出现**具体的那个 pane**（句柄 + 标题 + 屏幕/工作区），
+    /// **先解析目标再问**，并把解析结果钉住。破坏性命令的主体各不相同：
+    /// `pane close` 是一个 pane，`workspace clear` 是一个工作区里的那一组 pane，
+    /// `screen close` 是一整块屏幕——每一种都要在确认框里说清楚，也都要在落刀前再核一次
+    private func pin(_ spec: ControlCommandSpec, action: WMAction?, target: ControlTarget?,
+                     request: ControlRequest) throws -> PinnedSubject? {
+        let resolver = makeResolver(request)
+        switch spec.name {
+        case "workspace.clear":
+            let resolution = try resolver.resolve(target)
+            let controller = resolution.controller
+            let panes = controller.model.layouts[resolution.workspace].paneList
+                + controller.model.floatings[resolution.workspace].map(\.pane)
+            let handles = panes.map { ControlHandleRegistry.shared.handle(for: $0) }
+            return PinnedSubject(
+                controller: controller, workspace: resolution.workspace, pane: nil, handle: nil,
+                paneIDs: Set(panes.map(\.id)),
+                description: "屏幕 \(controller.screenIndex + 1) 工作区 \(resolution.workspace + 1)"
+                    + "（\(panes.count) 个 pane：\(handles.joined(separator: " "))）")
+        case "screen.close":
+            let resolution = try resolver.resolve(target)
+            let controller = resolution.controller
+            return PinnedSubject(
+                controller: controller, workspace: resolution.workspace, pane: nil, handle: nil,
+                paneIDs: nil,
+                description: "屏幕 \(controller.screenIndex + 1)「\(controller.window?.title ?? "")」"
+                    + "（\(controller.model.allPanes.count) 个 pane）")
+        default:
+            var effective = target ?? ControlTarget()
+            if effective.pane == nil { effective.pane = .focused }
+            let resolution = try resolver.resolve(effective)
+            guard let subject = resolution.pane ?? resolution.controller.focusedPane else { return nil }
+            let handle = ControlHandleRegistry.shared.handle(for: subject)
+            return PinnedSubject(
+                controller: resolution.controller, workspace: resolution.workspace,
+                pane: subject, handle: handle, paneIDs: nil,
+                description: "\(handle)「\(subject.paneTitle)」")
+        }
+    }
+
+    /// 确认框的正文。名字里必须出现**具体的那个主体**（句柄 + 标题 + 屏幕/工作区），
     /// 不能只回显调用方的写法——"关闭焦点 pane"这句话本身不构成同意。
     /// 这里给出的标题是未打码的真标题：打码防的是调用方，而这段文字只给用户自己看，
     /// 从不回到 socket 上去
-    static func consentSummary(_ request: ControlRequest, action: WMAction?, target: ControlTarget?,
-                               subject: PinnedSubject?) -> String {
-        var text = action.map { "执行动作 \($0.rawValue)（\($0.help)）" } ?? "执行 \(request.cmd)"
+    static func consentSummary(_ request: ControlRequest, spec: ControlCommandSpec, action: WMAction?,
+                               target: ControlTarget?, subject: PinnedSubject?) -> String {
+        var text = action.map { "执行动作 \($0.rawValue)（\($0.help)）" }
+            ?? "执行 \(spec.cli)（\(spec.summary)）"
         if let subject {
             let controller = subject.controller
-            // 浏览器 pane 还有别的标签时，close-pane 关的是当前标签而不是整个 pane（Chrome 语义）
-            let tabOnly = (subject.pane as? BrowserPaneView).map { $0.tabs.count > 1 } ?? false
-            text += "\n作用于 \(subject.handle)「\(subject.pane.paneTitle)」"
-                + "· 屏幕 \(controller.screenIndex + 1) · 工作区 \(controller.model.activeIndex + 1)"
-            if action == .closePane, tabOnly { text += "（只关当前标签）" }
+            switch spec.name {
+            case "workspace.clear":
+                text += "\n清空 \(subject.description) —— 其中的进程会被结束"
+            case "screen.close":
+                text += "\n关闭 \(subject.description) —— 其中的进程会被结束"
+            default:
+                // 浏览器 pane 还有别的标签时，close-pane 关的是当前标签而不是整个 pane（Chrome 语义）
+                let tabOnly = (subject.pane as? BrowserPaneView).map { $0.tabs.count > 1 } ?? false
+                text += "\n作用于 \(subject.description)"
+                    + "· 屏幕 \(controller.screenIndex + 1) · 工作区 \(subject.workspace + 1)"
+                if action == .closePane || spec.name == "pane.close", tabOnly { text += "（只关当前标签）" }
+            }
         } else if let target, !target.isEmpty {
             text += "，目标 \(target.text)"
         }
@@ -279,7 +378,21 @@ final class ControlCommandRunner {
             return
         }
         isExecuting = true
-        defer { isExecuting = false }
+        currentFlags = (dryRun: request.args[ControlCommandTable.Flag.dryRun]?.boolValue ?? false,
+                        failIfNoop: request.args[ControlCommandTable.Flag.failIfNoop]?.boolValue ?? false)
+        defer {
+            isExecuting = false
+            currentFlags = (false, false)
+        }
+        // 兜底：`handle()` 已经在限流与确认闸门之前拒过一次了（那才是正确的位置——
+        // 绝不能先把用户叫起来确认，再告诉他这条命令根本不认这个开关）
+        if !spec.honorsMutationFlags, currentFlags.dryRun || currentFlags.failIfNoop {
+            completion(.failure(id: request.id, seq: seq,
+                                error: ControlErrorBody(
+                                    .badRequest,
+                                    "--dry-run / --fail-if-noop 只对名词-动词层的变更命令有意义（\(spec.cli) 没有可预演的 diff）")))
+            return
+        }
 
         let encoder = makeEncoder(request)
         let resolver = makeResolver(request)
@@ -367,7 +480,23 @@ final class ControlCommandRunner {
                                         socket: ControlEnvironment.socketPath, running: true)))
 
             default:
-                throw ControlErrorBody(.unknownCommand, "命令 \(spec.name) 在本阶段还没有实现")
+                // Phase 2 的名词-动词层：统一的 (echo, 变更信封) 形状
+                guard let group = spec.group else {
+                    throw ControlErrorBody(.unknownCommand, "命令 \(spec.name) 在本阶段还没有实现")
+                }
+                let ctx = ControlContext(spec: spec, request: request, peer: peer, target: target,
+                                         resolver: resolver, encoder: encoder, pinned: pinned)
+                let result: (echo: ResolvedTarget?, data: any Encodable)
+                switch group {
+                case "pane": result = try runPane(ctx)
+                case "workspace": result = try runWorkspace(ctx)
+                case "screen": result = try runScreen(ctx)
+                case "app": result = try runApp(ctx)
+                default:
+                    throw ControlErrorBody(.unknownCommand, "未知命令组 \(group)",
+                                           candidates: ControlCommandTable.groups)
+                }
+                completion(.success(id: request.id, seq: seq, resolved: result.echo, data: result.data))
             }
         } catch let error as ControlErrorBody {
             completion(.failure(id: request.id, seq: seq, error: error))
@@ -440,13 +569,13 @@ final class ControlCommandRunner {
         // 确认闸门批准的是**这一个** pane：落刀前再核一次身份。
         // 用户读确认框的那十秒里，不需要确认的 mutate 命令（`focus-right`、`goto-workspace-N`…）
         // 完全可以插进来把焦点挪走；那时宁可整条命令 busy 掉，也绝不把批准过的一刀落到别处
-        if let pinned {
-            guard controller === pinned.controller, controller.focusedPane === pinned.pane,
-                  !controller.model.closingPanes.contains(pinned.pane.id) else {
+        if let pinned, let pinnedPane = pinned.pane {
+            guard controller === pinned.controller, controller.focusedPane === pinnedPane,
+                  !controller.model.closingPanes.contains(pinnedPane.id) else {
                 throw ControlErrorBody(
                     .busy,
-                    "确认期间目标变了（当时确认的是 \(pinned.handle)，现在的焦点已不是它）：本次什么都没做",
-                    hint: "重新发一次，或用 -t \(pinned.handle) 精确指定", retryAfterMs: 200)
+                    "确认期间目标变了（当时确认的是 \(pinned.handle ?? pinned.description)，现在的焦点已不是它）：本次什么都没做",
+                    hint: "重新发一次，或用 -t \(pinned.handle ?? "<句柄>") 精确指定", retryAfterMs: 200)
             }
         }
 

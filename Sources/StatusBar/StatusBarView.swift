@@ -46,6 +46,25 @@ struct StatusBarView: View {
                     workspacePill(i)
                 }
             }
+            controlFlash
+        }
+    }
+
+    /// 控制面活动提示（spec 控制面 §安全）：`mutate` 类命令不弹框、不问人——
+    /// 它被允许这么静默的**前提**就是事后有一眼能看见的痕迹。
+    /// 停留 2.5s 后自行消失；完整记录在「控制面活动…」里
+    @ViewBuilder
+    private var controlFlash: some View {
+        if let flash = model.controlFlash {
+            Text(flash.text)
+                .lineLimit(1)
+                .foregroundStyle(theme.accent)
+                .padding(.horizontal, 6)
+                .frame(minHeight: 18)
+                .background(theme.accent.opacity(0.15))
+                .transition(.opacity)
+                .accessibilityLabel("控制面活动：\(flash.text)")
+                .help("外部程序刚刚通过 quickterm 控制面执行了这条命令")
         }
     }
 

@@ -98,14 +98,67 @@ final class ControlActionTests: XCTestCase {
         XCTAssertLessThan(help.split(separator: "\n").count, 120, "根帮助要能被模型一次读完")
         XCTAssertTrue(help.contains("EXAMPLES"))
         XCTAssertTrue(help.contains("describe --json"), "根帮助必须把 agent 指向 describe")
-        for spec in ControlCommandTable.commands {
+        for spec in ControlCommandTable.commands where spec.group == nil {
             XCTAssertTrue(help.contains(spec.name), "根帮助漏了命令 \(spec.name)")
+        }
+        // 名词-动词层在根帮助里按组列出（一行一组）：整组的动词串必须原样出现，
+        // 少一个动词就是"帮助里没有、实现里有"——agent 永远发现不了它
+        for group in ControlCommandTable.groups {
+            let verbs = ControlCommandTable.commands(inGroup: group).map(\.verb).joined(separator: " | ")
+            XCTAssertTrue(help.contains("\(group)"), "根帮助漏了命令组 \(group)")
+            XCTAssertTrue(help.contains(verbs), "根帮助的 \(group) 那一行漏了动词：应含 \(verbs)")
+            XCTAssertTrue(Help.group(group).contains(verbs.split(separator: "|").first!.trimmingCharacters(in: .whitespaces)),
+                          "quickterm \(group) --help 要列出它的动词")
+        }
+        for spec in ControlCommandTable.commands {
             let sub = Help.command(spec)
             XCTAssertTrue(sub.hasSuffix(spec.examples.last!), "\(spec.name) 的帮助必须以 EXAMPLES 结尾")
+            XCTAssertTrue(sub.contains(spec.cli), "\(spec.name) 的帮助里要写命令行写法 \(spec.cli)")
         }
     }
 
     // MARK: 参数解析（由同一张表驱动）
+
+    /// 带值的全局开关写在命令名**之前**也要能用（`quickterm --socket /p state`）：
+    /// 不把值一起收走的话，下一轮会把 `/p` 当成命令名，报一句"未知命令 /p"
+    func testGlobalFlagWithAValueBeforeTheCommandName() throws {
+        guard case .command(let parsed) = try Args.parse(["--socket", "/tmp/x.sock", "state"]) else {
+            return XCTFail("应解析成命令")
+        }
+        XCTAssertEqual(parsed.spec.name, "state")
+        XCTAssertEqual(parsed.socketOverride, "/tmp/x.sock")
+
+        guard case .command(let targeted) = try Args.parse(["-t", "t7", "pane", "set", "--zoom", "on"]) else {
+            return XCTFail("应解析成命令")
+        }
+        XCTAssertEqual(targeted.spec.name, "pane.set")
+        XCTAssertEqual(targeted.target, "t7")
+        XCTAssertEqual(targeted.args["zoom"]?.stringValue, "on")
+    }
+
+    /// 名词-动词：`pane new` 与线名 `pane.new` 是同一条
+    func testParsesNounVerbCommands() throws {
+        guard case .command(let parsed) = try Args.parse(
+            ["pane", "new", "--kind", "browser", "--url", "http://x", "--env", "A=1", "--env", "B=2",
+             "--dry-run", "--fail-if-noop"]) else {
+            return XCTFail("应解析成命令")
+        }
+        XCTAssertEqual(parsed.spec.name, "pane.new")
+        XCTAssertEqual(parsed.spec.cli, "pane new")
+        XCTAssertEqual(parsed.args["kind"]?.stringValue, "browser")
+        XCTAssertEqual(parsed.args["env"]?.arrayValue?.compactMap { $0.stringValue }, ["A=1", "B=2"],
+                       "--env 是可重复的：逗号分隔会把值里的逗号切坏")
+        XCTAssertEqual(parsed.args[ControlCommandTable.Flag.dryRun]?.boolValue, true)
+        XCTAssertEqual(parsed.args[ControlCommandTable.Flag.failIfNoop]?.boolValue, true)
+
+        guard case .groupHelp(let group) = try Args.parse(["pane", "--help"]) else {
+            return XCTFail("`quickterm pane --help` 应给出这一组的清单")
+        }
+        XCTAssertEqual(group, "pane")
+
+        XCTAssertThrowsError(try Args.parse(["pane"]), "只写名词要报错并列出动词")
+        XCTAssertThrowsError(try Args.parse(["pane", "frobnicate"]))
+    }
 
     func testParsesPositionalAndFlags() throws {
         guard case .command(let parsed) = try Args.parse(["list", "panes", "--fields", "handle,cwd"]) else {

@@ -26,7 +26,9 @@ quickterm install-cli --alias qt        # 软链到 /usr/local/bin，不可写�
 
 在任意 pane 里 `env | grep QUICKTERM` 就能看到。
 
-## Phase 1 的命令面
+## 命令面
+
+查询与直通（Phase 1）：
 
 ```
 quickterm state   [-t 目标] [--fields a,b]
@@ -39,10 +41,52 @@ quickterm version
 quickterm install-cli [--alias qt] [--dir 目录]
 ```
 
+名词-动词层（Phase 2，**这一层才是给 agent 用的**）：
+
+```
+quickterm pane      new|close|focus|move|swap|set|resize
+quickterm workspace goto|set-layout|equalize|clear|count
+quickterm screen    new|close|move|focus|set
+quickterm app       get|set
+```
+
 `action` 是**快捷键平价的直通车**：全部 67 个 `WMAction` 原样直达 `perform()`，
 所以「快捷键能做的，命令行都能做」在第一天就成立，而且结构上不可能漂移。
-Phase 2 会补上绝对设值的名词-动词层（`pane set --zoom on` 之类），
-**到时候请优先用那一层**：agent 看不到状态，重试一次 toggle 会把自己撤销。
+但它保留的是**快捷键语义**（全是 toggle、全是"作用于焦点"）。
+
+**名词-动词层全是绝对设值**——这是整个 Phase 2 的定规：
+
+| 别写 | 要写 | 为什么 |
+|---|---|---|
+| `action toggle-zoom` | `pane set -t t7 --zoom on` | agent 看不到状态；重试一次 toggle 会把自己撤销 |
+| `action toggle-layout` | `workspace set-layout dwindle -t :4` | toggle 只能作用于**活动**工作区，而且没法指定目标 |
+| `action move-to-workspace-3` | `pane move -t t7 --to :3 [--follow]` | 前者只搬焦点 pane，而且强制跟随切换 |
+| `action resize-right` | `pane set -t t7 --width 0.33`（或 `pane resize --width +0.05`） | 绝对值可重放，增量不行 |
+| `action theme-picker` | `app set theme tokyo-night` | 面板要靠方向键选，经 socket 执行等于把 UI 卡在半路 |
+
+同一条设值命令跑两次，第二次什么都不做（`changed:false`）；
+加上 `--fail-if-noop` 时第二次是**退出码 7**——这正是"我以为我改了，其实没有"的信号。
+
+### 每条变更命令都认的两个开关
+
+- `--dry-run`：只回 `changes`（一份 diff），**一个字节都不改**。动真格之前先预演。
+  （只有名词-动词层认这两个开关；`action <wm-action>` 是直通车，带上会退出码 3。）
+- `--fail-if-noop`：已经是目标状态时退出码 7，而不是静默成功。
+
+变更类响应是统一的信封：
+
+```json
+{"ok":true,"seq":415,"resolved":{"screen":1,"workspace":2,"pane":"t9"},
+ "data":{"command":"pane.set","applied":true,"changed":true,"dryRun":false,
+   "changes":[{"path":"1:2.t9.zoom","from":"off","to":"on"}],
+   "pane":{"handle":"t9","…":"…"},"undo":"控制面：pane set"}}
+```
+
+### 落点（`--at` / `--where`）
+
+`--where right|left|up|down|stack` 走的就是鼠标拖放那一套落点算法（同一份代码），
+`--at` 是锚点 pane：`quickterm pane new --cwd ~/proj --cmd 'npm run dev' --at t1 --where right`。
+`--cmd` 建出来的 pane 在命令退出时自己关掉（`--hold` 可以让它留着）。
 
 ## 寻址
 
@@ -82,8 +126,11 @@ Phase 2 会补上绝对设值的名词-动词层（`pane set --zoom on` 之类�
 
 - **read** 静默；但**没有来源 token 的调用方读不到浏览器 pane 的网址与标题**（`<redacted>`）——
   浏览器 pane 里装着用户已登录的会话，`quickterm state` 本身就是一个外泄面。
-- **mutate** 静默执行（Phase 2 起状态栏可见 + ⌘Z 可撤销）。
-- **destructive**（`close-pane`）按 (调用进程 pid, 命令类) **在 QuickTerm 里确认一次**；
+- **mutate** 静默执行，但**可见**：状态栏闪一下（写明命令与自称来源 pane），
+  完整记录在 QuickTerm ▸「控制面活动…」里；布局类变更登记到 UndoManager，
+  Edit ▸ 撤销（⌘Z）能整份回滚。（焦点在终端 pane 上时 ⌘Z 归终端，用菜单项那一条。）
+  变更命令按来源限流，超了是退出码 6 并带 `retryAfterMs`。
+- **destructive**（`close-pane`、`pane close`、`workspace clear`、`screen close`）按 (调用进程 pid, 命令类) **在 QuickTerm 里确认一次**；
   确认框显示的进程名与 pid 来自内核（`LOCAL_PEERPID`），所以抄走 token 也伪装不了；
   框里那句"自称来自 pane t3"是**调用方自报的**，服务端验不了，所以写明是自称。
   确认框里点名的是**解析好的那一个 pane**（句柄 + 标题 + 屏幕/工作区），
@@ -106,3 +153,6 @@ README / CI 日志，然后被指使去跑 `quickterm` 命令。所以确认闸�
 3. 变更命令的响应里已经带了受影响的子树与新的 `seq`，**不要**再补一次 `state`。
 4. 拿到退出码 3 时读 `candidates`，别重试同一个模糊目标。
 5. `--fields` 能把 `state` 的体积压下来；六屏会话的完整 JSON 会吃掉大量上下文。
+6. **优先用名词-动词层，别用 `action`**：前者是绝对设值，可重放；后者是 toggle，重试会把自己撤销。
+7. 破坏性命令（`pane close` / `workspace clear` / `screen close`）之前先 `--dry-run` 看一眼 `changes`。
+8. 退出码 7 不是错误，是"你要的状态已经成立"。只有在你**需要知道自己是否真的改了**时才加 `--fail-if-noop`。

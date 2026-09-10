@@ -115,9 +115,9 @@ final class AppSession {
 
     /// 装上进程内唯一的目录监听（编辑器原子替换也能捕获）
     func installConfigWatcher() {
-        lastConfigContent = (try? String(contentsOf: ConfigStore.configURL, encoding: .utf8)) ?? ""
+        lastConfigContent = (try? String(contentsOf: ConfigStore.activeConfigURL, encoding: .utf8)) ?? ""
         configWatcher = ConfigWatcher(
-            directory: ConfigStore.configURL.deletingLastPathComponent()
+            directory: ConfigStore.activeConfigURL.deletingLastPathComponent()
         ) { [weak self] in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self?.reloadConfigFile() }
         }
@@ -125,7 +125,7 @@ final class AppSession {
 
     /// 文件内容真变了才重载（保存会连发多次事件），然后走一次 apply
     func reloadConfigFile() {
-        let content = (try? String(contentsOf: ConfigStore.configURL, encoding: .utf8)) ?? ""
+        let content = (try? String(contentsOf: ConfigStore.activeConfigURL, encoding: .utf8)) ?? ""
         guard content != lastConfigContent else { return }
         lastConfigContent = content
         apply(ConfigStore.parse(content))

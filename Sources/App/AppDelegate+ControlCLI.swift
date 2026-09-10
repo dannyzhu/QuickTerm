@@ -11,6 +11,22 @@ extension AppDelegate {
         Bundle.main.sharedSupportURL?.appendingPathComponent("quickterm")
     }
 
+    /// 「控制面活动…」：把最近的控制命令摊开给用户看。
+    /// `mutate` 类命令不弹框、不问人——用户能查到它们，是这条设计成立的前提
+    @objc func controlActivityAction(_ sender: Any?) {
+        let entries = ControlActivityLog.shared.recent(40)
+        let alert = NSAlert()
+        alert.messageText = "控制面活动（最近 \(entries.count) 条）"
+        alert.informativeText = entries.isEmpty
+            ? "还没有任何外部程序通过 quickterm 控制过 QuickTerm。\n\n"
+                + "socket：\(ControlEnvironment.socketPath ?? "（未监听）")\n"
+                + "关掉控制面：在 ~/.config/quickterm/config.toml 的 [control] 里写 enabled = false"
+            : entries.map(\.line).joined(separator: "\n")
+        alert.addButton(withTitle: "好")
+        if !entries.isEmpty { alert.addButton(withTitle: "清空") }
+        if alert.runModal() == .alertSecondButtonReturn { ControlActivityLog.shared.clear() }
+    }
+
     @objc func installCLIAction(_ sender: Any?) {
         let alert = NSAlert()
         guard let cli = Self.bundledCLIURL, FileManager.default.isExecutableFile(atPath: cli.path) else {

@@ -56,6 +56,15 @@ enum JSONValue: Codable, Equatable {
         }
     }
 
+    var doubleValue: Double? {
+        switch self {
+        case .double(let v): v
+        case .int(let v): Double(v)
+        case .string(let v): Double(v)
+        default: nil
+        }
+    }
+
     var boolValue: Bool? {
         switch self {
         case .bool(let v): v

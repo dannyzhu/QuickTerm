@@ -26,16 +26,21 @@ struct ControlArgSpec: Codable, Equatable {
     var kind: Kind
     var required: Bool
     var positional: Bool
+    /// 可以重复给（`--env A=1 --env B=2`）：值收成数组。
+    /// 刻意不做"逗号分隔"——环境变量的值里本来就可能有逗号
+    var repeatable: Bool
     var values: [String]?
     var defaultValue: String?
     var help: String
 
     init(_ name: String, _ kind: Kind, help: String, required: Bool = false,
-         positional: Bool = false, values: [String]? = nil, defaultValue: String? = nil) {
+         positional: Bool = false, repeatable: Bool = false,
+         values: [String]? = nil, defaultValue: String? = nil) {
         self.name = name
         self.kind = kind
         self.required = required
         self.positional = positional
+        self.repeatable = repeatable
         self.values = values
         self.defaultValue = defaultValue
         self.help = help
@@ -43,7 +48,15 @@ struct ControlArgSpec: Codable, Equatable {
 }
 
 struct ControlCommandSpec: Codable, Equatable {
+    /// 线上的命令名：顶层命令 = `state`，名词-动词层 = `pane.new`（点号）。
+    /// **只有这一处拼接**：CLI 的 `pane new`、`--help`、describe、MCP 全部由它派生
     var name: String
+    /// 名词（`pane` / `workspace` / `screen` / `app`）；顶层命令为 nil
+    var group: String?
+    /// 动词（`new` / `set-layout` / `state`）
+    var verb: String
+    /// 命令行里敲的形式（`pane new`）——与 `name` 同源，不可能各写各的
+    var cli: String
     var summary: String
     var cls: ControlCommandClass
     /// 同样的输入跑两次结果一致（Phase 5 映射成 MCP 的 idempotentHint）
@@ -56,6 +69,32 @@ struct ControlCommandSpec: Codable, Equatable {
     /// 查询类命令内嵌一段真实的（节选）输出样例——
     /// 这是 wezterm 的 `--help` 缺、kitty 的文档有的那一项，能替 agent 省掉每个会话一次探路调用
     var outputSample: String?
+
+    /// 这条命令真的**实现了** `--dry-run` / `--fail-if-noop`。
+    ///
+    /// 两个开关是从名词-动词层"先算 diff 再决定动不动手"的形状里长出来的（出口是
+    /// `ControlCommandRunner.commit()`）。`action <wm-action>` 是快捷键平价直通车，
+    /// 直通 `perform()`：既算不出 diff，也没有"预演"这回事。
+    /// 静默接受它的后果是双份的——一次"预演"真的落了刀，而 `--dry-run` 还顺手
+    /// 把破坏性命令的确认闸门一起关掉了。
+    var honorsMutationFlags: Bool { group != nil && cls.isMutation }
+
+    init(group: String? = nil, _ verb: String, summary: String, cls: ControlCommandClass,
+         idempotent: Bool, acceptsTarget: Bool, local: Bool = false,
+         args: [ControlArgSpec], examples: [String], outputSample: String? = nil) {
+        self.name = group.map { "\($0).\(verb)" } ?? verb
+        self.group = group
+        self.verb = verb
+        self.cli = group.map { "\($0) \(verb)" } ?? verb
+        self.summary = summary
+        self.cls = cls
+        self.idempotent = idempotent
+        self.acceptsTarget = acceptsTarget
+        self.local = local
+        self.args = args
+        self.examples = examples
+        self.outputSample = outputSample
+    }
 }
 
 enum ControlCommandTable {
@@ -63,7 +102,7 @@ enum ControlCommandTable {
 
     static let commands: [ControlCommandSpec] = [
         ControlCommandSpec(
-            name: "state",
+            "state",
             summary: "读整个会话：扁平 pane 数组 + 引用句柄的屏幕/工作区骨架",
             cls: .read, idempotent: true, acceptsTarget: true, local: false,
             args: [
@@ -77,7 +116,7 @@ enum ControlCommandTable {
             ],
             outputSample: stateSample),
         ControlCommandSpec(
-            name: "list",
+            "list",
             summary: "列出 screens / workspaces / panes",
             cls: .read, idempotent: true, acceptsTarget: true, local: false,
             args: [
@@ -92,7 +131,7 @@ enum ControlCommandTable {
             ],
             outputSample: listSample),
         ControlCommandSpec(
-            name: "get",
+            "get",
             summary: "读单个 pane 的完整记录",
             cls: .read, idempotent: true, acceptsTarget: true, local: false,
             args: [],
@@ -103,7 +142,7 @@ enum ControlCommandTable {
             ],
             outputSample: getSample),
         ControlCommandSpec(
-            name: "action",
+            "action",
             summary: "执行一个 WM 动作（快捷键平价直通车；全部 \(WMAction.allCases.count) 个）",
             cls: .mutate, idempotent: false, acceptsTarget: true, local: false,
             args: [
@@ -119,7 +158,7 @@ enum ControlCommandTable {
             ],
             outputSample: nil),
         ControlCommandSpec(
-            name: "describe",
+            "describe",
             summary: "把整个控制面当作机器可读的 schema 吐出来（agent 每个会话读一次即可）",
             cls: .read, idempotent: true, acceptsTarget: false, local: false,
             args: [],
@@ -129,14 +168,14 @@ enum ControlCommandTable {
             ],
             outputSample: nil),
         ControlCommandSpec(
-            name: "version",
+            "version",
             summary: "打印 CLI 与运行中 QuickTerm 的版本、协议版本、socket 路径",
             cls: .read, idempotent: true, acceptsTarget: false, local: false,
             args: [],
             examples: ["quickterm version", "quickterm version --json"],
             outputSample: nil),
         ControlCommandSpec(
-            name: "install-cli",
+            "install-cli",
             summary: "把 quickterm（可选 qt 别名）软链到 PATH——绝不弹管理员密码",
             cls: .read, idempotent: true, acceptsTarget: false, local: true,
             args: [
@@ -148,10 +187,258 @@ enum ControlCommandTable {
                 "quickterm install-cli --alias qt",
             ],
             outputSample: nil),
+
+        // MARK: —— Phase 2：名词-动词层（**绝对设值，绝不 toggle**）——
+        // agent 看不到状态，重试一次 toggle 会把自己撤销。这一层的每条命令跑两次结果一致，
+        // 第二次在 `--fail-if-noop` 下退 7。`action <wm-action>` 是唯一保留 toggle 语义的直通车。
+
+        ControlCommandSpec(
+            group: "pane", "new",
+            summary: "新建一个 pane（终端 / 浏览器 / 文件管理器），可指定 cwd、命令、环境与落点",
+            cls: .mutate, idempotent: false, acceptsTarget: true,
+            args: [
+                ControlArgSpec("kind", .enumeration, help: "pane 种类",
+                               values: ["terminal", "browser", "file-manager"], defaultValue: "terminal"),
+                ControlArgSpec("cwd", .string, help: "起始目录（支持 ~；默认继承锚点 pane）"),
+                ControlArgSpec("cmd", .string, help: "要跑的命令（引擎会 wait-after-command；默认退出即关 pane）"),
+                ControlArgSpec("hold", .bool, help: "命令退出后**不**关闭 pane（默认关闭）"),
+                ControlArgSpec("env", .string, help: "额外环境变量 KEY=VALUE（可重复给）", repeatable: true),
+                ControlArgSpec("url", .string, help: "浏览器 pane 打开的网址（--kind browser）"),
+                ControlArgSpec("at", .string, help: "落点锚 pane（目标语法；默认焦点 pane）"),
+                ControlArgSpec("where", .enumeration, help: "相对锚点的方位",
+                               values: ["right", "left", "up", "down", "stack"], defaultValue: "right"),
+            ],
+            examples: [
+                "quickterm pane new --cwd ~/proj --cmd 'npm run dev' --at t1 --where right",
+                "quickterm pane new --kind browser --url http://localhost:3000 --at t1 --where down",
+                "quickterm pane new --kind file-manager --cwd ~/proj",
+                "quickterm pane new --cmd 'tail -f log' --hold --env RUST_LOG=debug",
+            ],
+            outputSample: paneMutationSample),
+        ControlCommandSpec(
+            group: "pane", "close",
+            summary: "关掉一个 pane（会结束其中的进程；破坏性，按调用方确认一次）",
+            cls: .destructive, idempotent: false, acceptsTarget: true,
+            args: [
+                ControlArgSpec("force", .bool, help: "跳过 QuickTerm 自己那句「仍有进程在运行」的确认"),
+            ],
+            examples: [
+                "quickterm pane close -t t7",
+                "quickterm pane close -t b3 --force",
+            ],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "pane", "focus",
+            summary: "把键盘焦点交给一个 pane（幂等：已经是它就什么都不做）",
+            cls: .mutate, idempotent: true, acceptsTarget: true,
+            args: [
+                ControlArgSpec("where", .enumeration, help: "相对当前焦点的方向（不写就用 -t）",
+                               positional: true,
+                               values: ["left", "right", "up", "down", "next", "prev"]),
+            ],
+            examples: [
+                "quickterm pane focus -t t7",
+                "quickterm pane focus right",
+            ],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "pane", "move",
+            summary: "把 pane 移到别的工作区 / 屏幕（可指定落点；默认不跟随切换）",
+            cls: .mutate, idempotent: false, acceptsTarget: true,
+            args: [
+                ControlArgSpec("to", .string, help: "目标 screen:workspace（如 2:4、:3、@next）", required: true),
+                ControlArgSpec("at", .string, help: "目标工作区里的锚 pane"),
+                ControlArgSpec("where", .enumeration, help: "相对锚点的方位",
+                               values: ["right", "left", "up", "down", "stack"], defaultValue: "right"),
+                ControlArgSpec("follow", .bool, help: "同时切到目标工作区 / 屏幕（默认不跟随）"),
+                ControlArgSpec("no-follow", .bool, help: "显式不跟随（默认行为）"),
+            ],
+            examples: [
+                "quickterm pane move -t t7 --to :4",
+                "quickterm pane move -t t7 --to 2:1 --at t9 --where down --follow",
+            ],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "pane", "swap",
+            summary: "两个 pane 互换位置（幂等：换完再换回来要再发一次，位置本身是绝对的）",
+            cls: .mutate, idempotent: false, acceptsTarget: true,
+            args: [
+                ControlArgSpec("with", .string, help: "对手 pane（目标语法）", required: true),
+            ],
+            examples: ["quickterm pane swap -t t7 --with t2"],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "pane", "set",
+            summary: "绝对设值：zoom / float / 列宽（同样的命令跑两次结果一致）",
+            cls: .mutate, idempotent: true, acceptsTarget: true,
+            args: [
+                ControlArgSpec("zoom", .enumeration, help: "本 pane 是否占满内容区", values: ["on", "off"]),
+                ControlArgSpec("float", .enumeration, help: "本 pane 是否浮动", values: ["on", "off"]),
+                ControlArgSpec("width", .double, help: "scrolling 列宽因子（0.25–0.90，绝对值）"),
+                ControlArgSpec("ratio", .double, help: "dwindle 最近父 split 的比例（0.1–0.9，绝对值）"),
+            ],
+            examples: [
+                "quickterm pane set -t t7 --zoom on",
+                "quickterm pane set -t t7 --float off --width 0.33",
+            ],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "pane", "resize",
+            summary: "相对调整：列宽 ±（scrolling）或 split 比例（dwindle）——到边界即无操作（退 7）",
+            cls: .mutate, idempotent: false, acceptsTarget: true,
+            args: [
+                ControlArgSpec("width", .string, help: "列宽增量（+0.05 / -0.05）或绝对值（0.33）"),
+                ControlArgSpec("ratio", .string, help: "dwindle 比例增量（+0.1）或绝对值（0.5）"),
+            ],
+            examples: [
+                "quickterm pane resize -t t7 --width +0.05",
+                "quickterm pane resize -t t8 --ratio 0.5",
+            ],
+            outputSample: nil),
+
+        ControlCommandSpec(
+            group: "workspace", "goto",
+            summary: "切到某个工作区（幂等）",
+            cls: .mutate, idempotent: true, acceptsTarget: true,
+            args: [
+                ControlArgSpec("index", .int, help: "工作区序号（1 起）", required: true, positional: true),
+            ],
+            examples: ["quickterm workspace goto 3", "quickterm workspace goto 1 -t 2"],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "workspace", "set-layout",
+            summary: "把某个工作区设成 scrolling / dwindle —— **非活动工作区也能设**（toggle-layout 做不到）",
+            cls: .mutate, idempotent: true, acceptsTarget: true,
+            args: [
+                ControlArgSpec("layout", .enumeration, help: "布局", required: true, positional: true,
+                               values: ["scrolling", "dwindle"]),
+            ],
+            examples: [
+                "quickterm workspace set-layout dwindle -t :4",
+                "quickterm workspace set-layout scrolling -t 2:1",
+            ],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "workspace", "equalize",
+            summary: "把工作区里的列宽 / split 比例全部等分（幂等）",
+            cls: .mutate, idempotent: true, acceptsTarget: true,
+            args: [],
+            examples: ["quickterm workspace equalize -t :2"],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "workspace", "clear",
+            summary: "关掉一个工作区里的所有 pane（破坏性）",
+            cls: .destructive, idempotent: true, acceptsTarget: true,
+            args: [
+                ControlArgSpec("force", .bool,
+                               help: "已无作用：控制面的确认闸门已按整个工作区问过一次（与 screen close 同）"),
+            ],
+            examples: ["quickterm workspace clear -t :5"],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "workspace", "count",
+            summary: "设置工作区个数（1–10）：改写 config.toml 的 workspaces，由配置监听落地",
+            cls: .mutate, idempotent: true, acceptsTarget: false,
+            args: [
+                ControlArgSpec("n", .int, help: "个数（1–10）", required: true, positional: true),
+            ],
+            examples: ["quickterm workspace count 8"],
+            outputSample: nil),
+
+        ControlCommandSpec(
+            group: "screen", "new",
+            summary: "新建一个屏幕（窗口），可指定显示器",
+            cls: .mutate, idempotent: false, acceptsTarget: false,
+            args: [
+                ControlArgSpec("display", .string, help: "显示器：uuid:<…> / name:<…> / 1 起序号"),
+                ControlArgSpec("inherit-cwd-from", .string, help: "新屏幕首个终端继承这个 pane 的目录"),
+            ],
+            examples: [
+                "quickterm screen new",
+                "quickterm screen new --display 'name:Studio Display' --inherit-cwd-from t1",
+            ],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "screen", "close",
+            summary: "关掉一个屏幕连同它的所有 pane（破坏性）",
+            cls: .destructive, idempotent: false, acceptsTarget: true,
+            args: [
+                ControlArgSpec("force", .bool, help: "跳过 QuickTerm 自己那句关屏幕确认"),
+            ],
+            examples: ["quickterm screen close -t 2 --force"],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "screen", "move",
+            summary: "把一个屏幕搬到另一台显示器（幂等：已经在那台就什么都不做）",
+            cls: .mutate, idempotent: true, acceptsTarget: true,
+            args: [
+                ControlArgSpec("display", .string, help: "显示器：uuid:<…> / name:<…> / 1 起序号", required: true),
+            ],
+            examples: ["quickterm screen move -t 2 --display 1"],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "screen", "focus",
+            summary: "把某个屏幕的窗口置前并设为 key（幂等）",
+            cls: .mutate, idempotent: true, acceptsTarget: true,
+            args: [],
+            examples: ["quickterm screen focus -t 2"],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "screen", "set",
+            summary: "绝对设值：全屏 / 在所有桌面显示 / 每屏可见列数",
+            cls: .mutate, idempotent: true, acceptsTarget: true,
+            args: [
+                ControlArgSpec("fullscreen", .enumeration, help: "非原生全屏", values: ["on", "off"]),
+                ControlArgSpec("join-all-spaces", .enumeration, help: "在所有桌面显示", values: ["on", "off"]),
+                ControlArgSpec("visible-columns", .int, help: "scrolling 每屏可见列数（1–6）"),
+            ],
+            examples: [
+                "quickterm screen set -t 1 --fullscreen off --visible-columns 3",
+                "quickterm screen set -t 2 --join-all-spaces on",
+            ],
+            outputSample: nil),
+
+        ControlCommandSpec(
+            group: "app", "get",
+            summary: "读进程级设置（主题 / 背景 / 间隙 / 透明 / 状态条 / 可见列数 / 控制面）",
+            cls: .read, idempotent: true, acceptsTarget: true,
+            args: [
+                ControlArgSpec("key", .string, help: "只读某一项（不写 = 全部）", positional: true),
+            ],
+            examples: ["quickterm app get", "quickterm app get theme"],
+            outputSample: appGetSample),
+        ControlCommandSpec(
+            group: "app", "set",
+            summary: "绝对设值的进程级设置（这就是那 5 个模态面板动作在 socket 上的替代路径）",
+            cls: .mutate, idempotent: true, acceptsTarget: true,
+            args: [
+                ControlArgSpec("key", .enumeration, help: "设置项", required: true, positional: true,
+                               values: ControlAppSetting.allCases.map(\.rawValue)),
+                ControlArgSpec("value", .string, help: "值（见 app get 的 choices）", required: true, positional: true),
+            ],
+            examples: [
+                "quickterm app set theme tokyo-night",
+                "quickterm app set gaps off",
+                "quickterm app set visible-columns 3 -t 2",
+            ],
+            outputSample: nil),
     ]
 
+    /// 名词分组的出现顺序（`--help` 与 `describe` 用同一份）
+    static var groups: [String] {
+        var out: [String] = []
+        for spec in commands { if let g = spec.group, !out.contains(g) { out.append(g) } }
+        return out
+    }
+
+    static func commands(inGroup group: String) -> [ControlCommandSpec] {
+        commands.filter { $0.group == group }
+    }
+
+    /// 线名（`pane.new`）与命令行写法（`pane new`）都认——两边是同一处生成的，查得到同一条
     static func command(_ name: String) -> ControlCommandSpec? {
-        commands.first { $0.name == name }
+        let normalized = name.replacingOccurrences(of: " ", with: ".")
+        return commands.first { $0.name == normalized }
     }
 
     /// 全局开关（每条子命令都能用）
@@ -161,7 +448,16 @@ enum ControlCommandTable {
         ControlArgSpec("plain", .bool, help: "强制人类可读输出"),
         ControlArgSpec("socket", .string, help: "指定 socket 路径（默认读 QUICKTERM_SOCKET）"),
         ControlArgSpec("help", .bool, help: "帮助（每条子命令都以 EXAMPLES 结尾）"),
+        ControlArgSpec("dry-run", .bool, help: "只报告会改什么，什么都不改（仅变更类命令）"),
+        ControlArgSpec("fail-if-noop", .bool, help: "已经是目标状态时退出码 7，而不是静默成功"),
     ]
+
+    /// 每条变更命令都认的两个全局开关的 key（服务端按它们分流）
+    enum Flag {
+        static let dryRun = "dry-run"
+        static let failIfNoop = "fail-if-noop"
+        static let force = "force"
+    }
 
     // MARK: WMAction 的安全分级
 
@@ -244,10 +540,52 @@ enum ControlCommandTable {
       {"handle":"b3","kind":"browser","screen":1,"workspace":2,"title":"<redacted>"}]}}
     """
 
+    /// 变更类命令的统一信封（`--dry-run` 时 `applied:false` 且 `changes` 就是那份 diff）
+    static let paneMutationSample = """
+    {"ok":true,"seq":415,"resolved":{"screen":1,"workspace":2,"pane":"t9"},
+     "data":{"command":"pane.new","applied":true,"changed":true,"dryRun":false,
+       "changes":[{"path":"1:2","from":"2 panes","to":"3 panes"}],
+       "pane":{"handle":"t9","id":"C40D…","kind":"terminal","role":"shell","screen":1,
+               "workspace":2,"at":{"column":2,"row":0},"cwd":"/Users/danny/proj"},
+       "focusPending":true,"undo":"控制面：pane new"}}
+    """
+
+    static let appGetSample = """
+    {"ok":true,"seq":412,"data":{"settings":[
+      {"key":"theme","value":"tokyo-night","choices":["tokyo-night","gruvbox","…"]},
+      {"key":"gaps","value":"on","choices":["on","off"]},
+      {"key":"visible-columns","value":"2","choices":["1","2","3","4","5","6"]}]}}
+    """
+
     static let getSample = """
     {"ok":true,"seq":412,"resolved":{"screen":1,"workspace":2,"pane":"t7"},
      "data":{"pane":{"handle":"t7","id":"C40D…","kind":"terminal","role":"shell",
        "screen":1,"workspace":2,"at":{"column":2,"row":0},"title":"npm run dev",
        "cwd":"/Users/danny/proj","focused":false,"busy":true,"float":false,"zoom":false}}}
     """
+}
+
+/// `app get` / `app set` 认的设置项。**枚举即清单**：命令表的 values、describe、
+/// 服务端的 switch 全从这里来，不可能出现"帮助里有、实现里没有"的项
+enum ControlAppSetting: String, Codable, CaseIterable {
+    case theme
+    case background
+    case gaps
+    case opacity
+    case bar
+    case visibleColumns = "visible-columns"
+
+    var help: String {
+        switch self {
+        case .theme: "配色主题名（app get theme 的 choices 里列出全部）"
+        case .background: "壁纸：名字、1 起序号或 none"
+        case .gaps: "pane 间隙 on|off"
+        case .opacity: "透明 / 磨砂 on|off"
+        case .bar: "顶部状态条 on|off（按屏幕；-t 指定）"
+        case .visibleColumns: "scrolling 每屏可见列数 1–6（按屏幕；-t 指定）"
+        }
+    }
+
+    /// 作用在某一块屏幕上（其余是进程级）
+    var isPerScreen: Bool { self == .bar || self == .visibleColumns }
 }

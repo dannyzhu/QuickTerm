@@ -146,6 +146,24 @@ final class ControlServerTests: XCTestCase {
         XCTAssertEqual(ControlSocket.processName(for: getpid()).isEmpty, false)
     }
 
+    /// 确认框的**默认按钮必须是"拒绝"**。
+    /// 这条是实测事故的回归：默认按钮原本是"允许"，冒烟时一次落在窗口上的回车
+    /// 直接把一条破坏性命令批准了（日志里留下 `控制面确认结果：allow`，用户根本没读那个框）。
+    /// 安全闸门的默认答案只能是"不"
+    func testConsentAlertDefaultsToDeny() {
+        let alert = ControlConsent.makeAlert(.init(peerName: "node", peerPID: 4821, cls: .destructive,
+                                                   summary: "关闭 pane t7", originPane: "t3",
+                                                   tokenPresent: true))
+        XCTAssertEqual(alert.buttons.first?.title, "拒绝", "第一个按钮 = 默认按钮，必须是拒绝")
+        XCTAssertEqual(alert.buttons.first?.keyEquivalent, "\r", "回车必须落在拒绝上")
+        XCTAssertEqual(alert.buttons.last?.title, "允许")
+        XCTAssertEqual(alert.buttons.last?.keyEquivalent, "", "允许绝不能有键等价：它必须被点")
+        XCTAssertEqual(ControlConsent.allowResponse, .alertSecondButtonReturn,
+                       "映射要跟着按钮顺序走，否则回车会变成允许")
+        XCTAssertTrue(alert.informativeText.contains("pid 4821"), "框里要写内核给的真实身份")
+        XCTAssertTrue(alert.informativeText.contains("自称来自 pane t3"), "来源是自报的，措辞必须写明")
+    }
+
     // MARK: 端到端（同时也是"主线程 hop"的用例）
 
     /// socket 回调在 io 队列上；命令必须被送回主线程执行。

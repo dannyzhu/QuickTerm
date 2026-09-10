@@ -14,13 +14,16 @@ enum Help {
         out.append("用法： quickterm <命令> [参数] [-t 目标] [--json|--plain]")
         out.append("")
         out.append("命令")
-        for spec in ControlCommandTable.commands {
-            let positional = spec.args.filter(\.positional)
-                .map { $0.required ? "<\($0.name)>" : "[\($0.name)]" }
-                .joined(separator: " ")
-            let name = ([spec.name] + [positional]).filter { !$0.isEmpty }.joined(separator: " ")
-            out.append("  \(name.padding(toLength: max(22, name.count + 1), withPad: " ", startingAt: 0))\(spec.summary)")
+        for spec in ControlCommandTable.commands where spec.group == nil {
+            out.append("  " + pad(usage(spec)) + spec.summary)
         }
+        out.append("")
+        out.append("名词-动词层（**绝对设值，绝不 toggle**；每条都认 --dry-run / --fail-if-noop）")
+        for group in ControlCommandTable.groups {
+            let verbs = ControlCommandTable.commands(inGroup: group).map(\.verb).joined(separator: " | ")
+            out.append("  " + pad(group) + verbs)
+        }
+        out.append("  （逐条帮助：quickterm <名词> <动词> --help；一组的清单：quickterm <名词> --help）")
         out.append("")
         out.append("目标语法")
         for line in ControlTarget.grammarLines { out.append("  \(line)") }
@@ -48,6 +51,10 @@ enum Help {
         out.append("  quickterm action new-terminal             # 等价于按下新建终端的快捷键")
         out.append("  quickterm action goto-workspace-3 -t 2    # 2 号屏幕切到工作区 3")
         out.append("  quickterm action toggle-zoom -t t7        # 先把焦点交给 t7 再执行")
+        out.append("  quickterm pane new --cwd ~/proj --cmd 'npm run dev' --at t1 --where right")
+        out.append("  quickterm pane set -t t7 --zoom on         # 绝对设值：跑两次结果一样")
+        out.append("  quickterm workspace set-layout dwindle -t :4   # 非活动工作区也能设")
+        out.append("  quickterm pane move -t t7 --to 2:1 --follow")
         out.append("  quickterm action --list --json            # 全部 \(WMAction.allCases.count) 个动作及其安全分级")
         out.append("  quickterm describe --json                 # 整个控制面的机器可读 schema（会话开始读一次）")
         out.append("  quickterm install-cli --alias qt          # 装到 PATH（绝不弹管理员密码）")
@@ -56,12 +63,37 @@ enum Help {
         return out.joined(separator: "\n")
     }
 
-    static func command(_ spec: ControlCommandSpec) -> String {
-        var out: [String] = []
+    /// 一组名词的清单（`quickterm pane --help`）
+    static func group(_ group: String) -> String {
+        var out: [String] = ["quickterm \(group) <动词> [参数] —— \(group) 相关的命令", ""]
+        for spec in ControlCommandTable.commands(inGroup: group) {
+            out.append("  " + pad(usage(spec), 34) + spec.summary)
+        }
+        out.append("")
+        out.append("EXAMPLES")
+        for spec in ControlCommandTable.commands(inGroup: group) {
+            if let example = spec.examples.first { out.append("  \(example)") }
+        }
+        out.append("")
+        out.append("逐条帮助：quickterm \(group) <动词> --help")
+        return out.joined(separator: "\n")
+    }
+
+    static func pad(_ text: String, _ width: Int = 22) -> String {
+        text.padding(toLength: max(width, text.count + 1), withPad: " ", startingAt: 0)
+    }
+
+    /// 用法行（`pane new` + 位置参数）——命令表之外不再手写第二份
+    static func usage(_ spec: ControlCommandSpec) -> String {
         let positional = spec.args.filter(\.positional)
             .map { $0.required ? "<\($0.name)>" : "[\($0.name)]" }
             .joined(separator: " ")
-        out.append("quickterm \(spec.name) \(positional) —— \(spec.summary)")
+        return ([spec.cli] + [positional]).filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    static func command(_ spec: ControlCommandSpec) -> String {
+        var out: [String] = []
+        out.append("quickterm \(usage(spec)) —— \(spec.summary)")
         out.append("")
         out.append("安全分级： \(spec.cls.rawValue)\(spec.cls.requiresConsent ? "（需要在 QuickTerm 里确认一次）" : "")"
                    + "   幂等： \(spec.idempotent ? "是" : "否")"
@@ -74,6 +106,7 @@ enum Help {
                 var line = "  \(label.padding(toLength: 18, withPad: " ", startingAt: 0))\(arg.help)"
                 if let values = arg.values { line += "（\(values.joined(separator: " | "))）" }
                 if let def = arg.defaultValue { line += "（默认 \(def)）" }
+                if arg.repeatable { line += "（可重复）" }
                 out.append(line)
             }
         }
@@ -84,6 +117,12 @@ enum Help {
             out.append("  " + ControlCommandTable.interactiveActions.map(\.rawValue).sorted().joined(separator: " "))
             out.append("\(ControlCommandTable.destructiveActions.count) 个是破坏性的，会先要求用户确认一次：")
             out.append("  " + ControlCommandTable.destructiveActions.map(\.rawValue).sorted().joined(separator: " "))
+        }
+        if spec.honorsMutationFlags {
+            out.append("")
+            out.append("变更类通用开关")
+            out.append("  --dry-run         只报告会改什么（changes 就是 diff），什么都不改")
+            out.append("  --fail-if-noop    已经是目标状态时退出码 7，而不是静默成功")
         }
         if let sample = spec.outputSample {
             out.append("")

@@ -61,10 +61,14 @@ extension AppDelegate {
 
     /// 关闭一个屏幕（有活跃 pane 时先确认）。返回是否真的关了。
     /// 关掉最后一个屏幕 → applicationShouldTerminateAfterLastWindowClosed 让程序退出
+    /// - Parameter confirmed: 调用方已经问过用户了（控制面的确认闸门就是这么一次）。
+    ///   **必须有这个口子**：`confirmCloseScreen()` 里的 `NSAlert.runModal()` 会在调用者的栈上
+    ///   跑一个嵌套 run loop——控制命令在主线程上，等于把自己连同整个控制服务一起卡住，
+    ///   而用户看到的是两个内容相同的确认框
     @discardableResult
-    func closeScreen(_ controller: MainWindowController) -> Bool {
+    func closeScreen(_ controller: MainWindowController, confirmed: Bool = false) -> Bool {
         guard let window = controller.window else { return false }
-        guard controller.confirmCloseScreen() else { return false }
+        guard confirmed || controller.confirmCloseScreen() else { return false }
         // 关掉最后一个屏幕 = 程序退出：先存档，因为 windowWillClose 的 teardown 会清空模型，
         // 之后 applicationWillTerminate 就没有布局可存了
         if screens.controllers.count == 1 { session.sessionStore.saveNow() }

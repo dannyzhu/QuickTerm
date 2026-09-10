@@ -700,6 +700,7 @@ final class MainWindowController: BaseTerminalController {
         // 与 removeFromActiveLayout / removeFromAnyWorkspace 同一份 pane 级收尾：浏览器 pane
         // 要取消进行中的下载、告诉扩展"窗口"关了（deinit 只 tearDown 标签，这些都不做）。
         // 必须赶在拆视图层级之前：WebKit 处理 didCloseWindow 时会同步回查 tab.window(for:)
+        ControlUndo.invalidate()
         for pane in model.allPanes {
             forgetFileManagerSession(pane)
             (pane as? BrowserPaneView)?.paneWillClose()
@@ -776,17 +777,13 @@ final class MainWindowController: BaseTerminalController {
         case .fileManager:
             // Omarchy Super+Shift+F：新 pane 里以焦点 pane 的目录启动 TUI 文件管理器
             let start = focusedPane?.workingDirectory ?? FileManager.default.homeDirectoryForCurrentUser.path
-            let cwdFile = NSTemporaryDirectory() + "quickterm-fm-" + UUID().uuidString
-            let launch = FileManagerLaunch.plan(program: fileManagerCommand, startDirectory: start, cwdFile: cwdFile)
-            let pane = newSurface(workingDirectory: start, command: launch.command, environment: launch.environment)
-            pane.pwd = start               // yazi 不发 OSC 7：种入起始目录，Cmd+Return / 再开文件管理器都能继承
-            pane.closesOnChildExit = true  // 退出即关（引擎对带 command 的 surface 不自行 close）
+            let made = makeFileManagerPane(startDirectory: start)
             // 只有真的跑起文件管理器才登记会话（免关闭确认 + 退出读目录）；
             // 程序缺失开出的提示 pane 是普通交互 shell，按普通 pane 处理
-            if insertNewPane(pane), launch.found {
-                fileManagerSessions[ObjectIdentifier(pane)] = launch.session
+            if insertNewPane(made.pane), made.launch.found {
+                fileManagerSessions[ObjectIdentifier(made.pane)] = made.launch.session
             } else {
-                FileManagerLaunch.cleanup(launch.session)
+                FileManagerLaunch.cleanup(made.launch.session)
             }
 
         case .newBrowser:
@@ -966,8 +963,9 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// dwindle 布局区尺寸（contentView 去掉顶部状态条；决定分裂方向的宽高比）
-    private var dwindleLayoutSize: CGSize? {
+    /// dwindle 布局区尺寸（contentView 去掉顶部状态条；决定分裂方向的宽高比）。
+    /// 控制面往非活动工作区插 pane 时也要它——两处必须是同一份几何
+    var dwindleLayoutSize: CGSize? {
         guard let content = window?.contentView else { return nil }
         let barH: CGFloat = model.barVisible ? StatusBarView.height : 0
         return CGSize(width: content.bounds.width, height: content.bounds.height - barH)
@@ -1451,6 +1449,21 @@ final class MainWindowController: BaseTerminalController {
 
     // MARK: Surface 生命周期
 
+    /// 文件管理器 pane 的构造（**还没插进布局**）：`perform(.fileManager)` 与控制面的
+    /// `pane new --kind file-manager` 共用这一份——cwd 文件、登录 shell 包装、
+    /// `closesOnChildExit` 这几件事各写一份必然漂移
+    func makeFileManagerPane(startDirectory: String)
+        -> (pane: Ghostty.SurfaceView, launch: FileManagerLaunch) {
+        let cwdFile = NSTemporaryDirectory() + "quickterm-fm-" + UUID().uuidString
+        let launch = FileManagerLaunch.plan(program: fileManagerCommand,
+                                            startDirectory: startDirectory, cwdFile: cwdFile)
+        let pane = newSurface(workingDirectory: startDirectory, command: launch.command,
+                              environment: launch.environment)
+        pane.pwd = startDirectory      // yazi 不发 OSC 7：种入起始目录，Cmd+Return / 再开文件管理器都能继承
+        pane.closesOnChildExit = true  // 退出即关（引擎对带 command 的 surface 不自行 close）
+        return (pane, launch)
+    }
+
     /// 新建 surface；继承来源 pane 的当前目录（spec §4.1）
     func newSurface(inheritingFrom source: PaneView?) -> Ghostty.SurfaceView {
         newSurface(workingDirectory: source?.workingDirectory)
@@ -1491,7 +1504,7 @@ final class MainWindowController: BaseTerminalController {
     }
 
     /// 解除当前布局的 zoom（有的话）
-    private func clearZoom() {
+    func clearZoom() {
         switch model.layout {
         case .dwindle(let tree):
             if tree.zoomed != nil { model.layout = .dwindle(SplitTree(root: tree.root, zoomed: nil)) }
@@ -1517,7 +1530,8 @@ final class MainWindowController: BaseTerminalController {
             .max { $0.lastActivatedAt < $1.lastActivatedAt }
     }
 
-    private func applyBrowserTheme(_ pane: BrowserPaneView) {
+    /// 控制面新建浏览器 pane 时也要套（`controlMakeBrowserPane`）：漏了底色就与主题对不上
+    func applyBrowserTheme(_ pane: BrowserPaneView) {
         pane.applyTheme(background: NSColor(themeManager.background), foreground: NSColor(themeManager.foreground))
     }
 
@@ -1540,8 +1554,10 @@ final class MainWindowController: BaseTerminalController {
     /// 把新 pane 插进活动布局（scrolling：锚点右侧新列；dwindle：按锚点空间几何分裂 + 局部进场动效）并聚焦。
     /// 锚点默认为焦点 pane；文件管理器退出"原位开终端"时锚点是即将关闭的那个 pane。
     /// 返回是否真的插进了布局（dwindle 树非空却找不到可用锚点时为 false，调用方不得再引用该 pane）
+    /// 控制面（`Sources/Control`）也走这一条：重新实现它的不变量（列宽因子、dwindle 空间几何、
+    /// 局部进场动效、焦点交接）必然出 bug，所以从 private 放宽到 internal
     @discardableResult
-    private func insertNewPane(_ pane: PaneView, anchor: PaneView? = nil) -> Bool {
+    func insertNewPane(_ pane: PaneView, anchor: PaneView? = nil) -> Bool {
         let anchor = anchor ?? focusedPane ?? paneList.first
         switch model.layout {
         case .scrolling(let strip):
@@ -1607,6 +1623,13 @@ final class MainWindowController: BaseTerminalController {
     /// 测试/扩展用：登记一个文件管理器会话（退出时按会话决定是否原位开终端）
     func registerFileManagerSession(_ view: PaneView, _ session: FileManagerLaunch.Session) {
         fileManagerSessions[ObjectIdentifier(view)] = session
+    }
+
+    /// 把会话**交出去**（不清理临时文件）：pane 搬到另一块屏幕时会话要跟着走，
+    /// 否则新东家不知道它是文件管理器 pane——关闭确认会回来、退出也不再原位开终端。
+    /// `forgetFileManagerSession` 是"关闭"语义（会删 cwd 文件），这里刻意不复用
+    func controlTakeFileManagerSession(_ view: PaneView) -> FileManagerLaunch.Session? {
+        fileManagerSessions.removeValue(forKey: ObjectIdentifier(view))
     }
 
     private func forgetFileManagerSession(_ view: PaneView) {
@@ -1723,8 +1746,11 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 在任一工作区里找到并移除（活动工作区用 removeFromActiveLayout，那条路径还管焦点）
-    private func removeFromAnyWorkspace(_ view: PaneView) {
+    /// 在任一工作区里找到并移除（活动工作区用 removeFromActiveLayout，那条路径还管焦点）。
+    /// **这是"关闭"语义**：会跑 pane 级收尾（浏览器 paneWillClose、文件管理器会话清理）。
+    /// 搬家用 `controlDetach(_:)`，那条路径一个收尾都不能跑
+    func removeFromAnyWorkspace(_ view: PaneView) {
+        ControlUndo.invalidate()
         forgetFileManagerSession(view)
         (view as? BrowserPaneView)?.paneWillClose()
         for i in model.layouts.indices {
@@ -1747,7 +1773,9 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    private func removeFromActiveLayout(_ view: PaneView) {
+    /// 同上，只作用于活动工作区。**同样是"关闭"语义**（会跑 pane 级收尾）
+    func removeFromActiveLayout(_ view: PaneView) {
+        ControlUndo.invalidate()
         forgetFileManagerSession(view)
         (view as? BrowserPaneView)?.paneWillClose()
         if let idx = model.floating.firstIndex(where: { $0.pane === view }) {
@@ -1814,28 +1842,11 @@ final class MainWindowController: BaseTerminalController {
 
     private func handleDwindleDrop(_ drop: TerminalSplitOperation.Drop,
                                    tree: SplitTree<PaneView>) {
-        guard drop.payload !== drop.destination else { return }
-        if drop.zone == .center {
-            if let swapped = try? tree.swapping(drop.payload, drop.destination) {
-                model.layout = .dwindle(swapped)
-                requestFocus(to: drop.payload)
-            }
-            return
-        }
-        let direction: SplitTree<PaneView>.NewDirection = switch drop.zone {
-        case .top: .up
-        case .bottom: .down
-        case .left: .left
-        case .right: .right
-        case .center: .right  // 已在上方返回；穷尽 switch
-        }
-        guard let sourceNode = tree.root?.node(view: drop.payload) else { return }
-        let without = tree.removing(sourceNode)
-        if let newTree = try? without.inserting(
-            view: drop.payload, at: drop.destination, direction: direction) {
-            model.layout = .dwindle(newTree)
-            requestFocus(to: drop.payload)
-        }
+        // 树的算法在 SplitTree+QuickTerm.dropping：控制面的 `pane move --where` 用的是同一份，
+        // 两处各写一遍的话，拖放与命令行迟早给出不同的落点
+        guard let newTree = tree.dropping(drop.payload, on: drop.destination, zone: drop.zone) else { return }
+        model.layout = .dwindle(newTree)
+        requestFocus(to: drop.payload)
     }
 
     /// scrolling 布局拖放（spec §4.2-bis：左右缘=插新列、上下缘=併栈、中心=交换）
@@ -1866,6 +1877,15 @@ extension MainWindowController: NSWindowDelegate {
     /// 关闭按钮 / performClose：有活跃 pane 时按退出确认的规则问一次
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         confirmCloseScreen()
+    }
+
+    /// 控制面登记的撤销项要能被 Edit ▸ 撤销 / ⌘Z 找到：`undo:` 沿响应链走到窗口，
+    /// 窗口来问它的 delegate 要 UndoManager。没有这一条，`AppDelegate.undoManager` 里
+    /// 登记的东西永远没人能触发（Phase 1 之前它就是这么闲置着的）。
+    /// 注意焦点在终端 pane 上时 ⌘Z 由 EditMenuDelegate 交还给终端（kitty 键盘协议），
+    /// 那是刻意的——终端里的 ⌘Z 属于终端；菜单项点击则任何时候都能撤销
+    func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
+        (NSApp.delegate as? AppDelegate)?.undoManager
     }
 
     /// key 窗口一换就按 AppSession 的账本重算进程级 presentationOptions：

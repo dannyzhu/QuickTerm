@@ -120,7 +120,7 @@ final class ControlWireTests: XCTestCase {
         XCTAssertEqual(raw["schema"] as? String, "quickterm.describe/1")
         XCTAssertEqual(raw["protocolVersion"] as? Int, ControlProtocol.version)
         XCTAssertEqual(raw["appRunning"] as? Bool, true)
-        XCTAssertEqual(raw["phase"] as? Int, 1)
+        XCTAssertEqual(raw["phase"] as? Int, 2)
 
         // 命令：与命令表一一对应，且每条都有 summary / cls / examples
         let commands = try XCTUnwrap(raw["commands"] as? [[String: Any]])

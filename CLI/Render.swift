@@ -9,6 +9,9 @@ enum Render {
         }
         if object["schema"]?.stringValue == "quickterm.state/1" { return state(object, reply: reply) }
         if object["schema"]?.stringValue == "quickterm.describe/1" { return describe(object) }
+        // 变更信封要**先**认：它自己也带 pane / panes / workspace / screen 字段，
+        // 落到下面那些分支里就只剩一张表，"改了没有"反而看不见了
+        if object["command"] != nil, object["changed"] != nil { return mutation(object, reply: reply) }
         if let panes = object["panes"]?.arrayValue, object["screens"] == nil {
             return paneTable(panes)
         }
@@ -16,6 +19,7 @@ enum Render {
         if let workspaces = object["workspaces"]?.arrayValue { return workspaceTable(workspaces) }
         if let pane = object["pane"]?.objectValue { return paneDetail(pane) }
         if let actions = object["actions"]?.arrayValue { return actionTable(actions) }
+        if let settings = object["settings"]?.arrayValue { return settingsTable(settings) }
         if object["action"] != nil { return actionResult(object, reply: reply) }
         if object["cli"] != nil { return version(object) }
         return summaryLine(reply)
@@ -124,6 +128,46 @@ enum Render {
             out.append(paneTable(panes))
         }
         return out.joined(separator: "\n")
+    }
+
+    /// Phase 2 变更信封：一眼看出"改了没有 / 改了什么 / 能不能撤销"
+    static func mutation(_ object: [String: JSONValue], reply: ControlReply) -> String {
+        let dry = object["dryRun"]?.boolValue == true
+        let changed = object["changed"]?.boolValue == true
+        let applied = object["applied"]?.boolValue == true
+        let head = "\(object["command"]?.stringValue ?? "")："
+            + (dry ? "预演（什么都没改）" : applied ? "已执行" : changed ? "未执行" : "无需改动（已经是目标状态）")
+            + "  " + summaryLine(reply)
+        var out = [head]
+        for change in object["changes"]?.arrayValue ?? [] {
+            guard let c = change.objectValue else { continue }
+            out.append("  \(c["path"]?.stringValue ?? "")：\(display(c["from"])) → \(display(c["to"]))")
+        }
+        if let note = object["note"]?.stringValue { out.append("  注：\(note)") }
+        if let undo = object["undo"]?.stringValue { out.append("  可撤销：Edit ▸ 撤销「\(undo)」") }
+        if let pane = object["pane"]?.objectValue {
+            out.append(paneTable([.object(pane)]))
+        }
+        if let panes = object["panes"]?.arrayValue, !panes.isEmpty {
+            out.append(paneTable(panes))
+        }
+        if let workspace = object["workspace"]?.objectValue {
+            out.append(workspaceTable([.object(workspace)]))
+        }
+        if let screen = object["screen"]?.objectValue {
+            out.append(screenTable([.object(screen)]))
+        }
+        return out.joined(separator: "\n")
+    }
+
+    static func settingsTable(_ settings: [JSONValue]) -> String {
+        settings.compactMap(\.objectValue).map { s in
+            "\(pad(s["key"]?.stringValue ?? "", 18))\(pad(s["value"]?.stringValue ?? "", 16))"
+                + "\(pad(s["scope"]?.stringValue ?? "", 8))"
+                + ((s["choices"]?.arrayValue?.compactMap { $0.stringValue }).map {
+                    $0.count > 6 ? "\($0.prefix(6).joined(separator: "|"))…" : $0.joined(separator: "|")
+                } ?? "")
+        }.joined(separator: "\n")
     }
 
     static func version(_ object: [String: JSONValue]) -> String {

@@ -15,6 +15,8 @@ struct ParsedCommand {
 
 enum ArgsError: Error, CustomStringConvertible {
     case unknownCommand(String)
+    case missingVerb(group: String, verbs: [String])
+    case unknownVerb(group: String, verb: String, verbs: [String])
     case unknownFlag(String, command: String?)
     case missingValue(String)
     case missingPositional(String, command: String)
@@ -25,6 +27,10 @@ enum ArgsError: Error, CustomStringConvertible {
         switch self {
         case .unknownCommand(let name):
             "未知命令 \(name)（quickterm --help 有完整清单）"
+        case .missingVerb(let group, let verbs):
+            "quickterm \(group) 后面要跟一个动词：\(verbs.joined(separator: " | "))"
+        case .unknownVerb(let group, let verb, let verbs):
+            "quickterm \(group) 没有 \(verb) 这个动词；可用：\(verbs.joined(separator: " | "))"
         case .unknownFlag(let flag, let command):
             "未知选项 \(flag)\(command.map { "（quickterm \($0) --help）" } ?? "")"
         case .missingValue(let flag):
@@ -40,15 +46,21 @@ enum ArgsError: Error, CustomStringConvertible {
 }
 
 enum Args {
+    /// 需要跟一个值的全局开关（写在命令名之前时要连值一起收走）
+    static let globalFlagsTakingAValue: Set<String> = ["-t", "--target", "--socket"]
+
     /// 全局帮助 / 版本这类不落到具体命令的请求
     enum Outcome {
         case help(command: ControlCommandSpec?)
+        /// `quickterm pane --help`：列出这一组的动词
+        case groupHelp(String)
         case command(ParsedCommand)
     }
 
     static func parse(_ argv: [String]) throws -> Outcome {
         var rest = argv
         var globalHelp = false
+        var groupHelp: String?
         var pending: [String] = []
 
         // 命令名之前允许出现全局开关
@@ -65,7 +77,32 @@ enum Args {
             }
             if token.hasPrefix("-") {
                 pending.append(token)
+                // 带值的全局开关写在命令名**之前**时（`quickterm --socket /p state`），
+                // 它的值本身不以 `-` 开头——不一起收走的话，下一轮就会把那个值
+                // 当成命令名，报一句莫名其妙的"未知命令 /p"
+                if Self.globalFlagsTakingAValue.contains(token), !token.contains("="),
+                   let value = rest.first, !value.hasPrefix("-") {
+                    pending.append(rest.removeFirst())
+                }
                 continue
+            }
+            // 名词-动词：`quickterm pane new …`。命令表里 `pane.new` 是一条，
+            // 分组只是它的前缀——这里不存第二份清单
+            let verbs = ControlCommandTable.commands(inGroup: token)
+            if !verbs.isEmpty {
+                guard let verbToken = rest.first(where: { !$0.hasPrefix("-") }) else {
+                    if globalHelp || rest.contains("--help") || rest.contains("-h") {
+                        groupHelp = token
+                        break
+                    }
+                    throw ArgsError.missingVerb(group: token, verbs: verbs.map(\.verb))
+                }
+                guard let found = ControlCommandTable.command("\(token).\(verbToken)") else {
+                    throw ArgsError.unknownVerb(group: token, verb: verbToken, verbs: verbs.map(\.verb))
+                }
+                if let index = rest.firstIndex(of: verbToken) { rest.remove(at: index) }
+                spec = found
+                break
             }
             guard let found = ControlCommandTable.command(token) else {
                 throw ArgsError.unknownCommand(token)
@@ -74,6 +111,7 @@ enum Args {
             break
         }
 
+        if let groupHelp { return .groupHelp(groupHelp) }
         guard let spec else { return .help(command: nil) }
         var parsed = ParsedCommand(spec: spec)
         if globalHelp { return .help(command: spec) }
@@ -116,6 +154,10 @@ enum Args {
                 parsed.socketOverride = try value()
             case "--start":
                 parsed.start = true
+            case "--dry-run":
+                parsed.args[ControlCommandTable.Flag.dryRun] = .bool(true)
+            case "--fail-if-noop":
+                parsed.args[ControlCommandTable.Flag.failIfNoop] = .bool(true)
             case "-h", "--help":
                 parsed.wantsHelp = true
             default:
@@ -131,7 +173,14 @@ enum Args {
                 case .double:
                     parsed.args[arg.name] = .double(Double(try value()) ?? 0)
                 case .string:
-                    parsed.args[arg.name] = .string(try value())
+                    let v = try value()
+                    if arg.repeatable {
+                        var list = parsed.args[arg.name]?.arrayValue ?? []
+                        list.append(.string(v))
+                        parsed.args[arg.name] = .array(list)
+                    } else {
+                        parsed.args[arg.name] = .string(v)
+                    }
                 case .enumeration:
                     let v = try value()
                     guard arg.values?.contains(v) ?? true else {
@@ -146,7 +195,7 @@ enum Args {
             // `action --list` 不需要位置参数
             let skipsPositionals = spec.name == "action" && parsed.args["list"]?.boolValue == true
             if !skipsPositionals, let missing = positionals.first(where: { $0.required }) {
-                throw ArgsError.missingPositional(missing.name, command: spec.name)
+                throw ArgsError.missingPositional(missing.name, command: spec.cli)
             }
         }
         return .command(parsed)

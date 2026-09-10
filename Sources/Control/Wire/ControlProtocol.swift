@@ -67,6 +67,9 @@ enum ControlErrorCode: String, Codable, CaseIterable {
     case rateLimited = "rate_limited"
     case notRunning = "not_running"
     case internalError = "internal_error"
+    /// 已经是请求的状态，什么都没改（**只在 `--fail-if-noop` 下变成错误**）。
+    /// 绝对设值的代价就是"第二次调用什么都不做"，agent 需要一个能分辨这件事的信号
+    case noop = "noop"
 
     var exit: ControlExit {
         switch self {
@@ -77,6 +80,7 @@ enum ControlErrorCode: String, Codable, CaseIterable {
         case .confirmationRequired: .confirmationRequired
         case .busy, .rateLimited: .busy
         case .notRunning: .notRunning
+        case .noop: .noop
         }
     }
 
@@ -98,6 +102,7 @@ enum ControlErrorCode: String, Codable, CaseIterable {
         case .rateLimited: "超出速率上限"
         case .notRunning: "QuickTerm 没在运行"
         case .internalError: "内部错误"
+        case .noop: "已经是目标状态，什么都没改（仅 --fail-if-noop 时报错）"
         }
     }
 }

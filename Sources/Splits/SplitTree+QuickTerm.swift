@@ -33,6 +33,24 @@ extension SplitTree {
         return parentSplit(of: target, in: s.left) ?? parentSplit(of: target, in: s.right)
     }
 
+    /// 拖放语义（左右上下缘 = 在目标旁分裂；中心 = 交换）。**纯函数**：
+    /// SwiftUI 的拖放与控制面的 `pane move --where` 共用这一份，落点不可能各算各的。
+    /// 返回 nil = 这次拖放无效（同一个 pane / 载荷不在树里 / 插入失败），调用方不得改动布局
+    func dropping(_ payload: ViewType, on destination: ViewType,
+                  zone: TerminalSplitDropZone) -> Self? {
+        guard payload !== destination else { return nil }
+        if zone == .center { return try? swapping(payload, destination) }
+        let direction: NewDirection = switch zone {
+        case .top: .up
+        case .bottom: .down
+        case .left: .left
+        case .right: .right
+        case .center: .right   // 已在上方返回；穷尽 switch
+        }
+        guard let sourceNode = root?.node(view: payload) else { return nil }
+        return try? removing(sourceNode).inserting(view: payload, at: destination, direction: direction)
+    }
+
     /// 交换两个叶子的位置（Cmd+Shift+方向 / 拖拽到目标中心）。树形结构不变，仅叶互换。
     func swapping(_ a: ViewType, _ b: ViewType) throws -> Self {
         guard let root,

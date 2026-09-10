@@ -78,7 +78,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 进程级会话：配置在建窗口之前就位（控制器不再各自读盘 / 各自装 watcher）。
         // 顺序要紧：ThemeManager 与引擎必须已就绪（applyGlobalConfig 会写引擎 overlay 并触发一次热重载）
-        let session = AppSession(screens: screens, themeManager: themeManager)
+        // 第二实例（开发 / 冒烟）：用环境变量把存档与控制 socket 指到别处，
+        // 这样跑一个 Debug 版不会去抢用户那个 QuickTerm 的 socket，也不会覆盖他的会话存档。
+        // 两个都不设时就是正常的单实例行为（Application Support 里那一份）
+        let environment = ProcessInfo.processInfo.environment
+        let session = AppSession(
+            screens: screens, themeManager: themeManager,
+            stateURL: environment["QUICKTERM_STATE_FILE"].flatMap {
+                $0.isEmpty ? nil : URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
+            },
+            controlSocketPath: environment["QUICKTERM_CONTROL_SOCKET"].flatMap {
+                $0.isEmpty ? nil : ($0 as NSString).expandingTildeInPath
+            })
         self.session = session
         session.loadInitialConfig()
 

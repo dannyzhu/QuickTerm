@@ -6,6 +6,66 @@ enum ConfigStore {
     static let configURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".config/quickterm/config.toml")
 
+    /// **只给用例注入**：控制面的 `workspace count` 会改写配置文件，
+    /// 测试宿主绝不能去动用户真正的 ~/.config/quickterm/config.toml
+    nonisolated(unsafe) static var configURLOverride: URL?
+
+    /// 实际读写的那一份
+    static var activeConfigURL: URL { configURLOverride ?? configURL }
+
+    enum RewriteError: Error, CustomStringConvertible {
+        case unreadable(String)
+        case unwritable(String)
+
+        var description: String {
+            switch self {
+            case .unreadable(let path): "读不到 \(path)"
+            case .unwritable(let path): "写不进 \(path)"
+            }
+        }
+    }
+
+    /// 就地改写一个**顶层**键（`workspaces = 8`），保留其余内容与注释。
+    ///
+    /// 三条规矩：
+    /// - 只认第一个 `[section]` 之前的行——`[keybinds]` 里也可能有同名键；
+    /// - 键被注释掉了就把那一行换成生效的写法（模板里所有键都是注释形式）；
+    /// - 一次写盘。写完由已有的 `AppSession.installConfigWatcher` 去热重载，
+    ///   调用方**不得**自己再落一次值（两条生效路径 = 两次键位表重建 + 一次竞态）
+    static func rewriteTopLevel(key: String, value: String) throws {
+        let url = activeConfigURL
+        var text = (try? String(contentsOf: url, encoding: .utf8))
+        if text == nil {
+            // 文件还不存在（全新安装）：先落模板，再改
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            try? template.write(to: url, atomically: true, encoding: .utf8)
+            text = try? String(contentsOf: url, encoding: .utf8)
+        }
+        guard let content = text else { throw RewriteError.unreadable(url.path) }
+
+        var lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let sectionIndex = lines.firstIndex { $0.trimmingCharacters(in: .whitespaces).hasPrefix("[") }
+            ?? lines.count
+        func matches(_ line: String) -> Bool {
+            var s = Substring(line.trimmingCharacters(in: .whitespaces))
+            if s.hasPrefix("#") { s = s.dropFirst().drop(while: { $0 == " " }) }
+            guard s.hasPrefix(key) else { return false }
+            return s.dropFirst(key.count).drop(while: { $0 == " " }).hasPrefix("=")
+        }
+        let replacement = "\(key) = \(value)"
+        if let index = (0..<sectionIndex).first(where: { matches(lines[$0]) }) {
+            lines[index] = replacement
+        } else {
+            lines.insert(replacement, at: sectionIndex)
+        }
+        do {
+            try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            throw RewriteError.unwritable(url.path)
+        }
+    }
+
     static let template = """
     # QuickTerm 配置（spec §4.7）。保存即热重载。
     # theme = "tokyo-night"     # 或 "ghostty"：不覆盖配色，完全跟随 ghostty 配置
@@ -73,7 +133,7 @@ enum ConfigStore {
     /// - 已存在 → 补全缺失键（注释 + 默认值，插在第一个 [section] 之前），已有设置原样保留。
     /// 幂等；返回是否有写入。启动与打开设置时调用。
     @discardableResult
-    static func ensureTemplateKeys(at url: URL = configURL) -> Bool {
+    static func ensureTemplateKeys(at url: URL = activeConfigURL) -> Bool {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else {
             do {
                 try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
@@ -153,7 +213,7 @@ enum ConfigStore {
     }
 
     static func load() -> Settings {
-        guard let toml = try? String(contentsOf: configURL, encoding: .utf8) else {
+        guard let toml = try? String(contentsOf: activeConfigURL, encoding: .utf8) else {
             return Settings()
         }
         return parse(toml)
