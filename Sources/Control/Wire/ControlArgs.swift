@@ -47,7 +47,7 @@ enum ArgsError: Error, CustomStringConvertible {
 
 enum Args {
     /// 需要跟一个值的全局开关（写在命令名之前时要连值一起收走）
-    static let globalFlagsTakingAValue: Set<String> = ["-t", "--target", "--socket"]
+    static let globalFlagsTakingAValue: Set<String> = ["-t", "--target", "--socket", "-f", "--file"]
 
     /// 全局帮助 / 版本这类不落到具体命令的请求
     enum Outcome {
@@ -158,6 +158,13 @@ enum Args {
                 parsed.args[ControlCommandTable.Flag.dryRun] = .bool(true)
             case "--fail-if-noop":
                 parsed.args[ControlCommandTable.Flag.failIfNoop] = .bool(true)
+            case "-f":
+                // `-f` 是 `--file` 的短写。只有声明了 file 参数的命令认它（spec dump/apply/validate），
+                // 别的命令写 -f 仍然是"未知选项"——短写不该悄悄变成一个到处都在的全局开关
+                guard spec.args.contains(where: { $0.name == "file" }) else {
+                    throw ArgsError.unknownFlag(token, command: spec.name)
+                }
+                parsed.args["file"] = .string(try value())
             case "-h", "--help":
                 parsed.wantsHelp = true
             default:

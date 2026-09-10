@@ -64,6 +64,10 @@ struct ControlCommandSpec: Codable, Equatable {
     var acceptsTarget: Bool
     /// 完全在 CLI 侧完成，不经 socket（`install-cli`、`--help`）
     var local: Bool
+    /// CLI 要先把 `-f <文件>`（或标准输入）读进来，塞进 `spec` 参数再发。
+    /// **服务端绝不去读调用方的文件系统**：两个进程的 cwd 与权限本来就不一样，
+    /// 而"服务端替你 open 一个路径"是个能被滥用的原语
+    var readsFile: Bool
     var args: [ControlArgSpec]
     var examples: [String]
     /// 查询类命令内嵌一段真实的（节选）输出样例——
@@ -80,7 +84,7 @@ struct ControlCommandSpec: Codable, Equatable {
     var honorsMutationFlags: Bool { group != nil && cls.isMutation }
 
     init(group: String? = nil, _ verb: String, summary: String, cls: ControlCommandClass,
-         idempotent: Bool, acceptsTarget: Bool, local: Bool = false,
+         idempotent: Bool, acceptsTarget: Bool, local: Bool = false, readsFile: Bool = false,
          args: [ControlArgSpec], examples: [String], outputSample: String? = nil) {
         self.name = group.map { "\($0).\(verb)" } ?? verb
         self.group = group
@@ -91,6 +95,7 @@ struct ControlCommandSpec: Codable, Equatable {
         self.idempotent = idempotent
         self.acceptsTarget = acceptsTarget
         self.local = local
+        self.readsFile = readsFile
         self.args = args
         self.examples = examples
         self.outputSample = outputSample
@@ -422,6 +427,63 @@ enum ControlCommandTable {
                 "quickterm app set visible-columns 3 -t 2",
             ],
             outputSample: nil),
+
+        // MARK: —— Phase 3：一次性组合（`quickterm.workspace/1`）——
+        // 一次调用摆好整个工作区，而不是发 N 条 pane new 再逐条调宽度：
+        // N 条命令 = N 次重排、N 次动画、N 个失败点，中途失败还会留下一个谁也说不清的半成品。
+
+        ControlCommandSpec(
+            group: "spec", "dump",
+            summary: "把一个工作区 / 一块屏幕 / 整个会话吐成 \(SpecSchema.workspace) 的 JSON",
+            cls: .read, idempotent: true, acceptsTarget: true,
+            args: [
+                ControlArgSpec("all", .bool, help: "整个会话（\(SpecSchema.session)）"),
+                ControlArgSpec("relocatable", .bool, help: "home 下的路径写成 ~/…（换台机器也能用）"),
+                ControlArgSpec("include-ids", .bool,
+                               help: "附上 id / handle / title（给 diff 与 --reuse 用，别的模式忽略 id；不参与不动点比较）"),
+            ],
+            examples: [
+                "quickterm spec dump > dev.json                # 当前工作区",
+                "quickterm spec dump -t 1:2 > dev.json",
+                "quickterm spec dump -t 1 --relocatable > screen.json   # -t 只写屏幕 = 整块屏幕",
+                "quickterm spec dump --all > session.json",
+            ],
+            outputSample: specSample),
+        ControlCommandSpec(
+            group: "spec", "validate",
+            summary: "只校验一份 spec：认得的键、取值范围、工作区序号落不落得下去（什么都不改）",
+            cls: .read, idempotent: true, acceptsTarget: true, readsFile: true,
+            args: [
+                ControlArgSpec("file", .string, help: "spec 文件（- 或不写 = 读标准输入）"),
+                ControlArgSpec("spec", .string, help: "直接给 spec 的 JSON 正文（-f 的替代）"),
+            ],
+            examples: [
+                "quickterm spec validate -f dev.json",
+                "quickterm spec dump | quickterm spec validate",
+                "quickterm spec validate --spec '{\"columns\":[{},{}]}'",
+            ],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "spec", "apply",
+            summary: "把一份 spec 落到目标上；--replace 是破坏性的（会先确认），--dry-run 只给 diff",
+            cls: .destructive, idempotent: true, acceptsTarget: true, readsFile: true,
+            args: [
+                ControlArgSpec("file", .string, help: "spec 文件（- 或不写 = 读标准输入）"),
+                ControlArgSpec("spec", .string, help: "直接给 spec 的 JSON 正文（-f 的替代）"),
+                ControlArgSpec("into-empty", .bool,
+                               help: "默认：只往空工作区里放；非空一律拒绝（退出码 4），毁不掉任何东西"),
+                ControlArgSpec("replace", .bool,
+                               help: "覆盖：原有 pane 全部关掉（**破坏性**，会先确认；整份一模一样时是空操作）"),
+                ControlArgSpec("reuse", .bool,
+                               help: "能对上的 pane 原地留着（跑着的 dev server 不会被重启），其余关掉 / 新建"),
+            ],
+            examples: [
+                "quickterm spec apply -f dev.json --dry-run           # 先看 diff，再决定",
+                "quickterm spec apply -f dev.json -t 2:4 --replace",
+                "quickterm spec apply -f dev.json --reuse",
+                "quickterm spec apply -t :5 --spec '{\"columns\":[{\"panes\":[{}]},{\"panes\":[{},{}]}]}'",
+            ],
+            outputSample: specApplySample),
     ]
 
     /// 名词分组的出现顺序（`--help` 与 `describe` 用同一份）
@@ -555,6 +617,37 @@ enum ControlCommandTable {
       {"key":"theme","value":"tokyo-night","choices":["tokyo-night","gruvbox","…"]},
       {"key":"gaps","value":"on","choices":["on","off"]},
       {"key":"visible-columns","value":"2","choices":["1","2","3","4","5","6"]}]}}
+    """
+
+    /// `spec dump` 打印的**就是这份文件本身**（不套响应信封）：
+    /// `quickterm spec dump > w.json` 要能直接喂回 `spec apply -f w.json`
+    static let specSample = """
+    {"schema":"quickterm.workspace/1","layout":"scrolling","visibleColumns":3,
+     "columns":[
+       {"width":0.33,"panes":[{"kind":"terminal","cwd":"/Users/danny/proj"}]},
+       {"width":0.33,"panes":[{"kind":"terminal","cwd":"/Users/danny/proj"},
+                              {"kind":"terminal","cwd":"/Users/danny/proj/www"}]},
+       {"width":0.33,"panes":[{"kind":"browser","url":"http://localhost:3000"}]}],
+     "focus":{"column":0,"row":0}}
+    """
+
+    /// dwindle 形态（同一套词汇）——`spec` 组的帮助与 describe 都印它
+    static let specTreeSample = """
+    {"schema":"quickterm.workspace/1","layout":"dwindle",
+     "tree":{"split":"horizontal","ratio":0.6,
+             "a":{"pane":{"cwd":"~/proj"}},
+             "b":{"split":"vertical","ratio":0.5,
+                  "a":{"pane":{"cmd":"htop","hold":true}},
+                  "b":{"pane":{"kind":"browser","url":"http://localhost:3000"}}}},
+     "focus":{"path":"b.a"}}
+    """
+
+    static let specApplySample = """
+    {"ok":true,"seq":418,"resolved":{"screen":1,"workspace":2,"pane":"t9"},
+     "data":{"command":"spec.apply","applied":true,"changed":true,"dryRun":false,
+       "changes":[{"path":"1:2.panes","from":"2 个","to":"4 个（新建 3，关掉 1，留用 1）"}],
+       "spec":{"mode":"reuse","scope":"workspace","created":["t9","t10","b4"],
+               "reused":["t3"],"closed":["t4"]}}}
     """
 
     static let getSample = """

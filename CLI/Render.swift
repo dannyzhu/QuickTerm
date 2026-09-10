@@ -12,6 +12,9 @@ enum Render {
         // 变更信封要**先**认：它自己也带 pane / panes / workspace / screen 字段，
         // 落到下面那些分支里就只剩一张表，"改了没有"反而看不见了
         if object["command"] != nil, object["changed"] != nil { return mutation(object, reply: reply) }
+        // `spec dump` / `spec validate`（变更信封在上面已经先认过了）
+        if let spec = object["spec"], object["scope"] != nil { return specDump(object, spec) }
+        if object["valid"] != nil, object["scope"] != nil { return specValidate(object) }
         if let panes = object["panes"]?.arrayValue, object["screens"] == nil {
             return paneTable(panes)
         }
@@ -143,6 +146,17 @@ enum Render {
             guard let c = change.objectValue else { continue }
             out.append("  \(c["path"]?.stringValue ?? "")：\(display(c["from"])) → \(display(c["to"]))")
         }
+        if let report = object["spec"]?.objectValue {
+            func list(_ key: String) -> String {
+                let items = (report[key]?.arrayValue ?? []).compactMap(\.stringValue)
+                return items.isEmpty ? "—" : items.joined(separator: " ")
+            }
+            out.append("  spec（\(report["mode"]?.stringValue ?? "")，\(report["scope"]?.stringValue ?? "")）："
+                       + "新建 \(list("created"))  留用 \(list("reused"))  关掉 \(list("closed"))")
+            for skipped in (report["skipped"]?.arrayValue ?? []).compactMap(\.stringValue) {
+                out.append("  跳过：\(skipped)")
+            }
+        }
         if let note = object["note"]?.stringValue { out.append("  注：\(note)") }
         if let undo = object["undo"]?.stringValue { out.append("  可撤销：Edit ▸ 撤销「\(undo)」") }
         if let pane = object["pane"]?.objectValue {
@@ -156,6 +170,29 @@ enum Render {
         }
         if let screen = object["screen"]?.objectValue {
             out.append(screenTable([.object(screen)]))
+        }
+        return out.joined(separator: "\n")
+    }
+
+    /// `spec dump`：人看的时候在正文前加一行说明；JSON 模式下 main.swift 只打印 spec 本体
+    static func specDump(_ object: [String: JSONValue], _ spec: JSONValue) -> String {
+        var out = ["\(object["schema"]?.stringValue ?? "")"
+                   + "  作用域 \(object["scope"]?.stringValue ?? "")"
+                   + "  \(object["panes"]?.intValue ?? 0) 个 pane"]
+        if let data = try? ControlJSON.prettyEncoder.encode(spec),
+           let text = String(data: data, encoding: .utf8) {
+            out.append(text)
+        }
+        out.append("（重定向到文件即可再 apply 回去：quickterm spec dump > w.json）")
+        return out.joined(separator: "\n")
+    }
+
+    static func specValidate(_ object: [String: JSONValue]) -> String {
+        var out = ["spec 合法：\(object["schema"]?.stringValue ?? "")"
+                   + "  作用域 \(object["scope"]?.stringValue ?? "")"
+                   + "  \(object["panes"]?.intValue ?? 0) 个 pane"]
+        for note in (object["notes"]?.arrayValue ?? []).compactMap(\.stringValue) {
+            out.append("  注：\(note)")
         }
         return out.joined(separator: "\n")
     }

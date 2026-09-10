@@ -55,6 +55,8 @@ enum Help {
         out.append("  quickterm pane set -t t7 --zoom on         # 绝对设值：跑两次结果一样")
         out.append("  quickterm workspace set-layout dwindle -t :4   # 非活动工作区也能设")
         out.append("  quickterm pane move -t t7 --to 2:1 --follow")
+        out.append("  quickterm spec dump > dev.json            # 把当前工作区存成一份 spec")
+        out.append("  quickterm spec apply -f dev.json -t :5 --dry-run   # 先看 diff 再落")
         out.append("  quickterm action --list --json            # 全部 \(WMAction.allCases.count) 个动作及其安全分级")
         out.append("  quickterm describe --json                 # 整个控制面的机器可读 schema（会话开始读一次）")
         out.append("  quickterm install-cli --alias qt          # 装到 PATH（绝不弹管理员密码）")
@@ -117,6 +119,23 @@ enum Help {
             out.append("  " + ControlCommandTable.interactiveActions.map(\.rawValue).sorted().joined(separator: " "))
             out.append("\(ControlCommandTable.destructiveActions.count) 个是破坏性的，会先要求用户确认一次：")
             out.append("  " + ControlCommandTable.destructiveActions.map(\.rawValue).sorted().joined(separator: " "))
+        }
+        if spec.group == "spec" {
+            out.append("")
+            out.append("\(SpecSchema.workspace) 字段表（每个都可省，括号里是默认值）")
+            for field in ControlDescribeDocument.specSchema.fields {
+                let name = field.path.padding(toLength: 20, withPad: " ", startingAt: 0)
+                out.append("  \(name)\(field.help)"
+                           + (field.defaultValue.map { "（默认 \($0)）" } ?? ""))
+            }
+            out.append("  最小可用的一份：\(ControlDescribeDocument.specSchema.minimal)")
+            out.append("")
+            out.append("dwindle 形态（同一套词汇）")
+            for line in ControlCommandTable.specTreeSample.split(separator: "\n", omittingEmptySubsequences: false) {
+                out.append("  \(line)")
+            }
+            out.append("")
+            for note in ControlDescribeDocument.specSchema.notes { out.append("  \(note)") }
         }
         if spec.honorsMutationFlags {
             out.append("")

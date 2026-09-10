@@ -40,8 +40,17 @@ extension ControlReply {
     static func errorEnvelope(_ error: ControlErrorBody) -> Envelope { Envelope(error: error) }
 }
 
-func emit(_ reply: ControlReply, plain: Bool) -> Never {
+func emit(_ reply: ControlReply, plain: Bool, spec: ControlCommandSpec? = nil) -> Never {
     if let error = reply.error { fail(error, plain: plain) }
+    // `spec dump` 打印的**就是那份 spec 本身**，不套响应信封：
+    // `quickterm spec dump > w.json` 要能直接喂回 `quickterm spec apply -f w.json`，
+    // 否则每个人都得先 jq 一遍 —— 而那正是最容易出错的一步
+    if spec?.name == "spec.dump", !plain, let body = reply.data?["spec"],
+       let data = try? ControlJSON.prettyEncoder.encode(body),
+       let text = String(data: data, encoding: .utf8) {
+        writeOut(text)
+        exit(0)
+    }
     if plain {
         writeOut(Render.human(reply))
     } else if let data = try? ControlJSON.prettyEncoder.encode(reply.asJSON()),
@@ -102,9 +111,13 @@ case .command(let parsed):
 // MARK: 执行
 
 func run(_ parsed: ParsedCommand) -> Never {
+    var parsed = parsed
     // 完全在本地完成的命令（不需要 QuickTerm 在跑）
     if parsed.spec.local {
         runLocal(parsed)
+    }
+    if parsed.spec.readsFile, parsed.args["spec"] == nil {
+        parsed.args["spec"] = .string(readSpecInput(parsed))
     }
 
     var candidates = ControlPaths.clientSocketCandidates()
@@ -171,11 +184,42 @@ func send(_ parsed: ParsedCommand, over client: ControlClient) -> Never {
                                   hint: "用 QuickTerm.app/Contents/MacOS/quickterm 重新 install-cli"),
                  plain: plainMode)
         }
-        emit(reply, plain: plainMode)
+        emit(reply, plain: plainMode, spec: parsed.spec)
     } catch {
         client.close()
         fail(ControlErrorBody(.internalError, "\(error)"), plain: plainMode)
     }
+}
+
+/// `-f <文件>`（`-` 或不写 = 标准输入）。**读文件的是 CLI，不是 QuickTerm**：
+/// 两个进程的 cwd 与权限本来就不一样，而"服务端替你 open 一个任意路径"是个能被滥用的原语
+func readSpecInput(_ parsed: ParsedCommand) -> String {
+    let path = parsed.args["file"]?.stringValue
+    let data: Data
+    if let path, path != "-" {
+        let expanded = (path as NSString).expandingTildeInPath
+        guard let contents = FileManager.default.contents(atPath: expanded) else {
+            fail(ControlErrorBody(.badRequest, "读不到 \(path)",
+                                  hint: "quickterm spec dump > \(path) 先生成一份"), plain: plainMode)
+        }
+        data = contents
+    } else {
+        if isatty(STDIN_FILENO) == 1 {
+            fail(ControlErrorBody(.badRequest, "没有给 spec：-f <文件>，或从标准输入喂进来",
+                                  hint: "quickterm spec dump | quickterm spec validate"),
+                 plain: plainMode)
+        }
+        data = FileHandle.standardInput.readDataToEndOfFile()
+    }
+    guard data.count <= SpecLimits.maxBytes else {
+        fail(ControlErrorBody(.badRequest,
+                              "spec 太大了（\(data.count) 字节，上限 \(SpecLimits.maxBytes)）"),
+             plain: plainMode)
+    }
+    guard let text = String(data: data, encoding: .utf8) else {
+        fail(ControlErrorBody(.badRequest, "spec 不是 UTF-8 文本"), plain: plainMode)
+    }
+    return text
 }
 
 func runLocal(_ parsed: ParsedCommand) -> Never {

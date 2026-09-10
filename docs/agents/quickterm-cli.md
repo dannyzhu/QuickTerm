@@ -50,6 +50,15 @@ quickterm screen    new|close|move|focus|set
 quickterm app       get|set
 ```
 
+一次性组合（Phase 3）：
+
+```
+quickterm spec dump     [-t 目标] [--all] [--relocatable] [--include-ids]
+quickterm spec validate [-f 文件 | --spec JSON]
+quickterm spec apply    [-f 文件 | --spec JSON] [-t 目标]
+                        [--into-empty | --replace | --reuse] [--dry-run]
+```
+
 `action` 是**快捷键平价的直通车**：全部 67 个 `WMAction` 原样直达 `perform()`，
 所以「快捷键能做的，命令行都能做」在第一天就成立，而且结构上不可能漂移。
 但它保留的是**快捷键语义**（全是 toggle、全是"作用于焦点"）。
@@ -87,6 +96,81 @@ quickterm app       get|set
 `--where right|left|up|down|stack` 走的就是鼠标拖放那一套落点算法（同一份代码），
 `--at` 是锚点 pane：`quickterm pane new --cwd ~/proj --cmd 'npm run dev' --at t1 --where right`。
 `--cmd` 建出来的 pane 在命令退出时自己关掉（`--hold` 可以让它留着）。
+
+## 一次性组合：`spec`
+
+**要摆好一整个工作区，用 `spec apply`，别发 N 条 `pane new`。**
+N 条命令 = N 次重排、N 次动画、N 个失败点，中途失败还会留下一个谁也说不清的半成品；
+`spec apply` 是一次算完、一次落地（先把整个布局值算好，再一次赋给模型）。
+
+公开格式是 `quickterm.workspace/1`（外加 `quickterm.screen/1` / `quickterm.session/1`
+两个信封，原样复用同一套词汇）。**每个字段都可省**，所以两行就是一份合法的 spec：
+
+```json
+{"columns":[{"panes":[{}]},{"panes":[{},{}]}]}
+```
+
+完整一点的一份（scrolling：列 × 列内纵栈）：
+
+```json
+{ "schema": "quickterm.workspace/1", "layout": "scrolling", "visibleColumns": 3,
+  "columns": [
+    {"width":0.33,"panes":[{"kind":"terminal","cwd":"~/proj","cmd":"nvim ."}]},
+    {"width":0.33,"panes":[{"kind":"terminal","cwd":"~/proj","cmd":"npm run dev","hold":true,
+                            "env":{"NODE_ENV":"development"}},
+                           {"kind":"terminal","cwd":"~/proj"}]},
+    {"width":0.33,"panes":[{"kind":"browser","url":"http://localhost:3000"}]}],
+  "focus": {"column":0,"row":0} }
+```
+
+dwindle 则是一棵分裂树（`split` = `horizontal` 时 a 左 b 右，`vertical` 时 a 上 b 下）：
+
+```json
+{ "layout":"dwindle",
+  "tree":{"split":"horizontal","ratio":0.6,
+          "a":{"pane":{"cwd":"~/proj"}},
+          "b":{"split":"vertical","ratio":0.5,
+               "a":{"pane":{"cmd":"htop","hold":true}},
+               "b":{"pane":{"kind":"browser","url":"http://localhost:3000"}}}},
+  "focus":{"path":"b.a"} }
+```
+
+默认值：`kind` = terminal，`ratio` = 0.5，`width` = 按每屏可见列数折算，
+`cwd` = 继承锚点 pane 的目录，`focus` = 第一个 pane。字段表在 `quickterm spec apply --help`
+与 `describe --json` 的 `specSchema` 里（两处同一出处）。
+
+三种模式：
+
+| 模式 | 语义 |
+|---|---|
+| `--into-empty`（默认） | 只往**空**工作区里放；非空一律拒绝（退出码 4）。**毁不掉任何东西** |
+| `--replace` | 覆盖：原有 pane 全部走真正的关闭路径（**破坏性**，会先确认）。整份一模一样时是空操作 |
+| `--reuse` | 能对上的 pane 原地留着（跑着的 dev server 不会被重启），其余关掉 / 新建 |
+
+典型工作流——**dump 一份已知好用的，改两个字段，再落回去**：
+
+```sh
+quickterm spec dump -t 1:2 > dev.json          # 打印的就是那份 spec 本身，可以直接重定向
+vi dev.json                                     # 比如把某一列的 width 改成 0.5
+quickterm spec apply -f dev.json -t 2:4 --dry-run   # 先看 diff：只报几何变化就说明不会重建 pane
+quickterm spec apply -f dev.json -t 2:4 --reuse
+```
+
+几条一定要知道的：
+
+- `cmd` / `env` / `hold` **只进不出**：活着的 surface 不记得自己是被什么命令拉起来的，
+  `spec dump` 因此不会回吐 `cmd`。写了 `cmd` 的那一格，`--reuse` 会把对得上的 pane 原地留着
+  （**不重跑**，重试不会重启 dev server）；`--replace` 的语义是拆了重建，那条命令会被重新拉起来。
+- `--include-ids` 里的 `id` 是"就要这一个 pane"的指名道姓，**只有 `--reuse` 认它**：
+  否则 dump 一份带 id 的、改掉某个 `cwd` 再 `--replace`，每一格都会靠 id 对上，改动被整份丢掉。
+- `dump → apply → dump` 是**不动点**：dump 出来的东西落回去，再 dump 一次逐字节相同。
+- 认不得的键一律报错（写错 `colums` 不会被静默忽略），数值越界报错并给出范围，**绝不静默夹紧**。
+- 没有 token 的调用方读不到浏览器 pane 的网址（`redacted:true`，与 `state` 同一条规则）：
+  这样一份 dump 再 apply 回去时，浏览器 pane 会开在主页而不是原来的网址。
+- `spec apply` **不搬窗口**：屏幕信封里的 `display` / `frame` 只在 dump 里回显，
+  要搬窗口请用 `quickterm screen move`。
+- 落刀之后才失败会报 `partial_apply`（退出码 1）：工作区**已经被改过**，
+  重新 `spec dump` 看一眼现状再决定怎么收拾——绝不会假装什么都没发生。
 
 ## 寻址
 
@@ -156,3 +240,5 @@ README / CI 日志，然后被指使去跑 `quickterm` 命令。所以确认闸�
 6. **优先用名词-动词层，别用 `action`**：前者是绝对设值，可重放；后者是 toggle，重试会把自己撤销。
 7. 破坏性命令（`pane close` / `workspace clear` / `screen close`）之前先 `--dry-run` 看一眼 `changes`。
 8. 退出码 7 不是错误，是"你要的状态已经成立"。只有在你**需要知道自己是否真的改了**时才加 `--fail-if-noop`。
+9. **批量组合走 `spec apply`，不要发 N 条 `pane new`**；`spec apply --replace` 之前先 `--dry-run`。
+10. 想改一份已有布局：`spec dump` → 改字段 → `spec apply --reuse`，别推倒重来（`--replace` 会把跑着的进程一起结束）。

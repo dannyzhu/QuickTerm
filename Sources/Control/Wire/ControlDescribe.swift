@@ -21,6 +21,8 @@ struct ControlDescribeDocument: Codable, Equatable {
     var actions: [ControlCommandTable.ActionDoc]
     /// `app get/set` 认的设置项（枚举即清单）
     var appSettings: [AppSettingDoc]
+    /// `quickterm.workspace/1` 的字段表（Phase 3：agent 靠它一次读懂 spec 怎么写）
+    var specSchema: SpecSchemaDoc
     /// 名词分组（`pane` / `workspace` / `screen` / `app`）→ 动词
     var groups: [GroupDoc]
     var envVars: [EnvDoc]
@@ -58,6 +60,26 @@ struct ControlDescribeDocument: Codable, Equatable {
         var help: String
     }
 
+    /// 公开 schema 的字段表。**刻意不是内部存档 v5 的形状**：两者由
+    /// `Sources/Control/Spec/SpecCodec.swift` 的投影对连起来，各自独立演进
+    struct SpecSchemaDoc: Codable, Equatable {
+        var workspace: String
+        var screen: String
+        var session: String
+        var fields: [FieldDoc]
+        /// 两种布局形态各一份完整样例（都是合法 JSON，`ControlSpecTests` 会重新解析它们）
+        var examples: [String]
+        var minimal: String
+        var notes: [String]
+
+        struct FieldDoc: Codable, Equatable {
+            var path: String
+            var type: String
+            var defaultValue: String?
+            var help: String
+        }
+    }
+
     struct GroupDoc: Codable, Equatable {
         var name: String
         var verbs: [String]
@@ -78,6 +100,60 @@ struct ControlDescribeDocument: Codable, Equatable {
         }
     }
 
+    /// `quickterm.workspace/1` 的字段表（`spec --help` 与 describe 同一出处）
+    static var specSchema: SpecSchemaDoc {
+        typealias Field = SpecSchemaDoc.FieldDoc
+        return SpecSchemaDoc(
+            workspace: SpecSchema.workspace,
+            screen: SpecSchema.screen,
+            session: SpecSchema.session,
+            fields: [
+                Field(path: "layout", type: "scrolling | dwindle", defaultValue: "scrolling",
+                      help: "写了 tree 而没写 layout 时按 dwindle 认"),
+                Field(path: "visibleColumns", type: "int \(SpecLimits.visibleColumns.lowerBound)–\(SpecLimits.visibleColumns.upperBound)",
+                      defaultValue: "不动", help: "scrolling 每屏可见列数（**作用于整块屏幕**）"),
+                Field(path: "columns[]", type: "array", defaultValue: "[]",
+                      help: "scrolling：列 × 列内自上而下的 pane 栈"),
+                Field(path: "columns[].width", type: "double \(SpecLimits.widthRange.lowerBound)–\(SpecLimits.widthRange.upperBound)",
+                      defaultValue: "按每屏可见列数折算", help: "列宽因子；越界报错，绝不静默夹紧"),
+                Field(path: "columns[].panes[]", type: "pane[]", defaultValue: "[{}]", help: "列里的 pane"),
+                Field(path: "tree", type: "{pane} | {split,ratio,a,b}", defaultValue: "—",
+                      help: "dwindle：分裂树。split=horizontal（a 左 b 右）/ vertical（a 上 b 下）"),
+                Field(path: "tree.ratio", type: "double \(SpecLimits.ratioRange.lowerBound)–\(SpecLimits.ratioRange.upperBound)",
+                      defaultValue: "0.5", help: "分裂比例"),
+                Field(path: "pane.kind", type: "terminal | browser | file-manager", defaultValue: "terminal",
+                      help: "pane 种类"),
+                Field(path: "pane.cwd", type: "string（支持 ~）", defaultValue: "继承锚点 pane 的目录",
+                      help: "起始目录；apply 前会检查它真的存在"),
+                Field(path: "pane.cmd", type: "string", defaultValue: "—",
+                      help: "要跑的命令。**只进不出**：dump 回吐不了它"),
+                Field(path: "pane.hold", type: "bool", defaultValue: "false", help: "命令退出后不关 pane"),
+                Field(path: "pane.env", type: "{KEY: VALUE}", defaultValue: "{}", help: "额外环境变量（只进不出）"),
+                Field(path: "pane.url", type: "string", defaultValue: "浏览器主页",
+                      help: "kind=browser：活动标签的网址"),
+                Field(path: "pane.tabs[]", type: "string[]", defaultValue: "—",
+                      help: "kind=browser：全部标签，顺序即标签顺序"),
+                Field(path: "zoom", type: "{column,row} | {path} | {floating}", defaultValue: "null",
+                      help: "哪一格占满内容区"),
+                Field(path: "focus", type: "{column,row} | {path} | {floating}", defaultValue: "第一个 pane",
+                      help: "哪一格拿焦点"),
+                Field(path: "floating[]", type: "[{rect,pane}]", defaultValue: "[]",
+                      help: "浮动层；rect = 内容区比例 [x,y,w,h]，不写就居中默认尺寸"),
+            ],
+            examples: [ControlCommandTable.specSample, ControlCommandTable.specTreeSample],
+            minimal: "{\"columns\":[{\"panes\":[{}]},{\"panes\":[{},{}]}]}",
+            notes: [
+                "每个字段都可省，省掉时按上表的默认值——两行就能写出一份合法的 spec。",
+                "认不得的键一律报错（写错 colums 不会被静默忽略）；数值越界报错并给出范围，绝不静默夹紧。",
+                "spec apply 的三种模式：--into-empty（默认，非空目标退 4，毁不掉任何东西）、"
+                    + "--replace（破坏性，先确认）、--reuse（能对上的 pane 留着）。",
+                "cmd / env / hold 只进不出：再 apply 一次不会重跑已经在跑的命令（--replace 整份一模一样时是空操作）。",
+                "quickterm.screen/1 = {display, frame, fullscreen, joinAllSpaces, visibleColumns, "
+                    + "activeWorkspace, workspaces[]}；quickterm.session/1 = {screens[], keyScreen}；"
+                    + "两者原样复用工作区那一份词汇。apply 不搬窗口（display / frame 只在 dump 里回显）。",
+            ])
+    }
+
     /// 唯一构造入口。`appVersion == nil` = 应用没在运行，CLI 拿本地命令表兜底
     static func make(cliVersion: String, appVersion: String?, socket: String?, mode: String?) -> ControlDescribeDocument {
         ControlDescribeDocument(
@@ -87,7 +163,7 @@ struct ControlDescribeDocument: Codable, Equatable {
             appRunning: appVersion != nil,
             socket: socket,
             mode: mode,
-            phase: 2,
+            phase: 3,
             targetGrammar: TargetGrammar(
                 lines: ControlTarget.grammarLines,
                 screen: ["<1 起序号>", "#<uuid>:", "@current", "@primary"],
@@ -120,6 +196,7 @@ struct ControlDescribeDocument: Codable, Equatable {
             appSettings: ControlAppSetting.allCases.map {
                 AppSettingDoc(key: $0.rawValue, scope: $0.isPerScreen ? "screen" : "app", help: $0.help)
             },
+            specSchema: specSchema,
             groups: ControlCommandTable.groups.map {
                 GroupDoc(name: $0, verbs: ControlCommandTable.commands(inGroup: $0).map(\.verb))
             },
@@ -146,7 +223,11 @@ struct ControlDescribeDocument: Codable, Equatable {
                 "pane 的 `focused` 是**每块屏幕各自**的焦点；全局唯一的那个在 `key: true` 的屏幕上——"
                     + "恒有且只有一块屏幕是 `key`：应用在前台时是真正的 key 窗口，否则是最近一次成为 key 的那块。",
                 "短句柄（t7/b3）只在 QuickTerm 这一次运行期间稳定；跨重启唯一稳定的身份是 `id`（UUID）。",
-                "本阶段（Phase 2）有查询、action、pane/workspace/screen/app；spec / events / send-text 见 Phase 3–4。",
+                "一次要摆好一整个工作区就用 `spec apply`，别发 N 条 pane new："
+                    + "N 条命令 = N 次重排、N 次动画、N 个失败点；spec 是一次算完、一次落地。",
+                "`spec apply --replace` 之前先跑一次 `--dry-run`：它返回同样的信封，applied=false，changes 就是那份 diff。",
+                "`spec dump` 打印的就是那份 spec 本身（不套响应信封），可以直接重定向到文件再 apply 回去。",
+                "本阶段（Phase 3）有查询、action、pane/workspace/screen/app 与 spec；events / send-text 见 Phase 4。",
             ])
     }
 }

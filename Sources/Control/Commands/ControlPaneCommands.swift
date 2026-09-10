@@ -61,20 +61,15 @@ extension ControlCommandRunner {
 
         let kind = ctx.string("kind") ?? "terminal"
         let zone = try ctx.zone()
-        let environment = try Self.parseEnvironment(ctx.strings("env"))
-        let command = ctx.string("cmd")
-        let hold = ctx.flag("hold")
         let cwd = ctx.string("cwd").map { ($0 as NSString).expandingTildeInPath }
         if let cwd, cwd.hasPrefix("~") || cwd.contains("\0") {
             throw ControlErrorBody(.badRequest, "--cwd 不是一个可用的路径：\(cwd)")
         }
-        if kind != "browser", ctx.string("url") != nil {
-            throw ControlErrorBody(.badRequest, "--url 只对 --kind browser 有意义",
-                                   hint: "quickterm pane new --kind browser --url …")
-        }
-        if kind == "browser", command != nil {
-            throw ControlErrorBody(.badRequest, "--cmd 对浏览器 pane 没有意义")
-        }
+        // 造 pane 的那一份实现是共用的（`spec apply` 走同一条）：参数互斥与网址解析都在它那儿
+        let recipe = ControlPaneFactory.Request(
+            kind: kind, cwd: cwd, cmd: ctx.string("cmd"), hold: ctx.flag("hold"),
+            env: try Self.parseEnvironment(ctx.strings("env")), url: ctx.string("url"))
+        try ControlPaneFactory.validate(recipe)
 
         var created: PaneView?
         let mutation = ControlMutationRequest(
@@ -85,46 +80,15 @@ extension ControlCommandRunner {
             target: path(controller, workspace, anchor))
 
         var payload = try commit(mutation) {
-            let pane: PaneView
-            switch kind {
-            case "browser":
-                let raw = ctx.string("url") ?? BrowserPaneView.settings.home
-                guard let url = BrowserPaneView.settings.url(forInput: raw) else {
-                    throw ControlErrorBody(.badRequest, "--url 解析不出一个网址：\(raw)")
-                }
-                pane = controller.controlMakeBrowserPane(url: url)
-            case "file-manager":
-                let start = cwd ?? anchor?.workingDirectory
-                    ?? FileManager.default.homeDirectoryForCurrentUser.path
-                let made = controller.makeFileManagerPane(startDirectory: start)
-                pane = made.pane
-                guard controller.controlInsert(made.pane, workspace: workspace, anchor: anchor,
-                                               zone: zone, focus: true) else {
-                    FileManagerLaunch.cleanup(made.launch.session)
-                    throw ControlErrorBody(.failed, "没能把新 pane 插进 \(path(controller, workspace))")
-                }
-                // 只有真的跑起文件管理器才登记会话（免关闭确认 + 退出读目录）——与 perform(.fileManager) 同规则
-                if made.launch.found {
-                    controller.registerFileManagerSession(made.pane, made.launch.session)
-                } else {
-                    FileManagerLaunch.cleanup(made.launch.session)
-                }
-                created = made.pane
-                return
-            default:
-                let surface = controller.newSurface(
-                    workingDirectory: cwd ?? anchor?.workingDirectory,
-                    command: command, environment: environment)
-                // 引擎对带 command 的 surface 强制 wait-after-command、自己不会 close：
-                // 想要"命令跑完 pane 就消失"必须由我们接管（--hold 就是明确要求别接管）
-                if command != nil, !hold { surface.closesOnChildExit = true }
-                pane = surface
-            }
-            guard controller.controlInsert(pane, workspace: workspace, anchor: anchor,
+            let made = try ControlPaneFactory.make(recipe, controller: controller,
+                                                   inheriting: anchor?.workingDirectory)
+            guard controller.controlInsert(made.pane, workspace: workspace, anchor: anchor,
                                            zone: zone, focus: true) else {
+                ControlPaneFactory.discard(made, controller: controller)
                 throw ControlErrorBody(.failed, "没能把新 pane 插进 \(path(controller, workspace))")
             }
-            created = pane
+            ControlPaneFactory.register(made, controller: controller)
+            created = made.pane
         }
 
         guard let pane = created else {

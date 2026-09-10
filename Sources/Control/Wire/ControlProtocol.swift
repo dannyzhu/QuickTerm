@@ -70,10 +70,14 @@ enum ControlErrorCode: String, Codable, CaseIterable {
     /// 已经是请求的状态，什么都没改（**只在 `--fail-if-noop` 下变成错误**）。
     /// 绝对设值的代价就是"第二次调用什么都不做"，agent 需要一个能分辨这件事的信号
     case noop = "noop"
+    /// `spec apply` 落到一半失败了：工作区**已经被改过**（旧 pane 已关，新布局没落下去）。
+    /// 单独一个码，是因为"什么都没发生"与"改了一半"要求 agent 做的事完全不同，
+    /// 而它绝不该靠去读错误文案来分辨这两者
+    case partialApply = "partial_apply"
 
     var exit: ControlExit {
         switch self {
-        case .failed, .badRequest, .unknownCommand, .unknownAction, .internalError: .failure
+        case .failed, .badRequest, .unknownCommand, .unknownAction, .internalError, .partialApply: .failure
         case .protocolMismatch: .protocolMismatch
         case .badTarget, .ambiguousTarget, .notFound, .wrongPaneKind: .badTarget
         case .interactiveAction, .denied: .denied
@@ -103,6 +107,7 @@ enum ControlErrorCode: String, Codable, CaseIterable {
         case .notRunning: "QuickTerm 没在运行"
         case .internalError: "内部错误"
         case .noop: "已经是目标状态，什么都没改（仅 --fail-if-noop 时报错）"
+        case .partialApply: "spec 只落了一半：工作区已经被改过，需要重新读一次状态"
         }
     }
 }
@@ -127,6 +132,10 @@ struct ControlErrorBody: Codable, Equatable {
         self.exit = code.exit.rawValue
     }
 }
+
+/// 线上的错误体同时就是可抛的错误：Wire 这一层（`SpecParser` 等）也要能直接
+/// `throw ControlErrorBody(...)`，两边共用同一份错误码与 exit 映射
+extension ControlErrorBody: Error {}
 
 /// 命令落到了哪里（每条响应都回显）：agent 不必再发一次查询就知道自己打中了哪块屏幕 / 哪个工作区
 struct ResolvedTarget: Codable, Equatable {

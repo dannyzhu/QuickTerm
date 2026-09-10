@@ -313,7 +313,10 @@ final class BrowserPaneView: PaneView {
                                   windowAttached: tab?.pane != nil))
     }
 
-    private var reportedWindowClose = false
+    /// 一次性的「已经跑过收尾」标志。**对外只读**：控制面的用例靠它证明
+    /// 被顶掉的浏览器 pane 真的走了关闭路径（`spec apply --replace` 最容易偷懒的地方
+    /// 就是直接按赋值替换掉 pane，那样这里永远是 false，而下载与扩展窗口事件就此泄漏）
+    private(set) var reportedWindowClose = false
 
     /// pane 被移出工作区（控制器关 pane 时调用）：告诉扩展这个"窗口"关了。只报一次
     func paneWillClose() {

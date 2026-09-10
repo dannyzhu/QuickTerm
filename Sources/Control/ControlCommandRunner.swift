@@ -47,8 +47,20 @@ final class ControlCommandRunner {
         var handle: String?
         /// `workspace clear` 用：确认时那个工作区里的 pane 集合
         var paneIDs: Set<UUID>?
+        /// `spec apply` 用：这一刀会动到的**每一个**（屏幕，工作区）与它当时的 pane 集合。
+        /// 一份 `quickterm.screen/1` 会覆盖整块屏幕的每一个工作区、`quickterm.session/1`
+        /// 是每一块屏幕——只钉住 `-t` 指的那一个，用户批准的就不是即将发生的那件事
+        var scopes: [PinnedScope] = []
         /// 确认框里那句话的简短版（漂移时回给调用方，让它知道当时确认的是什么）
         var description: String
+    }
+
+    /// 被钉住的一个工作区（`PinnedSubject.scopes` 的元素）
+    struct PinnedScope {
+        var controller: MainWindowController
+        var workspace: Int
+        /// 确认那一刻这个工作区里的 pane（**不含正在淡出的**：确认与落刀之间会 flush 一次）
+        var paneIDs: Set<UUID>
     }
 
     let screens: ScreenRegistry
@@ -140,6 +152,15 @@ final class ControlCommandRunner {
             cls = ControlCommandTable.actionClass(parsed)
         } else if spec.name == "action" {
             cls = .read   // --list 只是打印表
+        }
+        // `spec apply` 的破坏性取决于模式：默认的 --into-empty **毁不掉任何东西**
+        // （非空工作区一律拒绝，退出码 4），而 --replace / --reuse 会关掉现有的 pane。
+        // 命令表里声明成 destructive（describe 与 MCP 的 hint 按最坏情况给），
+        // 只有确实不会关任何东西的那个模式在这里降一级——反过来写（默认 mutate、
+        // 见到 --replace 才升级）的话，将来多一个会关 pane 的模式就会静默绕开确认闸门
+        if spec.name == "spec.apply",
+           request.args["replace"]?.boolValue != true, request.args["reuse"]?.boolValue != true {
+            cls = .mutate
         }
 
         if cls == .interactive, let action {
@@ -292,6 +313,43 @@ final class ControlCommandRunner {
                 paneIDs: Set(panes.map(\.id)),
                 description: "屏幕 \(controller.screenIndex + 1) 工作区 \(resolution.workspace + 1)"
                     + "（\(panes.count) 个 pane：\(handles.joined(separator: " "))）")
+        case "spec.apply":
+            // 钉住的是"这一批工作区里的这些 pane"：**作用域由 spec 正文说了算**，不是 `-t`。
+            // 一份屏幕 spec 覆盖整块屏幕的每一个工作区、一份会话 spec 覆盖每一块屏幕；
+            // 确认框里只写 `-t` 指的那一个的话，用户批准的是一件比实际小得多的事
+            let resolution = try resolver.resolve(target)
+            guard let text = request.args["spec"]?.stringValue, !text.isEmpty else {
+                throw ControlErrorBody(.badRequest, "没有拿到 spec 内容",
+                                       hint: "quickterm spec apply -f <文件>，或从标准输入喂进来")
+            }
+            // 解析不了 / 落不下去的 spec 在这里就失败：不必先把用户叫起来确认一件做不成的事
+            let document = try SpecParser.parse(text)
+            let targets = try Self.specTargets(document, controller: resolution.controller,
+                                               workspace: resolution.workspace, screens: screens)
+            var scopes: [PinnedScope] = []
+            var handles: [String] = []
+            var places: [String] = []
+            for target in targets {
+                let closing = target.controller.model.closingPanes
+                let panes = (target.controller.model.layouts[target.workspace].paneList
+                    + target.controller.model.floatings[target.workspace].map(\.pane))
+                    .filter { !closing.contains($0.id) }
+                handles += panes.map { ControlHandleRegistry.shared.handle(for: $0) }
+                if places.count < 6 {
+                    places.append("屏幕 \(target.controller.screenIndex + 1) 工作区 \(target.workspace + 1)")
+                }
+                scopes.append(PinnedScope(controller: target.controller, workspace: target.workspace,
+                                          paneIDs: Set(panes.map(\.id))))
+            }
+            let listed = handles.prefix(12).joined(separator: " ")
+                + (handles.count > 12 ? " …" : "")
+            let where_ = places.joined(separator: "、") + (targets.count > places.count ? " …" : "")
+            let description = targets.count == 1
+                ? "\(where_)（\(handles.count) 个 pane：\(listed)）"
+                : "\(targets.count) 个工作区（\(where_)），共 \(handles.count) 个 pane：\(listed)"
+            return PinnedSubject(
+                controller: resolution.controller, workspace: resolution.workspace,
+                pane: nil, handle: nil, paneIDs: nil, scopes: scopes, description: description)
         case "screen.close":
             let resolution = try resolver.resolve(target)
             let controller = resolution.controller
@@ -328,6 +386,8 @@ final class ControlCommandRunner {
                 text += "\n清空 \(subject.description) —— 其中的进程会被结束"
             case "screen.close":
                 text += "\n关闭 \(subject.description) —— 其中的进程会被结束"
+            case "spec.apply":
+                text += "\n用一份 spec 覆盖 \(subject.description) —— 对不上的那些 pane 会被关掉，其中的进程会被结束"
             default:
                 // 浏览器 pane 还有别的标签时，close-pane 关的是当前标签而不是整个 pane（Chrome 语义）
                 let tabOnly = (subject.pane as? BrowserPaneView).map { $0.tabs.count > 1 } ?? false
@@ -492,6 +552,7 @@ final class ControlCommandRunner {
                 case "workspace": result = try runWorkspace(ctx)
                 case "screen": result = try runScreen(ctx)
                 case "app": result = try runApp(ctx)
+                case "spec": result = try runSpec(ctx)
                 default:
                     throw ControlErrorBody(.unknownCommand, "未知命令组 \(group)",
                                            candidates: ControlCommandTable.groups)
@@ -642,4 +703,3 @@ struct ControlStateProjected: Encodable {
     var panes: [JSONValue]
 }
 
-extension ControlErrorBody: Error {}

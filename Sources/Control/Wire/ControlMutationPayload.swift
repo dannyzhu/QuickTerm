@@ -31,6 +31,8 @@ struct ControlMutationPayload: Codable, Equatable {
     var undo: String?
     /// 需要告诉调用方的额外事实（如"由 config.toml 监听落地，稍后生效"）
     var note: String?
+    /// `spec apply` 的落地报告（新建 / 留用 / 关掉了哪些 pane）
+    var spec: ControlSpecApplyReport?
 
     init(command: String, applied: Bool, changed: Bool, dryRun: Bool,
          changes: [ControlChange] = [], pane: ControlStatePayload.PaneInfo? = nil,
@@ -38,7 +40,7 @@ struct ControlMutationPayload: Codable, Equatable {
          workspace: ControlStatePayload.WorkspaceInfo? = nil,
          screen: ControlStatePayload.ScreenInfo? = nil,
          focusPending: Bool? = nil, confirmPending: Bool? = nil,
-         undo: String? = nil, note: String? = nil) {
+         undo: String? = nil, note: String? = nil, spec: ControlSpecApplyReport? = nil) {
         self.command = command
         self.applied = applied
         self.changed = changed
@@ -52,6 +54,7 @@ struct ControlMutationPayload: Codable, Equatable {
         self.confirmPending = confirmPending
         self.undo = undo
         self.note = note
+        self.spec = spec
     }
 }
 

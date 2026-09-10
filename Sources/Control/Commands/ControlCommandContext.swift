@@ -151,4 +151,28 @@ extension ControlCommandRunner {
                 hint: "重新发一次，或用 -t 精确指定", retryAfterMs: 200)
         }
     }
+
+    /// `spec apply` 版的同一件事：确认框上写的是**一批**工作区（屏幕 / 会话作用域下不止一个），
+    /// 落刀前逐个再核一次——这一批里任何一个漂了，整条命令都不落
+    func verifyPinnedScopes(_ ctx: ControlContext,
+                            targets: [(controller: MainWindowController, workspace: Int)]) throws {
+        guard let pinned = ctx.pinned else { return }
+        var drifted = pinned.scopes.count != targets.count
+        for (scope, target) in zip(pinned.scopes, targets) where !drifted {
+            guard scope.controller === target.controller, scope.workspace == target.workspace else {
+                drifted = true
+                break
+            }
+            let closing = target.controller.model.closingPanes
+            let now = Set((target.controller.model.layouts[target.workspace].paneList
+                           + target.controller.model.floatings[target.workspace].map(\.pane))
+                .filter { !closing.contains($0.id) }.map(\.id))
+            if now != scope.paneIDs { drifted = true }
+        }
+        guard !drifted else {
+            throw ControlErrorBody(
+                .busy, "确认期间目标变了（当时确认的是 \(pinned.description)）：本次什么都没做",
+                hint: "重新发一次，或用 -t 精确指定", retryAfterMs: 200)
+        }
+    }
 }
