@@ -415,7 +415,9 @@ final class MCPToolMapTests: XCTestCase {
         }
         let done = expectation(description: "serve 退出")
         DispatchQueue.global().async {
-            server.serve(input: input.fileHandleForReading, output: output.fileHandleForWriting)
+            // gate 显式传：默认参数 `.load()` 会去读开发者自己的配置文件
+            server.serve(input: input.fileHandleForReading, output: output.fileHandleForWriting,
+                         gate: ControlConfigGate())
             try? output.fileHandleForWriting.close()
             done.fulfill()
         }
@@ -435,10 +437,11 @@ final class MCPToolMapTests: XCTestCase {
             rest.removeSubrange(rest.startIndex...index)
         }
         XCTAssertEqual(lines.count, 2, "一行请求一行应答")
-        let first = try ControlJSON.decoder.decode(JSONValue.self, from: lines[0])
+        // 空数组下标会把整个 test bundle 打断（不止红一条），所以先 unwrap
+        let first = try ControlJSON.decoder.decode(JSONValue.self, from: try XCTUnwrap(lines.first))
         // 客户端报的老版本我们支持，就照它回（不然宿主会以为握手失败）
         XCTAssertEqual(first["result"]?["protocolVersion"]?.stringValue, "2024-11-05")
-        let second = try ControlJSON.decoder.decode(JSONValue.self, from: lines[1])
+        let second = try ControlJSON.decoder.decode(JSONValue.self, from: try XCTUnwrap(lines.dropFirst().first))
         XCTAssertEqual(second["id"]?.intValue, 2)
         XCTAssertNotNil(second["result"])
     }

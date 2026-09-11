@@ -11,7 +11,13 @@ import AppKit
 @MainActor
 final class ControlCommandRunner {
     struct Config {
-        var enabled: Bool = true
+        /// `[control] socket`（旧名 `enabled`）
+        var socket: Bool = true
+        /// `[control] mcp`：只作用于 `quickterm mcp` 那个进程（见 `ControlConfigGate`）。
+        /// **socket 这一侧不认它**：MCP 的每一条调用都是一条普通的控制请求，
+        /// "我是 MCP"是调用方自报的，服务端一个字都验不了——把一个验不了的字段
+        /// 当闸门用，只会给用户一个假的安全感
+        var mcp: Bool = true
         var mode: String = "ask"
         var exposeBrowser: String = "token"
         var sendText: Bool = false
@@ -19,13 +25,16 @@ final class ControlCommandRunner {
         init() {}
 
         init(_ settings: ConfigStore.Settings) {
-            enabled = settings.controlEnabled
+            socket = settings.controlSocket
+            mcp = settings.controlMCP
             mode = settings.controlMode
             exposeBrowser = settings.controlExposeBrowser
             sendText = settings.controlSendText
         }
 
-        var isListening: Bool { enabled && mode != "off" }
+        /// 监听与否 = 三个开关取最严：`socket = false`、旧的 `enabled = false`
+        /// （解析阶段已并进 socket）、`mode = "off"`，任何一个都等于不监听
+        var isListening: Bool { socket && mode != "off" }
         var allowsMutation: Bool { isListening && mode != "readonly" }
         /// **反过来写**：只要这条命令能被执行，破坏性 / 敏感命令就一定要确认。
         /// 写成 `mode == "ask"` 的话，任何别的 mode 拼法（配置里写 "on"、将来多一个档位、

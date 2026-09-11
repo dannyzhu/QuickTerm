@@ -178,12 +178,14 @@ extension ConfigStoreTests {
         // 完整模板本身不需要补全；模板键覆盖所有可解析键
         try ConfigStore.template.write(to: url, atomically: true, encoding: .utf8)
         XCTAssertFalse(ConfigStore.ensureTemplateKeys(at: url))
-        let keys = Set(ConfigStore.templateKeyLines.map(\.key))
+        // 模板键 = 注册表的新名（分组之后 `[browser] home` 不再叫 browser-home）
+        let keys = Set(ConfigStore.templateKeyBlocks.map(\.spec.key))
+        XCTAssertEqual(keys, Set(ConfigSchema.keys.map(\.key)), "模板必须列全注册表里的每一个键")
         for k in ["theme", "workspaces", "pane-padding", "visible-columns", "pane-opacity",
                   "active-opacity", "bar-opacity", "divider-opacity", "pane-gap", "inactive-blur",
-                  "file-manager-command", "browser-home", "browser-search", "browser-user-agent",
-                  "browser-inspectable", "browser-tab-bar", "browser-tab-width", "browser-tab-min-width",
-                  "browser-extensions", "browser-download-dir", "link-opener"] {
+                  "file-manager-command", "home", "search", "user-agent", "inspectable",
+                  "tab-bar", "tab-width", "tab-min-width", "extensions", "download-dir",
+                  "link-opener", "socket", "mcp", "mode", "expose-browser", "send-text"] {
             XCTAssertTrue(keys.contains(k), "模板缺少 \(k)")
         }
         for k in ["new-terminal", "cursor-style", "动作"] {

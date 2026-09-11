@@ -112,7 +112,13 @@ final class AppSession {
     /// 必须在建第一个屏幕**之前**调用：控制器 init 直接用 `settings`（不再自己读盘），
     /// 而 `visibleColumns` / 工作区数在状态恢复前就得是最终值
     func loadInitialConfig() {
-        ConfigStore.ensureTemplateKeys()   // 已有配置文件补全新增键（注释形式，幂等）
+        // 已有配置文件补全新增键（注释形式，幂等）。
+        // **测试宿主一个字节都不写**（与 `SessionStore.writesAllowed`、控制 socket 同一条策略）：
+        // 跑一次用例就往用户真正的 ~/.config/quickterm/config.toml 里补一段，是谁都没同意过的事。
+        // 冒烟时用 QUICKTERM_CONFIG_FILE 指到别处，那一份该补还是要补
+        if !AppDelegate.isRunningTests || ConfigStore.configURLOverride != nil {
+            ConfigStore.ensureTemplateKeys()
+        }
         apply(ConfigStore.load())
     }
 
@@ -160,7 +166,7 @@ final class AppSession {
         BrowserExtensionManager.shared.isEnabled = settings.browserExtensions
         // 控制面：配置热重载即起停（enabled=false / mode="off" 就彻底不监听）
         var control = ControlCommandRunner.Config(settings)
-        if !controlAllowed { control.enabled = false }
+        if !controlAllowed { control.socket = false }
         // ⚠️ 这里**必须**在启动复原之前就把 socket 绑起来，别再加什么「复原跑完再监听」的闸门：
         // `ControlEnvironment.socketPath` 只在 `ControlServer.start()` 里赋值，而复原出来的
         // pane 和全新启动的第一个 pane 都是在 `restoreSession()` 里**同步**建出来的——

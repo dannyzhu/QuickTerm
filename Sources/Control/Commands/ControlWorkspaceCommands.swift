@@ -210,7 +210,7 @@ extension ControlCommandRunner {
             target: ConfigStore.activeConfigURL.lastPathComponent)
         var payload = try commit(mutation) {
             do {
-                try ConfigStore.rewriteTopLevel(key: "workspaces", value: String(wanted))
+                try ConfigStore.rewrite(key: "workspaces", value: String(wanted))
             } catch {
                 throw ControlErrorBody(.failed, "改写 config.toml 失败：\(error)")
             }

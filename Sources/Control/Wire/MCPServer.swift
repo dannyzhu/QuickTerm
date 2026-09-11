@@ -322,11 +322,28 @@ final class MCPServer {
 
     /// 读一行、处理、写一行，直到对端关掉标准输入。
     /// **绝不往标准输出写别的东西**：那条管道整条都是 JSON-RPC 的（日志只能走 stderr）
-    func serve(input: FileHandle = .standardInput, output: FileHandle = .standardOutput) {
+    /// 配置闸门：`~/.config/quickterm/config.toml` 的 `[control] mcp = false` 时一个字节都不服务。
+    ///
+    /// 闸门钉在 `serve()` 上，而不是只钉在 `quickterm mcp` 的命令处理里——
+    /// `serve()` 是"真的开始说 MCP"的唯一出口，将来再多一个入口也绕不过它。
+    /// 错误里**点名那个配置键**：宿主只会把失败显示成"服务器起不来"，
+    /// 用户得能从这句话直接找到自己关掉的那个开关
+    static func configRefusal(gate: ControlConfigGate = .load(),
+                              path: String = ConfigPaths.configURL().path) -> ControlErrorBody? {
+        guard !gate.mcp else { return nil }
+        return ControlErrorBody(.denied, ControlConfigGate.mcpDisabledMessage(path: path),
+                                hint: ControlConfigGate.mcpDisabledHint)
+    }
+
+    /// 正常读到流末尾返回 nil；被配置拒绝则原样返回那条错误（调用方负责退出码）
+    @discardableResult
+    func serve(input: FileHandle = .standardInput, output: FileHandle = .standardOutput,
+               gate: ControlConfigGate = .load()) -> ControlErrorBody? {
+        if let refusal = Self.configRefusal(gate: gate) { return refusal }
         var buffer = Data()
         while true {
             let chunk = input.availableData
-            if chunk.isEmpty { return }
+            if chunk.isEmpty { return nil }
             buffer.append(chunk)
             while let index = buffer.firstIndex(of: 0x0A) {
                 let line = buffer.subdata(in: buffer.startIndex..<index)

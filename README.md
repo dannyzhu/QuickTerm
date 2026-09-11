@@ -269,13 +269,18 @@ quickterm spec apply -f dev.json -t :4            # --into-empty is the default:
 
 ```toml
 [control]
-# enabled = true            # false: do not listen at all
-# mode = "ask"              # off | readonly | ask ("on" is an alias for ask)
+# socket = true             # false: do not listen at all (neither the CLI nor MCP can connect)
+# mcp = true                # false makes `quickterm mcp` refuse to serve (the CLI socket stays available)
+# mode = "ask"              # off | readonly | ask ("on" is an alias for ask). There is no "never ask" mode.
 # expose-browser = "token"  # token | always | never — who may read browser pane URLs and titles
-# send-text = false         # quickterm input send-text: typing into a terminal pane
+# send-text = false         # typing into a terminal pane on behalf of a caller; off by default
 ```
 
+`socket`, the old `enabled` and `mode` are three switches over the same listener and **the most restrictive one wins**: `socket = false`, `enabled = false` or `mode = "off"` — any single one of them means no socket is bound at all. `mcp` is separate on purpose: the threat surfaces differ, and you may well want the CLI for yourself without letting any MCP host (and everything it reads) in. With `mcp = false`, `quickterm mcp` refuses to serve and names the key that refused it; the socket stays available to your own shell.
+
 There is deliberately **no "never ask" mode**: the confirmation gate can only be bypassed by turning the control plane `off` or `readonly`, and an unrecognised value falls back to `ask`.
+
+Every boolean key in the config (here and everywhere else) accepts `true` / `1` / `yes` / `on` and `false` / `0` / `no` / `off`, case-insensitively. Anything else is **not** guessed: the line is ignored, the declared default stays in effect, and a warning naming the key and the value is written to the log — so `socket = off` really does turn the listener off instead of quietly leaving it on.
 
 ### Security posture
 
@@ -316,27 +321,37 @@ Full agent-facing documentation, including the addressing grammar and the exit-c
 `~/.config/quickterm/config.toml` — created with a commented template the first time you press `Cmd+,`. It hot-reloads on save.
 
 ```toml
-# theme = "tokyo-night"     # or "ghostty": don't touch colours, follow ~/.config/ghostty/config entirely
-# workspaces = 5            # 1–10
-# pane-padding = 14         # terminal padding in pt, 0–32 (Omarchy's value)
-# visible-columns = 2       # scrolling columns per screen, 1–6
-# pane-opacity = 0.92       # 0.5–1.0
-# active-opacity = 0.98     # 0.5–1.0
-# bar-opacity = 0.75        # 0–1
-# divider-opacity = 0.2     # 0–1, dwindle split divider line
-# pane-gap = 5              # 0–20 pt, padding around each pane (scrolling and dwindle alike)
-# file-manager-command = "yazi"   # program for the file-manager action (Cmd+Shift+B)
-# browser-home = "https://www.google.com"
-# browser-search = "https://www.google.com/search?q=%s"
-# browser-user-agent = "safari"   # safari | webkit | custom UA string
-# browser-inspectable = false
-# browser-tab-bar = "always"      # always | auto
-# browser-tab-width = 200         # max tab width, pt
-# browser-tab-min-width = 80      # min tab width, pt (strip scrolls when exceeded)
-# browser-extensions = true       # load WebExtensions in browser panes (macOS 15.4+)
-# browser-download-dir = "~/Downloads"   # where browser panes save downloads
-# link-opener = "browser-pane"    # browser-pane | system — where ⌘-clicked terminal links open
-# inactive-blur = 2.5       # > 0 enables frosted inactive panes
+# Every key is declared once in Sources/Config/ConfigSchema.swift; this block is that registry.
+# Keys are grouped by function — one group = one tab in the settings UI.
+
+[appearance]
+# theme = "tokyo-night"  # or "ghostty": don't touch colours, follow ~/.config/ghostty/config entirely
+# pane-opacity = 0.92    # 0.5–1.0, inactive baseline; text is never affected
+# active-opacity = 0.98  # 0.5–1.0, effective opacity of the focused pane
+# bar-opacity = 0.75     # 0–1, top status bar background
+# divider-opacity = 0.2  # 0–1, dwindle split divider line (0 hides it)
+# inactive-blur = 2.5    # > 0 enables frosted inactive panes; 0 turns it off
+# pane-padding = 14      # terminal padding in pt, 0–32 (Omarchy's value is 14)
+# pane-gap = 5           # 0–20 pt around each pane (neighbours end up 2×gap apart)
+
+[workspace]
+# workspaces = 5       # 1–10
+# visible-columns = 2  # scrolling columns per screen, 1–6 (unset: follows the main menu)
+
+[terminal]
+# file-manager-command = "yazi"  # program for the file-manager action (Cmd+Shift+B); name or absolute path
+
+[browser]
+# home = "https://www.google.com"                # page a new browser pane (Cmd+B) opens
+# search = "https://www.google.com/search?q=%s"  # used when the address bar text is not a URL (%s = the query)
+# user-agent = "safari"                          # safari | webkit | a custom UA string (Google's login page refuses embedded browsers)
+# inspectable = false                            # right-click "Inspect Element" in browser panes
+# tab-bar = "always"                             # always (default) | auto — auto hides the strip when there is one tab
+# tab-width = 200                                # max tab width in pt, 40–600
+# tab-min-width = 80                             # min tab width in pt, 40–600; the strip scrolls when they no longer fit
+# extensions = true                              # load WebExtensions in browser panes (macOS 15.4+)
+# download-dir = "~/Downloads"                   # where browser panes save downloads (~ expands; falls back to ~/Downloads)
+# link-opener = "browser-pane"                   # browser-pane | system — where ⌘-clicked terminal links open
 
 [keybinds]                  # action = "modifiers+key"; "none" unbinds. Action ids: Cmd+K
 # new-terminal = "cmd+return"
@@ -348,6 +363,8 @@ Full agent-facing documentation, including the addressing grammar and the exit-c
 # cursor-style = block
 # font-size = 13
 ```
+
+**Old spellings keep working, forever.** Everything used to sit at the top level of the file (`theme = …`, `browser-home = …`) and `[control]` used to say `enabled`. Every one of those is still accepted, silently and with no warning — your existing `config.toml` needs no edit. The table below is what QuickTerm writes into a fresh file; inside `[browser]` the `browser-` prefix is dropped because the section already says it, and `[control] enabled` is now `[control] socket` because it is the socket listener that is being switched. When both spellings are present the new name wins, except for `socket`/`enabled`, where the **more restrictive** one wins (see `[control]` above).
 
 Modifier names: `cmd`/`command`/`super`, `shift`, `alt`/`option`/`opt`, `ctrl`/`control`. Key names: single characters, or `left` `right` `up` `down` `return` `tab` `space` `backspace` `escape`. One binding per action — an override replaces all of that action's defaults.
 

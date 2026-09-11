@@ -276,6 +276,10 @@ func runLocal(_ parsed: ParsedCommand) -> Never {
 /// **每次 tools/call 才连一次 socket**——与 CLI 每条命令一次连接同一条规矩，
 /// 于是限流、确认、活动日志全都照旧生效，MCP 这一层没有任何自己的特权。
 func runMCP(_ parsed: ParsedCommand) -> Never {
+    // 配置闸门（`[control] mcp`）：关掉之后 `quickterm mcp` 连工具表都不给。
+    // 这条与 `MCPServer.serve()` 里那道是同一个判断（同一张注册表），
+    // 放在这里只是为了让用户在管道变成 JSON-RPC 之前就看到那句人话
+    if let refusal = MCPServer.configRefusal() { fail(refusal, plain: plainMode) }
     if parsed.args["list-tools"]?.boolValue == true {
         let tools = JSONValue.object(["tools": .array(MCPToolMap.tools.map(\.listEntry))])
         if let data = try? ControlJSON.prettyEncoder.encode(tools),
@@ -307,6 +311,6 @@ func runMCP(_ parsed: ParsedCommand) -> Never {
         return reply
     }
     // 标准输出整条管道都是 JSON-RPC：任何一句人话都会让宿主的解析器当场报错
-    server.serve()
+    if let refusal = server.serve() { fail(refusal, plain: plainMode) }
     exit(0)
 }

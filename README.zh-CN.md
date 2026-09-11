@@ -269,13 +269,18 @@ quickterm spec apply -f dev.json -t :4            # 默认 --into-empty：非空
 
 ```toml
 [control]
-# enabled = true            # false 彻底不监听
-# mode = "ask"              # off = 不监听 | readonly = 只读 | ask = 默认（"on" 是别名）
+# socket = true             # false 彻底不监听（quickterm 命令行与 MCP 都连不上）
+# mcp = true                # false 时 `quickterm mcp` 直接拒绝服务（socket 仍可给你自己的命令行用）
+# mode = "ask"              # off = 不监听 | readonly = 只读 | ask = 默认（"on" 是 ask 的别名）
 # expose-browser = "token"  # token | always | never：谁能读到浏览器 pane 的网址与标题
-# send-text = false         # quickterm input send-text：把文本当键盘输入送进终端 pane
+# send-text = false         # quickterm input send-text：把文本当键盘输入送进一个终端 pane。
 ```
 
+`socket`、旧名 `enabled`、`mode` 是同一个监听器上的三个开关，**取最严的那个**：`socket = false`、`enabled = false`、`mode = "off"`，任何一个都等于彻底不监听。`mcp` 是单独一档，因为两者的攻击面不同：你完全可能自己要用命令行，却不想让任何 MCP 宿主（以及它读到的每一段网页 / CI 日志）连进来。`mcp = false` 时 `quickterm mcp` 直接拒绝服务，并在错误里点名是哪个配置键拒绝的；socket 仍然照常给你自己的 shell 用。
+
 **刻意没有"免确认"这一档**：确认闸门只能靠 `off` / `readonly` 绕开，写错一个值也只会回落到 `ask`。
+
+配置里**所有布尔键**（这一段以及别处）都认 `true` / `1` / `yes` / `on` 与 `false` / `0` / `no` / `off`（大小写无所谓）。表外的写法一律**不猜**：那一行不生效，保留声明的默认值，并在日志里写一条点名键与值的告警——所以 `socket = off` 是真的关掉监听，而不是悄悄留在"开"上。
 
 ### 安全姿态
 
@@ -316,27 +321,37 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 `~/.config/quickterm/config.toml` —— 首次按 `Cmd+,` 会生成带注释的模板；保存即热重载。
 
 ```toml
-# theme = "tokyo-night"     # 或 "ghostty"：不碰配色，完全跟随 ~/.config/ghostty/config
-# workspaces = 5            # 1–10
-# pane-padding = 14         # 终端内四边留白 pt，0–32（Omarchy 官方值）
-# visible-columns = 2       # scrolling 每屏可见列数，1–6
-# pane-opacity = 0.92       # 0.5–1.0
-# active-opacity = 0.98     # 0.5–1.0
-# bar-opacity = 0.75        # 0–1
-# divider-opacity = 0.2     # 0–1，dwindle 分隔细线
-# pane-gap = 5              # 0–20 pt，每 pane 每边留白（scrolling / dwindle 一致）
-# file-manager-command = "yazi"   # file-manager 动作（Cmd+Shift+B）运行的程序
-# browser-home = "https://www.google.com"
-# browser-search = "https://www.google.com/search?q=%s"
-# browser-user-agent = "safari"   # safari | webkit | 自定义 UA
-# browser-inspectable = false
-# browser-tab-bar = "always"      # always | auto
-# browser-tab-width = 200         # 标签最大宽度 pt
-# browser-tab-min-width = 80      # 标签最小宽度 pt（放不下时横向滚动）
-# browser-extensions = true       # 浏览器 pane 加载 WebExtensions（macOS 15.4+）
-# browser-download-dir = "~/Downloads"   # 浏览器 pane 的下载落盘目录
-# link-opener = "browser-pane"    # browser-pane | system：终端 ⌘+点击链接开在哪
-# inactive-blur = 2.5       # > 0 开启非激活磨砂
+# 每个配置项只在 Sources/Config/ConfigSchema.swift 那张注册表里声明一次，这一段就是它。
+# 配置项按功能分组 —— 一个分组 = 设置界面的一个 tab。
+
+[appearance]
+# theme = "tokyo-night"  # 或 "ghostty"：不覆盖配色，完全跟随 ghostty 配置
+# pane-opacity = 0.92    # pane 背景透明度（0.5–1.0；非激活基准，文字不受影响）
+# active-opacity = 0.98  # 激活 pane 背景等效透明度（0.5–1.0）
+# bar-opacity = 0.75     # 顶部状态条背景透明度（0–1）
+# divider-opacity = 0.2  # dwindle 分隔细线不透明度（0–1；0 隐藏，1 实线）
+# inactive-blur = 2.5    # 非激活 pane 磨砂背景（> 0 开启；0 关闭）
+# pane-padding = 14      # pane 内终端四边留白（pt，0–32；Omarchy 官方值 14）
+# pane-gap = 5           # 每 pane 每边留白 pt（0–20；相邻间距 = 2×gap；scrolling / dwindle 一致）
+
+[workspace]
+# workspaces = 5       # 1–10
+# visible-columns = 2  # scrolling 每屏可见列数（1–6；未设置走主菜单选择）
+
+[terminal]
+# file-manager-command = "yazi"  # 文件管理器程序（Cmd+Shift+B 在新 pane 里运行；名字或绝对路径，lf/ranger 亦可）
+
+[browser]
+# home = "https://www.google.com"                # 浏览器 pane（Cmd+B）打开的首页
+# search = "https://www.google.com/search?q=%s"  # 地址栏输入非网址时的搜索模板（%s = 关键词）
+# user-agent = "safari"                          # 伪装成 Safari（Google 登录页拒绝嵌入式浏览器）；"webkit" = 不伪装；或填自定义 UA
+# inspectable = false                            # 浏览器 pane 的 Web Inspector（右键"检查元素"）
+# tab-bar = "always"                             # 标签条：always = 始终显示（默认）；auto = 只有一个标签时隐藏
+# tab-width = 200                                # 标签最大宽度 pt（40–600）
+# tab-min-width = 80                             # 标签最小宽度 pt（40–600）；放不下时标签条横向滚动
+# extensions = true                              # 浏览器 pane 加载 WebExtensions（Chrome Web Store 安装 / 从 Chrome 导入；macOS 15.4+）
+# download-dir = "~/Downloads"                   # 浏览器 pane 下载落盘目录（支持 ~；目录不存在时回退 ~/Downloads）
+# link-opener = "browser-pane"                   # 终端 ⌘+点击链接：browser-pane = 在浏览器 pane 打开（有则用最近激活的，无则新开）；system = 系统浏览器
 
 [keybinds]                  # 动作 = "修饰键+键"；"none" 解绑。动作 id 见 Cmd+K
 # new-terminal = "cmd+return"
@@ -348,6 +363,8 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # cursor-style = block
 # font-size = 13
 ```
+
+**旧写法永远有效。** 这些键原先都摊在文件顶层（`theme = …`、`browser-home = …`），`[control]` 里叫 `enabled`；每一种旧写法都照收不误，不警告、不啰嗦 —— 你现有的 `config.toml` 一个字都不用改。上面这份是全新安装会生成的样子：`[browser]` 段里去掉了 `browser-` 前缀（段名已经说了），`[control] enabled` 改叫 `socket`（被开关的本来就是那个 socket 监听）。新旧同时写了的话新名赢，只有 `socket`/`enabled` 例外 —— 那一对取**更严**的那个（见上面的 `[control]`）。
 
 修饰键写法：`cmd`/`command`/`super`、`shift`、`alt`/`option`/`opt`、`ctrl`/`control`。键名：单个字符，或 `left` `right` `up` `down` `return` `tab` `space` `backspace` `escape`。一个动作一个组合 —— 覆盖会替换掉该动作的全部默认键。
 

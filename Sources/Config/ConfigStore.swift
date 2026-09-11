@@ -1,10 +1,17 @@
 import AppKit
+import OSLog
 
 /// `~/.config/quickterm/config.toml`（spec §4.7）：极简 TOML 子集
-/// （顶层 key = value + `[keybinds]` + `[ghostty]` 原样透传段）。
+/// （`[section]` 分组 + `[keybinds]` + `[ghostty]` 原样透传段）。
+///
+/// **配置项本身在 `ConfigSchema` 那张注册表里声明**（分组、类型、范围、默认值、
+/// 中英文说明、旧写法）。这里只剩三件事：把注册表的值写进 `Settings`（`ConfigBindings`）、
+/// 落模板 / 补全缺键、以及就地改写一个键。
 enum ConfigStore {
-    static let configURL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".config/quickterm/config.toml")
+    static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "dev.danny.quickterm",
+                               category: "Config")
+
+    static var configURL: URL { ConfigPaths.defaultConfigURL }
 
     /// **只给用例注入**：控制面的 `workspace count` 会改写配置文件，
     /// 测试宿主绝不能去动用户真正的 ~/.config/quickterm/config.toml
@@ -16,48 +23,64 @@ enum ConfigStore {
     enum RewriteError: Error, CustomStringConvertible {
         case unreadable(String)
         case unwritable(String)
+        case unknownKey(String)
 
         var description: String {
             switch self {
             case .unreadable(let path): "读不到 \(path)"
             case .unwritable(let path): "写不进 \(path)"
+            case .unknownKey(let key): "配置注册表里没有 \(key) 这个键"
             }
         }
     }
 
-    /// 就地改写一个**顶层**键（`workspaces = 8`），保留其余内容与注释。
+    /// 模板 = 注册表渲染出来的那一份（没有第二份手写模板）
+    static var template: String { ConfigSchema.template }
+
+    /// 模板里每个配置项的那一块（赋值行 + 多行说明的续行；补全缺失键时复用）
+    static var templateKeyBlocks: [(spec: ConfigKeySpec, lines: [String])] { ConfigSchema.templateKeyBlocks }
+
+    // MARK: 就地改写
+
+    /// 就地改写**一个注册表里的键**（`workspaces = 8`），保留其余内容与注释。
     ///
-    /// 三条规矩：
-    /// - 只认第一个 `[section]` 之前的行——`[keybinds]` 里也可能有同名键；
+    /// 四条规矩：
+    /// - 认这个键的**每一种写法**：新写法（`[workspace] workspaces`）与旧的扁平写法都算，
+    ///   用户写的是哪一种就改哪一种（升级不会把人家的文件重排一遍）；
     /// - 键被注释掉了就把那一行换成生效的写法（模板里所有键都是注释形式）；
+    /// - 一份文件里都找不到 → 插到它所属的分组末尾（分组不存在就现建一个）；
     /// - 一次写盘。写完由已有的 `AppSession.installConfigWatcher` 去热重载，
     ///   调用方**不得**自己再落一次值（两条生效路径 = 两次键位表重建 + 一次竞态）
-    static func rewriteTopLevel(key: String, value: String) throws {
+    static func rewrite(key: String, value: String) throws {
+        guard let spec = ConfigSchema.spec(named: key) else { throw RewriteError.unknownKey(key) }
         let url = activeConfigURL
         var text = (try? String(contentsOf: url, encoding: .utf8))
         if text == nil {
             // 文件还不存在（全新安装）：先落模板，再改
             try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
-                                                    withIntermediateDirectories: true)
+                                                     withIntermediateDirectories: true)
             try? template.write(to: url, atomically: true, encoding: .utf8)
             text = try? String(contentsOf: url, encoding: .utf8)
         }
         guard let content = text else { throw RewriteError.unreadable(url.path) }
 
         var lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        let sectionIndex = lines.firstIndex { $0.trimmingCharacters(in: .whitespaces).hasPrefix("[") }
-            ?? lines.count
-        func matches(_ line: String) -> Bool {
-            var s = Substring(line.trimmingCharacters(in: .whitespaces))
-            if s.hasPrefix("#") { s = s.dropFirst().drop(while: { $0 == " " }) }
-            guard s.hasPrefix(key) else { return false }
-            return s.dropFirst(key.count).drop(while: { $0 == " " }).hasPrefix("=")
+        var canonicalHit: Int?
+        var legacyHit: (index: Int, name: String)?
+        for (index, ref) in assignments(in: lines) {
+            guard ref.spec.id == spec.id else { continue }
+            if ref.ref == spec.canonical {
+                if canonicalHit == nil { canonicalHit = index }
+            } else if legacyHit == nil {
+                legacyHit = (index, ref.ref.name)
+            }
         }
-        let replacement = "\(key) = \(value)"
-        if let index = (0..<sectionIndex).first(where: { matches(lines[$0]) }) {
-            lines[index] = replacement
+        if let index = canonicalHit {
+            lines[index] = "\(spec.key) = \(value)"
+        } else if let hit = legacyHit {
+            lines[hit.index] = "\(hit.name) = \(value)"
         } else {
-            lines.insert(replacement, at: sectionIndex)
+            lines = insert(blocks: [spec.section.rawValue: ["\(spec.key) = \(value)"]], into: lines)
         }
         do {
             try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
@@ -66,74 +89,12 @@ enum ConfigStore {
         }
     }
 
-    static let template = """
-    # QuickTerm 配置（spec §4.7）。保存即热重载。
-    # theme = "tokyo-night"     # 或 "ghostty"：不覆盖配色，完全跟随 ghostty 配置
-    # workspaces = 5            # 1–10
-    # pane-padding = 14         # pane 内终端四边留白（pt，0–32；Omarchy 官方值 14）
-    # visible-columns = 2       # scrolling 每屏可见列数（1–6；未设置走主菜单选择）
-    # pane-opacity = 0.92       # pane 背景透明度（0.5–1.0；非激活基准，文字不受影响）
-    # active-opacity = 0.98     # 激活 pane 背景等效透明度（0.5–1.0）
-    # bar-opacity = 0.75        # 顶部状态条背景透明度（0–1）
-    # divider-opacity = 0.2     # dwindle 分隔细线不透明度（0–1；0 隐藏，1 实线）
-    # pane-gap = 5              # 每 pane 每边留白 pt（0–20；相邻间距 = 2×gap；scrolling / dwindle 一致）
-    # inactive-blur = 2.5       # 非激活 pane 磨砂背景（> 0 开启；0 关闭）
-    # file-manager-command = "yazi"   # 文件管理器程序（Cmd+Shift+B 在新 pane 里运行；名字或绝对路径，lf/ranger 亦可）
-    # browser-home = "https://www.google.com"   # 浏览器 pane（Cmd+B）打开的首页
-    # browser-search = "https://www.google.com/search?q=%s"   # 地址栏输入非网址时的搜索模板（%s = 关键词）
-    # browser-user-agent = "safari"   # 伪装成 Safari（Google 登录页拒绝嵌入式浏览器）；"webkit" = 不伪装；或填自定义 UA
-    # browser-inspectable = false     # 浏览器 pane 的 Web Inspector（右键"检查元素"）
-    # browser-tab-bar = "always"      # 标签条：always = 始终显示（默认）；auto = 只有一个标签时隐藏
-    # browser-tab-width = 200         # 标签最大宽度 pt（40–600）
-    # browser-tab-min-width = 80      # 标签最小宽度 pt（40–600）；放不下时标签条横向滚动
-    # browser-extensions = true   # 浏览器 pane 加载 WebExtensions（Chrome Web Store 安装 / 从 Chrome 导入；macOS 15.4+）
-    # browser-download-dir = "~/Downloads"   # 浏览器 pane 下载落盘目录（支持 ~；目录不存在时回退 ~/Downloads）
-    # link-opener = "browser-pane"    # 终端 ⌘+点击链接：browser-pane = 在浏览器 pane 打开（有则用最近激活的，无则新开）；system = 系统浏览器
+    // MARK: 模板补全
 
-    [control]
-    # 控制面（quickterm 命令行 / AI agent）。socket：~/Library/Application Support/QuickTerm/control.sock
-    # enabled = true            # false 彻底不监听
-    # mode = "ask"              # off = 不监听 | readonly = 只读 | ask = 默认（"on" 是 ask 的别名）
-    #                           # ask = 读免确认；改静默执行；破坏性按调用方确认一次
-    #                           # 没有"免确认"档：确认闸门只能靠 off / readonly 绕开
-    # expose-browser = "token"  # token | always | never：谁能读到浏览器 pane 的网址与标题
-    # send-text = false         # quickterm input send-text：把文本当键盘输入送进一个终端 pane。
-    #                           # **等于在那个 shell 里打字**（可能是 root，也可能是一条 ssh 会话），
-    #                           # 所以默认关闭。打开之后：写调用方自己那个 pane 免确认，
-    #                           # 写别的 pane 每次都要确认；控制字符一律拒绝，换行只能靠 --enter
-
-    [keybinds]
-    # 动作 = "modifier+key"；"none" 解绑。动作清单见 Cmd+K 速查表。
-    # new-terminal = "cmd+return"
-    # file-manager = "cmd+shift+b"
-    # new-browser = "cmd+b"
-    # clear-terminal = "cmd+shift+k"
-    # goto-workspace-1 = "cmd+1"
-
-    [ghostty]
-    # 原样透传给引擎（最高优先级），任意 ghostty 选项。
-    # cursor-style = block
-    """
-
-    /// 模板顶层键的标准行（"# key = 默认  # 说明"），按模板顺序；补全缺失键时复用
-    static var templateKeyLines: [(key: String, line: String)] {
-        // 只扫第一个 [section] 之前的顶层键：[keybinds]/[ghostty] 里的示例行不是顶层配置项
-        template.split(separator: "\n", omittingEmptySubsequences: false)
-            .prefix { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("[") }
-            .compactMap { raw in
-            let line = String(raw)
-            guard line.hasPrefix("# ") else { return nil }
-            let body = line.dropFirst(2)
-            guard let eq = body.firstIndex(of: "=") else { return nil }
-            let key = body[..<eq].trimmingCharacters(in: .whitespaces)
-            guard !key.isEmpty, key.allSatisfy({ $0.isLetter || $0 == "-" }) else { return nil }
-            return (key, line)
-        }
-    }
-
-    /// 保证配置文件存在且列全所有顶层键（"所有配置项都要写在配置文件里"）：
+    /// 保证配置文件存在且列全所有配置项（"所有配置项都要写在配置文件里"）：
     /// - 文件不存在 → 写完整模板（含目录）；
-    /// - 已存在 → 补全缺失键（注释 + 默认值，插在第一个 [section] 之前），已有设置原样保留。
+    /// - 已存在 → 补全缺失键（注释 + 默认值，插在它所属分组的末尾；分组不存在就现建），
+    ///   已有设置原样保留。**旧写法也算"已经有了"**：用扁平写法的老配置文件不会被补一份重复的。
     /// 幂等；返回是否有写入。启动与打开设置时调用。
     @discardableResult
     static func ensureTemplateKeys(at url: URL = activeConfigURL) -> Bool {
@@ -146,30 +107,100 @@ enum ConfigStore {
             } catch { return false }
         }
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        func mentions(_ key: String) -> Bool {
-            lines.contains { line in
-                var s = Substring(line.trimmingCharacters(in: .whitespaces))
-                if s.hasPrefix("#") { s = s.dropFirst().drop(while: { $0 == " " }) }
-                guard s.hasPrefix(key) else { return false }
-                let rest = s.dropFirst(key.count).drop(while: { $0 == " " })
-                return rest.hasPrefix("=")
-            }
-        }
-        let missing = templateKeyLines.filter { !mentions($0.key) }
+        let mentioned = Set(assignments(in: lines).map(\.1.spec.id))
+        let missing = ConfigSchema.keys.filter { !mentioned.contains($0.id) }
         guard !missing.isEmpty else { return false }
-        var out = lines
-        let block = ["# —— QuickTerm 新增配置项（自动补全，注释 = 默认值）——"] + missing.map(\.line) + [""]
-        if let sectionIdx = out.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("[") }) {
-            out.insert(contentsOf: block, at: sectionIdx)
-        } else {
-            if out.last == "" { out.removeLast() }
-            out.append(contentsOf: [""] + block)
+
+        // 整块照抄模板（含多行说明的续行）：补上来的段落与全新安装写下的逐字一致
+        let templateBlock = Dictionary(uniqueKeysWithValues:
+            ConfigSchema.templateKeyBlocks.map { ($0.spec.id, $0.lines) })
+        var blocks: [String: [String]] = [:]
+        for spec in missing {
+            blocks[spec.section.rawValue, default: []]
+                .append(contentsOf: templateBlock[spec.id] ?? spec.templateBlock())
         }
+        let out = insert(blocks: blocks, into: lines)
         do {
             try out.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
             return true
         } catch { return false }
     }
+
+    static let autofillBanner = "# —— QuickTerm 新增配置项（自动补全，注释 = 默认值）——"
+
+    /// 把若干行按分组插进一份配置文件：分组在 → 插在那一段末尾；分组不在 → 现建一段，
+    /// 摆在 `[keybinds]` / `[ghostty]` 这两个自由段之前（它们后面的内容是原样透传的，
+    /// 把配置项塞到 `[ghostty]` 后面只会让人以为那是给引擎的）
+    private static func insert(blocks: [String: [String]], into lines: [String]) -> [String] {
+        var pending = blocks
+        var out: [String] = []
+        var section = ""
+
+        func flush(_ name: String) {
+            guard let block = pending.removeValue(forKey: name) else { return }
+            var trailing: [String] = []
+            while out.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { trailing.append(out.removeLast()) }
+            out.append(contentsOf: [autofillBanner] + block)
+            out.append(contentsOf: trailing.isEmpty ? [""] : trailing)
+        }
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("["), let close = trimmed.firstIndex(of: "]") {
+                flush(section)   // 上一段结束了
+                section = String(trimmed[trimmed.index(after: trimmed.startIndex)..<close])
+            }
+            out.append(line)
+        }
+        flush(section)
+
+        guard !pending.isEmpty else { return out }
+        // 还没落的都是文件里根本没有的分组：按注册表顺序现建
+        var fresh: [String] = []
+        for sectionCase in ConfigSection.allCases {
+            guard let block = pending.removeValue(forKey: sectionCase.rawValue) else { continue }
+            // 段头 + 段说明：现建的分组要和全新安装的模板长得一样，
+            // 不能只有一个光秃秃的 [control]（那段说明里写着 socket 的落点）
+            fresh.append(contentsOf: ConfigSchema.sectionHeaderLines(sectionCase))
+            fresh.append(contentsOf: block)
+            fresh.append("")
+        }
+        let freeform = ["keybinds", "ghostty"].map { "[\($0)]" }
+        if let index = out.firstIndex(where: { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return freeform.contains { trimmed.hasPrefix($0) }
+        }) {
+            out.insert(contentsOf: fresh, at: index)
+        } else {
+            if out.last?.isEmpty == true { out.removeLast() }
+            out.append(contentsOf: [""] + fresh)
+        }
+        return out
+    }
+
+    /// 一份配置文件里**每一行**（含被注释掉的）对注册表键的赋值。
+    /// 模板补全与就地改写都靠它 —— "这个键是不是已经写在文件里了"只能有一种判断
+    private static func assignments(in lines: [String]) -> [(Int, (ref: ConfigKeyRef, spec: ConfigKeySpec))] {
+        var out: [(Int, (ref: ConfigKeyRef, spec: ConfigKeySpec))] = []
+        var section = ""
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("["), let close = trimmed.firstIndex(of: "]") {
+                section = String(trimmed[trimmed.index(after: trimmed.startIndex)..<close])
+                continue
+            }
+            var body = Substring(trimmed)
+            if body.hasPrefix("#") { body = body.dropFirst().drop(while: { $0 == " " }) }
+            guard let eq = body.firstIndex(of: "=") else { continue }
+            let name = body[..<eq].trimmingCharacters(in: .whitespaces)
+            let ref = ConfigKeyRef(section, name)
+            guard let spec = ConfigSchema.byRef[ref] else { continue }
+            out.append((index, (ref, spec)))
+        }
+        return out
+    }
+
+    // MARK: 设置
 
     struct Settings: Equatable {
         var themeName: String?
@@ -205,8 +236,12 @@ enum ConfigStore {
         /// 浏览器 pane 的下载目录（支持 `~`；不是个真目录时回退 ~/Downloads）
         var browserDownloadDir: String = "~/Downloads"
         var linkOpener: String = "browser-pane"
-        /// `[control]`（控制面 / CLI）。默认**开**，模式 ask：读免确认、改静默但可见、破坏性按调用方确认一次
-        var controlEnabled: Bool = true
+        /// `[control] socket`（旧名 `enabled`）：false = 彻底不监听。默认**开**
+        var controlSocket: Bool = true
+        /// `[control] mcp`：false = `quickterm mcp` 拒绝服务。默认**开**。
+        /// 与 socket 分开，是因为两者的攻击面不同：用户完全可能自己用命令行，
+        /// 却不想任何 MCP 宿主（以及它读到的每一段网页 / CI 日志）连进来
+        var controlMCP: Bool = true
         var controlMode: String = "ask"
         var controlExposeBrowser: String = "token"
         var controlSendText: Bool = false
@@ -219,109 +254,74 @@ enum ConfigStore {
         guard let toml = try? String(contentsOf: activeConfigURL, encoding: .utf8) else {
             return Settings()
         }
-        return parse(toml)
+        let result = parseDetailed(toml)
+        // 值不合法的行会被丢掉、保留默认。**必须说一声**：
+        // `[control] socket = off` 这种写法以前会被悄悄读成"开"，用户以为自己关掉了
+        for note in result.diagnostics {
+            logger.warning("配置未生效：\(note.messageZH, privacy: .public)")
+        }
+        return result.settings
     }
 
-    static func parse(_ toml: String) -> Settings {
+    static func parse(_ toml: String) -> Settings { parseDetailed(toml).settings }
+
+    /// 解析 + 那些**没生效**的行（设置界面将来要把它们显示在对应 tab 上）
+    static func parseDetailed(_ toml: String) -> (settings: Settings, diagnostics: [ConfigDiagnostic]) {
         var settings = Settings()
-        var sawPaneGap = false   // pane-gap 优先于旧键 dwindle-gap（与出现顺序无关）
-        var section = ""
-        var passthrough: [String] = []
-        for rawLine in toml.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("["), line.hasSuffix("]") {
-                section = String(line.dropFirst().dropLast())
-                continue
-            }
-            guard !line.isEmpty, !line.hasPrefix("#") else { continue }
-            if section == "ghostty" {
-                passthrough.append(line)  // 原样透传（含 ghostty 自己的 key = value 语法）
-                continue
-            }
-            guard let eq = line.firstIndex(of: "=") else { continue }
-            let key = line[..<eq].trimmingCharacters(in: .whitespaces)
-            var value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
-            if value.hasPrefix("\"") {
-                let inner = value.dropFirst()
-                if let end = inner.firstIndex(of: "\"") { value = String(inner[..<end]) }
-            } else if let hash = value.firstIndex(of: "#") {
-                value = String(value[..<hash]).trimmingCharacters(in: .whitespaces)
-            }
-            switch section {
-            case "":
-                if key == "theme" { settings.themeName = value }
-                if key == "workspaces", let n = Int(value) {
-                    settings.workspaces = min(max(n, 1), 10)
-                }
-                if key == "pane-padding", let n = Int(value) {
-                    settings.panePadding = min(max(n, 0), 32)
-                }
-                if key == "visible-columns", let n = Int(value) {
-                    settings.visibleColumns = min(max(n, 1), 6)
-                }
-                if key == "pane-opacity", let v = Double(value) {
-                    settings.paneOpacity = min(max(v, 0.5), 1.0)
-                }
-                if key == "active-opacity", let v = Double(value) {
-                    settings.activeOpacity = min(max(v, 0.5), 1.0)
-                }
-                if key == "bar-opacity", let v = Double(value) {
-                    settings.barOpacity = min(max(v, 0.0), 1.0)
-                }
-                if key == "divider-opacity", let v = Double(value) {
-                    settings.dividerOpacity = min(max(v, 0.0), 1.0)
-                }
-                if key == "pane-gap", let v = Int(value) {
-                    settings.paneGap = min(max(v, 0), 20)
-                    sawPaneGap = true
-                }
-                if key == "dwindle-gap", let v = Int(value), !sawPaneGap {
-                    // 旧键（曾只作用于 dwindle）：pane-gap 未出现时沿用其值，两种布局一致
-                    settings.paneGap = min(max(v, 0), 20)
-                }
-                if key == "inactive-blur", let v = Double(value) {
-                    settings.inactiveBlur = min(max(v, 0), 10)
-                }
-                if key == "file-manager-command", !value.isEmpty {
-                    settings.fileManagerCommand = value
-                }
-                if key == "browser-home", !value.isEmpty { settings.browserHome = value }
-                if key == "browser-search", !value.isEmpty { settings.browserSearch = value }
-                if key == "browser-user-agent", !value.isEmpty { settings.browserUserAgent = value }
-                if key == "browser-inspectable" { settings.browserInspectable = (value.lowercased() == "true") }
-                if key == "browser-tab-bar", !value.isEmpty { settings.browserTabBar = value }
-                if key == "browser-tab-width", let v = Int(value) { settings.browserTabWidth = min(max(v, 40), 600) }
-                if key == "browser-tab-min-width", let v = Int(value) { settings.browserTabMinWidth = min(max(v, 40), 600) }
-                if key == "browser-extensions" { settings.browserExtensions = (value.lowercased() != "false") }
-                if key == "browser-download-dir", !value.isEmpty { settings.browserDownloadDir = value }
-                if key == "link-opener", !value.isEmpty { settings.linkOpener = value }
-            case "control":
-                if key == "enabled" { settings.controlEnabled = (value.lowercased() != "false") }
-                // "on" 只是"开着"的口语说法，落到默认姿态 ask —— 绝不是"免确认"。
-                // 让它自成一档的话，用户把它当成 off 的反义词写进配置，就在毫不知情的情况下
-                // 把整个破坏性确认闸门关掉了
-                if key == "mode", ["off", "readonly", "ask", "on"].contains(value.lowercased()) {
-                    let mode = value.lowercased()
-                    settings.controlMode = (mode == "on") ? "ask" : mode
-                }
-                if key == "expose-browser", ["token", "always", "never"].contains(value.lowercased()) {
-                    settings.controlExposeBrowser = value.lowercased()
-                }
-                if key == "send-text" { settings.controlSendText = (value.lowercased() == "true") }
-            case "keybinds":
-                guard let action = WMAction(rawValue: key) else { continue }
-                if value.lowercased() == "none" {
-                    settings.unbound.insert(action)
-                } else if let combo = KeyCombo.parse(value) {
-                    settings.overrides[action] = combo
-                }
-            default:
-                break
+        let scan = ConfigTOML.scan(toml)
+        let resolved = ConfigSchema.resolveDetailed(scan)
+        for (id, value) in resolved.values {
+            ConfigBindings.table[id]?(value, &settings)
+        }
+        // [keybinds] 不是注册表项（键名 = 动作清单，见 WMAction）
+        for entry in scan.entries where entry.section == "keybinds" {
+            guard let action = WMAction(rawValue: entry.key) else { continue }
+            if entry.value.lowercased() == "none" {
+                settings.unbound.insert(action)
+            } else if let combo = KeyCombo.parse(entry.value) {
+                settings.overrides[action] = combo
             }
         }
-        settings.ghosttyPassthrough = passthrough.joined(separator: "\n")
-        return settings
+        settings.ghosttyPassthrough = scan.ghostty.joined(separator: "\n")
+        return (settings, resolved.diagnostics)
     }
+}
+
+/// 注册表项 → `Settings` 的哪一个字段。**只有赋值，没有校验**：
+/// 类型、范围、越界脾气全在 `ConfigSchema` 里声明并统一执行，
+/// 这张表要是自己再判一次，两边就又能各走各的了。
+/// `ConfigSchemaTests.testEveryKeyHasABinding` 钉死两张表一一对应
+enum ConfigBindings {
+    typealias Write = (ConfigValue, inout ConfigStore.Settings) -> Void
+
+    static let table: [String: Write] = [
+        "appearance.theme": { v, s in s.themeName = v.stringValue },
+        "appearance.pane-opacity": { v, s in v.doubleValue.map { s.paneOpacity = $0 } },
+        "appearance.active-opacity": { v, s in v.doubleValue.map { s.activeOpacity = $0 } },
+        "appearance.bar-opacity": { v, s in v.doubleValue.map { s.barOpacity = $0 } },
+        "appearance.divider-opacity": { v, s in v.doubleValue.map { s.dividerOpacity = $0 } },
+        "appearance.inactive-blur": { v, s in v.doubleValue.map { s.inactiveBlur = $0 } },
+        "appearance.pane-padding": { v, s in v.intValue.map { s.panePadding = $0 } },
+        "appearance.pane-gap": { v, s in v.intValue.map { s.paneGap = $0 } },
+        "workspace.workspaces": { v, s in v.intValue.map { s.workspaces = $0 } },
+        "workspace.visible-columns": { v, s in s.visibleColumns = v.intValue },
+        "terminal.file-manager-command": { v, s in v.stringValue.map { s.fileManagerCommand = $0 } },
+        "browser.home": { v, s in v.stringValue.map { s.browserHome = $0 } },
+        "browser.search": { v, s in v.stringValue.map { s.browserSearch = $0 } },
+        "browser.user-agent": { v, s in v.stringValue.map { s.browserUserAgent = $0 } },
+        "browser.inspectable": { v, s in v.boolValue.map { s.browserInspectable = $0 } },
+        "browser.tab-bar": { v, s in v.stringValue.map { s.browserTabBar = $0 } },
+        "browser.tab-width": { v, s in v.intValue.map { s.browserTabWidth = $0 } },
+        "browser.tab-min-width": { v, s in v.intValue.map { s.browserTabMinWidth = $0 } },
+        "browser.extensions": { v, s in v.boolValue.map { s.browserExtensions = $0 } },
+        "browser.download-dir": { v, s in v.stringValue.map { s.browserDownloadDir = $0 } },
+        "browser.link-opener": { v, s in v.stringValue.map { s.linkOpener = $0 } },
+        "control.socket": { v, s in v.boolValue.map { s.controlSocket = $0 } },
+        "control.mcp": { v, s in v.boolValue.map { s.controlMCP = $0 } },
+        "control.mode": { v, s in v.stringValue.map { s.controlMode = $0 } },
+        "control.expose-browser": { v, s in v.stringValue.map { s.controlExposeBrowser = $0 } },
+        "control.send-text": { v, s in v.boolValue.map { s.controlSendText = $0 } },
+    ]
 }
 
 extension KeyCombo {

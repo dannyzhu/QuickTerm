@@ -240,19 +240,20 @@ final class ControlStateTests: XCTestCase {
         expose-browser = "never"
         send-text = true
         """)
-        XCTAssertTrue(settings.controlEnabled)
+        XCTAssertTrue(settings.controlSocket, "旧名 enabled 仍然映射到 socket 这个开关")
         XCTAssertEqual(settings.controlMode, "readonly")
         XCTAssertEqual(settings.controlExposeBrowser, "never")
         XCTAssertTrue(settings.controlSendText)
 
         let defaults = ConfigStore.parse("")
-        XCTAssertTrue(defaults.controlEnabled, "默认开")
+        XCTAssertTrue(defaults.controlSocket, "默认开")
+        XCTAssertTrue(defaults.controlMCP, "MCP 默认开")
         XCTAssertEqual(defaults.controlMode, "ask", "默认 ask")
         XCTAssertEqual(defaults.controlExposeBrowser, "token")
         XCTAssertFalse(defaults.controlSendText, "send-text 默认关")
 
         let off = ConfigStore.parse("[control]\nenabled = false\n")
-        XCTAssertFalse(off.controlEnabled)
+        XCTAssertFalse(off.controlSocket)
         XCTAssertFalse(ControlCommandRunner.Config(off).isListening)
         XCTAssertFalse(ControlCommandRunner.Config(ConfigStore.parse("[control]\nmode = \"off\"\n")).isListening)
         XCTAssertFalse(ControlCommandRunner.Config(ConfigStore.parse("[control]\nmode = \"readonly\"\n")).allowsMutation)
@@ -260,6 +261,8 @@ final class ControlStateTests: XCTestCase {
         // 模板里必须能看到这一段（"所有配置项都要写在配置文件里"）
         XCTAssertTrue(ConfigStore.template.contains("[control]"))
         XCTAssertTrue(ConfigStore.template.contains("expose-browser"))
+        XCTAssertTrue(ConfigStore.template.contains("# socket = true"))
+        XCTAssertTrue(ConfigStore.template.contains("# mcp = true"))
     }
 
     func testTestHostNeverBindsTheRealSocket() throws {

@@ -84,6 +84,9 @@ targets:
       - CLI
       - Sources/Control/Wire
       - Sources/Config/WMAction.swift
+      # 配置注册表：`quickterm mcp` 要在 app 之外读到 `[control] mcp`。
+      # 纯 Foundation，与 app 共用同一份声明（两份必然漂移）
+      - Sources/Config/ConfigSchema.swift
     settings:
       base:
         PRODUCT_NAME: quickterm
