@@ -74,8 +74,16 @@ struct MCPTool {
                 + "Browser pane URLs and titles are redacted unless the caller inherited QUICKTERM_TOKEN."
         }
         if destructiveHint {
+            // "先 dry-run 一下"只对**真的收这个参数**的工具成立。`quickterm_read_terminal`
+            // 背后的 pane.capture-text 是 readOnlyEffect（它什么都不改），
+            // 于是 `honorsMutationFlags` 为假：schema 里根本没有 dry_run 这一项，
+            // 服务端也会把它当未知参数拒掉（bad_request）。描述里劝模型去做一件
+            // 保证失败的事，正是这份"注解全部机械生成"想防的那类漂移
+            let advice = commands.contains(where: \.honorsMutationFlags)
+                ? " Run with dry-run first."
+                : " Changes nothing itself, and takes no dry-run / fail-if-noop."
             return "class \(classes) — QuickTerm asks the user to confirm in its own UI "
-                + "(exit code 4 / error confirmation_required if nobody answers). Run with dry-run first."
+                + "(exit code 4 / error confirmation_required if nobody answers)." + advice
         }
         // **这一句必须跟着 `idempotentHint` 走。** 宿主与模型读这一行是为了回答一个具体问题：
         // "调用超时了，能不能直接重发？" 对 `pane new` / `screen new` / `action` 来说答案是不能
@@ -241,10 +249,27 @@ enum MCPToolMap {
                 commandNames: ["pane.set", "pane.move", "pane.swap", "pane.resize",
                                "workspace.set-layout", "workspace.equalize", "workspace.count",
                                "screen.move", "screen.set", "app.set"]),
-        MCPTool(name: "quickterm_close", title: "Close panes, workspaces or screens",
-                summary: "Close a pane, clear a workspace, or close a screen with everything in it. This ends "
+        MCPTool(name: "quickterm_close", title: "Close panes, tabs, workspaces or screens",
+                summary: "Close a pane, one browser tab (closing the last tab closes the pane, exactly like "
+                    + "Cmd-W), clear a workspace, or close a screen with everything in it. This ends "
                     + "the processes running there. Destructive: QuickTerm asks the user to confirm.",
-                commandNames: ["pane.close", "workspace.clear", "screen.close"]),
+                commandNames: ["pane.close", "browser.close", "workspace.clear", "screen.close"]),
+        MCPTool(name: "quickterm_browser", title: "Drive a browser pane's tabs",
+                summary: "Open a new tab at a URL, navigate a tab, or reload one, in a browser pane. "
+                    + "`target` picks the pane (b3); `tab` picks the tab inside it — 1-based index, "
+                    + "`#<id prefix>` from the pane's `tabList`, `@active` (default) or `@last`. "
+                    + "Read `tabList` from quickterm_state first: it is what `tab` addresses. "
+                    + "Tab titles and URLs are redacted for callers without QUICKTERM_TOKEN, exactly like "
+                    + "the pane-level ones. To close a tab use quickterm_close.",
+                commandNames: ["browser.open", "browser.goto", "browser.reload"]),
+        MCPTool(name: "quickterm_read_terminal", title: "Read a terminal pane's screen",
+                summary: "Return the text currently visible in a terminal pane (optionally plus N lines of "
+                    + "scrollback) — how a command you started actually ended. Treated as sensitive, not as a "
+                    + "read: a shell screen can hold tokens, a password typed at a prompt, private source. "
+                    + "Off unless `[control] capture-text = true`; the caller must carry QUICKTERM_TOKEN; and "
+                    + "the user confirms once per calling process in QuickTerm's own UI. The captured text is "
+                    + "returned once and never logged.",
+                commandNames: ["pane.capture-text"]),
         MCPTool(name: "quickterm_dump_spec", title: "Dump or validate a workspace spec",
                 summary: "Serialise a workspace / screen / whole session as \(SpecSchema.workspace) JSON, or "
                     + "validate a spec without touching anything. dump -> edit -> apply is the safe way to "
@@ -385,6 +410,10 @@ enum MCPToolMap {
             return schema(fromSample: MCPSamples.specValidate, description: "Validation report; nothing was changed.")
         case "events.poll":
             return schema(fromSample: MCPSamples.events, description: "quickterm.events/1 — never carries pane output.")
+        case "pane.capture-text":
+            return schema(fromSample: MCPSamples.capture,
+                          description: "`text` is what the pane shows right now (plus `scrollback` lines of "
+                              + "history when asked). It is returned here once and written nowhere else.")
         default:
             // 名词-动词层的变更命令共用一个信封（`ControlMutationPayload`）
             return schema(fromSample: MCPSamples.mutation,
@@ -467,6 +496,9 @@ enum MCPSamples {
             rect: [0.97, 0, 0.485, 1], points: [776, 900], cols: 96, rows: 48,
             split: "vertical", ratio: 0.62, width: 0.485, share: 1),
         title: "npm run dev", cwd: "/Users/you/proj", url: "http://localhost:3000", tabs: 2,
+        tabList: [ControlStatePayload.PaneInfo.TabInfo(
+            index: 1, id: "8A1F-…", active: true, title: "QuickTerm",
+            url: "http://localhost:3000", loading: false)],
         focused: false, busy: true, float: false, zoom: false, redacted: false)
 
     static let workspaceInfo = ControlStatePayload.WorkspaceInfo(
@@ -513,7 +545,12 @@ enum MCPSamples {
         note: "由 config.toml 监听落地，约 0.2s 后生效",
         spec: ControlSpecApplyReport(mode: "reuse", scope: "workspace", created: ["t9"],
                                      reused: ["t3"], closed: ["t4"], partial: false,
-                                     skipped: ["screen 3"]))
+                                     skipped: ["screen 3"]),
+        warnings: [ControlWarning.cwdDenied("/Users/you/Downloads", used: nil)])
+
+    static let capture = ControlCaptureTextPayload(
+        command: "pane.capture-text", pane: paneInfo, cols: 96, rows: 24,
+        lines: 2, scrollback: 0, truncated: false, text: "~/proj $ npm test\n  12 passing")
 
     static let specDump = ControlSpecDumpPayload(scope: "workspace", schema: SpecSchema.workspace,
                                                  panes: 3, spec: .object([:]))

@@ -200,6 +200,28 @@ final class MCPToolMapTests: XCTestCase {
         XCTAssertEqual(MCPToolMap.tool(named: "quickterm_action")?.idempotentHint, false)
     }
 
+    /// **描述里提到的参数，schema 里必须真的有。**
+    /// 回归：`safetyLine` 的 destructive 分支一律写"Run with dry-run first"，
+    /// 而 `quickterm_read_terminal`（背着 pane.capture-text，readOnlyEffect）
+    /// 根本不收这个参数——照着描述发一次的下场是 bad_request，或者模型自己编一个 schema 里没有的键
+    func testAToolNeverAdvisesAFlagItsSchemaDoesNotAccept() throws {
+        for tool in MCPToolMap.tools {
+            let properties = try XCTUnwrap(tool.inputSchema["properties"]?.objectValue)
+            let exposed = properties[ControlCommandTable.Flag.dryRun] != nil
+            if !exposed {
+                XCTAssertFalse(tool.safetyLine.lowercased().contains("dry-run first"),
+                               "\(tool.name) 的 schema 里没有 dry_run，就不能劝模型先跑一次："
+                                   + tool.safetyLine)
+            }
+            XCTAssertEqual(exposed, tool.commands.contains(where: \.honorsMutationFlags),
+                           "\(tool.name)：dry_run 出现在 schema 里，当且仅当背后有命令认这个参数")
+        }
+        let read = try XCTUnwrap(MCPToolMap.tool(named: "quickterm_read_terminal"))
+        XCTAssertTrue(read.destructiveHint, "sensitive 仍然要让宿主每次确认")
+        XCTAssertTrue(read.safetyLine.contains("takes no dry-run"),
+                      "要明说它不收这两个参数：\(read.safetyLine)")
+    }
+
     /// 取值集合各不相同时**不写 enum**：写一个只对其中一条命令成立的 enum 比不写更糟
     func testEnumsAreOnlyDeclaredWhenTheyHoldForEveryCommand() throws {
         let arrange = try XCTUnwrap(MCPToolMap.tool(named: "quickterm_arrange"))

@@ -683,6 +683,36 @@ extension Ghostty {
             }
         }
 
+        /// QuickTerm 控制面：**绝对设值**的标题（`quickterm pane set --title`）。
+        ///
+        /// 与右键那个「Change Terminal Title」落到同一处状态（`titleFromTerminal` 非 nil
+        /// = 用户接管了标题，引擎之后报的标题只更新那份备份、不再改可见标题），
+        /// 但有两处刻意的不同：
+        /// - **同步**。`setTitle` 为了消抖排了一个 75ms 的定时器；一条命令行命令返回时
+        ///   标题必须已经是新的，否则紧接着的 `state` 读回来的还是旧值。
+        /// - **可重放**。连设两次自定义标题时不覆盖那份备份，所以 `--title ""`
+        ///   还原的永远是 shell 最初报的那个，而不是上一次的自定义值
+        ///   （右键那条路会把备份覆盖成自定义值——那是上游的行为，这里不照抄）。
+        ///
+        /// `nil` / 空串 = 交还给 shell。返回值：标题真的变了吗
+        @discardableResult
+        func setControlTitle(_ wanted: String?) -> Bool {
+            titleChangeTimer?.invalidate()
+            let before = title
+            if let wanted, !wanted.isEmpty {
+                if titleFromTerminal == nil { titleFromTerminal = title }
+                title = wanted
+            } else {
+                guard let shellTitle = titleFromTerminal else { return false }   // 本来就没被接管
+                titleFromTerminal = nil
+                title = shellTitle.isEmpty ? "👻" : shellTitle
+            }
+            return title != before
+        }
+
+        /// 标题此刻被用户 / 控制面接管了吗（`pane set --title ""` 的幂等判定要它）
+        var hasControlTitle: Bool { titleFromTerminal != nil }
+
         func setTitle(_ title: String) {
             // This fixes an issue where very quick changes to the title could
             // cause an unpleasant flickering. We set a timer so that we can

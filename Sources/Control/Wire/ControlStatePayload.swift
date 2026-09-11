@@ -126,7 +126,13 @@ struct ControlStatePayload: Codable, Equatable {
         var title: String?
         var cwd: String?
         var url: String?
+        /// 浏览器 pane 的标签**数量**（形状不变：一直是个整数）
         var tabs: Int?
+        /// 浏览器 pane 的逐标签明细（顺序 = 标签顺序）。
+        /// **打码规则与 pane 级的 url / title 逐字相同**：没有 token 的调用方
+        /// 拿得到 index / id / active（寻址要用），拿不到任何标题与网址——
+        /// 否则"pane 级打了码、tab 级照抄一份"就是同一个外泄面换了个字段名
+        var tabList: [TabInfo]? = nil
         var focused: Bool
         var busy: Bool
         var float: Bool
@@ -138,6 +144,24 @@ struct ControlStatePayload: Codable, Equatable {
             var column: Int?
             var row: Int?
             var path: String?
+        }
+
+        /// 浏览器 pane 里的一个标签。**`index` 与 `id` 就是 `--tab` 认的那两种写法**：
+        /// 序号是给人看的（1 起，与标签栏顺序一致，会随开关标签移动），
+        /// id 是稳定的（标签活着就不变，`--tab #<前缀>` 认它）——
+        /// agent 先 `get` 再 `--tab #id`，中间别人开了新标签也不会打到别的页面上
+        struct TabInfo: Codable, Equatable {
+            /// 1 起的序号（= 标签栏从左到右）
+            var index: Int
+            /// 稳定的标签 id（`--tab #<uuid 或 ≥4 位前缀>`）
+            var id: String
+            /// 当前标签（`--tab @active` 指的就是它）
+            var active: Bool
+            /// 标题 / 网址：无 token 的调用方读到的是 `<redacted>`
+            var title: String?
+            var url: String?
+            /// 正在加载
+            var loading: Bool?
         }
 
         /// pane 的几何。**以模型为准**：`rect` 是由 dwindle 的 ratio / scrolling 的列宽因子
@@ -215,7 +239,10 @@ struct ControlActionListPayload: Codable, Equatable {
 }
 
 struct ControlVersionPayload: Codable, Equatable {
-    var cli: String
+    /// 调用方二进制的版本。**应用侧一律留空**——它无从得知谁在调它；
+    /// 由 CLI 自己填。填成应用版本会让「CLI 与应用不一致」永远显示一致，
+    /// 而升级后 PATH 上留着旧 quickterm 正是要靠这一栏发现的
+    var cli: String?
     var app: String?
     var protocolVersion: Int
     var appProtocolVersion: Int?

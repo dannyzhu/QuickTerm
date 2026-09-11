@@ -245,6 +245,7 @@ enum ConfigStore {
         var controlMode: String = "ask"
         var controlExposeBrowser: String = "token"
         var controlSendText: Bool = false
+        var controlCaptureText: Bool = false
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
         var ghosttyPassthrough: String = ""
@@ -321,6 +322,7 @@ enum ConfigBindings {
         "control.mode": { v, s in v.stringValue.map { s.controlMode = $0 } },
         "control.expose-browser": { v, s in v.stringValue.map { s.controlExposeBrowser = $0 } },
         "control.send-text": { v, s in v.boolValue.map { s.controlSendText = $0 } },
+        "control.capture-text": { v, s in v.boolValue.map { s.controlCaptureText = $0 } },
     ]
 }
 

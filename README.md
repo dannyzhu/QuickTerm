@@ -233,7 +233,8 @@ The CLI parser, `--help`, `describe --json`, the security classes and the MCP to
 
 ```
 quickterm state | list | get | action <wm-action> | describe | version
-quickterm pane      new | close | focus | move | swap | set | resize
+quickterm pane      new | close | focus | move | swap | set | resize | capture-text
+quickterm browser   open | goto | reload | close
 quickterm workspace goto | set-layout | equalize | clear | count
 quickterm screen    new | close | move | focus | set
 quickterm app       get | set
@@ -274,6 +275,7 @@ quickterm spec apply -f dev.json -t :4            # --into-empty is the default:
 # mode = "ask"              # off | readonly | ask ("on" is an alias for ask). There is no "never ask" mode.
 # expose-browser = "token"  # token | always | never — who may read browser pane URLs and titles
 # send-text = false         # typing into a terminal pane on behalf of a caller; off by default
+# capture-text = false      # reading a terminal pane's visible text on behalf of a caller; off by default
 ```
 
 `socket`, the old `enabled` and `mode` are three switches over the same listener and **the most restrictive one wins**: `socket = false`, `enabled = false` or `mode = "off"` — any single one of them means no socket is bound at all. `mcp` is separate on purpose: the threat surfaces differ, and you may well want the CLI for yourself without letting any MCP host (and everything it reads) in. With `mcp = false`, `quickterm mcp` refuses to serve and names the key that refused it; the socket stays available to your own shell.
@@ -287,7 +289,10 @@ Every boolean key in the config (here and everywhere else) accepts `true` / `1` 
 - Reads are silent — but **browser pane URLs and titles are redacted** for callers that did not inherit `QUICKTERM_TOKEN`. Browser panes hold logged-in sessions, so `quickterm state` is itself a disclosure surface.
 - Mutations are silent but **visible**: the status bar flashes the command and its claimed origin pane, everything is recorded in QuickTerm's control activity log, and layout changes register an undo entry (`Cmd+Z`). Mutations are rate-limited per caller, and every mutating command is refused while a modal dialog is up.
 - Destructive commands (`pane close`, `workspace clear`, `screen close`, `spec apply --replace`) ask the user **inside QuickTerm**, once per (calling pid, command class). The process name and pid in the dialog come from the kernel (`LOCAL_PEERPID`), so a copied token cannot fake them.
-- `input send-text` is off by default and is arbitrary code execution in whatever shell is there — possibly root, possibly a live ssh session. Once enabled, writing into the caller's own pane needs no prompt (that tty is already its own), and the caller has to *prove* that with the per-pane `QUICKTERM_PANE_TOKEN` it inherited — the self-reported `QUICKTERM_PANE` buys nothing, because the server cannot verify it. **Every other pane prompts every single time**, and the dialog shows the exact text that would be typed and whether a newline follows. Control characters are refused, and a newline requires an explicit `--enter`.
+- **Browser tabs and terminal screens.** `browser open | goto | reload | close` drive the tabs of a browser pane: `-t` picks the pane, `--tab` picks the tab inside it (1-based index, `#<id prefix>`, `@active`, `@last` — all of them visible in the `tabList` that `state` and `get` now report). Navigating is an absolute setter, closing the last tab closes the pane exactly like `Cmd+W`, and per-tab titles and URLs are redacted for a caller without `QUICKTERM_TOKEN`, exactly like the pane-level ones (for that caller `goto` always navigates rather than reporting a no-op, so "did it change?" cannot become a yes/no oracle for a URL it is not allowed to read). URLs and titles reach the in-app activity log but never the system-wide unified log, which only records the path that changed. `pane capture-text` returns what a terminal pane shows right now — see below for why it is gated harder than a read.
+- `input send-text` and `pane capture-text` are **separate opt-ins, both off by default**, and a grant for one is never a grant for the other. `input send-text` is off by default and is arbitrary code execution in whatever shell is there — possibly root, possibly a live ssh session. Once enabled, writing into the caller's own pane needs no prompt (that tty is already its own), and the caller has to *prove* that with the per-pane `QUICKTERM_PANE_TOKEN` it inherited — the self-reported `QUICKTERM_PANE` buys nothing, because the server cannot verify it. **Every other pane prompts every single time**, and the dialog shows the exact text that would be typed and whether a newline follows. Control characters are refused, and a newline requires an explicit `--enter`.
+- `pane capture-text` is classified `sensitive`, not `read`: a shell screen can hold a token, a password typed at a prompt, private source. It needs `[control] capture-text = true`, the caller must carry `QUICKTERM_TOKEN` (the same one browser redaction turns on), and the user confirms once per calling process — there is no "reading your own pane" exemption, because a process cannot normally read its own tty's scrollback either. It refuses `--dry-run` (elsewhere that flag also means "do not prompt", which here would be a way around the gate), and the captured text is returned once and written to no log.
+- A `--cwd` that macOS privacy rules refuse (the protected `~/Desktop` / `~/Documents` / `~/Downloads` without a Files-and-Folders grant) no longer succeeds silently: the response carries a `cwd_denied` warning naming the path, the reason and how to grant access, and `--require-cwd` turns it into an error that creates nothing at all. `spec apply` reports the same thing. Browser panes never consume `--cwd`, so neither the warning nor `--require-cwd` applies to them.
 - Connections must come from the same uid (`LOCAL_PEERCRED`); the socket is `0600` inside a `0700` directory. There is no TCP listener and no escape-sequence channel, ever.
 - **`QUICKTERM_TOKEN` is proof of origin, not a permission boundary.** There is one per app launch, injected into every pane, so it answers "this came from *some* QuickTerm pane" and never skips a confirmation. `QUICKTERM_PANE_TOKEN` is one per pane (`HMAC(per-launch key, paneID)`) and answers the question the first one cannot — *which* pane — but it too is not a boundary: it is used in exactly one place, the `send-text` self-write exemption.
 
@@ -295,7 +300,7 @@ The real threat is not another user on the machine — it is a **confused deputy
 
 ### MCP
 
-`quickterm mcp` is a stdio MCP server whose 11 coarse tools are generated from the same command table (a hand-written one would drift silently).
+`quickterm mcp` is a stdio MCP server whose 13 coarse tools are generated from the same command table (a hand-written one would drift silently).
 
 ```sh
 claude mcp add quickterm -- /usr/local/bin/quickterm mcp
@@ -308,7 +313,7 @@ Tool annotations (`readOnlyHint` / `destructiveHint` / `idempotentHint`) are map
 ### Honest limits
 
 - Short handles (`t7`, `b3`) are stable only for one run of QuickTerm; the only identity that survives a restart is the pane `id` (a UUID).
-- Events carry structure, titles and cwd — **never pane output**. Reading what a command printed is not something the control plane does.
+- Events carry structure, titles and cwd — **never pane output**. To read what is on a terminal's screen there is one deliberate, opt-in, per-process-confirmed door: `pane capture-text`.
 - Some changes bump `seq` without a typed event (`app set theme`, `screen set --fullscreen`): you learn your snapshot is stale, then re-read `state`.
 - `events follow` is a stream for humans and shell scripts; agents should long-poll with `events poll --since`.
 - The MCP tool list is roughly 64 KB of schema — that is the per-session context tax the CLI does not charge, which is why the docs say MCP for interactive one-offs, CLI for bulk composition.

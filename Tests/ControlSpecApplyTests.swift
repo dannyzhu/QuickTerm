@@ -583,6 +583,51 @@ final class ControlSpecApplyTests: XCTestCase {
             .contains("google") ?? false, "没有 scheme 的词还是该去搜索")
     }
 
+    /// **省略形式与 WebKit 落地之后的形式是同一个网址。**
+    /// 人（和 agent）写的是 `http://localhost:3000`，WebView 报回来的是 `http://localhost:3000/`。
+    /// 照字面比的话，手写 spec 里的浏览器 pane 永远匹配不上活着的那个——
+    /// 于是每 apply 一次就把一个正停在目标页上的 pane 拆了重建（页面、登录态、滚动位置全没）
+    func testAnOmittedTrailingSlashIsTheSameURL() {
+        func url(_ raw: String) -> URL? { URL(string: raw) }
+        XCTAssertTrue(ControlPaneFactory.sameURL(url("http://localhost:3000"),
+                                                 url("http://localhost:3000/")))
+        XCTAssertTrue(ControlPaneFactory.sameURL(url("HTTPS://Example.COM/a"),
+                                                 url("https://example.com/a")))
+        XCTAssertTrue(ControlPaneFactory.sameURL(url("https://example.com:443/"),
+                                                 url("https://example.com/")))
+        // 规范化到此为止：下面这些是**不同的页面**，不能被"整理"到一起
+        XCTAssertFalse(ControlPaneFactory.sameURL(url("https://example.com/a"),
+                                                  url("https://example.com/a/")))
+        XCTAssertFalse(ControlPaneFactory.sameURL(url("https://example.com/?a=1&b=2"),
+                                                  url("https://example.com/?b=2&a=1")))
+        XCTAssertFalse(ControlPaneFactory.sameURL(url("https://example.com/#x"),
+                                                  url("https://example.com/")))
+        XCTAssertFalse(ControlPaneFactory.sameURL(url("https://example.com/"), nil))
+    }
+
+    /// 上面那条规矩落到 `spec apply --reuse` 上：spec 里写省略形式，
+    /// 活着的 pane 停在带斜杠的那一个——必须**原地留着**
+    func testABrowserPaneIsReusedAcrossTheTrailingSlash() throws {
+        touched.insert(1)
+        let keeper = try XCTUnwrap(try newPane(["kind": .string("browser"),
+                                                "url": .string("http://127.0.0.1:1/")])
+                                   as? BrowserPaneView)
+        harness.spin(0.5)
+        XCTAssertEqual(keeper.currentURL?.absoluteString, "http://127.0.0.1:1/", "前提：活的那个带斜杠")
+
+        // **带 token 发**：读不到网址的调用方本来就一律不匹配（那条规矩在 `identityMatches`
+        // 里，为的是不让"匹配上了没有"变成一个猜网址的探测通道），那样就验不到斜杠这件事
+        _ = try harness.mutation(try harness.run(
+            "spec.apply", target: ":2",
+            args: ["spec": .string("""
+            {"columns":[{"panes":[{"kind":"browser","url":"http://127.0.0.1:1"}]}]}
+            """), "reuse": .bool(true)],
+            token: ControlEnvironment.token))
+        harness.spin(0.6)
+        XCTAssertTrue(try panes(1).contains { $0 === keeper },
+                      "省略斜杠不该让 spec apply 把同一个页面重建一遍")
+    }
+
     /// 带命令的 pane 走的是 Phase 2 那一份 `pane new` 机制（引擎对带 command 的 surface
     /// 强制 wait-after-command，不接管 `closesOnChildExit` 的话命令跑完 pane 就永远僵着）
     func testSpecPanesWithCommandsReuseThePaneNewMachinery() throws {

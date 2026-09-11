@@ -21,6 +21,10 @@ struct ControlContext {
         return raw
     }
 
+    /// **空串也算给了**（`--title ""` = 清掉标题，与"没写 --title"是两件不同的事）。
+    /// 别处一律用 `string(_:)`：那里空串与没写确实同义，而这里不是
+    func rawString(_ name: String) -> String? { request.args[name]?.stringValue }
+
     func strings(_ name: String) -> [String] {
         guard let value = request.args[name] else { return [] }
         if let list = value.arrayValue { return list.compactMap(\.stringValue) }

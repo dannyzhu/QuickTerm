@@ -114,12 +114,19 @@ struct ControlDescribeDocument: Codable, Equatable {
         switch mode {
         case "off": "控制面已关闭（[control] mode = \"off\"）：一律不执行"
         case "readonly": "只读模式（[control] mode = \"readonly\"）：一律拒绝"
-        default: "默认关闭：`[control] send-text = true` 之前一律拒绝（退出码 5，code=denied）。"
-            + "打开之后，只有写调用方自己那个 pane 免确认——那个 tty 本来就是它自己的；"
+        default: "**一条命令一个开关，默认全关**（退出码 5，code=denied）："
+            + "input send-text 要 `[control] send-text = true`，pane capture-text 要 `[control] capture-text = true`；"
+            + "打开一个绝不会顺带打开另一个，确认的缓存也是一条命令一份。"
+            + "\n· send-text：打开之后只有写调用方自己那个 pane 免确认——那个 tty 本来就是它自己的；"
             + "判定看的是每 pane 一枚、可验证的 QUICKTERM_PANE_TOKEN 与 -t 真正解析到的那个 pane 对不对得上，"
             + "自报的 QUICKTERM_PANE 不参与判定（它验不了）。"
             + "写**任何**别的 pane 每次都要确认，确认框里会原样列出要打进去的正文与是否跟回车，"
             + "且这次批准不进缓存。控制字符一律拒绝；换行只能靠显式的 --enter。"
+            + "\n· capture-text：没有「读自己那个 pane」的豁免（一个进程本来就读不到自己 tty 的回滚缓冲）；"
+            + "调用方还必须带着本次启动的 QUICKTERM_TOKEN（与浏览器网址打码同一枚），"
+            + "然后每个调用进程确认一次。它什么都不改，因此**不认 --dry-run / --fail-if-noop**——"
+            + "那个开关在别处同时意味着免确认，在这里就成了绕过闸门拿到全部内容的后门。"
+            + "抓到的正文只在那一条响应里出现一次：不进活动日志、不进事件流、不进统一日志。"
         }
     }
 

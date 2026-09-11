@@ -9,6 +9,11 @@ enum Render {
         }
         if object["schema"]?.stringValue == "quickterm.state/1" { return state(object, reply: reply) }
         if object["schema"]?.stringValue == "quickterm.describe/1" { return describe(object) }
+        // 抓屏要**先**认：它带着 pane 字段，落到下面的 paneDetail 分支里
+        // 正文（也就是调用方唯一要的东西）会被整段丢掉
+        if let text = object["text"]?.stringValue, object["lines"] != nil {
+            return capture(object, text: text)
+        }
         // 变更信封要**先**认：它自己也带 pane / panes / workspace / screen 字段，
         // 落到下面那些分支里就只剩一张表，"改了没有"反而看不见了
         if object["command"] != nil, object["changed"] != nil { return mutation(object, reply: reply) }
@@ -27,6 +32,21 @@ enum Render {
         if object["action"] != nil { return actionResult(object, reply: reply) }
         if object["cli"] != nil { return version(object) }
         return summaryLine(reply)
+    }
+
+    /// `pane capture-text`：一行元信息 + 原样的正文（人要读的就是正文，别加缩进）
+    static func capture(_ object: [String: JSONValue], text: String) -> String {
+        let pane = object["pane"]?["handle"]?.stringValue ?? "?"
+        var head = "\(pane)"
+        if let cols = object["cols"]?.intValue, let rows = object["rows"]?.intValue {
+            head += "  \(cols)×\(rows)"
+        }
+        head += "  \(object["lines"]?.intValue ?? 0) 行"
+        if let scrollback = object["scrollback"]?.intValue, scrollback > 0 {
+            head += "（含 \(scrollback) 行历史）"
+        }
+        if object["truncated"]?.boolValue == true { head += "  ⚠️ 超长，已从头部截断" }
+        return head + "\n" + String(repeating: "─", count: 12) + "\n" + text
     }
 
     /// `events poll` 的人类输出
@@ -117,7 +137,11 @@ enum Render {
         // 投影过的输出只有用户点名的字段
         let present = Set(rows.flatMap { $0.keys })
         keys = keys.filter { present.contains($0) }
-        for extra in present.sorted() where !keys.contains(extra) && extra != "id" { keys.append(extra) }
+        // `id` 与 `tabList` 不进表格：一个是 36 位 uuid，一个是结构化的数组——
+        // 塞进一列要么把表撑爆，要么渲染成一片空白。标签明细走 `get` 的逐项输出
+        for extra in present.sorted() where !keys.contains(extra) && !["id", "tabList"].contains(extra) {
+            keys.append(extra)
+        }
         var widths = keys.map { $0.count }
         let cells: [[String]] = rows.map { row in
             keys.enumerated().map { index, key in
@@ -150,7 +174,18 @@ enum Render {
     }
 
     static func paneDetail(_ pane: [String: JSONValue]) -> String {
-        pane.keys.sorted().map { "\(pad($0, 12))\(display(pane[$0]))" }.joined(separator: "\n")
+        var out = pane.keys.sorted().filter { $0 != "tabList" }
+            .map { "\(pad($0, 12))\(display(pane[$0]))" }
+        // 标签是**可寻址的东西**（`--tab 2` / `--tab #<id>`），所以逐条列出来，
+        // 而不是显示成一个没法用的 `{…}`
+        for tab in pane["tabList"]?.arrayValue ?? [] {
+            guard let t = tab.objectValue else { continue }
+            out.append(pad("tab \(t["index"]?.intValue ?? 0)", 12)
+                + (t["active"]?.boolValue == true ? "* " : "  ")
+                + pad(String((t["id"]?.stringValue ?? "").prefix(8)), 10)
+                + "  \(display(t["title"]))  \(display(t["url"]))")
+        }
+        return out.joined(separator: "\n")
     }
 
     static func actionTable(_ actions: [JSONValue]) -> String {
@@ -193,6 +228,12 @@ enum Render {
             for skipped in (report["skipped"]?.arrayValue ?? []).compactMap(\.stringValue) {
                 out.append("  跳过：\(skipped)")
             }
+        }
+        for warning in object["warnings"]?.arrayValue ?? [] {
+            guard let w = warning.objectValue else { continue }
+            // 告警要**显眼**：这条命令成功了，而用户以为的和实际发生的不是一回事
+            out.append("  ⚠️ \(w["message"]?.stringValue ?? "")（\(w["code"]?.stringValue ?? "")）")
+            if let hint = w["hint"]?.stringValue { out.append("     → \(hint)") }
         }
         if let note = object["note"]?.stringValue { out.append("  注：\(note)") }
         if let undo = object["undo"]?.stringValue { out.append("  可撤销：Edit ▸ 撤销「\(undo)」") }

@@ -45,7 +45,8 @@ quickterm install-cli [--alias qt] [--dir 目录]
 名词-动词层（Phase 2，**这一层才是给 agent 用的**）：
 
 ```
-quickterm pane      new|close|focus|move|swap|set|resize
+quickterm pane      new|close|focus|move|swap|set|resize|capture-text
+quickterm browser   open|goto|reload|close          # 浏览器 pane 里的标签
 quickterm workspace goto|set-layout|equalize|clear|count
 quickterm screen    new|close|move|focus|set
 quickterm app       get|set
@@ -160,6 +161,108 @@ quickterm pane resize -t t7 --width +0.05             # scrolling 列宽因子�
 `--dir`（就近同向那条）与 `--split`（指名哪一条）互斥，一起给会报错而**不会**悄悄调另一条。
 组合工作区时把尺寸直接写进 spec（`columns[].width` / `tree` 每层的 `ratio`），
 `spec dump → apply → dump` 连非默认比例都是逐字节不动点。
+
+### 给 pane 起个名字：`pane set --title`
+
+```sh
+quickterm pane set -t t7 --title 'build · web'   # = 右键「Change Terminal Title」
+quickterm get -t 'title:~build'                  # 之后就能按标题寻址它
+quickterm pane set -t t7 --title ''              # 空串 = 交还给 shell
+```
+
+绝对设值：跑两次结果一样，第二次 `changed:false`（带 `--fail-if-noop` 时退 7）。
+标题会出现在 `state` / `list` / `get` 的 `title` 字段里，而 **`title:~<正则>` 是一等的寻址写法**——
+给几个长期存在的 pane 起名字，比每次都去查一串句柄稳得多（句柄会随 pane 关掉而回收）。
+只有终端 pane 能设：浏览器 pane 的标题来自网页，设了也会被下一次导航盖掉。
+
+### 浏览器标签：`browser`
+
+```sh
+quickterm browser open   -t b3 --url http://localhost:3000   # 新标签
+quickterm browser goto   -t b3 --url http://localhost:5173   # 当前标签换网址
+quickterm browser goto   -t b3 --tab 2 --url https://a.b     # 指定标签
+quickterm browser reload -t b3 --tab 1 [--hard]              # 刷新（--hard 绕过缓存）
+quickterm browser close  -t b3 [--tab 1 | --others] [--force]
+```
+
+- **`-t` 指 pane（`b3`），`--tab` 指 pane 里的标签。** 标签有三种写法：
+  **1 起的序号**（会随开关标签移位）、**`#<id 或 ≥4 位前缀>`**（标签活着就不变，agent 该用这个）、
+  **`@active`（默认）/ `@last`**。三种都能在 `state` / `get` 的 `tabList` 里原样读到：
+
+  ```sh
+  quickterm get -t b3 --json | jq '.data.pane.tabList'
+  # [{"index":1,"id":"8A1F…","active":true,"title":"docs","url":"https://…"}]
+  ```
+
+- `browser goto` 是**绝对设值**：已经在那个网址上就什么都不做（`--fail-if-noop` 退 7）。
+  要强制重新取一次用 `browser reload`——"换网址"与"刷新"是两个不同的意图。
+  比的是**规范化之后**的网址：`http://localhost:3000` 与 WebKit 落地后报的
+  `http://localhost:3000/` 是同一个页面（scheme / 主机名大小写、默认端口同理）。
+  到此为止——路径末尾的斜杠（`/a` 与 `/a/`）、query 的顺序、fragment 都是**不同的页面**。
+  同一条规则也用在 `spec apply --reuse` 的浏览器 pane 匹配上，
+  所以手写 spec 里的 `"url":"http://localhost:3000"` 不会每次都把 pane 拆了重建。
+- **`browser close` 关掉最后一个标签时会关掉整个 pane**，与 ⌘W 逐字一致（Chrome 语义）。
+  它是破坏性的，会先要求确认；`--others` 则永远留下 `--tab` 指的那一个，不会关 pane。
+- **打码规则一个字都不松**：没有 `QUICKTERM_TOKEN` 的调用方读到的 `tabList` 里，
+  `title` / `url` 是 `<redacted>`（`index` / `id` / `active` 照给——那是寻址要用的），
+  变更信封里的 diff 同样打码。对这类调用方 **`goto` 不再是幂等的**：它一律当成一次改动
+  （`changed` 恒真、照常加载），否则一条 `--dry-run --fail-if-noop` 就成了
+  「这个标签是不是正停在某网址上」的是/否探测器——而它本来连那个网址都读不到。
+- **网址与标题不进系统日志**：应用内的活动日志面板里写全（看的人就是你本人），
+  但镜像进统一日志（OSLog）的那一份只留路径（`1:2.b3.tab1.url 已变更`）。
+  那份日志落在 `/var/db/diagnostics`，应用退出后还在、`sysdiagnose` 会打包带走。
+  终端标题（`pane set --title` / `pane close`）同理。
+
+### 读终端屏幕：`pane capture-text`
+
+```sh
+quickterm pane capture-text -t t7                      # 可视区
+quickterm pane capture-text -t t7 --scrollback 200     # 再往上带 200 行历史
+quickterm pane capture-text -t t7 --json | jq -r .data.text
+```
+
+回的是那个 pane **此刻屏幕上的文字**（外加引擎量到的 `cols` × `rows`），
+用来回答"我刚起的那条命令到底跑成什么样了"——事件流里永远不会有 pane 的输出。
+
+**它是 `sensitive`，不是 `read`**，因为一个 shell 的可视区里可能有 token、
+刚敲进去还没回车的密码、私有代码。四道闸门各自独立：
+
+- 默认**关闭**：`[control] capture-text = true` 之前一律拒绝（退出码 5）。
+  它与 `send-text` 是**两个**开关，打开一个绝不会顺带打开另一个。
+- 调用方必须带着本次启动的 `QUICKTERM_TOKEN`（浏览器网址打码用的同一枚）——
+  在 QuickTerm 的 pane 里跑就是自动的；读不到浏览器标题的调用方一律读不到终端屏幕。
+- 每个调用进程要用户在 QuickTerm 里**确认一次**（框里写明是"读取哪个 pane 屏幕上的全部文字"）。
+  没有"读自己那个 pane 免确认"的豁免：一个进程本来就读不到自己 tty 的回滚缓冲。
+- 正文**只在那一条响应里出现一次**：不进活动日志、不进事件流、不进统一日志。
+
+它什么都不改，因此**不认 `--dry-run` / `--fail-if-noop`**（带了退 3）：
+`--dry-run` 在别处同时意味着免确认，在这里就成了绕过闸门拿到全部内容的后门。
+
+### 工作目录用不上时：`cwd_denied` 与 `--require-cwd`
+
+macOS 把 `~/Desktop` `~/Documents` `~/Downloads` 划成受保护目录，授权按**代码签名身份**记账。
+没有授权时 QuickTerm 不会把这个目录交给引擎（否则启动会挂死，见 `WorkingDirectoryGate`），
+shell 于是起在默认目录。这件事**不再是静默的**：
+
+```sh
+quickterm pane new --cwd ~/Downloads
+# ⚠️ 工作目录 /Users/you/Downloads 没能用上：…（cwd_denied）
+#    → 在系统设置 ▸ 隐私与安全性 ▸ 文件与文件夹里给 QuickTerm 勾上对应的项…
+```
+
+```json
+{"ok":true,"data":{"command":"pane.new","applied":true,
+  "warnings":[{"code":"cwd_denied","path":"/Users/you/Downloads",
+               "message":"…","hint":"…"}]}}
+```
+
+- 默认**照常开 pane 并带一条告警**：命令确实成功了，把它变成失败会让每一个不在乎
+  目录的脚本跟着挂掉。**在 `code` 上分支**（`cwd_denied` 是稳定的），别去匹配文案。
+- 受不了这种回退的脚本加 **`--require-cwd`**：目录用不上就退出码 5，而且**一个 pane 都不建**。
+  `spec apply` 同样认这个开关（预检阶段就失败，一个 pane 都不动）。
+- 只对**真的会用到 cwd 的 pane** 生效：浏览器 pane 不消费 `--cwd`（它只要一个网址），
+  所以 `pane new --kind browser --cwd ~/Downloads` 既不告警也不会被 `--require-cwd` 拦下——
+  一律带 `--cwd "$PWD"` 的脚本不会因为当前目录恰好受保护就开不出浏览器 pane。
 
 ## 一次性组合：`spec`
 
@@ -284,7 +387,7 @@ quickterm input send-text 'git status' -t @self --enter
 
 ## MCP：`quickterm mcp`
 
-同一张命令表还生成一个 stdio 的 MCP 服务，**11 个粗粒度工具**（不是一个命令一个工具）：
+同一张命令表还生成一个 stdio 的 MCP 服务，**13 个粗粒度工具**（不是一个命令一个工具）：
 
 ```sh
 claude mcp add quickterm -- /usr/local/bin/quickterm mcp     # Claude Code
@@ -293,8 +396,9 @@ quickterm mcp --list-tools | jq -r '.tools[].name'           # 看一眼会暴�
 ```
 
 工具：`quickterm_describe` `quickterm_state` `quickterm_action` `quickterm_new_pane`
-`quickterm_focus` `quickterm_arrange` `quickterm_close` `quickterm_dump_spec`
-`quickterm_apply_spec` `quickterm_poll_events` `quickterm_send_text`。
+`quickterm_focus` `quickterm_arrange` `quickterm_close` `quickterm_browser`
+`quickterm_read_terminal` `quickterm_dump_spec` `quickterm_apply_spec`
+`quickterm_poll_events` `quickterm_send_text`。
 
 - 每个工具背后是命令表里的哪几条命令，写在它的 `description` 里，也在
   `quickterm describe --json` 的 `mcpTools` 里。参数名与 CLI 一模一样（`target` / `dry-run` / …）。
@@ -357,10 +461,14 @@ quickterm mcp --list-tools | jq -r '.tools[].name'           # 看一眼会暴�
   批准之后落刀前还会再核一次身份——确认期间焦点被别的命令挪走了就整条 busy 掉，什么都不做。
   10 秒无人应答 → 退出码 4，去 QuickTerm 里批准后重试。
   用户面前挂着别的对话框时，**所有**变更类命令都返回 `busy`（退出码 6）。
-- **sensitive**（`input send-text`）默认**关闭**（`[control] send-text = true` 才可用）；
-  打开之后，只有写调用方自己那个 pane 免确认，而且要靠每 pane 一枚的 `QUICKTERM_PANE_TOKEN`
-  证明这一点（自报的 `QUICKTERM_PANE` 不算数）；
-  写**任何**别的 pane 每次都要确认（框里带正文），且这次批准不进缓存。
+- **sensitive**（`input send-text`、`pane capture-text`）**一条命令一个开关，默认全关**，
+  确认的缓存也是一条命令一份——批准过"读屏幕"绝不等于顺手批准"往 shell 里打字"。
+  - `input send-text`（`[control] send-text = true`）：只有写调用方自己那个 pane 免确认，
+    而且要靠每 pane 一枚的 `QUICKTERM_PANE_TOKEN` 证明这一点（自报的 `QUICKTERM_PANE` 不算数）；
+    写**任何**别的 pane 每次都要确认（框里带正文），且这次批准不进缓存。
+  - `pane capture-text`（`[control] capture-text = true`）：**没有自读豁免**，
+    调用方还必须带着 `QUICKTERM_TOKEN`（与浏览器打码同一枚），然后每个调用进程确认一次；
+    不认 `--dry-run`（那会变成绕过确认的后门）；正文不进任何长期留存的记录。
 - **interactive**（`theme-picker` `next-background` `keybind-help` `main-menu` `open-settings`
   `web-extensions`）**一律拒绝**：它们会打开需要键盘交互的面板或弹出菜单。
 - 连接必须与 QuickTerm 同 uid（`LOCAL_PEERCRED` 硬校验）；socket 0600、目录 0700。
@@ -387,9 +495,13 @@ README / CI 日志，然后被指使去跑 `quickterm` 命令。所以确认闸�
 10. 想改一份已有布局：`spec dump` → 改字段 → `spec apply --reuse`，别推倒重来（`--replace` 会把跑着的进程一起结束）。
 11. 要等一件事发生，用 `events poll --since <seq> --timeout 30s`，**别去轮询 `state`**：
     一次调用就回答"我上次看之后发生了什么"，而轮 `state` 是每次都把整份快照塞进上下文。
-12. 事件里没有、也永远不会有 pane 的输出内容。要看输出，去那个 pane 里看（或者一开始就用
-    `pane new --cmd 'cmd > /tmp/out' --hold` 把它落到文件里）。
+12. 事件里没有、也永远不会有 pane 的输出内容。要读屏幕上的字用 `pane capture-text`
+    （用户要先在 `[control]` 里打开它并确认一次）；要可靠地拿一条命令的输出，
+    还是 `pane new --cmd 'cmd > /tmp/out' --hold` 落到文件里最稳。
 13. `input send-text` 不是"运行一条命令"的 API：它是**在别人的键盘上打字**。
     要跑东西，优先 `pane new --cmd`——那条路有明确的进程边界，也不会撞进一个正在等你输入密码的 shell。
-14. 交互式的一次性控制挂 `quickterm mcp`（宿主那一层会替你确认）；
+14. 给长期存在的 pane 起名字（`pane set --title`），之后用 `-t 'title:~…'` 寻址——
+    句柄会随 pane 关掉而回收，名字不会。
+15. 浏览器标签用 `--tab #<id>`（从 `tabList` 里抄），别用序号：开一个新标签就把序号全挪了。
+16. 交互式的一次性控制挂 `quickterm mcp`（宿主那一层会替你确认）；
     批量组合直接用 CLI——工具表是每次会话都要付的上下文税，CLI 不调用就不占一个 token。

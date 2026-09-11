@@ -464,4 +464,224 @@ final class ControlPaneCommandTests: XCTestCase {
         XCTAssertEqual(payload["applied"]?.boolValue, false)
         XCTAssertTrue(controller.model.allPanes.contains { $0 === pane }, "预演绝不能真关")
     }
+
+    // MARK: pane set --title（给 pane 起名字）
+
+    /// **绝对设值 + 可寻址**：设了名字之后 `-t 'title:~…'` 就能找到它；
+    /// 同一条命令跑两次第二次什么都不做；空串把标题交还给 shell
+    func testPaneSetTitleIsAbsoluteAndAnEmptyValueGivesItBackToTheShell() throws {
+        let pane = try harness.newTerminal()
+        let surface = try XCTUnwrap(pane as? Ghostty.SurfaceView)
+        harness.spin(0.4)
+        let shellTitle = surface.paneTitle
+        let wanted = "qt-title-\(UUID().uuidString.prefix(6))"
+
+        // ① 设上：state 这一侧立刻读得到（不等消抖定时器）
+        let set = try harness.mutation(try harness.run("pane.set", target: handle(pane),
+                                                        args: ["title": .string(wanted)]))
+        XCTAssertEqual(set["applied"]?.boolValue, true)
+        XCTAssertEqual(set["pane"]?["title"]?.stringValue, wanted)
+        XCTAssertEqual(surface.paneTitle, wanted)
+        XCTAssertTrue(surface.hasControlTitle)
+
+        // ② 设第二次：空操作（--fail-if-noop 退 7）
+        let again = try harness.mutation(try harness.run("pane.set", target: handle(pane),
+                                                          args: ["title": .string(wanted)]))
+        XCTAssertEqual(again["changed"]?.boolValue, false)
+        let noop = try harness.run("pane.set", target: handle(pane),
+                                   args: ["title": .string(wanted),
+                                          ControlCommandTable.Flag.failIfNoop: .bool(true)])
+        XCTAssertFalse(noop.ok)
+        XCTAssertEqual(noop.error?.code, ControlErrorCode.noop.rawValue)
+
+        // ③ 设完就能按标题寻址（这正是这条命令存在的理由）
+        let found = try harness.run("get", target: "title:~\(wanted)")
+        XCTAssertTrue(found.ok, "\(String(describing: found.error))")
+        XCTAssertEqual(found.data?["pane"]?["handle"]?.stringValue, handle(pane))
+
+        // ④ `--dry-run` 一个字都不改
+        let dry = try harness.mutation(try harness.run(
+            "pane.set", target: handle(pane),
+            args: ["title": .string("nope"), ControlCommandTable.Flag.dryRun: .bool(true)]))
+        XCTAssertEqual(dry["applied"]?.boolValue, false)
+        XCTAssertEqual(surface.paneTitle, wanted)
+
+        // ⑤ 空串 = 交还给 shell（**不是**设成空标题）
+        let cleared = try harness.mutation(try harness.run("pane.set", target: handle(pane),
+                                                            args: ["title": .string("")]))
+        XCTAssertEqual(cleared["applied"]?.boolValue, true)
+        XCTAssertFalse(surface.hasControlTitle, "标题要回到引擎手里")
+        XCTAssertNotEqual(surface.paneTitle, wanted)
+        XCTAssertEqual(surface.paneTitle, shellTitle.isEmpty ? "👻" : shellTitle)
+        // 已经是 shell 的了：再清一次是空操作
+        let clearedAgain = try harness.mutation(try harness.run("pane.set", target: handle(pane),
+                                                                 args: ["title": .string("")]))
+        XCTAssertEqual(clearedAgain["changed"]?.boolValue, false)
+    }
+
+    /// 标题只属于终端 pane（浏览器 pane 的标题来自网页），控制字符与超长一律拒绝
+    func testPaneSetTitleRefusesWhatItCannotHonour() throws {
+        let pane = try harness.newTerminal()
+        for bad in [String(repeating: "x", count: ControlCommandRunner.maxTitleLength + 1), "a\u{1B}[31m"] {
+            let reply = try harness.run("pane.set", target: handle(pane), args: ["title": .string(bad)])
+            XCTAssertFalse(reply.ok, "这种标题该被拒")
+            XCTAssertEqual(reply.error?.code, ControlErrorCode.badRequest.rawValue)
+        }
+        let browser = try newPane(["kind": .string("browser"), "url": .string("http://127.0.0.1:1/")])
+        let wrongKind = try harness.run("pane.set", target: handle(browser),
+                                        args: ["title": .string("nope")])
+        XCTAssertFalse(wrongKind.ok)
+        XCTAssertEqual(wrongKind.error?.code, ControlErrorCode.wrongPaneKind.rawValue)
+    }
+
+    /// **判据是"有没有被接管"，不是"看上去一不一样"。**
+    /// 回归：shell 报的标题恰好等于要设的那个时（拿目录名当 pane 名很常见），
+    /// 只比字面就成了空操作——`setControlTitle` 不被调用，标题没钉住，
+    /// shell 的下一次标题上报把它换掉，而调用方收到的是一句 success
+    func testSettingTheTitleToWhatTheShellAlreadyReportsStillPinsIt() throws {
+        let pane = try harness.newTerminal()
+        let surface = try XCTUnwrap(pane as? Ghostty.SurfaceView)
+        let reported = "qt-shell-\(UUID().uuidString.prefix(6))"
+        surface.setTitle(reported)               // 引擎报上来的那条路（75ms 消抖）
+        harness.spin(0.2)
+        XCTAssertEqual(surface.paneTitle, reported)
+        XCTAssertFalse(surface.hasControlTitle, "前提：此刻标题还在 shell 手里")
+
+        let set = try harness.mutation(try harness.run("pane.set", target: handle(pane),
+                                                        args: ["title": .string(reported)]))
+        XCTAssertEqual(set["applied"]?.boolValue, true, "字面相同，但这一次确实有事可做：把它钉住")
+        XCTAssertTrue(surface.hasControlTitle)
+
+        // 钉住的意思就是：shell 再报别的也盖不掉它
+        surface.setTitle("something-else")
+        harness.spin(0.2)
+        XCTAssertEqual(surface.paneTitle, reported, "钉住之后 shell 的上报不该改可见标题")
+
+        // 钉过之后再设同一个才是空操作（绝对设值那一条照旧成立）
+        let again = try harness.run("pane.set", target: handle(pane),
+                                    args: ["title": .string(reported),
+                                           ControlCommandTable.Flag.failIfNoop: .bool(true)])
+        XCTAssertFalse(again.ok)
+        XCTAssertEqual(again.error?.code, ControlErrorCode.noop.rawValue)
+    }
+
+    /// 终端标题会出现在活动日志里，而那份日志会镜像进 OSLog（应用退出后还在）。
+    /// 标题里常年躺着 cwd 或正在跑的命令行：面板里写全，系统日志里只留路径
+    func testTerminalTitlesNeverReachTheSystemLog() throws {
+        let pane = try harness.newTerminal()
+        let secret = "qt-secret-\(UUID().uuidString.prefix(6))"
+        ControlActivityLog.shared.clear()
+        _ = try harness.run("pane.set", target: handle(pane), args: ["title": .string(secret)])
+        let entry = try XCTUnwrap(ControlActivityLog.shared.recent(1).first)
+        XCTAssertTrue(entry.line.contains(secret), "面板里照旧写全")
+        XCTAssertFalse(entry.logLine.contains(secret), "OSLog 那一份不能有标题：\(entry.logLine)")
+
+        // pane close 记的 `open「标题」` 也一样（浏览器 pane 时那是网页标题）
+        ControlActivityLog.shared.clear()
+        harness.consent.decisionStub = { _, reply in reply(.allow) }
+        _ = try harness.run("pane.close", target: handle(pane), args: ["force": .bool(true)])
+        harness.spin(0.3)
+        let closed = try XCTUnwrap(ControlActivityLog.shared.recent(1).first)
+        XCTAssertFalse(closed.logLine.contains(secret), "关 pane 那条也不能：\(closed.logLine)")
+    }
+
+    // MARK: --cwd 被隐私守卫挡下来（**说出来**，别咽掉）
+
+    /// 受保护目录（~/Downloads 之类）在没有授权时交不给引擎，shell 起在默认目录。
+    /// 这件事**必须出现在响应里**——一句平平无奇的 ok 正是"pane 开了、目录没变"的来源。
+    /// 守卫的探针是注入的：用例不依赖这台机器真实的 TCC 状态
+    func testARefusedWorkingDirectoryIsReportedAsAWarning() throws {
+        let denied = "\(NSHomeDirectory())/Downloads"
+        WorkingDirectoryGate.resetForTesting()
+        WorkingDirectoryGate.prober = { root, _ in !root.hasSuffix("/Downloads") }
+        defer { WorkingDirectoryGate.resetForTesting() }
+
+        let payload = try harness.mutation(try harness.run("pane.new", args: ["cwd": .string(denied)]))
+        harness.spin(0.35)
+        if let made = harness.app.screens.allPanes.first(where: {
+            ControlHandleRegistry.shared.handle(for: $0) == payload["pane"]?["handle"]?.stringValue
+        }) {
+            harness.track(made)
+            XCTAssertNotEqual((made as? Ghostty.SurfaceView)?.pwd, denied,
+                              "挡下来的目录绝不能被当场种进 pwd —— 那会让 state 说一句当场就能被证伪的话")
+        }
+        let warning = try XCTUnwrap(payload["warnings"]?.arrayValue?.first?.objectValue,
+                                    "被挡下来的 --cwd 必须回一条告警")
+        XCTAssertEqual(warning["code"]?.stringValue, ControlWarning.cwdDenied,
+                       "机器要在 code 上分支，而不是去匹配文案")
+        XCTAssertEqual(warning["path"]?.stringValue, denied)
+        XCTAssertTrue(warning["message"]?.stringValue?.contains(denied) ?? false)
+        XCTAssertTrue(warning["hint"]?.stringValue?.contains("--require-cwd") ?? false,
+                      "要指路：想让它直接失败该怎么写")
+        XCTAssertEqual(payload["applied"]?.boolValue, true, "pane 照样开出来了（不是失败）")
+
+        // 反面：没被挡下来的目录一条告警都不该有
+        let fine = try harness.mutation(try harness.run("pane.new",
+                                                        args: ["cwd": .string(NSTemporaryDirectory())]))
+        harness.spin(0.35)
+        if let made = harness.app.screens.allPanes.first(where: {
+            ControlHandleRegistry.shared.handle(for: $0) == fine["pane"]?["handle"]?.stringValue
+        }) {
+            harness.track(made)
+        }
+        XCTAssertNil(fine["warnings"], "能用的目录不该带告警")
+    }
+
+    /// `--require-cwd`：目录用不上就**报错**，而且一个 pane 都不建
+    func testRequireCwdTurnsTheRefusalIntoAnError() throws {
+        let denied = "\(NSHomeDirectory())/Documents"
+        WorkingDirectoryGate.resetForTesting()
+        WorkingDirectoryGate.prober = { root, _ in !root.hasSuffix("/Documents") }
+        defer { WorkingDirectoryGate.resetForTesting() }
+
+        let controller = try harness.controller
+        let before = controller.model.allPanes.count
+        let reply = try harness.run("pane.new", args: ["cwd": .string(denied),
+                                                        "require-cwd": .bool(true)])
+        XCTAssertFalse(reply.ok)
+        XCTAssertEqual(reply.error?.code, ControlErrorCode.denied.rawValue)
+        XCTAssertEqual(reply.error?.exit, ControlExit.denied.rawValue)
+        XCTAssertTrue(reply.error?.message.contains(denied) ?? false)
+        harness.spin(0.3)
+        XCTAssertEqual(controller.model.allPanes.count, before, "失败的那一条一个 pane 都不能建")
+
+        // 目录能用时，--require-cwd 不改变任何行为
+        let ok = try harness.mutation(try harness.run("pane.new",
+                                                      args: ["cwd": .string(NSTemporaryDirectory()),
+                                                             "require-cwd": .bool(true)]))
+        harness.spin(0.35)
+        if let made = harness.app.screens.allPanes.first(where: {
+            ControlHandleRegistry.shared.handle(for: $0) == ok["pane"]?["handle"]?.stringValue
+        }) {
+            harness.track(made)
+        }
+        XCTAssertEqual(ok["applied"]?.boolValue, true)
+        XCTAssertNil(ok["warnings"])
+    }
+
+
+    /// **浏览器 pane 根本不消费 `--cwd`。**
+    /// 回归：告警与 `--require-cwd` 原本只看路径，于是
+    /// `pane new --kind browser --cwd ~/Downloads` 会回一条"shell 起在了默认目录"
+    /// （那儿压根没有 shell），加上 `--require-cwd` 还会把一次完全正常的建 pane 变成退出码 5。
+    /// 一律带 `--cwd "$PWD"` 的脚本，只要当前目录恰好是受保护目录就会撞上
+    func testAProtectedCwdIsIrrelevantToBrowserPanes() throws {
+        let denied = "\(NSHomeDirectory())/Downloads"
+        WorkingDirectoryGate.resetForTesting()
+        WorkingDirectoryGate.prober = { root, _ in !root.hasSuffix("/Downloads") }
+        defer { WorkingDirectoryGate.resetForTesting() }
+
+        let payload = try harness.mutation(try harness.run("pane.new", args: [
+            "kind": .string("browser"), "url": .string("http://127.0.0.1:1/"),
+            "cwd": .string(denied), "require-cwd": .bool(true),
+        ]))
+        harness.spin(0.35)
+        if let made = harness.app.screens.allPanes.first(where: {
+            ControlHandleRegistry.shared.handle(for: $0) == payload["pane"]?["handle"]?.stringValue
+        }) {
+            harness.track(made)
+        }
+        XCTAssertEqual(payload["applied"]?.boolValue, true, "--require-cwd 不该拦下一个用不到 cwd 的 pane")
+        XCTAssertNil(payload["warnings"], "没有 shell 可言，就没有「目录没用上」这件事")
+    }
 }

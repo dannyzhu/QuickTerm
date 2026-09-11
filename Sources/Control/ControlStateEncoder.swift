@@ -280,6 +280,22 @@ struct ControlStateEncoder {
         return out
     }
 
+    /// 浏览器 pane 的逐标签明细。**打码规则与 pane 级的 url / title 逐字相同**
+    /// （同一个 `hide`）：没有 token 的调用方拿得到 index / id / active——
+    /// 那是寻址要用的、且什么都不泄露——但标题与网址一律 `<redacted>`。
+    /// 在这里开一个"tab 级不打码"的口子，等于把 pane 级那条规则作废
+    static func tabList(of pane: BrowserPaneView, hide: Bool)
+        -> [ControlStatePayload.PaneInfo.TabInfo] {
+        pane.tabs.enumerated().map { index, tab in
+            .init(index: index + 1,
+                  id: tab.id.uuidString,
+                  active: index == pane.activeTabIndex,
+                  title: hide ? redacted : tab.displayTitle,
+                  url: hide ? redacted : (tab.effectiveURL?.absoluteString ?? ""),
+                  loading: tab.webView.isLoading ? true : nil)
+        }
+    }
+
     func paneInfo(_ pane: PaneView, controller: MainWindowController, workspace: Int,
                   at position: ControlStatePayload.PaneInfo.Position?,
                   float: Bool, zoomed: Bool) -> ControlStatePayload.PaneInfo {
@@ -298,6 +314,7 @@ struct ControlStateEncoder {
             cwd: pane.workingDirectory,
             url: browser.map { hide ? Self.redacted : ($0.currentURL?.absoluteString ?? "") },
             tabs: browser?.tabs.count,
+            tabList: browser.map { Self.tabList(of: $0, hide: hide) },
             focused: controller.focusedPane === pane && controller.model.activeIndex == workspace,
             busy: pane.wantsConfirmClose,
             float: float,

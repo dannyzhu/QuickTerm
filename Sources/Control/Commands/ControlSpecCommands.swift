@@ -247,6 +247,21 @@ extension ControlCommandRunner {
             }
             changes += applier.changes(at: path(applier.controller, applier.workspace))
         }
+        // 存在但用不上的工作目录（受保护目录 + 缺授权）：默认照铺，但**必须说出来**；
+        // `--require-cwd` 的脚本要的是宁可失败也不要一个目录全落错的工作区，
+        // 而这一步还在"一个 pane 都没建、一个都没关"的阶段
+        let deniedDirectories = appliers.flatMap(\.deniedDirectories).reduce(into: [String]()) {
+            if !$0.contains($1) { $0.append($1) }
+        }
+        if !deniedDirectories.isEmpty, ctx.flag("require-cwd") {
+            throw ControlErrorBody(
+                .denied,
+                "这份 spec 里有 \(deniedDirectories.count) 个目录用不上（macOS 受保护目录，缺少「文件与文件夹」授权）："
+                    + deniedDirectories.joined(separator: "、")
+                    + "。--require-cwd 要求宁可失败也不落在别处，所以这次什么都没动",
+                hint: "在系统设置 ▸ 隐私与安全性 ▸ 文件与文件夹里给 QuickTerm 授权并重启它；"
+                    + "或者去掉 --require-cwd（照常铺，响应里带 cwd_denied 告警）")
+        }
         for (controller, spec) in screenSettings {
             changes += Self.screenChanges(spec, controller: controller, path: path(controller))
         }
@@ -304,6 +319,9 @@ extension ControlCommandRunner {
             }
         }
         payload.spec = payload.applied ? report : nil
+        if !deniedDirectories.isEmpty {
+            payload.warnings = deniedDirectories.map { .cwdDenied($0, used: nil) }
+        }
         if payload.applied {
             payload.panes = createdPanes.map {
                 paneInfo($0.pane, controller: $0.controller, workspace: $0.workspace, encoder: ctx.encoder)

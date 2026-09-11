@@ -60,6 +60,15 @@ enum ControlPaneFactory {
         }
     }
 
+    /// 这个 kind 会不会真的用上 `cwd`。
+    ///
+    /// 浏览器 pane 不会：`make` 的 browser 分支只接一个 url，`BrowserPaneView.workingDirectory`
+    /// 恒为 nil。`--cwd` 配 `--kind browser` 一直是**被接受且被忽略**的（不报错，免得
+    /// 一律 `--cwd "$PWD"` 的脚本每开一个浏览器 pane 就挂），所以隐私守卫那一套
+    /// 告警与 `--require-cwd` 也必须跟着跳过它——否则同一条被忽略的参数，
+    /// 只因为当前目录恰好是 ~/Downloads 就变成一句假告警，甚至一次失败
+    static func consumesWorkingDirectory(_ kind: String) -> Bool { kind != "browser" }
+
     /// 目标目录真的存在吗。`spec apply` 在**动手之前**对整份 spec 走一遍——
     /// 半途才发现某个目录不在，工作区已经被拆了一半
     static func directoryProblem(_ cwd: String?) -> String? {
@@ -87,6 +96,42 @@ enum ControlPaneFactory {
             return url
         }
         return BrowserPaneView.settings.url(forInput: raw)
+    }
+
+    /// **两个网址指的是不是同一个页面。**
+    ///
+    /// 直接比 `absoluteString` 会在一个地方必然出错：WebKit 落地之后的网址带着规范化的路径，
+    /// 而人（和 agent）写的是省略形式——`http://localhost:3000` 装进 WebView 之后就是
+    /// `http://localhost:3000/`。于是 `browser goto --url http://localhost:3000` 对一个
+    /// **已经停在那儿**的标签永远报"变了"（绝对设值的承诺当场作废，页面被无谓地重载一次），
+    /// 而 `spec apply` 里手写的 `{"kind":"browser","url":"http://localhost:3000"}`
+    /// 永远匹配不上活着的那个 pane，于是每 apply 一次就把它拆了重建一次。
+    ///
+    /// 规范化只做 WebKit 自己会做的那几件（scheme / host 小写、空路径记作 `/`、默认端口去掉），
+    /// query 与 fragment 一个字都不碰：`?a=1&b=2` 与 `?b=2&a=1` 是两个不同的页面
+    static func sameURL(_ a: URL?, _ b: URL?) -> Bool {
+        guard let a, let b else { return false }
+        return canonical(a) == canonical(b)
+    }
+
+    static func canonical(_ url: URL) -> String {
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.absoluteString
+        }
+        parts.scheme = parts.scheme?.lowercased()
+        parts.host = parts.host?.lowercased()
+        if parts.path.isEmpty, parts.host != nil { parts.path = "/" }
+        if let port = parts.port, port == Self.defaultPort(parts.scheme) { parts.port = nil }
+        return parts.string ?? url.absoluteString
+    }
+
+    private static func defaultPort(_ scheme: String?) -> Int? {
+        switch scheme {
+        case "http": 80
+        case "https": 443
+        case "ftp": 21
+        default: nil
+        }
     }
 
     static func browserURL(_ request: Request) throws -> URL {
@@ -122,7 +167,12 @@ enum ControlPaneFactory {
             // 否则 `spec dump` 读到的 cwd 要等 shell 的第一个提示符发 OSC 7 才出现，
             // 于是 `dump → apply → dump` 是否相等取决于两次 dump 之间等了多久——
             // 那不是不动点，那是一场赛跑
-            if let directory { surface.pwd = URL(fileURLWithPath: directory).resolvingSymlinksInPath().path }
+            // 被隐私守卫挡下来的目录**不种**：shell 根本没起在那儿，
+            // 种进去等于让 `state` 的 cwd 说一句当场就能被证伪的话
+            // （`pane new` 会在响应里回一条 cwd_denied 告警说明这件事）
+            if let directory, WorkingDirectoryGate.usable(directory) != nil {
+                surface.pwd = URL(fileURLWithPath: directory).resolvingSymlinksInPath().path
+            }
             return Made(pane: surface)
         }
     }

@@ -233,7 +233,8 @@ CLI 解析、`--help`、`describe --json`、安全分级与 MCP 工具表**全�
 
 ```
 quickterm state | list | get | action <wm-action> | describe | version
-quickterm pane      new | close | focus | move | swap | set | resize
+quickterm pane      new | close | focus | move | swap | set | resize | capture-text
+quickterm browser   open | goto | reload | close
 quickterm workspace goto | set-layout | equalize | clear | count
 quickterm screen    new | close | move | focus | set
 quickterm app       get | set
@@ -274,6 +275,7 @@ quickterm spec apply -f dev.json -t :4            # 默认 --into-empty：非空
 # mode = "ask"              # off = 不监听 | readonly = 只读 | ask = 默认（"on" 是 ask 的别名）
 # expose-browser = "token"  # token | always | never：谁能读到浏览器 pane 的网址与标题
 # send-text = false         # quickterm input send-text：把文本当键盘输入送进一个终端 pane。
+# capture-text = false      # quickterm pane capture-text：把终端 pane 屏幕上的文字读回给调用方。
 ```
 
 `socket`、旧名 `enabled`、`mode` 是同一个监听器上的三个开关，**取最严的那个**：`socket = false`、`enabled = false`、`mode = "off"`，任何一个都等于彻底不监听。`mcp` 是单独一档，因为两者的攻击面不同：你完全可能自己要用命令行，却不想让任何 MCP 宿主（以及它读到的每一段网页 / CI 日志）连进来。`mcp = false` 时 `quickterm mcp` 直接拒绝服务，并在错误里点名是哪个配置键拒绝的；socket 仍然照常给你自己的 shell 用。
@@ -287,7 +289,10 @@ quickterm spec apply -f dev.json -t :4            # 默认 --into-empty：非空
 - 读是静默的——但**没有继承 `QUICKTERM_TOKEN` 的调用方读不到浏览器 pane 的网址与标题**（`<redacted>`）。浏览器 pane 里装着用户已登录的会话，`quickterm state` 本身就是一个外泄面。
 - 改是静默但**可见**的：状态栏闪一下（写明命令与自称来源 pane），完整记录在应用内的控制面活动日志里，布局类变更登记到 UndoManager（`Cmd+Z` 可回滚）。变更命令按来源限流；用户面前挂着模态对话框时，**所有**变更命令一律拒绝。
 - 破坏性命令（`pane close`、`workspace clear`、`screen close`、`spec apply --replace`）按 (调用进程 pid, 命令类) **在 QuickTerm 里确认一次**。确认框里的进程名与 pid 来自内核（`LOCAL_PEERPID`），抄走 token 也伪装不了。
-- `input send-text` 默认关闭，**等于在那个 shell 里打字**（可能是 root，也可能是一条活着的 ssh 会话）。打开之后：写调用方自己那个 pane 免确认（那个 tty 本来就是它自己的），但这一点要用继承来的、每 pane 一枚的 `QUICKTERM_PANE_TOKEN` **证明**——自报的 `QUICKTERM_PANE` 换不来豁免，服务端验不了它。写**任何**别的 pane 每次都要确认，**确认框里会列出要打进去的正文以及后面跟不跟回车**；控制字符一律拒绝，换行只能靠显式的 `--enter`。
+- **浏览器标签与终端屏幕。** `browser open | goto | reload | close` 驱动浏览器 pane 里的标签：`-t` 指 pane，`--tab` 指标签（1 起的序号、`#<id 前缀>`、`@active`、`@last`——全都能在 `state` / `get` 新增的 `tabList` 里读到）。换网址是绝对设值；关掉最后一个标签会关掉整个 pane，与 `Cmd+W` 逐字一致；没有 `QUICKTERM_TOKEN` 的调用方读到的逐标签标题与网址照样是 `<redacted>`，与 pane 级同一条规则（对这类调用方 `goto` 一律照常加载而不回一句「空操作」——否则「改了没有」就成了一个问网址的探测器）；网址与标题进应用内的活动日志，但**不进系统的统一日志**，那一份只记「哪一条变了」。`pane capture-text` 读的是终端 pane 此刻屏幕上的文字——它为什么比"读"管得更严，见下一条。
+- `input send-text` 与 `pane capture-text` 是**两个独立的开关，默认都关**，批准了一个绝不等于批准另一个。`input send-text` 默认关闭，**等于在那个 shell 里打字**（可能是 root，也可能是一条活着的 ssh 会话）。打开之后：写调用方自己那个 pane 免确认（那个 tty 本来就是它自己的），但这一点要用继承来的、每 pane 一枚的 `QUICKTERM_PANE_TOKEN` **证明**——自报的 `QUICKTERM_PANE` 换不来豁免，服务端验不了它。写**任何**别的 pane 每次都要确认，**确认框里会列出要打进去的正文以及后面跟不跟回车**；控制字符一律拒绝，换行只能靠显式的 `--enter`。
+- `pane capture-text` 被划成 `sensitive` 而不是 `read`：一个 shell 的可视区里可能有 token、刚敲进去还没回车的密码、私有代码。它要 `[control] capture-text = true`，调用方必须带着 `QUICKTERM_TOKEN`（浏览器打码用的同一枚），然后每个调用进程要用户确认一次——**没有"读自己那个 pane 免确认"的豁免**，因为一个进程本来也读不到自己 tty 的回滚缓冲。它拒绝 `--dry-run`（那个开关在别处同时意味着免确认，在这里就成了绕过闸门的后门），抓到的正文只回一次，不进任何日志。
+- `--cwd` 被 macOS 隐私规则挡下来时（受保护的 `~/Desktop` / `~/Documents` / `~/Downloads` 而没有「文件与文件夹」授权）**不再静默成功**：响应里带一条 `cwd_denied` 告警，写明路径、原因与怎么授权；`--require-cwd` 则把它变成错误，而且一个 pane 都不建。`spec apply` 同样如此。浏览器 pane 从不消费 `--cwd`，所以告警与 `--require-cwd` 都不会落到它头上。
 - 连接必须与 QuickTerm 同 uid（`LOCAL_PEERCRED`）；socket 0600，目录 0700。**绝不监听 TCP，也绝不做转义序列通道。**
 - **`QUICKTERM_TOKEN` 是来源证明，不是权限边界。** 每次启动只有一枚、注入每一个 pane，所以它只能回答"这条命令来自**某个** QuickTerm pane"，绝不跳过任何确认。`QUICKTERM_PANE_TOKEN` 每 pane 一枚（`HMAC(每次启动的密钥, paneID)`），能回答前者答不了的"来自**哪一个** pane"——但它同样不是权限边界，全控制面只用在一处：`send-text` 的自写豁免。
 
@@ -295,7 +300,7 @@ quickterm spec apply -f dev.json -t :4            # 默认 --into-empty：非空
 
 ### MCP
 
-`quickterm mcp` 是一个 stdio MCP 服务，11 个粗粒度工具**由同一张命令表生成**（手写的那份两个版本之内必然漂移）。
+`quickterm mcp` 是一个 stdio MCP 服务，13 个粗粒度工具**由同一张命令表生成**（手写的那份两个版本之内必然漂移）。
 
 ```sh
 claude mcp add quickterm -- /usr/local/bin/quickterm mcp
@@ -308,7 +313,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 ### 老实说的限制
 
 - 短句柄（`t7`/`b3`）只在 QuickTerm 这一次运行期间稳定；跨重启唯一稳定的身份是 pane 的 `id`（UUID）。
-- 事件只携带结构、标题与 cwd，**绝不携带 pane 的输出内容**。"读一读那条命令打印了什么"不是控制面做的事。
+- 事件只携带结构、标题与 cwd，**绝不携带 pane 的输出内容**。要读终端屏幕上的字，只有一道刻意留下的门：`pane capture-text`（默认关闭，每个调用进程确认一次）。
 - 有些变更会推进 `seq` 却没有类型化事件（`app set theme`、`screen set --fullscreen`）：你只知道快照过期了，得重新读一次 `state`。
 - `events follow` 是给人和 shell 脚本的流；agent 应该用 `events poll --since` 长轮询。
 - MCP 工具表约 64 KB 的 schema —— 那是每次会话都要付的上下文税，而 CLI 不调用就不占一个 token。所以：交互式的一次性控制用 MCP，批量组合用 CLI。

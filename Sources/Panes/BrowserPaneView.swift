@@ -932,7 +932,17 @@ final class BrowserPaneView: PaneView {
     /// 错误页状态下重载的是原网址，不是错误页本身
     func reload() {
         guard let tab = activeTab else { return }
-        if tab.showingErrorPage, let url = tab.lastRequestedURL { load(url, in: tab) } else { tab.webView.reload() }
+        reload(tab, fromOrigin: false)
+    }
+
+    /// 指名重载某一个标签（控制面的 `browser reload` 用它；`fromOrigin` = 绕过缓存）。
+    /// 错误页那条规矩在这里**只写一遍**：重载的是原网址，不是错误页本身
+    func reload(_ tab: Tab, fromOrigin: Bool) {
+        if tab.showingErrorPage, let url = tab.lastRequestedURL {
+            load(url, in: tab)
+            return
+        }
+        if fromOrigin { tab.webView.reloadFromOrigin() } else { tab.webView.reload() }
     }
 
     /// 焦点进地址栏并全选（Cmd+Shift+L）

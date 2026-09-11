@@ -21,6 +21,7 @@ final class ControlCommandRunner {
         var mode: String = "ask"
         var exposeBrowser: String = "token"
         var sendText: Bool = false
+        var captureText: Bool = false
 
         init() {}
 
@@ -30,6 +31,27 @@ final class ControlCommandRunner {
             mode = settings.controlMode
             exposeBrowser = settings.controlExposeBrowser
             sendText = settings.controlSendText
+            captureText = settings.controlCaptureText
+        }
+
+        /// 这条 `sensitive` 命令被用户显式打开了吗。
+        /// **一条命令一个开关**：早先这里只有一个 `sendText`，于是"我要 agent 能读屏幕"
+        /// 会顺带把"agent 能往我的 shell 里打字"一起打开——那是两件完全不同的授权
+        func allowsSensitive(_ command: String) -> Bool {
+            switch command {
+            case "input.send-text": sendText
+            case "pane.capture-text": captureText
+            default: false   // 认不得的敏感命令一律关着：默认值只能是安全的那一侧
+            }
+        }
+
+        /// 该命令没被打开时，告诉用户去哪儿开
+        func sensitiveHint(_ command: String) -> String {
+            switch command {
+            case "input.send-text": "在 ~/.config/quickterm/config.toml 的 [control] 里写 send-text = true"
+            case "pane.capture-text": "在 ~/.config/quickterm/config.toml 的 [control] 里写 capture-text = true"
+            default: "这条命令在 [control] 里没有对应的开关"
+            }
         }
 
         /// 监听与否 = 三个开关取最严：`socket = false`、旧的 `enabled = false`
@@ -187,9 +209,21 @@ final class ControlCommandRunner {
                                   hint: ControlCommandTable.interactiveHint(action)))
             return
         }
-        if cls == .sensitive, !config.sendText {
-            fail(ControlErrorBody(.denied, "敏感命令默认关闭",
-                                  hint: "在 ~/.config/quickterm/config.toml 的 [control] 里写 send-text = true"))
+        if cls == .sensitive, !config.allowsSensitive(spec.name) {
+            fail(ControlErrorBody(.denied, "敏感命令默认关闭（\(spec.cli)）",
+                                  hint: config.sensitiveHint(spec.name)))
+            return
+        }
+        // **读别人屏幕上的字，至少要拿得到浏览器网址那一枚 token。**
+        // 没有 `QUICKTERM_TOKEN` 的调用方连一个浏览器 pane 的标题都读不到（默认打码），
+        // 那它更没有道理读到一个 shell 的可视区——那里可能停着刚 export 的凭据。
+        // 这道闸在确认闸门**之前**：一条注定要被拒的命令不该先把用户叫起来点一次"允许"
+        if spec.name == "pane.capture-text", request.token != ControlEnvironment.token {
+            logRefusal(request.cmd, peer: peer, request: request, code: .denied, message: "无 token")
+            fail(ControlErrorBody(
+                .denied, "capture-text 要求调用方带着本次启动的来源标记（QUICKTERM_TOKEN）",
+                hint: "在 QuickTerm 的 pane 里跑这条命令（环境变量是自动注入的）；"
+                    + "外部进程请从一个 pane 里继承 QUICKTERM_TOKEN"))
             return
         }
         if cls.isMutation, !config.allowsMutation {
@@ -311,7 +345,9 @@ final class ControlCommandRunner {
             execute()
             return
         }
-        if consent.isModalBusy, !consent.hasGrant(pid: peer.pid, cls: cls) {
+        // 敏感命令一条一个授权键：批准过"读屏幕"不等于批准"往 shell 里打字"
+        let grantScope: String? = cls == .sensitive ? spec.name : nil
+        if consent.isModalBusy, !consent.hasGrant(pid: peer.pid, cls: cls, scope: grantScope) {
             fail(ControlErrorBody(.busy, "QuickTerm 正有一个对话框挂着，破坏性命令暂不执行",
                                   hint: "先处理掉 QuickTerm 里的对话框", retryAfterMs: 2000))
             return
@@ -326,6 +362,7 @@ final class ControlCommandRunner {
                                // 破坏性命令按 (pid, 类) 缓存一次是因为"关 pane"这件事用户看得见，
                                // 而注入的文本会在那个 shell 里执行任意东西，两次之间可以完全不同
                                cacheable: spec.name != "input.send-text",
+                               scope: grantScope,
                                // 正文只画给用户看：它是这次确认与上一次唯一的区别，
                                // 不给出来的话 `echo hi` 和 `curl … | sh` 在框里长得一模一样
                                payload: sendTextPreview,
@@ -502,6 +539,23 @@ final class ControlCommandRunner {
                 text += "\n关闭 \(subject.description) —— 其中的进程会被结束"
             case "spec.apply":
                 text += "\n用一份 spec 覆盖 \(subject.description) —— 对不上的那些 pane 会被关掉，其中的进程会被结束"
+            case "browser.close":
+                let tabs = (subject.pane as? BrowserPaneView)?.tabs.count ?? 0
+                let which = request.args["tab"]?.stringValue ?? "@active"
+                if request.args["others"]?.boolValue == true {
+                    text += "\n关掉 \(subject.description) 里除 \(which) 之外的 \(max(tabs - 1, 0)) 个标签"
+                } else if tabs <= 1 {
+                    text += "\n关掉 \(subject.description) 的最后一个标签 —— **整个 pane 会一起关掉**"
+                } else {
+                    text += "\n关掉 \(subject.description) 的标签 \(which)（还剩 \(tabs - 1) 个）"
+                }
+                text += "· 屏幕 \(controller.screenIndex + 1) · 工作区 \(subject.workspace + 1)"
+            case "pane.capture-text":
+                // 读屏幕这件事必须在框里说成"读"：用户批准的是"把那个 pane 屏幕上的字交出去"，
+                // 而不是一句抽象的"执行敏感操作"
+                text += "\n**读取 \(subject.description) 屏幕上的全部文字**并交给这个调用方"
+                    + "（其中可能有密码、token、私有代码）"
+                    + "· 屏幕 \(controller.screenIndex + 1) · 工作区 \(subject.workspace + 1)"
             default:
                 // 浏览器 pane 还有别的标签时，close-pane 关的是当前标签而不是整个 pane（Chrome 语义）
                 let tabOnly = (subject.pane as? BrowserPaneView).map { $0.tabs.count > 1 } ?? false
@@ -660,8 +714,12 @@ final class ControlCommandRunner {
 
             case "version":
                 completion(.success(id: request.id, seq: seq, resolved: nil,
+                                    // cli 留空：应用无从得知调用方二进制的版本，
+                                    // 由 CLI 用自己的 cliVersion 填上（见 CLI/main.swift）。
+                                    // 编成 appVersion 会让「CLI 与应用版本不一致」这个诊断永远显示一致，
+                                    // 而升级后 PATH 上留着旧二进制正是设计里点名要发现的情况
                                     data: ControlVersionPayload(
-                                        cli: appVersion, app: appVersion,
+                                        cli: nil, app: appVersion,
                                         protocolVersion: ControlProtocol.version,
                                         appProtocolVersion: ControlProtocol.version,
                                         socket: ControlEnvironment.socketPath, running: true)))
@@ -689,6 +747,7 @@ final class ControlCommandRunner {
                 case "app": result = try runApp(ctx)
                 case "spec": result = try runSpec(ctx)
                 case "input": result = try runInput(ctx)
+                case "browser": result = try runBrowser(ctx)
                 default:
                     throw ControlErrorBody(.unknownCommand, "未知命令组 \(group)",
                                            candidates: ControlCommandTable.groups)

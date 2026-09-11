@@ -42,6 +42,20 @@ extension ControlReply {
 
 func emit(_ reply: ControlReply, plain: Bool, spec: ControlCommandSpec? = nil) -> Never {
     if let error = reply.error { fail(error, plain: plain) }
+    // version 的 cli 一栏由**本二进制**填：应用不知道谁在调它，填了也只会是它自己的版本，
+    // 那样「升级后 PATH 上留着旧 quickterm」就永远看不出来了
+    if spec?.name == "version", var object = reply.data?.objectValue {
+        object["cli"] = .string(cliVersion)
+        let patched = ControlReply(v: reply.v, id: reply.id, ok: reply.ok, seq: reply.seq,
+                                   resolved: reply.resolved, data: .object(object), error: nil)
+        if plain {
+            writeOut(Render.human(patched))
+        } else if let encoded = try? ControlJSON.prettyEncoder.encode(patched.asJSON()),
+                  let text = String(data: encoded, encoding: .utf8) {
+            writeOut(text)
+        }
+        exit(0)
+    }
     // `spec dump` 打印的**就是那份 spec 本身**，不套响应信封：
     // `quickterm spec dump > w.json` 要能直接喂回 `quickterm spec apply -f w.json`，
     // 否则每个人都得先 jq 一遍 —— 而那正是最容易出错的一步

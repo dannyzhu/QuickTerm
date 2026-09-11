@@ -117,11 +117,16 @@ final class SpecApplier {
             ?? controller.focusedPane?.workingDirectory
     }
 
+    /// 预检发现的、**存在但用不上**的工作目录（macOS 受保护目录且没有授权）。
+    /// `spec apply` 会把它们变成响应里的 `cwd_denied` 告警（`--require-cwd` 则变成错误）
+    private(set) var deniedDirectories: [String] = []
+
     // MARK: 预检（**一个 pane 都还没建、一个都还没关**）
 
     func preflight() throws {
         dispatchPrecondition(condition: .onQueue(.main))
         controller.flushPendingCloses()
+        deniedDirectories.removeAll()
 
         var built: [Slot] = []
         for item in Self.tiledSlots(spec) + Self.floatingSlots(spec) {
@@ -136,6 +141,16 @@ final class SpecApplier {
             if let problem = ControlPaneFactory.directoryProblem(request.cwd) {
                 throw ControlErrorBody(.badRequest, "spec \(item.key)：\(problem)",
                                        hint: "先建好目录，或改掉这份 spec 里的 cwd")
+            }
+            // 目录存在，却因为缺少 macOS 的隐私授权而交不给引擎（受保护目录）：
+            // **不是错误**（这份 spec 照样铺得出来），但调用方必须被告知——
+            // 否则 `spec apply` 会安安静静地把每个 pane 都落在默认目录上
+            // （只问真的会用上 cwd 的 kind：浏览器 pane 从来不消费它，
+            //   为它报一条 cwd_denied 是在说一件没发生过的事，`--require-cwd` 还会整份 spec 拒掉）
+            if let cwd = request.cwd, ControlPaneFactory.consumesWorkingDirectory(request.kind),
+               WorkingDirectoryGate.usable(cwd) == nil,
+               !deniedDirectories.contains(cwd) {
+                deniedDirectories.append(cwd)
             }
             built.append(Slot(key: item.key, spec: item.pane, request: request, rect: item.rect))
         }
@@ -596,7 +611,11 @@ final class SpecApplier {
             // 没有 token 的调用方读不到活 pane 的网址：那就一律不匹配（宁可重建，
             // 也不要让"匹配上了没有"变成一个猜网址的探测通道）
             guard exposesBrowser, let wanted = spec.url else { return false }
-            return browser.currentURL?.absoluteString == wanted
+            // 规范化之后再比：手写的 spec 里是 `http://localhost:3000`，
+            // 活着的那个 pane 报的是 `http://localhost:3000/`。照字面比就永远匹配不上，
+            // 于是每 apply 一次都把一个正停在目标页上的 pane 拆了重建
+            return ControlPaneFactory.sameURL(browser.currentURL,
+                                              ControlPaneFactory.resolveURL(wanted))
         }
         guard let cwd = spec.cwd, let live = pane.workingDirectory else { return false }
         return samePath(cwd, live)

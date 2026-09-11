@@ -139,10 +139,12 @@ final class ControlMutationTests: XCTestCase {
     func testModalGuardRefusesEveryMutatingCommand() throws {
         let pane = try harness.newTerminal()
         let handle = ControlHandleRegistry.shared.handle(for: pane)
-        // send-text 默认是关的，会先被"敏感命令默认关闭"那一道拒掉（denied），
-        // 于是根本走不到模态闸门 —— 这里要测的是闸门本身，所以先把它打开
+        // 敏感命令（send-text / capture-text）默认是关的，会先被"敏感命令默认关闭"那一道
+        // 拒掉（denied），于是根本走不到模态闸门 —— 这里要测的是闸门本身，所以先把它们打开。
+        // 同理，下面每一条都带上来源 token：capture-text 少了它也会在模态闸门之前就被拒
         var config = ControlCommandRunner.Config()
         config.sendText = true
+        config.captureText = true
         harness.runner.config = config
         harness.runner.modalBusyProbe = { true }
         defer { harness.runner.modalBusyProbe = { false } }
@@ -150,7 +152,8 @@ final class ControlMutationTests: XCTestCase {
         var checked = 0
         for spec in ControlCommandTable.commands where spec.cls.isMutation && !spec.local {
             let reply = try harness.run(spec.name, target: spec.acceptsTarget ? handle : nil,
-                                        args: Self.minimalArgs(for: spec, handle: handle))
+                                        args: Self.minimalArgs(for: spec, handle: handle),
+                                        token: ControlEnvironment.token)
             XCTAssertFalse(reply.ok, "\(spec.name) 在模态挂着时被执行了")
             XCTAssertEqual(reply.error?.code, ControlErrorCode.busy.rawValue, spec.name)
             XCTAssertEqual(reply.error?.exit, ControlExit.busy.rawValue, spec.name)

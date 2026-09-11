@@ -42,6 +42,10 @@ final class ControlConsent {
         /// 关一个 pane 是用户看得见的一件事，缓存一次说得过去；而往别人的 tty 里注入文本
         /// 每一次的内容都可以完全不同，"批准过一次"根本不构成对下一次的同意
         var cacheable: Bool = true
+        /// 这次批准缓存在**哪个**键上。nil = 按命令类（破坏性命令彼此等价：
+        /// 用户批准的是"这个进程可以关东西"）。敏感命令一条命令一个键——
+        /// 批准"读 t7 的屏幕"绝不等于顺手批准"往 t7 里打字"，那是两件不同的授权
+        var scope: String?
         /// **只画给用户看**的正文预览（`input send-text` 才有；已净化并截断）。
         ///
         /// 它必须在框里，因为它是这一次确认与上一次唯一的区别：命令名与目标 pane 完全相同的两次调用，
@@ -63,6 +67,8 @@ final class ControlConsent {
     private struct GrantKey: Hashable {
         var pid: pid_t
         var cls: ControlCommandClass
+        /// 见 `Request.scope`
+        var scope: String?
     }
 
     static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "dev.danny.quickterm",
@@ -91,15 +97,15 @@ final class ControlConsent {
     /// 已授权？**pid 拿不到（<= 0）时永远返回 false**：
     /// 否则所有身份不明的对端会共用同一个 GrantKey(0, …)，第一个被批准之后
     /// 后面每一个都白拿授权——一次同意变成永久后门
-    func hasGrant(pid: pid_t, cls: ControlCommandClass) -> Bool {
+    func hasGrant(pid: pid_t, cls: ControlCommandClass, scope: String? = nil) -> Bool {
         guard pid > 0 else { return false }
-        return grants.contains(GrantKey(pid: pid, cls: cls))
+        return grants.contains(GrantKey(pid: pid, cls: cls, scope: scope))
     }
 
     /// 同上：只有拿得到真实 pid 才缓存
-    private func grant(pid: pid_t, cls: ControlCommandClass) {
+    private func grant(pid: pid_t, cls: ControlCommandClass, scope: String?) {
         guard pid > 0 else { return }
-        grants.insert(GrantKey(pid: pid, cls: cls))
+        grants.insert(GrantKey(pid: pid, cls: cls, scope: scope))
     }
 
     /// 主线程上是否有别的模态在挂（sheet 或 NSAlert.runModal 的嵌套 run loop）。
@@ -157,7 +163,7 @@ final class ControlConsent {
     /// 决策。`completion` 一定在主线程上被调用一次
     func evaluate(_ request: Request, completion: @escaping (Decision) -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
-        if request.cacheable, hasGrant(pid: request.peerPID, cls: request.cls) {
+        if request.cacheable, hasGrant(pid: request.peerPID, cls: request.cls, scope: request.scope) {
             completion(.allow)
             return
         }
@@ -171,7 +177,7 @@ final class ControlConsent {
                 answered = true
                 self?.isPrompting = false
                 if decision == .allow, request.cacheable {
-                    self?.grant(pid: request.peerPID, cls: request.cls)
+                    self?.grant(pid: request.peerPID, cls: request.cls, scope: request.scope)
                 }
                 completion(decision)
             }
@@ -201,7 +207,7 @@ final class ControlConsent {
             answered = true
             self?.isPrompting = false
             if decision == .allow, request.cacheable {
-                self?.grant(pid: request.peerPID, cls: request.cls)
+                self?.grant(pid: request.peerPID, cls: request.cls, scope: request.scope)
             }
             Self.logger.notice("控制面确认结果：\(decision.rawValue, privacy: .public)（pid \(request.peerPID)）")
             completion(decision)

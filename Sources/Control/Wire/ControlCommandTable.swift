@@ -74,6 +74,10 @@ struct ControlCommandSpec: Codable, Equatable {
     /// 这是 wezterm 的 `--help` 缺、kitty 的文档有的那一项，能替 agent 省掉每个会话一次探路调用
     var outputSample: String?
 
+    /// 非 `read` 类（它触碰隐私 / 别人的 tty），但**什么都不改**：`pane capture-text`。
+    /// 见 `honorsMutationFlags`——这两件事必须分开说，否则"敏感"会被当成"会改东西"
+    var readOnlyEffect: Bool
+
     /// 这条命令真的**实现了** `--dry-run` / `--fail-if-noop`。
     ///
     /// 两个开关是从名词-动词层"先算 diff 再决定动不动手"的形状里长出来的（出口是
@@ -81,10 +85,15 @@ struct ControlCommandSpec: Codable, Equatable {
     /// 直通 `perform()`：既算不出 diff，也没有"预演"这回事。
     /// 静默接受它的后果是双份的——一次"预演"真的落了刀，而 `--dry-run` 还顺手
     /// 把破坏性命令的确认闸门一起关掉了。
-    var honorsMutationFlags: Bool { group != nil && cls.isMutation }
+    /// **`readOnlyEffect` 的命令一律不认这两个开关**，而且这不只是"没意义"那么简单：
+    /// `--dry-run` 在 `handle()` 里同时是**免确认**的理由（预演什么都不改，所以不问用户）。
+    /// 一条什么都不改、却会把别人 shell 屏幕上的字回给调用方的命令要是认了 `--dry-run`，
+    /// 那个开关就成了绕过确认闸门、照样拿到全部内容的后门
+    var honorsMutationFlags: Bool { group != nil && cls.isMutation && !readOnlyEffect }
 
     init(group: String? = nil, _ verb: String, summary: String, cls: ControlCommandClass,
          idempotent: Bool, acceptsTarget: Bool, local: Bool = false, readsFile: Bool = false,
+         readOnlyEffect: Bool = false,
          args: [ControlArgSpec], examples: [String], outputSample: String? = nil) {
         self.name = group.map { "\($0).\(verb)" } ?? verb
         self.group = group
@@ -96,6 +105,7 @@ struct ControlCommandSpec: Codable, Equatable {
         self.acceptsTarget = acceptsTarget
         self.local = local
         self.readsFile = readsFile
+        self.readOnlyEffect = readOnlyEffect
         self.args = args
         self.examples = examples
         self.outputSample = outputSample
@@ -205,6 +215,9 @@ enum ControlCommandTable {
                 ControlArgSpec("kind", .enumeration, help: "pane 种类",
                                values: ["terminal", "browser", "file-manager"], defaultValue: "terminal"),
                 ControlArgSpec("cwd", .string, help: "起始目录（支持 ~；默认继承锚点 pane）"),
+                ControlArgSpec("require-cwd", .bool,
+                               help: "--cwd 用不上就**报错**（默认是照常开 pane 并回一条 cwd_denied 告警）："
+                                   + "受保护目录（~/Desktop ~/Documents ~/Downloads）缺少隐私授权时会走到这一步"),
                 ControlArgSpec("cmd", .string, help: "要跑的命令（引擎会 wait-after-command；默认退出即关 pane）"),
                 ControlArgSpec("hold", .bool, help: "命令退出后**不**关闭 pane（默认关闭）"),
                 ControlArgSpec("env", .string, help: "额外环境变量 KEY=VALUE（可重复给）", repeatable: true),
@@ -218,6 +231,7 @@ enum ControlCommandTable {
                 "quickterm pane new --kind browser --url http://localhost:3000 --at t1 --where down",
                 "quickterm pane new --kind file-manager --cwd ~/proj",
                 "quickterm pane new --cmd 'tail -f log' --hold --env RUST_LOG=debug",
+                "quickterm pane new --cwd ~/Downloads --require-cwd   # 目录用不上就退 5，绝不静默落在别处",
             ],
             outputSample: paneMutationSample),
         ControlCommandSpec(
@@ -282,10 +296,16 @@ enum ControlCommandTable {
                 ControlArgSpec("width", .double, help: "scrolling 列宽因子（0.25–0.90，绝对值）"),
                 ControlArgSpec("ratio", .double,
                                help: "dwindle 最近父 split 的比例（\(SpecLimits.ratioRange.lowerBound)–\(SpecLimits.ratioRange.upperBound)，绝对值；越界报错）"),
+                ControlArgSpec("title", .string,
+                               help: "终端 pane 的标题（= 右键「Change Terminal Title」）；"
+                                   + "空串 \"\" 清掉覆盖、回到 shell 自己报的那个。"
+                                   + "设完就能用 -t 'title:~<正则>' 寻址它"),
             ],
             examples: [
                 "quickterm pane set -t t7 --zoom on",
                 "quickterm pane set -t t7 --float off --width 0.33",
+                "quickterm pane set -t t7 --title 'build · web'   # 之后 -t 'title:~build' 就能找到它",
+                "quickterm pane set -t t7 --title ''              # 交还给 shell",
             ],
             outputSample: nil),
         ControlCommandSpec(
@@ -315,6 +335,89 @@ enum ControlCommandTable {
                 "quickterm pane resize -t t7 --dir right --points 100",
             ],
             outputSample: resizeSample),
+        ControlCommandSpec(
+            group: "pane", "capture-text",
+            summary: "读一个终端 pane **当前屏幕上的文字**（可选再带上若干行历史）——"
+                + "默认关闭，每个调用进程确认一次",
+            cls: .sensitive, idempotent: true, acceptsTarget: true, readOnlyEffect: true,
+            args: [
+                ControlArgSpec("scrollback", .int,
+                               help: "可视区之上再带回多少行历史（0–\(ControlCaptureLimits.maxScrollback)，默认 0 = 只要可视区）",
+                               defaultValue: "0"),
+            ],
+            examples: [
+                "quickterm pane capture-text -t t7",
+                "quickterm pane capture-text -t t7 --scrollback 200",
+                "quickterm pane capture-text -t t7 --json | jq -r .data.text",
+            ],
+            outputSample: captureTextSample),
+
+        // MARK: —— 浏览器 pane 的标签 ——
+        // `-t` 指的永远是 **pane**（`b3`），`--tab` 才指 pane 里的那一个标签。
+        // 标签有两种写法，都在 `state` / `get` 的 `tabList` 里回显：序号（1 起，会随开关标签移动）
+        // 与 id（标签活着就不变）。**没有 token 的调用方读不到标题与网址**——
+        // 与 pane 级 url / title 同一条打码规则，别处开个后门等于没打码。
+
+        ControlCommandSpec(
+            group: "browser", "open",
+            summary: "在浏览器 pane 里新开一个标签并打开网址",
+            cls: .mutate, idempotent: false, acceptsTarget: true,
+            args: [
+                ControlArgSpec("url", .string, help: "要打开的网址（不写 = 浏览器主页）"),
+                ControlArgSpec("activate", .enumeration,
+                               help: "新标签是否立刻成为当前标签", values: ["on", "off"],
+                               defaultValue: "on"),
+            ],
+            examples: [
+                "quickterm browser open -t b3 --url http://localhost:3000",
+                "quickterm browser open -t b3 --url https://example.com --activate off",
+            ],
+            outputSample: browserSample),
+        ControlCommandSpec(
+            group: "browser", "goto",
+            summary: "把某个标签导航到一个网址（绝对设值：已经在那儿就什么都不做）",
+            cls: .mutate, idempotent: true, acceptsTarget: true,
+            args: [
+                ControlArgSpec("url", .string, help: "要打开的网址", required: true),
+                ControlArgSpec("tab", .string, help: ControlTabRef.help, defaultValue: "@active"),
+            ],
+            examples: [
+                "quickterm browser goto -t b3 --url http://localhost:5173",
+                "quickterm browser goto -t b3 --tab 2 --url https://example.com",
+                "quickterm browser goto -t b3 --tab '#8A1F' --url https://example.com",
+            ],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "browser", "reload",
+            summary: "重新加载某个标签（`--hard` 连缓存一起绕过）",
+            cls: .mutate, idempotent: true, acceptsTarget: true,
+            args: [
+                ControlArgSpec("tab", .string, help: ControlTabRef.help, defaultValue: "@active"),
+                ControlArgSpec("hard", .bool, help: "绕过缓存（等价 ⌘⇧R）"),
+            ],
+            examples: [
+                "quickterm browser reload -t b3",
+                "quickterm browser reload -t b3 --tab 1 --hard",
+            ],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "browser", "close",
+            summary: "关掉标签（破坏性）。**关掉最后一个标签 = 关掉整个 pane**——与 ⌘W 逐字一致",
+            cls: .destructive, idempotent: false, acceptsTarget: true,
+            args: [
+                ControlArgSpec("tab", .string, help: ControlTabRef.help, defaultValue: "@active"),
+                ControlArgSpec("others", .bool,
+                               help: "反过来：**除了** --tab 指的那个，其余标签全关掉（本身不会关 pane）"),
+                ControlArgSpec("force", .bool,
+                               help: "只在「关到最后一个标签因而要关 pane」时有意义："
+                                   + "跳过 QuickTerm 那句「仍有进程在运行」的确认"),
+            ],
+            examples: [
+                "quickterm browser close -t b3                 # 关当前标签",
+                "quickterm browser close -t b3 --tab 1         # 关第一个标签",
+                "quickterm browser close -t b3 --others        # 只留当前这一个",
+            ],
+            outputSample: nil),
 
         ControlCommandSpec(
             group: "workspace", "goto",
@@ -491,6 +594,9 @@ enum ControlCommandTable {
                                help: "覆盖：原有 pane 全部关掉（**破坏性**，会先确认；整份一模一样时是空操作）"),
                 ControlArgSpec("reuse", .bool,
                                help: "能对上的 pane 原地留着（跑着的 dev server 不会被重启），其余关掉 / 新建"),
+                ControlArgSpec("require-cwd", .bool,
+                               help: "spec 里有目录用不上就**报错**（默认照铺并回 cwd_denied 告警）："
+                                   + "受保护目录缺少隐私授权时会走到这一步"),
             ],
             examples: [
                 "quickterm spec apply -f dev.json --dry-run           # 先看 diff，再决定",
@@ -786,6 +892,26 @@ enum ControlCommandTable {
      "data":{"command":"input.send-text","applied":true,"changed":true,"dryRun":false,
        "changes":[{"path":"1:2.t7","from":"(键盘输入)","to":"12 个字符 + 回车"}],
        "pane":{"handle":"t7","kind":"terminal","screen":1,"workspace":2}}}
+    """
+
+    /// `pane capture-text` 的回声。**text 只在这里出现一次**：不进日志、不进事件流
+    static let captureTextSample = """
+    {"ok":true,"seq":430,"resolved":{"screen":1,"workspace":2,"pane":"t7"},
+     "data":{"command":"pane.capture-text","cols":96,"rows":24,"lines":3,"scrollback":0,
+       "pane":{"handle":"t7","kind":"terminal","screen":1,"workspace":2},
+       "text":"~/proj $ npm test\\n  12 passing\\n~/proj $ "}}
+    """
+
+    /// 浏览器标签类命令的回声：`pane.tabList` 就是下一条 `--tab` 该写的东西
+    static let browserSample = """
+    {"ok":true,"seq":432,"resolved":{"screen":1,"workspace":2,"pane":"b3"},
+     "data":{"command":"browser.open","applied":true,"changed":true,"dryRun":false,
+       "changes":[{"path":"1:2.b3.tabs","from":"2 个","to":"3 个"}],
+       "pane":{"handle":"b3","kind":"browser","screen":1,"workspace":2,"tabs":3,
+         "tabList":[{"index":1,"id":"8A1F…","active":false,"title":"QuickTerm","url":"https://…"},
+                    {"index":2,"id":"C40D…","active":false,"title":"docs","url":"https://…"},
+                    {"index":3,"id":"F17B…","active":true,"title":"","url":"http://localhost:3000",
+                     "loading":true}]}}}
     """
 
     static let getSample = """

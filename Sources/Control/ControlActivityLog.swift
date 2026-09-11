@@ -33,12 +33,24 @@ final class ControlActivityLog: ObservableObject {
         var outcome: String
         var changes: [ControlChange]
 
-        var line: String {
+        /// 应用内那一份（活动日志面板）：值写全。看的人就是这台机器前面的用户本人
+        var line: String { render(redactingSensitiveValues: false) }
+
+        /// 写进 OSLog 的那一份：`sensitive` 的变更只留 `path`。
+        ///
+        /// 这两份不一样**是有意的**：面板是给用户看的一瞥，而 OSLog 落在
+        /// /var/db/diagnostics——任何管理员读得到、sysdiagnose 会打包带走、应用关了还在。
+        /// 把一个默认要按 token 打码的网址/标题原样写进那里，等于给打码开了一扇后门
+        /// （`input.send-text` 早就是这么办的：正文从不入日志，只记「N 个字符」）
+        var logLine: String { render(redactingSensitiveValues: true) }
+
+        private func render(redactingSensitiveValues redacting: Bool) -> String {
             let stamp = Entry.formatter.string(from: at)
             let origin = originPane.map { " ←\($0)" } ?? ""
             let where_ = target.map { " @\($0)" } ?? ""
             let diff = changes.isEmpty ? "" : "  " + changes.map {
-                "\($0.path): \($0.from ?? "-") → \($0.to ?? "-")"
+                if redacting, $0.sensitive { return "\($0.path): 已变更（值不入日志）" }
+                return "\($0.path): \($0.from ?? "-") → \($0.to ?? "-")"
             }.joined(separator: "，")
             return "\(stamp)  \(command)\(where_)  [\(outcome)]  \(peer)\(origin)\(diff)"
         }
@@ -57,7 +69,7 @@ final class ControlActivityLog: ObservableObject {
     func record(_ entry: Entry) {
         entries.append(entry)
         if entries.count > Self.capacity { entries.removeFirst(entries.count - Self.capacity) }
-        Self.logger.notice("\(entry.line, privacy: .public)")
+        Self.logger.notice("\(entry.logLine, privacy: .public)")
     }
 
     /// 最近 N 条（新的在前）

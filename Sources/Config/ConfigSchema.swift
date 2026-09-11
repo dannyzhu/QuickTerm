@@ -462,6 +462,15 @@ enum ConfigSchema {
                       写别的 pane 每次都要确认；控制字符一律拒绝，换行只能靠 --enter
                       """,
                       helpEN: "typing into a terminal pane on behalf of a caller; off by default"),
+        ConfigKeySpec(.control, "capture-text", .bool, default: .bool(false),
+                      labelZH: "允许 capture-text", labelEN: "Allow capture-text",
+                      helpZH: """
+                      quickterm pane capture-text：把一个终端 pane **屏幕上的文字**读回给调用方。
+                      那里可能有 token、刚敲进去还没回车的密码、私有代码，所以默认关闭。
+                      打开之后仍然要：调用方带着本次启动的 QUICKTERM_TOKEN（与浏览器网址同一枚），
+                      而且每个调用进程要用户在 QuickTerm 里确认一次；正文不进任何日志
+                      """,
+                      helpEN: "reading a terminal pane's visible text on behalf of a caller; off by default"),
     ]
 
     /// `id` → 配置项

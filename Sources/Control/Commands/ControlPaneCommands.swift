@@ -16,6 +16,7 @@ extension ControlCommandRunner {
         case "swap": return try paneSwap(ctx)
         case "set": return try paneSet(ctx)
         case "resize": return try paneResize(ctx)
+        case "capture-text": return try paneCaptureText(ctx)
         default: throw ControlErrorBody(.unknownCommand, "pane 没有 \(ctx.spec.verb) 这个动词")
         }
     }
@@ -65,6 +66,25 @@ extension ControlCommandRunner {
         if let cwd, cwd.hasPrefix("~") || cwd.contains("\0") {
             throw ControlErrorBody(.badRequest, "--cwd 不是一个可用的路径：\(cwd)")
         }
+        // **在动手之前**问一次隐私守卫：这个目录交给引擎会不会被挡下来。
+        // 判定按根目录缓存（`WorkingDirectoryGate`），所以这一问是免费的，
+        // 而它换来的是两件事——`--require-cwd` 能在一个 pane 都还没建的时候就失败，
+        // 以及成功的那条路上带着一条说清楚"目录没用上"的告警，而不是一句平平无奇的 ok
+        // **只问真的会用到 cwd 的那些 kind。** 浏览器 pane 根本不消费 cwd
+        // （`ControlPaneFactory.make` 的 browser 分支只接一个 url），
+        // 对它报一句"shell 起在了默认目录"是在说一件没发生过的事，
+        // 而 `--require-cwd` 还会把一次完全正常的建 pane 变成退出码 5
+        let cwdDenied = ControlPaneFactory.consumesWorkingDirectory(kind)
+            ? cwd.flatMap { WorkingDirectoryGate.usable($0) == nil ? $0 : nil }
+            : nil
+        if let cwdDenied, ctx.flag("require-cwd") {
+            throw ControlErrorBody(
+                .denied,
+                "--cwd \(cwdDenied) 用不上：macOS 把它划成受保护目录，而 QuickTerm 没有拿到"
+                    + "「文件与文件夹」授权。--require-cwd 要求宁可失败也不落在别处，所以这次一个 pane 都没建",
+                hint: "在系统设置 ▸ 隐私与安全性 ▸ 文件与文件夹里给 QuickTerm 勾上对应的项并重启它；"
+                    + "或者去掉 --require-cwd（照常开 pane，响应里带一条 cwd_denied 告警）")
+        }
         // 造 pane 的那一份实现是共用的（`spec apply` 走同一条）：参数互斥与网址解析都在它那儿
         let recipe = ControlPaneFactory.Request(
             kind: kind, cwd: cwd, cmd: ctx.string("cmd"), hold: ctx.flag("hold"),
@@ -91,6 +111,13 @@ extension ControlCommandRunner {
             created = made.pane
         }
 
+        if let cwdDenied {
+            // `used` 尽力而为：shell 的第一个提示符还没发 OSC 7 时它就是 nil。
+            // **绝不拿 `workingDirectory` 顶上**——那一栏在被挡下来时回显的正是
+            // 用户要的那个目录（存档要按它复原，见 `deniedWorkingDirectory`），
+            // 拿它当"实际用的目录"写进告警，等于用一句假话解释一句真话
+            payload.warnings = [.cwdDenied(cwdDenied, used: (created as? Ghostty.SurfaceView)?.pwd)]
+        }
         guard let pane = created else {
             // dry-run：什么都没建，如实回报会建在哪
             return (ResolvedTarget(screen: controller.screenIndex + 1,
@@ -107,6 +134,10 @@ extension ControlCommandRunner {
                                workspace: workspace + 1,
                                pane: handleName(pane), paneID: pane.id.uuidString), payload)
     }
+
+    /// `pane set --title` 的长度上限。标题会进标题栏、状态条与每一条 `state` 响应——
+    /// 一个 agent 把整段日志塞进标题是真实会发生的事
+    static let maxTitleLength = 200
 
     /// `--env KEY=VALUE`。控制字符一律拒绝：它们会一路混进子进程的环境
     static func parseEnvironment(_ raw: [String]) throws -> [String: String] {
@@ -139,7 +170,8 @@ extension ControlCommandRunner {
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer,
             changes: [ControlChange(path(hit.controller, hit.workspace, hit.pane),
-                                    from: "open「\(title)」", to: "closed")],
+                                    // 标题是网页的标题 / 终端的标题：面板里写全，OSLog 里只留 path
+                                    from: "open「\(title)」", to: "closed", sensitive: true)],
             controllers: [hit.controller],
             // **不登记撤销**：进程已经被结束了，把布局放回去只会造出一个"好像还在"的假象
             undoName: nil,
@@ -345,8 +377,12 @@ extension ControlCommandRunner {
         let float = try ctx.onOff("float")
         let width = ctx.double("width")
         let ratio = ctx.double("ratio")
-        guard zoom != nil || float != nil || width != nil || ratio != nil else {
-            throw ControlErrorBody(.badRequest, "pane set 至少要给一个设值（--zoom / --float / --width / --ratio）",
+        // **空串是有意义的值**（`--title "" ` = 把标题交还给 shell），所以这一项不能走
+        // `ctx.string`（它把空串当成"没写"）。"没写"与"写了个空的"是两件不同的事
+        let title = ctx.rawString("title")
+        guard zoom != nil || float != nil || width != nil || ratio != nil || title != nil else {
+            throw ControlErrorBody(.badRequest,
+                                   "pane set 至少要给一个设值（--zoom / --float / --width / --ratio / --title）",
                                    hint: "quickterm pane set --help")
         }
         let layoutName = controller.model.layouts[hit.workspace].name
@@ -427,10 +463,51 @@ extension ControlCommandRunner {
             }
         }
 
+        // 标题：终端 pane 独有（浏览器 pane 的标题是网页给的，改不得——
+        // 改了也会在下一次导航时被页面自己盖掉，那种"设了但没生效"最难查）
+        var surfaceForTitle: Ghostty.SurfaceView?
+        if let title {
+            guard let surface = hit.pane as? Ghostty.SurfaceView else {
+                throw ControlErrorBody(
+                    .wrongPaneKind,
+                    "\(handleName(hit.pane)) 是 \(hit.pane.kind.rawValue) pane，标题不是它自己的"
+                        + "（浏览器 pane 的标题来自网页）",
+                    hint: "只有 kind=terminal 的 pane 能设标题")
+            }
+            guard title.count <= Self.maxTitleLength else {
+                throw ControlErrorBody(.badRequest,
+                                       "--title 太长了（\(title.count) 个字符，上限 \(Self.maxTitleLength)）")
+            }
+            guard title.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F
+                                                    && !(0x80...0x9F).contains($0.value) }) else {
+                throw ControlErrorBody(.badRequest, "--title 里有控制字符",
+                                       hint: "标题会原样画进 pane 的标题栏与 state 的 title 字段")
+            }
+            surfaceForTitle = surface
+            let now = surface.paneTitle
+            if title.isEmpty {
+                // 还原：只有真的被接管过才算一次改动（跑第二次就是空操作，退 7 靠的就是这一条）
+                if surface.hasControlTitle {
+                    changes.append(ControlChange("\(base).title", from: now, to: "（交还给 shell）",
+                                                 sensitive: true))
+                }
+            } else if !(surface.hasControlTitle && now == title) {
+                // **判据是"有没有被接管"，不是"看上去一不一样"。** shell 自己报的标题恰好
+                // 等于要设的那个（agent 拿目录名当 pane 名时很常见）时，只比字面就成了空操作：
+                // `setControlTitle` 不会被调用，标题没被钉住，shell 的下一次 OSC 标题上报
+                // 会把它换掉——而调用方收到的是一句 success。绝对设值要的是"跑完之后它就是这个"
+                changes.append(ControlChange(
+                    "\(base).title",
+                    from: surface.hasControlTitle ? now : "「\(now)」（shell 报的，未接管）",
+                    to: title, sensitive: true))
+            }
+        }
+
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
             controllers: [controller], undoName: "控制面：\(ctx.spec.cli)", target: base)
         var payload = try commit(mutation) {
+            if let title, let surfaceForTitle { surfaceForTitle.setControlTitle(title) }
             // **层先定下来**：float 决定 pane 在哪一层，zoom / width / ratio 都是层内属性。
             // 反过来写的话 `--float off --zoom on` 会先在浮动层写一个孤儿 zoom，
             // 再被回塞路径（insertingColumnRight / tree.inserting，两条都清 zoom）抹掉
