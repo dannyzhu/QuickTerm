@@ -1618,39 +1618,63 @@ extension Ghostty {
             // in a row without storing it all.
             var item: NSMenuItem
 
-            // If we have a selection, add copy
-            if let text = self.accessibilitySelectedText(), text.count > 0 {
+            // QuickTerm：只保留用户要的几项——分屏与检查器在快捷键 / 菜单里都有，
+            // 右键菜单留短一点。AutoFill 与 Services 是 AppKit 自动追加的，不在这里加
+            let selection = self.accessibilitySelectedText()
+            if let text = selection, !text.isEmpty {
                 menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+                // QuickTerm：拿选中的文字去搜索，落在**最近用过的浏览器 pane** 的新标签里
+                // （没有浏览器 pane 就开一个），而不是跳去系统默认浏览器
+                item = menu.addItem(withTitle: Self.searchMenuTitle(for: text),
+                                    action: #selector(searchSelectionInBrowserPane(_:)), keyEquivalent: "")
+                item.setImageIfDesired(systemSymbolName: "magnifyingglass")
             }
             menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
 
             menu.addItem(.separator())
-            item = menu.addItem(withTitle: "Split Right", action: #selector(splitRight(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "rectangle.righthalf.inset.filled")
-            item = menu.addItem(withTitle: "Split Left", action: #selector(splitLeft(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "rectangle.leadinghalf.inset.filled")
-            item = menu.addItem(withTitle: "Split Down", action: #selector(splitDown(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "rectangle.bottomhalf.inset.filled")
-            item = menu.addItem(withTitle: "Split Up", action: #selector(splitUp(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "rectangle.tophalf.inset.filled")
-
-            menu.addItem(.separator())
             item = menu.addItem(withTitle: "Reset Terminal", action: #selector(resetTerminal(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "arrow.trianglehead.2.clockwise")
-            item = menu.addItem(withTitle: "Toggle Terminal Inspector", action: #selector(toggleTerminalInspector(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "scope")
             item = menu.addItem(withTitle: "Terminal Read-only", action: #selector(toggleReadonly(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "eye.fill")
             item.state = readonly ? .on : .off
+
             menu.addItem(.separator())
-            item = menu.addItem(withTitle: "Change Tab Title...", action: #selector(BaseTerminalController.changeTabTitle(_:)), keyEquivalent: "")
-            item.setImageIfDesired(systemSymbolName: "pencil.line")
             item = menu.addItem(withTitle: "Change Terminal Title...", action: #selector(changeTitle(_:)), keyEquivalent: "")
 
             return menu
         }
 
         // MARK: Menu Handlers
+
+        /// QuickTerm：搜索菜单项的标题。引擎名从 `browser-search` 模板的域名里取
+        /// （用户把模板换成别家时标题不会继续谎称 Google），选中的文字截断后附在后面
+        static func searchMenuTitle(for text: String) -> String {
+            let host = URL(string: BrowserPaneView.settings.search
+                .replacingOccurrences(of: "%s", with: "q"))?.host?.lowercased() ?? ""
+            let engine: String
+            if host.contains("google") { engine = "Google" }
+            else if host.contains("bing") { engine = "Bing" }
+            else if host.contains("duckduckgo") { engine = "DuckDuckGo" }
+            else if host.contains("baidu") { engine = "百度" }
+            else { engine = "Web" }
+            let flat = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\n", with: " ")
+            let shown = flat.count > 24 ? flat.prefix(24) + "…" : flat[...]
+            return "Search with \(engine) “\(shown)”"
+        }
+
+        /// QuickTerm：把选中的文字丢进最近用过的浏览器 pane 搜索（新标签）。
+        /// 这里**一律当成搜索词**，不走地址栏那套「像域名就直接打开」的判断——
+        /// 菜单项写着 Search，选中 `github.com/x` 时用户要的是搜索结果而不是跳转
+        @IBAction func searchSelectionInBrowserPane(_ sender: Any?) {
+            guard let text = self.accessibilitySelectedText(),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let url = BrowserPaneView.settings.searchURL(for: text) else { return }
+            // 控制器不接管（link-opener = system）时退回系统浏览器，与 ⌘+点链接同一条语义
+            if controller?.openLink(url, from: self) != true {
+                NSWorkspace.shared.open(url)
+            }
+        }
 
         @IBAction func copy(_ sender: Any?) {
             guard let surface = self.surface else { return }
@@ -2173,6 +2197,9 @@ extension Ghostty.SurfaceView: NSTextInputClient {
 
 // https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/SysServices/Articles/using.html
 extension Ghostty.SurfaceView: NSServicesMenuRequestor {
+    /// QuickTerm：是否把终端交给系统服务（Services 菜单）。关掉 = Services 整个消失
+    fileprivate static let servicesEnabled = false
+
     override func validRequestor(
         forSendType sendType: NSPasteboard.PasteboardType?,
         returnType: NSPasteboard.PasteboardType?
@@ -2185,6 +2212,14 @@ extension Ghostty.SurfaceView: NSServicesMenuRequestor {
         // The "COMBINATION" bit is key: we might get sent a string (we can handle that)
         // but get requested an image (we can't handle that at the time of writing this),
         // so we must bubble up.
+
+        // QuickTerm：不做服务请求者 → 右键菜单与菜单栏里都不再出现 Services。
+        // Services 的内容由系统填充、无法按条过滤，而其中的 "Search With Google" 会跳去系统默认
+        // 浏览器，与本应用「落到浏览器 pane」的语义冲突。AutoFill 走 NSTextInputClient，不受影响。
+        // 想恢复系统服务把这个开关改回 true 即可（下面是 Ghostty 的原实现，一行未动）
+        if !Self.servicesEnabled {
+            return super.validRequestor(forSendType: sendType, returnType: returnType)
+        }
 
         // Types we can receive
         let receivable: [NSPasteboard.PasteboardType] = [.string, .init("public.utf8-plain-text")]

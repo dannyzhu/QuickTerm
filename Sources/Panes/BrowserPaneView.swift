@@ -68,6 +68,16 @@ final class BrowserPaneView: PaneView {
         }
 
         /// 地址栏文本 → URL：有 scheme 直接用；像域名（含点、无空格）补 https；否则搜索
+        /// QuickTerm：**一律**按搜索词构造 URL（右键「Search with …」用）。
+        /// 与 `url(forInput:)` 的区别是不做「像域名就直接打开」的判断：
+        /// 菜单上写着 Search，选中 `github.com/x` 时用户要的是搜索结果
+        func searchURL(for raw: String) -> URL? {
+            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            let q = text.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? text
+            return URL(string: search.replacingOccurrences(of: "%s", with: q))
+        }
+
         func url(forInput raw: String) -> URL? {
             let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
