@@ -213,6 +213,8 @@ extension Ghostty {
 
         override class var kind: PaneKind { .terminal }
         override var paneTitle: String { title }
+        // QuickTerm：边框上的标题只认"被接管"这一状态——shell 用 OSC 报的标题不算数
+        override var customTitle: String? { hasControlTitle ? title : nil }
         // QuickTerm: before the shell reports OSC 7, inherit the directory we started it with
         // rather than nil (which would silently open a new terminal in $HOME).
         override var workingDirectory: String? { pwd ?? initialWorkingDirectory }
@@ -291,7 +293,18 @@ extension Ghostty {
         // This is the title from the terminal. This is nil if we're currently using
         // the terminal title as the main title property. If the title is set manually
         // by the user, this is set to the prior value (which may be empty, but non-nil).
-        private var titleFromTerminal: String?
+        //
+        // QuickTerm：「标题被接管了吗」这一位本身就得发变更。它能在可见标题一个字没改的
+        // 情况下翻转——把标题钉成 shell 此刻正在报的那个值（拿目录名当 pane 名很常见）时，
+        // `title` 纹丝不动，@Published 于是一声不吭，边框上的标题就永远不出现；
+        // 反过来交还给 shell 时也一样。只在 nil 与非 nil 之间翻转时发，
+        // 免得钉住期间 shell 每报一次标题（只更新这份备份）都白刷一次视图
+        private var titleFromTerminal: String? {
+            willSet {
+                guard (titleFromTerminal == nil) != (newValue == nil) else { return }
+                objectWillChange.send()
+            }
+        }
 
         // The cached contents of the screen.
         private(set) var cachedScreenContents: CachedValue<String>

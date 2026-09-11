@@ -221,6 +221,8 @@ enum ConfigStore {
         var paneGap: Int = 5
         /// 非激活 pane 高斯模糊半径（0–10pt，默认 2.5；磨砂感）
         var inactiveBlur: Double = 2.5
+        /// 在 pane 上边框上画标题（默认开；只画显式设过的标题，最长 20 字）
+        var paneTitle: Bool = true
         /// 文件管理器程序（`file-manager` 动作在新 pane 里运行；名字按 PATH + 常见安装目录查找，或绝对路径）
         var fileManagerCommand: String = FileManagerLaunch.defaultProgram
         /// 浏览器 pane：首页 / 搜索模板 / UA（"safari" 伪装、"webkit" 不伪装、或自定义）/ Web Inspector
@@ -304,6 +306,7 @@ enum ConfigBindings {
         "appearance.inactive-blur": { v, s in v.doubleValue.map { s.inactiveBlur = $0 } },
         "appearance.pane-padding": { v, s in v.intValue.map { s.panePadding = $0 } },
         "appearance.pane-gap": { v, s in v.intValue.map { s.paneGap = $0 } },
+        "appearance.pane-title": { v, s in v.boolValue.map { s.paneTitle = $0 } },
         "workspace.workspaces": { v, s in v.intValue.map { s.workspaces = $0 } },
         "workspace.visible-columns": { v, s in s.visibleColumns = v.intValue },
         "terminal.file-manager-command": { v, s in v.stringValue.map { s.fileManagerCommand = $0 } },

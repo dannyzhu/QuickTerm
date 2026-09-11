@@ -143,6 +143,7 @@ All panels are centred, Walker-style: `↑`/`↓` to move, `Return` to choose, `
 | `bar-opacity` | 0.75 | Status bar background |
 | `divider-opacity` | 0.2 | Opacity of the 1pt divider line between dwindle splits (1 = solid, 0 = hidden) |
 | `pane-gap` | 5 | Padding around each pane in pt, same in scrolling and dwindle (neighbours are 2×gap apart; the dwindle divider line takes no space). `dwindle-gap` is still read as a legacy alias |
+| `pane-title` | true | Draw the pane's title into its top border, fieldset-legend style: the line breaks where the text sits and the text takes the border's colour. Only a title you set yourself shows up — right-click **Change Terminal Title** or `quickterm pane set --title`; the one the shell reports over OSC never does. 20 characters max, and it never reaches the top-right corner (2 characters of border always stay to its right; too narrow for that and no title is drawn). The text sits on the line itself, so it needs room above the border: with gaps off (Cmd+Shift+Backspace) or `pane-gap` below 3 no title is drawn and the border stays unbroken |
 | `file-manager-command` | yazi | Program run by the `file-manager` action (a name looked up in PATH plus the usual Homebrew/cargo dirs, or an absolute path; `lf` and `ranger` work too). Install with `brew install yazi` |
 | `browser-home` | https://www.google.com | Page a new browser pane opens |
 | `browser-search` | https://www.google.com/search?q=%s | Search template used when the address bar input is not a URL (`%s` = query) |
@@ -338,6 +339,7 @@ Full agent-facing documentation, including the addressing grammar and the exit-c
 # inactive-blur = 2.5    # > 0 enables frosted inactive panes; 0 turns it off
 # pane-padding = 14      # terminal padding in pt, 0–32 (Omarchy's value is 14)
 # pane-gap = 5           # 0–20 pt around each pane (neighbours end up 2×gap apart)
+# pane-title = true      # draw the title into the pane's top border (only titles you set; 20 chars max)
 
 [workspace]
 # workspaces = 5       # 1–10

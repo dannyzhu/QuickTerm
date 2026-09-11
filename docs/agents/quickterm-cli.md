@@ -174,6 +174,7 @@ quickterm pane set -t t7 --title ''              # 空串 = 交还给 shell
 标题会出现在 `state` / `list` / `get` 的 `title` 字段里，而 **`title:~<正则>` 是一等的寻址写法**——
 给几个长期存在的 pane 起名字，比每次都去查一串句柄稳得多（句柄会随 pane 关掉而回收）。
 只有终端 pane 能设：浏览器 pane 的标题来自网页，设了也会被下一次导航盖掉。
+这样设下的标题还会直接画在 pane 的上边框上（最长 20 字；配置 `[appearance] pane-title = false` 关掉）。
 
 ### 浏览器标签：`browser`
 

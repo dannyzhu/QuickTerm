@@ -143,6 +143,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `bar-opacity` | 0.75 | 顶栏背景 |
 | `divider-opacity` | 0.2 | dwindle 分隔细线（1pt）的不透明度（1 = 实线，0 = 隐藏） |
 | `pane-gap` | 5 | 每 pane 每边留白 pt，scrolling / dwindle 一致（相邻间距 = 2×gap；dwindle 分隔线不占空间）。旧键 `dwindle-gap` 仍可读作别名 |
+| `pane-title` | true | 把 pane 的标题画在上边框上（fieldset legend 那个样子：边框在文字处断开，文字与边框同色）。**只显示手动设过的**标题（右键「Change Terminal Title」或 `quickterm pane set --title`），shell 用 OSC 报的不算。最长 20 字（含截断的 `…`），且永远碰不到右上角：右侧始终留至少 2 个字符宽的边框，窄到连一个字都放不下就不画。文字是压在线上的，上边框外得有地方落字：gaps 关掉（Cmd+Shift+Backspace）或 `pane-gap` 小于 3 时不画，边框照常连着 |
 | `file-manager-command` | yazi | `file-manager` 动作运行的程序（名字按 PATH 与常见 Homebrew/cargo 目录查找，或绝对路径；`lf`、`ranger` 亦可）。安装：`brew install yazi` |
 | `browser-home` | https://www.google.com | 新浏览器 pane 打开的页面 |
 | `browser-search` | https://www.google.com/search?q=%s | 地址栏输入非网址时的搜索模板（`%s` = 关键词） |
@@ -338,6 +339,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # inactive-blur = 2.5    # 非激活 pane 磨砂背景（> 0 开启；0 关闭）
 # pane-padding = 14      # pane 内终端四边留白（pt，0–32；Omarchy 官方值 14）
 # pane-gap = 5           # 每 pane 每边留白 pt（0–20；相邻间距 = 2×gap；scrolling / dwindle 一致）
+# pane-title = true      # 把标题画在 pane 上边框上（只显示手动设过的标题，最长 20 字）
 
 [workspace]
 # workspaces = 5       # 1–10

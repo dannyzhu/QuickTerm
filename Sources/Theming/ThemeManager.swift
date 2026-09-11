@@ -29,6 +29,8 @@ final class ThemeManager: ObservableObject {
     @Published private(set) var dividerOpacity = 0.2
     /// 每 pane 每边留白（config `pane-gap`，默认 5pt；scrolling / dwindle / 浮动一致，相邻合成 2×gap，外圈同值）
     @Published private(set) var paneGap: CGFloat = 5
+    /// 在 pane 上边框上画标题（config `pane-title`，默认开；纯 UI 层，PaneChrome 读）
+    @Published private(set) var paneTitleEnabled = true
 
     var frostedInactive: Bool { opacityEnabled && inactiveBlur > 0 }
 
@@ -48,8 +50,10 @@ final class ThemeManager: ObservableObject {
     func updateFromConfig(passthrough: String, followEngine: Bool, panePadding: Int = 14,
                           paneOpacity: Double = 0.92, inactiveBlur: Double = 2.5,
                           activeOpacity: Double = 0.98, barOpacity: Double = 0.75,
-                          dividerOpacity: Double = 0.2, paneGap: Int = 5) {
+                          dividerOpacity: Double = 0.2, paneGap: Int = 5,
+                          paneTitle: Bool = true) {
         self.paneGap = CGFloat(paneGap)  // 纯 UI 层
+        paneTitleEnabled = paneTitle  // 纯 UI 层
         self.activeOpacity = activeOpacity  // 纯 UI 层
         self.inactiveBlur = inactiveBlur  // 纯 UI 层
         self.barOpacity = barOpacity  // 纯 UI 层

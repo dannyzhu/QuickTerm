@@ -184,7 +184,8 @@ final class AppSession {
             activeOpacity: settings.activeOpacity,
             barOpacity: settings.barOpacity,
             dividerOpacity: settings.dividerOpacity,
-            paneGap: settings.paneGap)
+            paneGap: settings.paneGap,
+            paneTitle: settings.paneTitle)
         if let name = settings.themeName, name != "ghostty",
            let theme = themeManager.themes.first(where: { $0.name == name }),
            theme != themeManager.current {

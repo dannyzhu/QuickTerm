@@ -350,6 +350,10 @@ enum ConfigSchema {
                       helpEN: "0–20 pt around each pane (neighbours end up 2×gap apart)",
                       legacy: [ConfigKeyRef("", "pane-gap"), ConfigKeyRef("", "dwindle-gap"),
                                ConfigKeyRef("appearance", "dwindle-gap")]),
+        ConfigKeySpec(.appearance, "pane-title", .bool, default: .bool(true),
+                      labelZH: "pane 标题", labelEN: "Pane title",
+                      helpZH: "把标题画在 pane 上边框上（只显示手动设过的标题，最长 20 字）",
+                      helpEN: "draw the title into the pane's top border (only titles you set; 20 chars max)"),
 
         // MARK: [workspace]
         ConfigKeySpec(.workspace, "workspaces", .int(min: 1, max: 10), default: .int(5),

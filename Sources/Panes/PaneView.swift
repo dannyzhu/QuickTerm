@@ -41,6 +41,10 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
 
     /// 状态条 / 速查表用的标题
     var paneTitle: String { "" }
+    /// 画到 pane 边框上的标题：**只有被显式设过的**才算（右键改标题 / 控制面 `pane set --title`）。
+    /// 基类一律 nil——浏览器 pane 的标题是网页给的，不是谁"起"的，边框上不显示。
+    /// 这个钩子存在的意义是 `PaneChrome` 不必伸手去摸 SurfaceView 的内部状态
+    var customTitle: String? { nil }
     /// 新建终端要继承的目录（终端 = OSC 7 的 pwd；浏览器 = nil）
     var workingDirectory: String? { nil }
     /// 关闭前是否要确认（终端：仍有子进程在跑）
