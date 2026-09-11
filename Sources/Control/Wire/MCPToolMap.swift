@@ -463,13 +463,16 @@ enum MCPSamples {
     static let paneInfo = ControlStatePayload.PaneInfo(
         handle: "t7", id: "C40D-…", kind: "terminal", role: "shell", screen: 1, workspace: 2,
         at: ControlStatePayload.PaneInfo.Position(column: 2, row: 0, path: "b.a"),
+        size: ControlStatePayload.PaneInfo.PaneSize(
+            rect: [0.97, 0, 0.485, 1], points: [776, 900], cols: 96, rows: 48,
+            split: "vertical", ratio: 0.62, width: 0.485, share: 1),
         title: "npm run dev", cwd: "/Users/you/proj", url: "http://localhost:3000", tabs: 2,
         focused: false, busy: true, float: false, zoom: false, redacted: false)
 
     static let workspaceInfo = ControlStatePayload.WorkspaceInfo(
         index: 2, layout: "scrolling", empty: false, active: true, panes: ["t7", "b3"], zoom: "t7",
         columns: [ControlStatePayload.ColumnInfo(width: 0.485, panes: ["t7"])],
-        tree: [ControlStatePayload.TreeLeafInfo(pane: "t7", path: "b.a")],
+        tree: .split(.init(split: "vertical", ratio: 0.62, a: .leaf("t7"), b: .leaf("b3"))),
         floating: ["t9"])
 
     static let screenInfo = ControlStatePayload.ScreenInfo(

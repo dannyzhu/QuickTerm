@@ -29,7 +29,9 @@ struct SplitView<L: View, R: View>: View {
     let onEqualize: () -> Void
 
     /// The minimum size (in points) of a split
-    let minSize: CGFloat = 10
+    /// QuickTerm：搬到 `SplitViewMetrics.minSize`——控制面的 `pane resize` 要夹的是同一条线，
+    /// 各写一份的话命令行能把分隔条设到鼠标拖不到的位置
+    var minSize: CGFloat { SplitViewMetrics.minSize }
 
     /// The current fractional width of the split view. 0.5 means L/R are equally sized, for example.
     @Binding var split: CGFloat
@@ -103,14 +105,13 @@ struct SplitView<L: View, R: View>: View {
     private func dragGesture(_ size: CGSize, splitterPoint: CGPoint) -> some Gesture {
         return DragGesture()
             .onChanged { gesture in
+                // QuickTerm：换算 + 最小尺寸夹取收进 SplitViewMetrics.ratio，
+                // 控制面的 `pane resize --ratio` 调的是同一个函数（拖到底与设到底必须落在同一个数上）
                 switch direction {
                 case .horizontal:
-                    let new = min(max(minSize, gesture.location.x), size.width - minSize)
-                    split = new / size.width
-
+                    split = SplitViewMetrics.ratio(dividerAt: gesture.location.x, in: size.width)
                 case .vertical:
-                    let new = min(max(minSize, gesture.location.y), size.height - minSize)
-                    split = new / size.height
+                    split = SplitViewMetrics.ratio(dividerAt: gesture.location.y, in: size.height)
                 }
             }
     }
@@ -202,6 +203,18 @@ enum SplitViewDirection: Codable {
 
 /// QuickTerm：SplitView 布局常量（SplitBranchView 的钉住尺寸计算与之共用同一算法）
 enum SplitViewMetrics {
+    /// 一侧最小尺寸（pt）：拖分隔条最多把一侧压到这么窄
+    static let minSize: CGFloat = 10
+
+    /// 分隔条落在 `points` 处 → 比例，并施加与拖拽手势同一条最小尺寸规则。
+    /// **鼠标与命令行共用**：`pane resize --ratio / --points` 拿它夹值，
+    /// 于是"拖到最左"与"--ratio 0"落在同一个比例上。
+    /// 槽位窄到连两条最小尺寸都放不下时无从夹起，退回对半分
+    static func ratio(dividerAt points: CGFloat, in size: CGFloat) -> CGFloat {
+        guard size > 2 * minSize else { return 0.5 }
+        return min(max(minSize, points), size - minSize) / size
+    }
+
     /// 分隔线在布局里占用的尺寸（gaps 开启时）：0 = 不占，间距全部来自两侧 pane 留白
     static let splitterLayoutSize: CGFloat = 0
     /// gaps 关闭（Cmd+Shift+Backspace）时恢复 1pt 占位：否则细线压在两侧贴边的边框上

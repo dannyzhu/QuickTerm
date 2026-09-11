@@ -86,7 +86,7 @@ quickterm mcp --list-tools       # 工具表本身（JSON）
 | `action toggle-zoom` | `pane set -t t7 --zoom on` | agent 看不到状态；重试一次 toggle 会把自己撤销 |
 | `action toggle-layout` | `workspace set-layout dwindle -t :4` | toggle 只能作用于**活动**工作区，而且没法指定目标 |
 | `action move-to-workspace-3` | `pane move -t t7 --to :3 [--follow]` | 前者只搬焦点 pane，而且强制跟随切换 |
-| `action resize-right` | `pane set -t t7 --width 0.33`（或 `pane resize --width +0.05`） | 绝对值可重放，增量不行 |
+| `action resize-right` | `pane set -t t7 --width 0.33`（或 `pane resize -t t7 --dir right`） | 绝对值可重放，增量不行 |
 | `action theme-picker` | `app set theme tokyo-night` | 面板要靠方向键选，经 socket 执行等于把 UI 卡在半路 |
 
 同一条设值命令跑两次，第二次什么都不做（`changed:false`）；
@@ -112,6 +112,54 @@ quickterm mcp --list-tools       # 工具表本身（JSON）
 `--where right|left|up|down|stack` 走的就是鼠标拖放那一套落点算法（同一份代码），
 `--at` 是锚点 pane：`quickterm pane new --cwd ~/proj --cmd 'npm run dev' --at t1 --where right`。
 `--cmd` 建出来的 pane 在命令退出时自己关掉（`--hold` 可以让它留着）。
+
+### 尺寸：读得到，也调得动
+
+**每一条读命令都带尺寸。** `state` / `list panes` / `get` 里每个 pane 都有一段 `size`：
+
+```json
+"size":{"rect":[0.3,0,0.7,0.7],"points":[1086,630],"cols":135,"rows":33,
+        "split":"vertical","ratio":0.7}
+```
+
+- `rect` = 工作区布局区里的归一化矩形 `[x,y,w,h]`，**左上角为原点**，由模型里的
+  比例 / 列宽算出来（不是读 frame，所以重排期间也不会给出上一帧的数）；
+  scrolling 的横向单位是"一个视口宽"，条带溢出时 `x+w` 会大于 1。**`rect` 是准的那个**。
+- `points` = 这个 pane 的**槽位**点尺寸。底是工作区布局区 = 窗口内容区去掉顶部状态条、
+  再去掉外圈那一圈 pane-gap 留白——正是分裂树真正铺开的那块地，也是 `--points` 换算和
+  分隔条夹取踩的同一块底。槽位里面还有每个 pane 自己的一圈留白和终端 pane-padding，
+  终端画布比槽位小：要网格就看 `cols`/`rows`（引擎量的），别拿 points 去除字宽。
+  窗口还没挂上时整字段没有。
+- dwindle 另给 `split`/`ratio`（最近那条分隔条的方向与比例）；
+  scrolling 另给 `width`（列宽因子）与 `share`（列内份额 = 1/列内 pane 数）。
+- `hidden: true` = 本工作区有 pane 被 zoom，而这一片不是它：**它现在屏幕上一点位置都没有**，
+  所以不给 `points`。`rect`/`ratio`/`width` 照旧是底下那层平铺——`pane resize` 调的就是它，
+  取消 zoom 也回到它。被 zoom 的那一片则报满整块布局区。
+
+dwindle 工作区的骨架就是那棵树，**和 `spec dump` 一套词**（`split`/`ratio`/`a`/`b`），
+叶子装句柄：
+
+```json
+{"index":3,"layout":"dwindle","panes":["t8","b3"],
+ "tree":{"split":"vertical","ratio":0.62,"a":{"pane":"t8"},"b":{"pane":"b3"}}}
+```
+
+**调尺寸与鼠标同权**，三条路对应鼠标的三种手势：
+
+```sh
+quickterm pane resize -t t8 --ratio 0.62              # = 把那条分隔条拖到 62%
+quickterm pane resize -t t8 --points +120             # = 把它往右/下拖 120pt（裸数字 = a 侧设成 N pt）
+quickterm pane resize -t t8 --split root --ratio 0.3  # = 去拖祖先那条分隔条（路径 a/b，根写 root）
+quickterm pane resize -t t7 --dir right --points 100  # = 按一次 ⌘⌃→（也是 ⌘右键拖拽那条路）
+quickterm pane resize -t t7 --width +0.05             # scrolling 列宽因子（--points 则按点数）
+```
+
+夹取规则也是同一条：`--ratio` / `--points` 走分隔条拖拽那条（两侧各留 10pt，
+与拖拽同一个函数、同一块底，命令行够不到鼠标够不到的地方），`--dir` 走快捷键那条（0.1–0.9），
+列宽走 `0.25–0.90`。到边界就是空操作（`--fail-if-noop` 退 7）。
+`--dir`（就近同向那条）与 `--split`（指名哪一条）互斥，一起给会报错而**不会**悄悄调另一条。
+组合工作区时把尺寸直接写进 spec（`columns[].width` / `tree` 每层的 `ratio`），
+`spec dump → apply → dump` 连非默认比例都是逐字节不动点。
 
 ## 一次性组合：`spec`
 

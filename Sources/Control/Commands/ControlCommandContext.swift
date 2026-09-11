@@ -122,7 +122,8 @@ extension ControlCommandRunner {
 
     func paneInfo(_ pane: PaneView, controller: MainWindowController, workspace: Int,
                   encoder: ControlStateEncoder) -> ControlStatePayload.PaneInfo {
-        let positions = ControlStateEncoder.positions(in: controller.model.layouts[workspace])
+        let positions = ControlStateEncoder.positions(in: controller.model.layouts[workspace],
+                                                     closing: controller.model.closingPanes)
         return encoder.paneInfo(pane, controller: controller, workspace: workspace,
                                 at: positions[pane.id],
                                 float: controller.controlIsFloating(pane, workspace: workspace),

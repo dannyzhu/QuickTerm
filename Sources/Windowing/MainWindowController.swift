@@ -765,20 +765,19 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// ⌘+右键拖拽：dwindle 调就近分隔条；scrolling 按横向位移调列宽
+    /// ⌘+右键拖拽：dwindle 调就近分隔条；scrolling 按横向位移调列宽。
+    /// 两条都只是**这一个手势**到 `controlResizeSplit` / `controlResizeColumn` 的换算——
+    /// 真正的算法只有那一份，控制面的 `pane resize --dir` 调的是同一个函数
     private func resizeByDrag(pane: PaneView, dx: CGFloat, dy: CGFloat) {
         switch model.layout {
-        case .dwindle(let tree):
-            guard let node = tree.root?.node(view: pane),
-                  let bounds = window?.contentLayoutRect else { return }
-            let amount = UInt16(min(max(abs(dx) >= abs(dy) ? abs(dx) : abs(dy), 1), 200))
+        case .dwindle:
+            // 单个事件的位移封顶 200pt：手势偶尔会甩出一个离谱的增量
+            let amount = min(max(abs(dx) >= abs(dy) ? abs(dx) : abs(dy), 1), 200)
             let direction: SplitTree<PaneView>.Spatial.Direction =
                 abs(dx) >= abs(dy) ? (dx > 0 ? .right : .left) : (dy > 0 ? .down : .up)
-            model.layout = .dwindle((try? tree.resizing(
-                node: node, by: amount, in: direction, with: bounds)) ?? tree)
-        case .scrolling(let strip):
-            let viewport = max(window?.contentLayoutRect.width ?? 1000, 1)
-            model.layout = .scrolling(strip.resizingWidth(of: pane, delta: dx / viewport))
+            controlResizeSplit(pane, workspace: model.activeIndex, points: amount, direction: direction)
+        case .scrolling:
+            controlResizeColumn(pane, workspace: model.activeIndex, deltaPoints: dx)
         }
     }
 
@@ -1001,6 +1000,25 @@ final class MainWindowController: BaseTerminalController {
         guard let content = window?.contentView else { return nil }
         let barH: CGFloat = model.barVisible ? StatusBarView.height : 0
         return CGSize(width: content.bounds.width, height: content.bounds.height - barH)
+    }
+
+    /// **分裂树 / 条带真正铺开的那块地**（pt）= `dwindleLayoutSize` 再去掉 RootView 外圈
+    /// 那一圈 pane-gap 留白（`RootView.content` 里的 `.padding(theme.paneGap)`）。
+    ///
+    /// 不能拿 `window.contentLayoutRect` 当它：那是"去掉标题栏"的矩形，而 RootView
+    /// `.ignoresSafeArea(.container, edges: .top)`，布局压根从 contentView 顶边起算——
+    /// 横向永远多算一圈留白，纵向的误差还会随 `app set bar off` 变号。
+    /// 报尺寸（`size.points`）、`--points` 换算、最小尺寸夹取、⌘右键拖拽与 `resize-*`
+    /// 快捷键全部踩这一块底：**只有一份，就不会有"命令行能调到鼠标够不着的地方"**。
+    ///
+    /// 注意这是 pane 的**槽位**，每个 pane 内部还有 PaneChrome 的一圈 pane-gap 留白
+    /// 与终端 pane-padding，终端画布因此比槽位更小（`size.cols/rows` 由引擎量得，不由此推）
+    var workspaceLayoutSize: CGSize? {
+        guard let base = dwindleLayoutSize else { return nil }
+        let inset = 2 * (themeManager.gapsEnabled ? themeManager.paneGap : 0)
+        let size = CGSize(width: base.width - inset, height: base.height - inset)
+        guard size.width > 1, size.height > 1 else { return nil }
+        return size
     }
 
     /// hover 遮挡判定（SurfaceView mouseEntered/mouseMoved 回调；spec v7 修订）：
@@ -1448,11 +1466,10 @@ final class MainWindowController: BaseTerminalController {
     private func resizeFocused(_ direction: ScrollingStrip.Direction, precise: Bool) {
         guard let focused = focusedPane else { return }
         switch model.layout {
-        case .dwindle(let tree):
-            guard let node = tree.root?.node(view: focused),
-                  let bounds = window?.contentLayoutRect else { return }
-            model.layout = .dwindle((try? tree.resizing(
-                node: node, by: precise ? 10 : 100, in: direction.spatial, with: bounds)) ?? tree)
+        case .dwindle:
+            // 与 ⌘右键拖拽、控制面 `pane resize --dir` 同一条路径（步长不同而已）
+            controlResizeSplit(focused, workspace: model.activeIndex,
+                               points: precise ? 10 : 100, direction: direction.spatial)
         case .scrolling(let strip):
             // 列宽仅横向可调（spec §4.2-bis：↑/↓ 无操作）
             switch direction {
@@ -1892,7 +1909,8 @@ final class MainWindowController: BaseTerminalController {
     }
 }
 
-private extension ScrollingStrip.Direction {
+/// 方向词的唯一换算（控制面的 `pane resize --dir` 也用它，不再各写一份）
+extension ScrollingStrip.Direction {
     var spatial: SplitTree<PaneView>.Spatial.Direction {
         switch self {
         case .left: .left

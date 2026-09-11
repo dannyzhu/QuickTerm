@@ -264,6 +264,69 @@ extension MainWindowController {
         return true
     }
 
+    /// dwindle：按**路径**寻址一条分裂（`a.b`；空串 = 根）。
+    /// `pane resize --split a` 用它去够到"祖先那条分隔条"——鼠标可以直接拖任意一条，
+    /// 而只认"自己的父 split"的命令行够不着上面那几条
+    /// `size` 决定 `bounds` 的单位：默认是归一化方框，传内容区尺寸就得到点数
+    /// （`--points` 与比例之间的换算要的正是后者）
+    func controlSplitSlot(workspace: Int, path: String,
+                          size: CGSize = ControlGeometry.unit) -> ControlGeometry.SplitSlot? {
+        guard model.layouts.indices.contains(workspace),
+              case .dwindle(let tree) = model.layouts[workspace] else { return nil }
+        return ControlGeometry.splits(in: tree, size: size).first { $0.path == path }
+    }
+
+    /// dwindle：这个 pane 最近父 split 的路径（树根上的孤叶没有）
+    func controlParentSplitPath(of pane: PaneView, workspace: Int) -> String? {
+        guard let (path, _) = controlParentSplit(of: pane, workspace: workspace) else { return nil }
+        return ControlStateEncoder.pathString(path)
+    }
+
+    /// 按路径设某条分裂的比例（绝对值；范围校验在调用方）
+    @discardableResult
+    func controlSetSplitRatio(workspace: Int, path: String, to ratio: Double) -> Bool {
+        guard case .dwindle(let tree) = model.layouts[workspace],
+              let slot = controlSplitSlot(workspace: workspace, path: path),
+              let next = try? tree.replacing(node: slot.node, with: slot.node.resizing(to: ratio))
+        else { return false }
+        model.layouts[workspace] = .dwindle(next)
+        return true
+    }
+
+    /// **调分隔条的那一条路径**（dwindle）：就近的同向父 split，按点数调。
+    /// ⌘右键拖拽（`resizeByDrag`）、`resize-*` 快捷键（`resizeFocused`）与控制面的
+    /// `pane resize --dir` 全部调它——三处各写一份的话，命令行迟早和鼠标给出不同的比例。
+    /// 底是 `workspaceLayoutSize`（树真正铺开的那块地），与 `size.points` 同源
+    @discardableResult
+    func controlResizeSplit(_ pane: PaneView, workspace: Int, points: CGFloat,
+                            direction: SplitTree<PaneView>.Spatial.Direction) -> Bool {
+        guard model.layouts.indices.contains(workspace),
+              case .dwindle(let tree) = model.layouts[workspace],
+              let node = tree.root?.node(view: pane),
+              let size = workspaceLayoutSize,
+              let next = try? tree.resizing(node: node,
+                                            by: UInt16(min(max(points, 1), 30000)),
+                                            in: direction,
+                                            with: CGRect(origin: .zero, size: size))
+        else { return false }
+        model.layouts[workspace] = .dwindle(next)
+        return true
+    }
+
+    /// **调列宽的那一条路径**（scrolling）：横向位移 ÷ 视口 = 列宽因子增量。
+    /// 同样是 ⌘右键拖拽与控制面 `--dir left|right --points` 共用的那一份。
+    /// 视口 = `workspaceLayoutSize.width`，正是 `ScrollingStripView` 的
+    /// `GeometryReader` 量到的那一个（列宽换算两边必须同底）
+    @discardableResult
+    func controlResizeColumn(_ pane: PaneView, workspace: Int, deltaPoints: CGFloat) -> Bool {
+        guard model.layouts.indices.contains(workspace),
+              case .scrolling(let strip) = model.layouts[workspace],
+              strip.position(of: pane) != nil, deltaPoints != 0 else { return false }
+        let viewport = max(workspaceLayoutSize?.width ?? 1000, 1)
+        model.layouts[workspace] = .scrolling(strip.resizingWidth(of: pane, delta: deltaPoints / viewport))
+        return true
+    }
+
     private func controlParentSplit(of pane: PaneView, workspace: Int)
         -> (path: SplitTree<PaneView>.Path, node: SplitTree<PaneView>.Node)? {
         guard model.layouts.indices.contains(workspace),

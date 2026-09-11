@@ -280,7 +280,8 @@ enum ControlCommandTable {
                 ControlArgSpec("zoom", .enumeration, help: "本 pane 是否占满内容区", values: ["on", "off"]),
                 ControlArgSpec("float", .enumeration, help: "本 pane 是否浮动", values: ["on", "off"]),
                 ControlArgSpec("width", .double, help: "scrolling 列宽因子（0.25–0.90，绝对值）"),
-                ControlArgSpec("ratio", .double, help: "dwindle 最近父 split 的比例（0.1–0.9，绝对值）"),
+                ControlArgSpec("ratio", .double,
+                               help: "dwindle 最近父 split 的比例（\(SpecLimits.ratioRange.lowerBound)–\(SpecLimits.ratioRange.upperBound)，绝对值；越界报错）"),
             ],
             examples: [
                 "quickterm pane set -t t7 --zoom on",
@@ -289,17 +290,31 @@ enum ControlCommandTable {
             outputSample: nil),
         ControlCommandSpec(
             group: "pane", "resize",
-            summary: "相对调整：列宽 ±（scrolling）或 split 比例（dwindle）——到边界即无操作（退 7）",
+            summary: "调尺寸（= 鼠标拖分隔条 / 拖列宽 / ⌘⌃方向键能做的那几件事）："
+                + "比例、点数、列宽因子；到边界即无操作（退 7）",
             cls: .mutate, idempotent: false, acceptsTarget: true,
             args: [
-                ControlArgSpec("width", .string, help: "列宽增量（+0.05 / -0.05）或绝对值（0.33）"),
-                ControlArgSpec("ratio", .string, help: "dwindle 比例增量（+0.1）或绝对值（0.5）"),
+                ControlArgSpec("width", .string, help: "scrolling 列宽因子：增量（+0.05）或绝对值（0.33）"),
+                ControlArgSpec("ratio", .string, help: "dwindle 分裂比例：增量（+0.1）或绝对值（0.5）"),
+                ControlArgSpec("points", .string,
+                               help: "改用**点**：+120 = 把这条分隔条往右/下挪 120pt，120 = 把 a 那一侧设成 120pt"
+                                   + "（scrolling 则是列宽点数）"),
+                ControlArgSpec("dir", .enumeration,
+                               help: "按方向调，等价于 ⌘⌃方向键 / ⌘右键拖拽：就近的同向分隔条，"
+                                   + "步长 --points（默认 100）；与 --split 互斥",
+                               values: ["left", "right", "up", "down"]),
+                ControlArgSpec("split", .string,
+                               help: "dwindle：指名调哪一条分隔条（树路径 a/b 点号连接，根那条写 root）；"
+                                   + "不写 = 本 pane 的父分裂；与 --dir 互斥"),
             ],
             examples: [
                 "quickterm pane resize -t t7 --width +0.05",
                 "quickterm pane resize -t t8 --ratio 0.5",
+                "quickterm pane resize -t t8 --points +120",
+                "quickterm pane resize -t t8 --split root --ratio 0.3",
+                "quickterm pane resize -t t7 --dir right --points 100",
             ],
-            outputSample: nil),
+            outputSample: resizeSample),
 
         ControlCommandSpec(
             group: "workspace", "goto",
@@ -676,12 +691,28 @@ enum ControlCommandTable {
         "visibleColumns":2,"fullscreen":false,
         "workspaces":[{"index":1,"layout":"scrolling","empty":true,"panes":[]},
                       {"index":2,"layout":"scrolling","empty":false,"panes":["t1","t2"],
-                       "columns":[{"width":0.485,"panes":["t1"]},{"width":0.485,"panes":["t2"]}]}]}],
+                       "columns":[{"width":0.485,"panes":["t1"]},{"width":0.485,"panes":["t2"]}]},
+                      {"index":3,"layout":"dwindle","empty":false,"panes":["t8","b3"],
+                       "tree":{"split":"vertical","ratio":0.62,
+                               "a":{"pane":"t8"},"b":{"pane":"b3"}}}]}],
       "panes":[{"handle":"t1","id":"9C1B4E…","kind":"terminal","role":"shell","screen":1,
-                "workspace":2,"at":{"column":0,"row":0},"title":"nvim  ~/proj",
+                "workspace":2,"at":{"column":0,"row":0},
+                "size":{"rect":[0,0,0.485,1],"points":[776,900],"cols":96,"rows":48,
+                        "width":0.485,"share":1},
+                "title":"nvim  ~/proj",
                 "cwd":"/Users/danny/proj","focused":true,"busy":true,"float":false,"zoom":false},
                {"handle":"b3","id":"41EE07…","kind":"browser","screen":1,"workspace":2,
                 "title":"<redacted>","url":"<redacted>","tabs":2,"focused":false}]}}
+    """
+
+    /// `pane resize` 的回声：diff 的路径与 `state` 里的 JSON 同形（`1:2.tree.a.ratio`）
+    static let resizeSample = """
+    {"ok":true,"seq":418,"resolved":{"screen":1,"workspace":3,"pane":"t8"},
+     "data":{"command":"pane.resize","applied":true,"changed":true,"dryRun":false,
+       "changes":[{"path":"1:3.tree.ratio","from":"0.620","to":"0.700"}],
+       "pane":{"handle":"t8","size":{"rect":[0,0,1,0.7],"points":[1552,630],"cols":192,"rows":33,
+                                     "split":"vertical","ratio":0.7}},
+       "undo":"控制面：pane resize"}}
     """
 
     static let listSample = """
@@ -760,7 +791,10 @@ enum ControlCommandTable {
     static let getSample = """
     {"ok":true,"seq":412,"resolved":{"screen":1,"workspace":2,"pane":"t7"},
      "data":{"pane":{"handle":"t7","id":"C40D…","kind":"terminal","role":"shell",
-       "screen":1,"workspace":2,"at":{"column":2,"row":0},"title":"npm run dev",
+       "screen":1,"workspace":2,"at":{"column":2,"row":0},
+       "size":{"rect":[0.97,0,0.485,1],"points":[776,900],"cols":96,"rows":48,
+               "width":0.485,"share":1},
+       "title":"npm run dev",
        "cwd":"/Users/danny/proj","focused":false,"busy":true,"float":false,"zoom":false}}}
     """
 }

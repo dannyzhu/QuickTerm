@@ -618,7 +618,8 @@ final class ControlCommandRunner {
                     throw ControlErrorBody(.notFound, "没有可寻址的 pane")
                 }
                 let positions = ControlStateEncoder.positions(
-                    in: resolution.controller.model.layouts[resolution.workspace])
+                    in: resolution.controller.model.layouts[resolution.workspace],
+                    closing: resolution.controller.model.closingPanes)
                 let workspace = encoder.workspaceInfo(resolution.controller, index: resolution.workspace)
                 let handle = ControlHandleRegistry.shared.handle(for: pane)
                 let info = encoder.paneInfo(pane, controller: resolution.controller,
@@ -771,7 +772,8 @@ final class ControlCommandRunner {
         controller.perform(action, precise: precise)   // perform() 自己先 flushPendingCloses()
 
         let after = controller.model.allPanes.filter { !before.contains($0.id) }
-        let positions = ControlStateEncoder.positions(in: controller.model.layout)
+        let positions = ControlStateEncoder.positions(in: controller.model.layout,
+                                                     closing: controller.model.closingPanes)
         let created = after.map { pane in
             encoder.paneInfo(pane, controller: controller, workspace: controller.model.activeIndex,
                              at: positions[pane.id], float: false, zoomed: false)
