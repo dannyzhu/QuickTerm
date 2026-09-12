@@ -26,7 +26,11 @@ Every pane's environment carries these (no need to ask the user):
 | `QUICKTERM_PANE` | this pane's UUID — what `-t @self` resolves through |
 | `QUICKTERM_SOCKET` | path to the control socket |
 | `QUICKTERM_SCREEN` / `QUICKTERM_WORKSPACE` | the screen / workspace index at creation time (a hint; not updated when the pane moves) |
-| `QUICKTERM_TOKEN` | proof that a command came from a QuickTerm pane — what stops browser URLs and titles reading `<redacted>` |
+| `QUICKTERM_TOKEN` | one value per launch, the same in every pane: proof that a command came from *some* QuickTerm pane. It is what stops browser URLs and titles reading `<redacted>`, and `pane capture-text` refuses outright without it |
+| `QUICKTERM_PANE_TOKEN` | **a different thing — don't read the two as one.** One value per pane (`HMAC(per-launch secret, pane id)`), so it proves *which* pane the command came from. The control plane uses it in exactly one place: `input send-text` writing into your own pane skips the confirmation, because the server can recompute the HMAC for the pane `-t` resolved to and check it |
+
+Neither token is a permission boundary — environment variables are inherited and readable, so nothing anywhere
+skips a confirmation merely because `QUICKTERM_TOKEN` came along.
 
 To find out what things look like *now*, always use `quickterm state --json`.
 Never lean on `QUICKTERM_SCREEN` / `QUICKTERM_WORKSPACE`.
@@ -75,12 +79,24 @@ quickterm browser close  -t b3 --others                      # keep only the cur
 Both the indexes and the ids are in `tabList`, in `state` / `get`.
 **Closing the last tab closes the whole pane** (same as ⌘W).
 
-Name a pane, and afterwards you can find it by that name:
+Name a pane (terminal panes only — a browser pane's title is the web page's), and afterwards you can find it
+by that name:
 
 ```bash
 quickterm pane set -t t7 --title 'build · web'   # -t 'title:~build' hits it from then on
 quickterm pane set -t t7 --title ''              # hand the title back to the shell
 ```
+
+Name a **workspace** the same way — it renames the pill in the bar:
+
+```bash
+quickterm workspace set -t 1:4 --title dev
+quickterm workspace set -t :4 --title ''         # clear it: the pill falls back to the index
+```
+
+That name belongs to the **slot**, not to the panes inside it: `workspace clear` and closing its last pane
+both leave it standing. Three things change it and nothing else does — this command, a right-click rename, and
+applying a spec that carries a `title` (the one `spec dump` writes does).
 
 Build a whole workspace in one command (**the most efficient thing you can do here**):
 
@@ -110,29 +126,38 @@ quickterm spec apply -f /tmp/ws.json --dry-run   # look at what it would change 
 3. **Address by handle or uuid; never carry "whatever has focus" from one command to the next.** Focus may have moved in between.
 4. **Compose layouts with `spec apply`; don't fire off N `pane new`s in a row.** The first reflows once and animates once; the
    second makes the UI flicker, and failing halfway leaves you with a half-built workspace.
-5. **Don't hammer it.** There's a rate limit. To wait for the UI to change, use `quickterm events poll --since <seq> --timeout 10`
-   (`state`'s reply carries the `seq`) — don't poll `state`.
+5. **Don't hammer it.** Mutations are rate-limited per origin (a burst of 30, refilling at 10/s) and process-wide
+   (a burst of 40, refilling at 20/s); over the limit is exit code 6 with `retryAfterMs` in the body. One workspace
+   holds at most 32 panes. To wait for the UI to change, use `quickterm events poll --since <seq> --timeout 10`
+   (`state`'s reply carries the `seq`; `--timeout` is seconds, or `500ms` / `2m`, up to 300s) — don't poll `state`.
 6. **Give `--cwd` an absolute path** (`"$PWD"` or `~/proj`). A relative path is refused (`bad_request`): it would be
    resolved inside QuickTerm's process, whose working directory is not yours, so `.` never means what you meant.
    `~/Desktop`, `~/Documents` and `~/Downloads` are macOS protected directories: QuickTerm can't use them until it has been
    granted "Files and Folders", and the pane still opens but the shell starts somewhere else — the reply then carries a
    `warnings[].code == "cwd_denied"` (**read the code, not the prose**). If you'd rather fail than land elsewhere, add `--require-cwd`.
-7. **Read errors as JSON.** On failure stderr is JSON with a stable `code`, and the exit codes mean something
-   (1 = a bad argument or a plain failure, 3 = a bad or ambiguous target, 4 = the user declined or it timed out,
-   7 = nothing changed). Never match on the message text.
+7. **Read errors as JSON.** On failure stderr is JSON with a stable `code`, and the process exit code is derived
+   from that code — never match on the message text:
+   **1** a bad argument or a plain failure · **2** QuickTerm is not running · **3** a bad or ambiguous target
+   (the body lists the candidates) · **4** `confirmation_required` — nobody answered the confirmation within ten
+   seconds, or `spec apply --into-empty` found the workspace non-empty · **5** `denied` — the user pressed Deny,
+   or policy refused it (an action that opens a panel) · **6** busy or rate-limited (the body carries
+   `retryAfterMs`) · **7** nothing changed, only ever with `--fail-if-noop` · **8** protocol version mismatch.
 
 ## What will get stopped
 
-- **Destructive operations** (`pane close`, `screen close`, `workspace clear`, `spec apply --replace`)
-  **pop a confirmation dialog** inside QuickTerm, counted once per (calling process, command class). The user
-  declines → exit code 4.
+- **Destructive operations** (`pane close`, `browser close`, `screen close`, `workspace clear`,
+  `spec apply --replace`) **pop a confirmation dialog** inside QuickTerm, counted once per (calling process,
+  command class). The user presses Deny → **exit code 5** (`denied`). Nobody answers within ten seconds → the
+  dialog goes away and you get **exit code 4** (`confirmation_required`); either way the command did not run.
   Don't retry; go ask the user.
 - **`input send-text` (typing into a pane) is off by default**; the user has to turn on `[control] send-text = true` in the config.
-  Even with it on: writing to **your own** pane skips the confirmation, writing to any other pane **asks the user every single time** —
+  Even with it on: writing to **your own** pane skips the confirmation — and what decides "your own" is the
+  `QUICKTERM_PANE_TOKEN` you inherited, recomputed by the server for the pane `-t` resolved to, never the pane id
+  you report about yourself. Writing to any other pane **asks the user every single time** —
   because that amounts to running a command in someone else's shell (which may be root, and may be a live ssh session).
   To run a command, reach for `pane new --cmd "..."` rather than stuffing characters into another terminal.
-- **Actions that open a panel** (the theme picker, the main menu, and so on) are refused outright: they need keyboard interaction, and
-  running them over the socket would only leave the UI stuck half-open.
+- **Actions that open a panel** (the theme picker, the main menu, and so on) are refused outright — `interactive_action`,
+  exit code 5: they need keyboard interaction, and running them over the socket would only leave the UI stuck half-open.
 - **Reading the text on a terminal's screen (`pane capture-text`) is off by default**; the user has to write `[control] capture-text = true`.
   Even with it on: it requires `QUICKTERM_TOKEN`, and **every calling process has to be confirmed by the user once** — including
   reading your own pane. (`send-text` gets an exemption for writing to itself; reading gets none: whatever the user typed before
@@ -141,6 +166,11 @@ quickterm spec apply -f /tmp/ws.json --dry-run   # look at what it would change 
   For the output of your own commands, use `pane new --cmd "..."` or just run them locally — don't go reading someone else's screen.
 - **A browser pane's URL and title read `<redacted>`** to any caller without `QUICKTERM_TOKEN` — and so does the per-tab `tabList`.
   Run inside a pane and you have that variable.
+- **The whole control plane can be turned down in the config.** `[control] socket = false` means nothing is
+  listening: no socket, token or pane token is injected into any pane, and every command that needs the app exits
+  with code 2 (`describe` and `version` still answer, out of the CLI's own tables). `[control] mode = readonly`
+  lets reads through and refuses every mutation with `denied` (exit code 5). There is no "never ask" mode: the
+  confirmation gate is not something the config can switch off.
 
 ## How to work well here
 

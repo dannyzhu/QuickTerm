@@ -135,7 +135,9 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 - **快捷键速查**（`Cmd+K`）—— 由当前生效的键位表实时生成，永远反映你的改键。
 - **主菜单**（`Cmd+Alt+Space`）—— 新建终端 · 主题 · 背景 · 每屏列数 · 顶栏开关 · Gaps 开关 · 透明度开关 · 快捷键速查 · 设置 · 关于。
 
-### 透明度
+### 配置项速查
+
+`config.toml` 里的配置项——前四行是透明度，其余是 pane 间距、标题与浏览器 pane。按段分组的完整清单见[配置](#配置)。
 
 | 配置 | 默认 | 作用 |
 |---|---|---|
@@ -165,7 +167,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 
 | `inactive-blur` | 2.5 | `> 0` 时非激活的平铺 pane 背后垫磨砂（模糊的是壁纸，文字不受影响；浮动 pane 不垫；目前数值只作开关） |
 
-`Cmd+Backspace` 一键全部关掉（pane 与顶栏变不透明）；`Cmd+Shift+Backspace` 开关 gaps。
+`Cmd+Backspace` 一键关掉全部透明度（pane 与顶栏变不透明）；`Cmd+Shift+Backspace` 开关 gaps。
 
 ### 浏览器扩展
 
@@ -225,7 +227,7 @@ macOS 菜单栏的 Shell / Pane 菜单只列了少数动作的默认快捷键；
 
 ## 控制面（命令行与 AI agent）
 
-**命令行这一侧一律说英文**：`--help`、`describe --json`、报错、提示、给 MCP 宿主的工具描述全是英文——读它的主要是 agent，而 agent 之间的通用语是英文。应用界面（菜单、确认框、活动日志）仍然是中文。
+**命令行这一侧一律说英文**：`--help`、`describe --json`、报错、提示、给 MCP 宿主的工具描述全是英文——读它的主要是 agent，而 agent 之间的通用语是英文。应用界面则备有英文与简体中文两套：默认跟随系统语言，在 `config.toml` 里写 `[general] language = "en"` 或 `"zh"` 可以钉死它。日志、协议标识符、配置键与 pane 句柄在两种语言下都是英文。
 
 QuickTerm 在 `~/Library/Application Support/QuickTerm/` 下监听一个 Unix domain socket，并随包提供 `quickterm` 命令行。快捷键能做的，命令行都能做；在这之上还有一层名词-动词层，它的定规是**只给绝对设值，绝不 toggle**——agent 看不到状态，重试一次 toggle 会把自己撤销。
 
@@ -325,6 +327,8 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 - `spec apply` 不搬窗口（要搬用 `screen move`）；落刀之后才失败会如实报 `partial_apply`，绝不假装什么都没发生。
 
 完整的 agent 文档（寻址语法、退出码表、经验法则）：[`docs/agents/quickterm-cli.md`](docs/agents/quickterm-cli.md)。
+
+给 agent 的即插即用说明：把 [`docs/agents/AGENTS.quickterm.md`](docs/agents/AGENTS.quickterm.md) 复制到你项目根目录当 `AGENTS.md`，你的编码 agent 就能驱动 QuickTerm。
 
 ## 配置
 

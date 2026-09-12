@@ -101,11 +101,11 @@ A *screen* is a QuickTerm window with its own workspaces, status bar, floating l
 
 | Item | What it does |
 |---|---|
-| 新建屏幕 / New screen | Opens a screen on the current display, inheriting the focused pane's directory |
-| 在显示器上新建屏幕 ▸ | Same, on a display you pick (the submenu is rebuilt each time it opens, so hot-plugged and virtual displays show up) |
-| 将此屏幕移到显示器 ▸ | Moves the current screen to another display (the window has no title bar to drag) |
-| 在所有桌面显示 | Makes this screen appear on every Space |
-| 关闭屏幕 | Closes it (asks first if processes are still running); closing the last one quits |
+| New Screen | Opens a screen on the current display, inheriting the focused pane's directory |
+| New Screen on Display ▸ | Same, on a display you pick (the submenu is rebuilt each time it opens, so hot-plugged and virtual displays show up) |
+| Move This Screen to Display ▸ | Moves the current screen to another display (the window has no title bar to drag) |
+| Show on All Desktops | Makes this screen appear on every Space |
+| Close Screen | Closes it (asks first if processes are still running); closing the last one quits |
 
 The session is restored on the next launch: every screen, on the display it was on, with its workspaces, layouts, floating panes, each terminal's directory and each browser pane's open tabs. State is written continuously (debounced), not only at quit, and the archive is `state.json` v5 — an older QuickTerm will refuse to read it, so the first launch of this version leaves a `state.pre-v5.json` copy beside it.
 
@@ -135,7 +135,9 @@ All panels are centred, Walker-style: `↑`/`↓` to move, `Return` to choose, `
 - **Keybinding cheat sheet** (`Cmd+K`) — generated from the live keymap, so it always reflects your overrides.
 - **Main menu** (`Cmd+Alt+Space`) — New terminal · Themes · Backgrounds · Visible columns · Toggle bar · Toggle gaps · Toggle opacity · Keybindings · Settings · About.
 
-### Transparency
+### Settings reference
+
+Keys you set in `config.toml` — the first four rows are the transparency knobs, the rest covers pane spacing, titles and browser panes. The complete list, grouped by section, is under [Configuration](#configuration).
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -165,16 +167,16 @@ Browser pane limits: no Widevine DRM (Netflix/Spotify web) and no system passwor
 
 | `inactive-blur` | 2.5 | `> 0` puts a frosted-glass backdrop behind inactive tiled panes (blurs the wallpaper, not the text; floating panes are exempt; the numeric value is currently on/off only) |
 
-`Cmd+Backspace` turns all of it off at once (panes and bar go opaque); `Cmd+Shift+Backspace` toggles the gaps.
+`Cmd+Backspace` turns all the transparency off at once (panes and bar go opaque); `Cmd+Shift+Backspace` toggles the gaps.
 
 ### Browser extensions
 
 Browser panes run Chrome/Firefox WebExtensions through WebKit's `WKWebExtension` (macOS 15.4+). Set `browser-extensions = false` to turn the whole thing off.
 
-- **Install from the Chrome Web Store** — open an extension's store page in a browser pane and click the **添加到 QuickTerm** button injected in the bottom-right corner. QuickTerm downloads the CRX, shows what the extension asks for, and installs it once you confirm.
-- **Import from Chrome** — the puzzle-piece menu at the right end of the toolbar (`Cmd+Shift+E`) has *从 Chrome 导入已安装扩展…*: it copies the newest version of every extension in `~/Library/Application Support/Google/Chrome/Default/Extensions`, skipping themes, packaged apps and anything already installed.
-- **Manage** — the same menu lists every installed extension (disabled ones marked *（已停用）*); its submenu opens the extension, pins it to the toolbar, enables/disables it, opens its options page, or removes it.
-- **Pin to the toolbar** — as in Chrome, only *pinned* extensions get a button (badge included) left of the puzzle icon; everything else lives in the puzzle menu, where *打开* does the same thing as clicking the button. Web Store installs are pinned by default, imports keep whatever was pinned in Chrome, and the address bar keeps at least 200pt — pinned extensions that no longer fit are hidden from the toolbar and stay reachable from the menu. In a pane too narrow even for that, the address bar keeps giving way instead: the puzzle button is always visible and clickable.
+- **Install from the Chrome Web Store** — open an extension's store page in a browser pane and click the **Add to QuickTerm** button injected in the bottom-right corner. QuickTerm downloads the CRX, shows what the extension asks for, and installs it once you confirm.
+- **Import from Chrome** — the puzzle-piece menu at the right end of the toolbar (`Cmd+Shift+E`) has *Import Installed Extensions from Chrome…*: it copies the newest version of every extension in `~/Library/Application Support/Google/Chrome/Default/Extensions`, skipping themes, packaged apps and anything already installed.
+- **Manage** — the same menu lists every installed extension (disabled ones marked *(Disabled)*); its submenu opens the extension, pins it to the toolbar, enables/disables it, opens its options page, or removes it.
+- **Pin to the toolbar** — as in Chrome, only *pinned* extensions get a button (badge included) left of the puzzle icon; everything else lives in the puzzle menu, where *Open* does the same thing as clicking the button. Web Store installs are pinned by default, imports keep whatever was pinned in Chrome, and the address bar keeps at least 200pt — pinned extensions that no longer fit are hidden from the toolbar and stay reachable from the menu. In a pane too narrow even for that, the address bar keeps giving way instead: the puzzle button is always visible and clickable.
 - **Popups and context menus** — clicking an extension's button opens its popup, and page context menus gain the extension's own items.
 - **Where things live** — `~/Library/Application Support/QuickTerm/Extensions/<id>/`, with `state.json` holding the enabled and pinned flags. Extensions share cookies and login state with your tabs.
 - **Compatibility shim** — on install (and once, on the next launch, for extensions installed earlier) QuickTerm rewrites the extension's `background` entry so `__quickterm-compat.js` runs first. It adds no-op `webNavigation.onHistoryStateUpdated` / `onReferenceFragmentUpdated` events (missing in WebKit; Stylish's background threw on them and never started) and makes `importScripts()` skip empty files (WebKit drains the microtask queue after every imported script, which flipped Tampermonkey's startup flag and left its popup spinning forever). It also rewrites the literal `chrome-extension:` to `webkit-extension:` in the extension's `.js` / `.mjs` files, since WebKit serves extension pages from `webkit-extension://` and Chrome builds that hard-code the scheme otherwise treat their own popup as a foreign page (Tampermonkey's background refused every popup request). Extension pages embedded in ordinary web pages (Stylish's side panel is a `webkit-extension://` iframe) run in the page's process, and WebKit kills that process if they call `tabs`, `windows`, `action`, `scripting`, `alarms`, `contextMenus` or `cookies` directly, so every namespace except `runtime`, `storage`, `i18n` and `permissions` is replaced there by proxies that relay each call through the extension's background (extensions without a background script get proxies whose calls fail instead of crashing). Sites that hand data to an extension through Chrome's `externally_connectable` channel (userstyles.org signs you into Stylish that way) call `chrome.runtime.sendMessage(<extension id>, …)`; WebKit implements that channel but exposes it to pages only as `browser.runtime`, so pages whose URL matches an installed extension's `externally_connectable.matches` also get a minimal `chrome.runtime` alias (`sendMessage` / `connect` and nothing else) — never on other sites, and never over a `chrome` object the page already has. The original entry is kept under `__quickterm` in the manifest; updates regenerate the shim.
@@ -225,7 +227,7 @@ The Shell and Pane menus in the macOS menu bar show the default shortcuts for a 
 
 ## Control plane (CLI and AI agents)
 
-**The command line speaks English** — `--help`, `describe --json`, errors, hints and the generated MCP tool descriptions — because agents read it and English is their lingua franca. The app's own UI (menus, confirmation prompts, the activity log) is Chinese.
+**The command line speaks English** — `--help`, `describe --json`, errors, hints and the generated MCP tool descriptions — because agents read it and English is their lingua franca. The app's own UI ships in English and Simplified Chinese: by default it follows the system language, and `[general] language = "en"` or `"zh"` in `config.toml` pins it. Logs, wire identifiers, config keys and pane handles stay English in both.
 
 QuickTerm listens on a Unix-domain socket in `~/Library/Application Support/QuickTerm/` and ships a `quickterm` command line that speaks to it. Everything a keybinding can do, a command can do — plus a curated noun-verb layer whose defining rule is **absolute setters, never toggles**, because an agent cannot observe state cheaply and a retried toggle silently undoes itself.
 
@@ -325,6 +327,8 @@ Tool annotations (`readOnlyHint` / `destructiveHint` / `idempotentHint`) are map
 - `spec apply` never moves windows (use `screen move`), and a failure after the first cut reports `partial_apply` rather than pretending nothing happened.
 
 Full agent-facing documentation, including the addressing grammar and the exit-code table: [`docs/agents/quickterm-cli.md`](docs/agents/quickterm-cli.md).
+
+Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents/AGENTS.quickterm.md) into your project root as `AGENTS.md` to let your coding agent drive QuickTerm.
 
 ## Configuration
 
