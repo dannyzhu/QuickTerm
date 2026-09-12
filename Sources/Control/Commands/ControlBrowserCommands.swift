@@ -1,18 +1,21 @@
 import AppKit
 
-/// `browser open|goto|reload|close` —— 浏览器 pane 里**标签**这一层。
+/// `browser open|goto|reload|close` - the **tab** level inside a browser pane.
 ///
-/// 三条贯穿始终的规矩：
+/// Three rules that run through all of it:
 ///
-/// 1. **`-t` 指 pane，`--tab` 指标签。** 两级分开写（而不是塞进一个 `b3.2`）是因为
-///    `.` 在寻址语法里已经是"工作区.pane"的分隔符；混在一起之后，
-///    "第 2 个工作区的 b3"与"b3 的第 2 个标签"长得一模一样。
-/// 2. **打码规则一个字都不松。** 标签的标题与网址跟 pane 级的 url / title 走同一条线：
-///    没有 token 的调用方读到的是 `<redacted>`——包括**变更信封里的 diff**
-///    （`from` 是命令跑之前那个页面的网址，泄出去和直接读 `state` 没有区别）。
-/// 3. **关掉最后一个标签 = 关掉整个 pane。** 这不是我们发明的语义，是 ⌘W 在
-///    `MainWindowController.perform(.closePane)` 里已经有的那一条（Chrome 语义）。
-///    命令行要是自作主张"最后一个标签就不给关"，同一件事在两个入口会得到两种结果。
+/// 1. **`-t` names the pane, `--tab` names the tab.** The two levels are written separately
+///    (rather than packed into something like `b3.2`) because `.` is already the
+///    "workspace.pane" separator in the addressing grammar; once they are mixed, "b3 in
+///    workspace 2" and "the 2nd tab of b3" look exactly the same.
+/// 2. **The redaction rules are not loosened by a single character.** A tab's title and URL go
+///    down the same line as the pane-level url / title: a caller without a token reads
+///    `<redacted>` - including **the diff in the change envelope** (`from` is the URL of the page
+///    before the command ran, and leaking that is no different from reading `state` directly).
+/// 3. **Closing the last tab = closing the whole pane.** That is not a semantic we invented, it is
+///    the one Cmd+W already has in `MainWindowController.perform(.closePane)` (Chrome's
+///    semantics). If the command line took it upon itself to say "the last tab cannot be closed",
+///    the same act would produce two different results through the two entry points.
 @MainActor
 extension ControlCommandRunner {
     func runBrowser(_ ctx: ControlContext) throws -> (echo: ResolvedTarget?, data: any Encodable) {
@@ -27,9 +30,10 @@ extension ControlCommandRunner {
         }
     }
 
-    // MARK: 解析
+    // MARK: Resolution
 
-    /// 落到一个浏览器 pane 上。终端 pane 要给的是**明确的**错误，而不是一句"没做什么"
+    /// Resolve down to a browser pane. A terminal pane has to get an **explicit** error, not a
+    /// bland "nothing was done"
     func requireBrowser(_ ctx: ControlContext) throws -> (hit: PaneHit, pane: BrowserPaneView) {
         let hit = try requirePane(ctx, ctx.target)
         guard let browser = hit.pane as? BrowserPaneView else {
@@ -42,7 +46,8 @@ extension ControlCommandRunner {
         return (hit, browser)
     }
 
-    /// `--tab` → 0 起的下标。**越界与歧义一律报错**，绝不"就近挑一个"
+    /// `--tab` -> a 0-based index. **Out of range and ambiguous both raise**; never "pick the
+    /// nearest one"
     func resolveTab(_ ref: ControlTabRef, in pane: BrowserPaneView, handle: String) throws -> Int {
         let count = pane.tabs.count
         guard count > 0 else {
@@ -84,15 +89,16 @@ extension ControlCommandRunner {
         try ControlTabRef.parse(ctx.string("tab") ?? "")
     }
 
-    /// diff 里能不能写真正的网址 / 标题。**变更信封会原样回给调用方**，
-    /// 所以这里必须与 `state` 用同一条打码规则；写死成"反正是日志"就是一个绕过打码的通道
+    /// Whether the real URL / title may be written into the diff. **The change envelope goes back
+    /// to the caller verbatim**, so this has to use the same redaction rule as `state`; hard-coding
+    /// it on the grounds that "it is only a log" is a channel around redaction
     func browserVisible(_ ctx: ControlContext, _ text: String?) -> String {
         guard ctx.encoder.exposesBrowser else { return ControlStateEncoder.redacted }
         let value = text ?? ""
         return value.isEmpty ? "—" : value
     }
 
-    // MARK: open（新标签）
+    // MARK: open (a new tab)
 
     private func browserOpen(_ ctx: ControlContext) throws -> (ResolvedTarget?, any Encodable) {
         let (hit, browser) = try requireBrowser(ctx)
@@ -114,7 +120,8 @@ extension ControlCommandRunner {
             changes: [ControlChange("\(base).tabs", from: ControlChange.count(before, "tab"),
                                     to: ControlChange.count(before + 1, "tab"))],
             controllers: [hit.controller],
-            // 布局没动，撤销栈里放一条"关掉那个标签"的假动作只会更乱
+            // The layout did not move, and putting a fake "close that tab" step on the undo stack
+            // would only make things murkier.
             undoCommand: nil, target: base)
         var payload = try commit(mutation) {
             browser.addTab(url: url, activate: activate)
@@ -123,7 +130,7 @@ extension ControlCommandRunner {
         return (hit.echo, payload)
     }
 
-    // MARK: goto（绝对设值：已经在那儿就什么都不做）
+    // MARK: goto (absolute assignment: if it is already there, do nothing)
 
     private func browserGoto(_ ctx: ControlContext) throws -> (ResolvedTarget?, any Encodable) {
         let (hit, browser) = try requireBrowser(ctx)
@@ -138,21 +145,24 @@ extension ControlCommandRunner {
         let tab = browser.tabs[index]
         let base = "\(path(hit.controller, hit.workspace, hit.pane)).tab\(index + 1)"
 
-        // 已经在这个网址上 = 空操作（`--fail-if-noop` 会退 7）。
-        // 想强制重新取一次就用 browser reload —— "设值"与"刷新"是两个不同的意图，
-        // 混成一条命令之后，一次无意的重放会把一个填了一半的表单冲掉。
+        // Already on this URL = a no-op (`--fail-if-noop` exits 7). To force a refetch, use
+        // browser reload - "assign a value" and "reload" are two different intents, and once they
+        // are fused into one command an unintended replay wipes out a half-filled form.
         //
-        // **但这条幂等只对读得到网址的调用方成立。** 对读不到的（没 token / expose-browser=never）：
-        // "改了没有"本身就是一个答案——一条 `--dry-run --fail-if-noop` 的 goto 能问出
-        // "这个标签现在是不是正停在 <某网址> 上"，而同一个调用方读 `state` 拿到的是 `<redacted>`。
-        // `SpecApplier.identityMatches` 关的正是这个通道（"宁可重建，也不要让『匹配上了没有』
-        // 变成一个猜网址的探测通道"）。所以这类调用方一律当成一次改动：无条件加载，
-        // `changed` 恒真，不携带任何关于当前网址的信息
+        // **But this idempotency only holds for callers that can read the URL.** For those that
+        // cannot (no token / expose-browser=never), "did it change" is itself an answer - a
+        // `--dry-run --fail-if-noop` goto could ask "is this tab currently sitting on <some URL>",
+        // while the same caller reading `state` gets `<redacted>`. `SpecApplier.identityMatches`
+        // closes exactly this channel ("rebuild rather than let 'did it match' become a probe for
+        // guessing URLs"). So callers like that always count as a change: load unconditionally,
+        // `changed` is always true, and nothing about the current URL is carried out.
         var changes: [ControlChange] = []
         //
-        // 比的是**规范化之后**的两个网址（`ControlPaneFactory.sameURL`）：WebKit 落地的是
-        // `http://localhost:3000/`，而没有人会那样写。照字面比的话，这条命令对最常见的那种
-        // 写法永远报"变了"——绝对设值的承诺当场作废，页面还被白重载一次
+        // What gets compared is the two URLs **after normalization**
+        // (`ControlPaneFactory.sameURL`): what WebKit settles on is `http://localhost:3000/`, and
+        // nobody writes it that way. Compared literally, this command would forever report
+        // "changed" for the most common spelling - the absolute-assignment promise is void on the
+        // spot and the page is reloaded for nothing.
         if !ctx.encoder.exposesBrowser
             || !ControlPaneFactory.sameURL(tab.effectiveURL, url) {
             changes.append(ControlChange(
@@ -181,8 +191,9 @@ extension ControlCommandRunner {
         let hard = ctx.flag("hard")
         let base = "\(path(hit.controller, hit.workspace, hit.pane)).tab\(index + 1)"
 
-        // 刷新**永远有事可做**（那就是它的全部意义）：`changes` 恒非空，
-        // 于是 `--fail-if-noop` 对它永远不触发，而 `--dry-run` 如实说"会重新加载谁"
+        // A reload **always has something to do** (that is its entire point): `changes` is never
+        // empty, so `--fail-if-noop` never fires for it, and `--dry-run` honestly says which tab
+        // would be reloaded.
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer,
             changes: [ControlChange("\(base).load",
@@ -197,7 +208,7 @@ extension ControlCommandRunner {
         return (hit.echo, payload)
     }
 
-    // MARK: close（破坏性：最后一个标签连 pane 一起关）
+    // MARK: close (destructive: the last tab takes the pane with it)
 
     private func browserClose(_ ctx: ControlContext) throws -> (ResolvedTarget?, any Encodable) {
         let (hit, browser) = try requireBrowser(ctx)
@@ -209,8 +220,9 @@ extension ControlCommandRunner {
         let count = browser.tabs.count
         let panePath = path(hit.controller, hit.workspace, hit.pane)
 
-        // 关到最后一个标签时**整个 pane 一起关**（= ⌘W 的语义，见文件头）。
-        // `--others` 永远留下一个标签，所以它自己不会走到关 pane 那条路上
+        // Closing down to the last tab **closes the whole pane with it** (= Cmd+W semantics,
+        // see the file header). `--others` always leaves one tab behind, so it can never end up on
+        // the close-the-pane path by itself.
         let closesPane = !others && count == 1
         var changes: [ControlChange] = []
         if others {
@@ -230,13 +242,15 @@ extension ControlCommandRunner {
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
             controllers: [hit.controller],
-            // 关掉的页面放不回来（进程 / 会话都没了），登记撤销只会造一个假象
+            // A closed page cannot be put back (both the process and the session are gone), and
+            // registering an undo would only manufacture an illusion.
             undoCommand: nil, target: panePath)
 
         var stillOpen = false
         var payload = try commit(mutation) {
             if others {
-                // **从后往前关**：从前往后的话，每关一个后面的下标都要往前挪一格
+                // **Close back to front**: going front to back, every close shifts the indices
+                // after it down by one.
                 for i in stride(from: browser.tabs.count - 1, through: 0, by: -1) where i != index {
                     browser.closeTab(at: i)
                 }
@@ -252,7 +266,8 @@ extension ControlCommandRunner {
                 browser.closeTab(at: index)
             }
         }
-        // 关 pane 那条路可能撞上"仍有进程在运行"的确认框：**按事实判定**，不去猜（同 pane close）
+        // The close-the-pane path can run into the "processes are still running" confirmation:
+        // **decide from the facts**, do not guess (same as pane close).
         if payload.applied, closesPane, stillOpen {
             payload.confirmPending = true
             payload.applied = false
@@ -261,8 +276,9 @@ extension ControlCommandRunner {
         if payload.applied, closesPane, !stillOpen {
             payload.note = "That was the last tab, so the whole pane closed with it (same as ⌘W)."
         }
-        // pane 还在（没关它、只关了标签，或者是一次预演）才回它的记录：
-        // 关掉之后再编码一次等于回报一个已经不存在的东西
+        // Only return the pane record while the pane is still there (it was not closed, only a tab
+        // was, or this was a dry run): encoding it after the close would report something that no
+        // longer exists.
         if hit.controller.model.allPanes.contains(where: { $0 === hit.pane }) {
             payload.pane = paneInfo(hit, encoder: ctx.encoder)
         }
@@ -274,8 +290,9 @@ extension ControlCommandRunner {
     }
 }
 
-/// 标签这一层的上限。上限本身就是策略：没有它，一个跑飞的 agent 能在一个 pane 里
-/// 开出几百个 WKWebView（每个都是一条 WebContent 进程），机器会先于用户发现这件事
+/// The ceiling at the tab level. The ceiling is itself the policy: without it a runaway agent can
+/// open several hundred WKWebViews inside one pane (each one its own WebContent process), and the
+/// machine finds out about it before the user does
 enum ControlBrowserLimits {
     static let maxTabs = 50
 }

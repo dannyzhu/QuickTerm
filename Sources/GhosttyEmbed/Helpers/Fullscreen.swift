@@ -129,9 +129,9 @@ class NativeFullscreen: FullscreenBase, FullscreenStyle {
 }
 
 
-// QuickTerm 裁剪（M0）：NonNativeFullscreen 系列依赖 Ghostty 应用的
-// TerminalWindow / CGSSpace / 窗口 tab 逻辑，M1 会按 QuickTerm 自己的窗口类重新移植。
-// 见 docs/porting-notes.md。
+// QuickTerm trim (M0): the NonNativeFullscreen family depends on the Ghostty app's
+// TerminalWindow / CGSSpace / window-tab logic. M1 will re-port it against QuickTerm's own window
+// classes. See docs/porting-notes.md.
 class NonNativeFullscreen: NativeFullscreen {}
 class NonNativeFullscreenVisibleMenu: NonNativeFullscreen {}
 class NonNativeFullscreenPaddedNotch: NonNativeFullscreen {}

@@ -1,31 +1,34 @@
 import AppKit
 
-/// Phase 2 变更命令的共同骨架：**先算 diff，再决定要不要动手**。
+/// The shared skeleton of the Phase 2 mutation commands: **compute the diff first, then decide
+/// whether to touch anything at all**.
 ///
-/// 每条命令都被写成同一个形状：
-/// 1. 只读地算出 `changes`（当前值 → 目标值）；
-/// 2. 交给 `commit(_:apply:)`——它统一处理 `--dry-run` / `--fail-if-noop` / 撤销登记 /
-///    状态栏闪烁 / 活动日志 / `seq` 自增。
+/// Every command is written to the same shape:
+/// 1. compute `changes` read-only (current value → target value);
+/// 2. hand them to `commit(_:apply:)`, which deals with `--dry-run` / `--fail-if-noop` / undo
+///    registration / the status-bar flash / the activity log / bumping `seq`, all in one place.
 ///
-/// 这个形状本身就是幂等性的**实现方式**，而不是一句承诺：
-/// 空的 `changes` 就是"已经是目标状态"，`apply` 那一段根本不会被调用。
-/// 于是"跑两次第二次是 no-op"不是某条命令的自觉，是所有命令共用的一条控制流。
+/// That shape is **how idempotency is implemented**, not a promise that it holds:
+/// an empty `changes` means "already in the requested state", and the `apply` block is simply
+/// never called. So "run it twice and the second run is a no-op" is not the conscientiousness
+/// of any individual command, it is one control flow that all of them share.
 @MainActor
 struct ControlMutationRequest {
-    /// 线上的命令名（`pane.set`）
+    /// The command's name on the wire (`pane.set`)
     let command: String
     let request: ControlRequest
     let peer: ControlSocket.Peer
-    /// 只读算出来的 diff。**空 = 什么都不用做**
+    /// The diff, computed read-only. **Empty = there is nothing to do**
     let changes: [ControlChange]
-    /// 会被改动的控制器（撤销快照 + 状态栏闪烁的落点；跨屏幕移动时是两块）
+    /// The controllers this will change (where the undo snapshot is taken and where the
+    /// status-bar flash lands; two of them for a move across screens)
     let controllers: [MainWindowController]
     /// The command the undo entry stands for (`pane set`), or nil when this step cannot be
     /// undone (closing a pane, say: the process is already dead, so an undo would only be a
     /// pretence). The wire spells it in English (`ControlUndo.wireName`); the Edit menu and the
     /// status-bar flash draw `ControlUndo.displayName`, which follows the UI language.
     let undoCommand: String?
-    /// 日志里显示的落点（`1:2.t7`）
+    /// Where it landed, as the log shows it (`1:2.t7`)
     let target: String?
 }
 
@@ -38,8 +41,9 @@ extension ControlCommandRunner {
     var isDryRun: Bool { currentFlags.dryRun }
     var failsIfNoop: Bool { currentFlags.failIfNoop }
 
-    /// 变更命令的唯一出口。返回值里 `applied` / `changed` / `changes` 三件事都已经填好，
-    /// 调用方只需要再补上"改完之后的实体"（pane / workspace / screen）
+    /// The one exit for mutation commands. `applied` / `changed` / `changes` in the return
+    /// value are already filled in; all the caller adds is the entity as it stands afterwards
+    /// (pane / workspace / screen)
     func commit(_ mutation: ControlMutationRequest,
                 apply: () throws -> Void) throws -> ControlMutationPayload {
         dispatchPrecondition(condition: .onQueue(.main))
@@ -61,17 +65,20 @@ extension ControlCommandRunner {
                                           changed: true, dryRun: true, changes: mutation.changes)
         }
 
-        // 撤销快照要在动手**之前**拍：值类型的 layouts / floatings 拍下来就是完整的一份旧布局
+        // The undo snapshot has to be taken **before** anything moves: layouts / floatings are
+        // value types, so snapshotting them is a complete copy of the old layout
         let generation = ControlUndo.generation
         var snapshots = mutation.undoCommand == nil ? [] : mutation.controllers.map { $0.controlSnapshot() }
         do {
             try apply()
         } catch {
-            // apply 抛出 = 这一步没落地：seq 不动、不进撤销栈、不闪状态栏。
-            // 但**要**记一笔——失败的变更正是用户最需要在活动日志里看到的那一类。
-            // （命令体一律直接 `throw`，绝不用捕获变量把失败绕过 commit：
-            //   那样 seq 会为一次没发生的变更 +1，撤销栈会多一个撤不到点子上的项，
-            //   日志还会记成 applied）
+            // apply threw = this step did not land: seq does not move, nothing goes on the undo
+            // stack, the status bar does not flash.
+            // It **does** get logged, though — a failed mutation is exactly the kind of entry
+            // the user most needs to find in the activity log.
+            // (Command bodies always `throw` outright and never route a failure around commit
+            //  through a captured variable: that would bump seq for a change that never
+            //  happened, push an undo entry that undoes the wrong thing, and log it as applied.)
             let body = (error as? ControlErrorBody) ?? ControlErrorBody(.failed, "\(error)")
             log(mutation, outcome: Outcome.failed(body.code))
             throw body
@@ -79,7 +86,8 @@ extension ControlCommandRunner {
         seqDidMutate()
         if let undoCommand = mutation.undoCommand, !snapshots.isEmpty,
            ControlUndo.generation == generation {
-            // apply 期间没有任何 pane 被关掉才登记：关掉过就说明快照里吊着一个已死的 pane
+            // Register only if no pane was closed during apply: if one was, the snapshot is
+            // left holding a pane that is already dead
             for index in snapshots.indices { snapshots[index].stampExpectedPanes() }
             ControlUndo.register(command: undoCommand, before: snapshots)
         }
@@ -90,8 +98,9 @@ extension ControlCommandRunner {
                                       undo: mutation.undoCommand.map(ControlUndo.wireName))
     }
 
-    /// 状态栏闪一下：`mutate` 类命令是静默执行的，**可见性是它被允许静默的前提**。
-    /// 文案里写清是哪条命令、来自哪个 pane（自称）——用户至少知道刚才不是自己按错了键
+    /// Flash the status bar. `mutate` commands run silently, and **visibility is the condition
+    /// on which they are allowed to be silent**. The text names the command and the pane it
+    /// claims to come from — so the user at least knows that was not their own keystroke
     private func flash(_ mutation: ControlMutationRequest) {
         let origin = originHandle(for: mutation.request)
         let text = origin.map { L("control.flash.command-from-pane", mutation.command, $0) }
@@ -113,8 +122,9 @@ extension ControlCommandRunner {
             changes: mutation.changes))
     }
 
-    /// 读命令也记一笔？**不记**：读是高频且无害的，记下来只会把真正的变更淹掉。
-    /// 被拒绝的变更倒是要记——那是用户最需要看到的一类
+    /// Log reads too? **No.** Reads are frequent and harmless, and logging them would only bury
+    /// the actual changes. Refused mutations, on the other hand, do get logged — those are the
+    /// entries the user most needs to see
     func logRefusal(_ command: String, peer: ControlSocket.Peer, request: ControlRequest,
                     code: ControlErrorCode, message: String) {
         ControlActivityLog.shared.record(.init(
@@ -128,38 +138,50 @@ extension ControlCommandRunner {
     }
 }
 
-/// 撤销登记。用的是 `AppDelegate.undoManager`——它一直存在却从来没人用过。
+/// Undo registration, through `AppDelegate.undoManager` — which has been there all along and
+/// had never been used.
 ///
-/// 快照式撤销（把 layouts / floatings / activeIndex 整份存下来再整份放回）而不是逐操作反算：
-/// 布局是值类型，一份快照就是一份完整的旧状态，绝不会出现"反算漏了 zoom"这种半吊子回滚。
-/// 代价是快照强引用着那些 PaneView，所以 `levelsOfUndo` 必须封顶——
-/// 否则一个跑飞的 agent 会让撤销栈把几百个 surface 一直吊在内存里。
+/// Snapshot-based undo (store layouts / floatings / activeIndex wholesale, then put the whole
+/// thing back) rather than inverting operations one by one: the layout is a value type, so one
+/// snapshot is one complete copy of the old state, and there is no way to end up with a
+/// half-done rollback that "forgot to invert the zoom".
+/// The price is that a snapshot holds those PaneViews strongly, so `levelsOfUndo` has to be
+/// capped — otherwise a runaway agent leaves the undo stack keeping hundreds of surfaces alive
+/// in memory.
 ///
-/// **关 pane / 关屏幕不登记撤销**：进程已经被杀了，把布局放回去只会造出一个"好像还在"的假象。
+/// **Closing a pane or a screen registers no undo**: the process has already been killed, and
+/// putting the layout back would only manufacture the impression that it is still there.
 @MainActor
 enum ControlUndo {
     static let levels = 25
 
-    /// 每一次登记 / 每一次真正的关闭都 +1。`commit` 用它判断"拍完快照到落刀之间有没有 pane 被关掉"
+    /// Incremented on every registration and on every real close. `commit` uses it to tell
+    /// whether a pane was closed between taking the snapshot and the knife going in
     private(set) static var generation = 0
 
     private final class Target {
         static let shared = Target()
     }
 
-    /// **关 pane / 关屏幕 = 整个控制面撤销栈作废。**
+    /// **Closing a pane or a screen voids the entire control-plane undo stack.**
     ///
-    /// 快照里的 layouts / floatings 是值类型，但里面装的是 `PaneView`（类），
-    /// 也就是每个 pane 一份**强引用**；而关闭全靠"放弃最后一份引用"触发
-    /// `SurfaceView.deinit → ghostty_surface_free`（`finishClose` / `removePane` / `teardown`
-    /// 的注释写的都是这句）。留着快照的后果是两条，都与关闭路径的生命周期不变量直接冲突：
-    /// 1. 关掉的 surface 不释放、shell 不退出（关屏幕更是明说"就该结束里面的进程"）；
-    /// 2. ⌘Z 能把一个已经跑完一次性 `paneWillClose()` 的浏览器 pane 原样塞回布局，
-    ///    而它再也不会重新向扩展报一次窗口事件。
+    /// The layouts / floatings inside a snapshot are value types, but what they contain is
+    /// `PaneView` (a class) — that is **one strong reference per pane**, while closing works by
+    /// giving up the last reference, which is what triggers
+    /// `SurfaceView.deinit → ghostty_surface_free` (the comments on `finishClose`, `removePane`
+    /// and `teardown` all say exactly this). Holding on to the snapshot has two consequences,
+    /// both of them in direct conflict with the lifecycle invariants of the close path:
+    /// 1. the closed surface is never released and the shell never exits (closing a screen is
+    ///    explicitly documented as "the processes inside it are supposed to end");
+    /// 2. Cmd+Z can drop a browser pane that has already run its one-shot `paneWillClose()` back
+    ///    into the layout intact, and it will never report a window event to the extension
+    ///    again.
     ///
-    /// 真正的 `removeAllActions()` 排到下一轮：本方法可能正处在引擎 close_surface 的回调栈里，
-    /// 同步释放会当场 free 一个仍在引擎栈上的 surface。排队时记下当时的代号，
-    /// 期间若有新的登记（代号变了）就不清——那条新的撤销项是这次关闭**之后**拍的，本来就是干净的。
+    /// The actual `removeAllActions()` is deferred to the next turn: this method may be running
+    /// inside the engine's close_surface callback stack, and releasing synchronously would free
+    /// a surface that is still on the engine's stack. Record the generation when queueing; if
+    /// anything registered in the meantime (the generation changed) do not clear — that new undo
+    /// entry was taken **after** this close, so it is clean by construction.
     nonisolated static func invalidate() {
         MainActor.assumeIsolated {
             generation &+= 1
@@ -186,12 +208,15 @@ enum ControlUndo {
         guard let manager = (NSApp.delegate as? AppDelegate)?.undoManager else { return }
         manager.levelsOfUndo = levels
         generation &+= 1
-        // 反向那一半：撤销之后要能重做，所以撤销的时候把"现在"再拍一份登记回去
+        // The other half of the reversal: after undoing you have to be able to redo, so undoing
+        // snapshots "now" as well and registers that back
         let after = before.compactMap { $0.controller?.controlSnapshot() }
         manager.registerUndo(withTarget: Target.shared) { _ in
             MainActor.assumeIsolated {
-                // 整份盖回去 = 换掉整个 pane 集合。所以只有每一块屏幕都还是这次变更留下的
-                // 那一组 pane 时才撤销，而且全有全无（跨屏幕移动只回滚一半会凭空多出/少掉一个 pane）
+                // Putting the whole thing back = replacing the entire set of panes. So undo only
+                // while every screen still holds exactly the set of panes this change left
+                // behind, and do it all or not at all (rolling back half of a cross-screen move
+                // would conjure a pane out of nowhere, or lose one)
                 guard before.allSatisfy({ $0.matchesLive() }) else {
                     for snapshot in before {
                         snapshot.controller?.model.showControlFlash(
@@ -199,8 +224,9 @@ enum ControlUndo {
                     }
                     return
                 }
-                // 撤销会顺带关掉 pane（撤销 `pane new`）时不登记重做：
-                // 重做快照会把那个已经跑完收尾的 pane 一直吊着，还能把它放回布局
+                // When the undo itself closes panes (undoing `pane new`), register no redo: a
+                // redo snapshot would hold on to a pane that has already run its teardown, and
+                // could even put it back into the layout
                 let closes = before.contains { $0.closesPanesOnRestore }
                 for snapshot in before { _ = snapshot.restore() }
                 if !after.isEmpty, !closes {

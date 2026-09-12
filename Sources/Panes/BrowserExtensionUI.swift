@@ -1,14 +1,17 @@
 import AppKit
 import WebKit
 
-/// 地址栏右侧的扩展工具条：每个"固定到工具条"、启用且对当前标签有动作的扩展一个按钮，末尾一个拼图菜单。
-/// 未固定的扩展（Chrome 语义）只出现在拼图菜单里——从 Chrome 导入几十个扩展也不会把地址栏挤没。
+/// The extension toolbar to the right of the address bar: one button per extension that is pinned to
+/// the toolbar, enabled, and has an action for the current tab, with a puzzle-piece menu at the end.
+/// Unpinned extensions (Chrome's semantics) show up only in the puzzle menu, so importing a few dozen
+/// extensions from Chrome does not squeeze the address bar out of existence.
 ///
-/// 手工布局：pane 由 SwiftUI 托管、没有外部宽度约束，pane 内部优先级 >= 500 的宽度约束都会反过来
-/// 把 pane 撑成工具条的宽度（见 porting-notes）。这里只对外报 intrinsicContentSize（非必需优先级），
-/// 内部按钮的帧在 layout() 里自己算。
+/// Laid out by hand: the pane is hosted by SwiftUI and has no external width constraint, so any width
+/// constraint inside the pane at priority >= 500 feeds back and stretches the pane to the toolbar's
+/// width (see porting-notes). This view only publishes an intrinsicContentSize (a non-required
+/// priority) and computes its own buttons' frames inside layout().
 final class BrowserExtensionToolbar: NSView {
-    /// 按钮边长与相邻按钮的步进（步进 = 边长 + 间隙）
+    /// Button side length, and the step between adjacent buttons (step = side length + gap).
     static let buttonSize: CGFloat = 22
     static let step: CGFloat = 24
 
@@ -50,11 +53,12 @@ final class BrowserExtensionToolbar: NSView {
         needsDisplay = true
     }
 
-    // MARK: - 内容
+    // MARK: - Content
 
     private var manager: BrowserExtensionManager { .current }
 
-    /// 当前标签下应该显示的扩展动作（固定到工具条 + 启用 + 对该标签有动作）
+    /// Extension actions that should be shown for the current tab (pinned to the toolbar + enabled +
+    /// has an action for that tab).
     private func visibleActions(for tab: BrowserPaneView.Tab?)
         -> [(item: BrowserExtensionManager.Installed, action: WKWebExtension.Action)] {
         guard manager.isEnabled else { return [] }
@@ -65,7 +69,7 @@ final class BrowserExtensionToolbar: NSView {
         }
     }
 
-    /// 按当前标签重建按钮
+    /// Rebuild the buttons for the current tab.
     func reload() {
         let entries = visibleActions(for: pane?.activeTab)
         while actionButtons.count > entries.count {
@@ -87,15 +91,17 @@ final class BrowserExtensionToolbar: NSView {
         reloadCountForTesting += 1
     }
 
-    /// 测试用：`reload()` 跑过的次数（导航后必须重读，见 BrowserPaneView 的 `\.url` 观察）
+    /// For tests: how many times `reload()` has run. It must re-read after navigation; see the `\.url`
+    /// observation in BrowserPaneView.
     private(set) var reloadCountForTesting = 0
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: CGFloat(actionButtons.count + 1) * Self.step, height: Self.buttonSize)
     }
 
-    /// 被压到比 intrinsic 还窄时（地址栏保底 200pt 会把工具条压掉），从左到右只摆放得下的按钮，
-    /// 剩下的藏起来——它们仍可从拼图菜单点开；拼图按钮永远在最右且可见
+    /// When squeezed below the intrinsic width (the address bar's 200pt floor squeezes the toolbar),
+    /// place only as many buttons as fit, left to right, and hide the rest: they can still be invoked
+    /// from the puzzle menu. The puzzle button is always rightmost and always visible.
     func fittingActionButtonCount(width: CGFloat) -> Int {
         let room = width - Self.buttonSize
         guard room > 0 else { return 0 }
@@ -111,46 +117,52 @@ final class BrowserExtensionToolbar: NSView {
             button.frame = NSRect(x: CGFloat(i) * Self.step, y: y,
                                   width: Self.buttonSize, height: Self.buttonSize)
         }
-        // 全放得下时按钮右边紧跟拼图（= 老行为）；有按钮被藏起来时拼图贴住右边缘（Chrome 同款，
-        // 且拖动 pane 边缘时拼图跟着边走，不会甩下一截 0–23pt 的空隙再整格跳）
+        // When everything fits, the puzzle sits right after the buttons (the old behavior); once any
+        // button is hidden, the puzzle hugs the right edge. That matches Chrome, and it means dragging
+        // the pane's edge moves the puzzle along with it instead of leaving a 0-23pt gap behind and
+        // then jumping a whole slot at a time.
         let menuX = shown < actionButtons.count
             ? max(0, bounds.width - Self.buttonSize)
             : CGFloat(shown) * Self.step
         menuButton.frame = NSRect(x: menuX, y: y, width: Self.buttonSize, height: Self.buttonSize)
     }
 
-    /// 弹出层的锚点：该扩展**看得见**的按钮，没有就用拼图按钮（藏起来的按钮当锚点会把 popover 挂到零帧上）
+    /// Anchor for the popover: this extension's **visible** button, falling back to the puzzle button.
+    /// Anchoring to a hidden button would attach the popover to a zero-sized frame.
     func anchorButton(for context: WKWebExtensionContext) -> NSButton {
         actionButtons.first { $0.item?.context === context && !$0.isHidden } ?? menuButton
     }
 
-    /// 测试用
+    /// For tests.
     var actionButtonsForTesting: [NSButton] { actionButtons }
     var menuButtonForTesting: NSButton { menuButton }
 
-    // MARK: - 动作
+    // MARK: - Actions
 
     @objc private func performExtensionAction(_ sender: BrowserExtensionActionButton) {
         guard let item = sender.item else { return }
         perform(item)
     }
 
-    /// 点开一个扩展动作。缓存的东西一律在点击这一刻重算：
-    /// 当前标签（按钮建好之后可能已经开 / 关 / 切过标签）、动作对象（WebKit 按标签给不同的 action）、
-    /// 以及扩展眼里的"当前窗口"（`tabs.query({currentWindow:true})` 查的是缓存值，
-    /// 点按钮不改 first responder，不报的话消息会发到别的 pane 去）
+    /// Invoke an extension action. Everything cached is recomputed at the moment of the click:
+    /// the current tab (tabs may have been opened, closed or switched since the button was built), the
+    /// action object (WebKit hands out a different action per tab), and which window the extension
+    /// thinks is current (`tabs.query({currentWindow:true})` reads a cached value, and clicking a
+    /// button does not change the first responder, so without announcing it the message would be
+    /// delivered to a different pane).
     private func perform(_ item: BrowserExtensionManager.Installed) {
         pane?.makeCurrentForExtensions()
         let tab = pane?.activeTab
         guard item.enabled, item.context.isLoaded,
               let action = item.context.action(for: tab), action.isEnabled else { return }
         manager.performAction(of: item, tab: tab)
-        // badge / 图标可能被动作改掉。下一轮再重建：reload() 会把按钮从视图层级里摘掉，
-        // 不能在它自己的 action 派发栈里干这事
+        // The action may have changed the badge or the icon. Rebuild on the next turn of the run loop:
+        // reload() pulls the button out of the view hierarchy, which must not happen inside that
+        // button's own action dispatch.
         DispatchQueue.main.async { [weak self] in self?.reload() }
     }
 
-    /// 拼图菜单（也是 WM 动作 web-extensions 的落点）
+    /// The puzzle menu; also where the web-extensions WM action lands.
     @objc func showMenu() {
         let menu = buildMenu()
         let point = NSPoint(x: menuButton.bounds.minX, y: menuButton.bounds.maxY + 4)
@@ -191,7 +203,8 @@ final class BrowserExtensionToolbar: NSView {
 
     private func submenu(for item: BrowserExtensionManager.Installed) -> NSMenu {
         let menu = NSMenu()
-        // 「打开」= 点它工具条按钮的等价物：没固定 / 固定了但工具条放不下时，扩展仍能从这里点开
+        // "Open" is the equivalent of clicking the extension's toolbar button: whether it is unpinned,
+        // or pinned but squeezed out of the toolbar, it can still be invoked from here.
         if item.enabled, item.context.isLoaded, item.context.action(for: pane?.activeTab) != nil {
             menu.addItem(command(title: L("browser.extension.menu.open"),
                                  selector: #selector(performActionFromMenu(_:)), represented: item))
@@ -282,7 +295,7 @@ final class BrowserExtensionToolbar: NSView {
     }
 }
 
-/// 一个扩展动作按钮：图标 + 右上角 badge
+/// One extension action button: the icon plus a badge in the top-right corner.
 final class BrowserExtensionActionButton: NSButton {
     private(set) var item: BrowserExtensionManager.Installed?
     private var badge = ""
@@ -303,8 +316,10 @@ final class BrowserExtensionActionButton: NSButton {
         image = action.icon(for: NSSize(width: 16, height: 16))
             ?? NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: item.displayName)
         toolTip = action.label.isEmpty ? item.displayName : action.label
-        // 按钮永远可点：NSButton 的 isEnabled = false 会**静默**吃掉点击，而这里的可用状态是
-        // 上一次 reload 时的快照（扩展随时会改）。停用只做视觉变淡，能不能执行在点击那一刻现算
+        // The button always stays clickable: NSButton's isEnabled = false swallows clicks **silently**,
+        // and the enabled state here is only a snapshot from the last reload, which the extension can
+        // change at any time. Being disabled only dims it; whether the action can actually run is
+        // decided at the moment of the click.
         isEnabled = true
         alphaValue = action.isEnabled ? 1 : 0.45
         badge = action.badgeText
@@ -327,16 +342,18 @@ final class BrowserExtensionActionButton: NSButton {
     }
 }
 
-/// Chrome Web Store 详情页注入的「添加到 QuickTerm」按钮，以及它回传消息用的处理器。
+/// The "Add to QuickTerm" button injected into a Chrome Web Store detail page, plus the handler for
+/// the messages it posts back.
 enum BrowserExtensionWebStore {
-    /// 页面 → 原生的消息通道名
+    /// Name of the page-to-native message channel.
     static let messageHandlerName = "quicktermExtension"
 
-    /// 注入脚本与消息通道都待在私有世界里：页面自己的 JS 拿不到
-    /// `window.webkit.messageHandlers.quicktermExtension`（否则任意页面都能拉起安装弹窗）
+    /// The injected script and the message channel both live in a private content world, so the page's
+    /// own JS cannot reach `window.webkit.messageHandlers.quicktermExtension`. Otherwise any page at
+    /// all could raise the install prompt.
     static let contentWorld = WKContentWorld.world(name: "QuickTermExtensionInstall")
 
-    /// Web Store 的两个域名（只有它们的详情页能触发安装）
+    /// The Web Store's two hostnames; only detail pages on these can trigger an install.
     static let storeHosts = ["chromewebstore.google.com", "chrome.google.com"]
 
     /// Built on every read: the button's labels come from the app catalog, so the injected
@@ -356,22 +373,28 @@ enum BrowserExtensionWebStore {
         return "'" + escaped + "'"
     }
 
-    /// 页面回传的消息能不能触发安装：必须是 Web Store 详情页的主框架，且 id 与该详情页的 id 一致。
-    /// （纯函数，便于单测；`frameURL` 传 `WKScriptMessage.frameInfo.request.url`）
+    /// Whether a message posted back by the page may trigger an install: it has to come from the main
+    /// frame of a Web Store detail page, and its id has to match that detail page's id.
+    /// Kept a pure function so it is easy to unit-test; pass `WKScriptMessage.frameInfo.request.url`
+    /// as `frameURL`.
     nonisolated static func acceptedInstallID(body: Any, isMainFrame: Bool,
                                               frameURL: URL?, originHost: String?) -> String? {
         guard isMainFrame,
               let body = body as? [String: Any], let id = body["id"] as? String,
               let frameURL, BrowserExtensionManager.extensionID(fromWebStoreURL: frameURL) == id
         else { return nil }
-        // securityOrigin 是发消息那段脚本的真实来源：iframe / about:blank / 沙盒页一律挡掉
+        // securityOrigin is the real origin of the script that posted the message: iframes,
+        // about:blank and sandboxed pages are all rejected.
         if let originHost, !storeHosts.contains(originHost.lowercased()) { return nil }
         return id
     }
 
-    /// 注入脚本：把「添加到 QuickTerm」放在商店自己那颗（对非 Chrome 浏览器灰掉的）「添加至 Chrome」按钮旁边；
-    /// 商店是 SPA、按钮由 JS 晚些渲染，所以先放右下角兜底，MutationObserver 等到商店按钮出现再挪过去；
-    /// 详情页之间的站内跳转不会重新注入，id 在点击时从 location 重新取，不在详情页时把按钮藏起来
+    /// The injected script: it puts "Add to QuickTerm" next to the store's own "Add to Chrome" button,
+    /// which the store greys out for non-Chrome browsers. The store is an SPA and renders that button
+    /// from JS some time later, so the injected button starts pinned to the bottom-right corner as a
+    /// fallback and a MutationObserver moves it next to the store button once that appears.
+    /// In-site navigation between detail pages does not re-inject, so the id is re-read from
+    /// `location` at click time, and the button hides itself whenever this is not a detail page.
     private static func script(label: String, installing: String) -> String {
         """
         (function () {
@@ -431,9 +454,11 @@ enum BrowserExtensionWebStore {
           styleFloating();
           document.body.appendChild(button);
           place();
-          // 观察回调里只做"必要时才动 DOM"的事（place 自带守卫）：回调里无条件改 DOM 会再次触发观察者，
-          // 微任务死循环把页面 JS 线程卡死。商店 DOM 变动很频繁，用 setTimeout 合并
-          // （不用 requestAnimationFrame：后台标签 / 未渲染的 WebView 里 rAF 不触发）
+          // The observer callback only touches the DOM when it has to (place() guards itself):
+          // mutating the DOM unconditionally from the callback re-triggers the observer and the
+          // resulting endless microtask loop wedges the page's JS thread. The store's DOM churns
+          // constantly, so coalesce with setTimeout - not requestAnimationFrame, which never fires
+          // in a background tab or an unrendered WebView.
           var scheduled = false;
           var observer = new MutationObserver(function () {
             if (scheduled) return;
@@ -451,7 +476,8 @@ enum BrowserExtensionWebStore {
     }
 }
 
-/// 弱引用代理：WKUserContentController 会强引用消息处理器，直接注册 pane 会成环
+/// Weak-reference proxy: WKUserContentController retains its message handlers strongly, so registering
+/// the pane itself would create a cycle.
 final class BrowserExtensionScriptHandler: NSObject, WKScriptMessageHandler {
     weak var pane: BrowserPaneView?
 

@@ -1,14 +1,16 @@
 import AppKit
 
-/// `app get|set`：进程级设置的绝对设值。
+/// `app get|set`: absolute value assignment for process-level settings.
 ///
-/// 这一组存在的理由，是那 5 个被 `action` 拒掉的模态面板动作（`theme-picker`、
-/// `background-menu`、`main-menu`、`keybind-help`、`open-settings`）需要一条**能经 socket 走**的
-/// 替代路径。面板打开之后要靠方向键与回车才能用完——经 socket 执行等于把 UI 卡在半路。
-/// 所以这里给的是"直接设成这个值"，不是"打开那个面板"。
+/// This group exists because the 5 modal-panel actions that `action` refuses (`theme-picker`,
+/// `background-menu`, `main-menu`, `keybind-help`, `open-settings`) need an alternative path that
+/// **can go over the socket**. Once one of those panels is open it takes arrow keys and Return to
+/// finish using it - driving that over the socket just leaves the UI stuck half way through. So
+/// what this offers is "set it to this value directly", not "open that panel".
 ///
-/// 刻意**不给** `app set control …`：让 agent 能改控制面自己的开关，
-/// 就等于给了它一条"先把闸门关掉再动手"的路。开关归用户（config.toml + 菜单）。
+/// There is deliberately **no** `app set control ...`: letting an agent change the control plane's
+/// own switches would hand it a way to "close the gate first, then act". Those switches belong to
+/// the user (config.toml + the menu).
 @MainActor
 extension ControlCommandRunner {
     func runApp(_ ctx: ControlContext) throws -> (echo: ResolvedTarget?, data: any Encodable) {
@@ -69,8 +71,9 @@ extension ControlCommandRunner {
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
             controllers: setting.isPerScreen ? [controller] : screens.controllers,
-            // 主题 / 背景 / 间隙这类是进程级视觉开关：布局快照撤不回它们，
-            // 与其登记一个撤不干净的撤销项，不如老实说这一步不进撤销栈
+            // Theme / background / gaps and friends are process-level visual switches: a layout
+            // snapshot cannot undo them. Rather than register an undo entry that only half works,
+            // be honest and keep this step off the undo stack.
             undoCommand: setting == .visibleColumns ? ctx.spec.cli : nil,
             target: setting.isPerScreen ? path(controller) : "app")
         var payload = try commit(mutation) {
@@ -93,7 +96,7 @@ extension ControlCommandRunner {
                                pane: nil, paneID: nil), payload)
     }
 
-    // MARK: 读 / 写 / 校验（三者共用同一张表，绝不各写各的）
+    // MARK: Read / write / validate (all three share one table; never let them drift apart)
 
     private func value(of setting: ControlAppSetting, controller: MainWindowController) throws -> String {
         guard let theme = themeManager else { throw ControlErrorBody(.internalError, "No ThemeManager") }
@@ -119,8 +122,10 @@ extension ControlCommandRunner {
         }
     }
 
-    /// 把用户给的写法归一成"读回来会是什么样"——**diff 与幂等判定都靠它**。
-    /// 不归一的话 `--gaps ON` 与读回来的 `on` 会被当成两个不同的值，于是每次调用都"改了一下"
+    /// Normalize whatever spelling the user gave into "what it will look like when read back" -
+    /// **both the diff and the idempotency check rest on this**. Without normalization `--gaps ON`
+    /// and the `on` that comes back on a read count as two different values, so every single call
+    /// reports that it "changed something"
     private func normalize(_ raw: String, for setting: ControlAppSetting) throws -> String {
         switch setting {
         case .gaps, .opacity, .bar:
@@ -178,8 +183,10 @@ extension ControlCommandRunner {
             }
             theme.selectBackground(index)
         case .gaps:
-            // 走 toggle**是**对的：`toggleGaps` 之外还有别的副作用要跑（透明那条还要写引擎覆盖层）。
-            // 绝对语义由上面的 diff 保证——值相同时这段根本不会被调用
+            // Going through toggle **is** right: `toggleGaps` carries other side effects that have
+            // to run too (the opacity one also writes the engine overlay). The absolute semantics
+            // are guaranteed by the diff above - when the value is already equal, this is never
+            // reached.
             if theme.gapsEnabled != (value == "on") { theme.toggleGaps() }
         case .opacity:
             if theme.opacityEnabled != (value == "on") { theme.toggleOpacity() }

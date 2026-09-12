@@ -1,16 +1,19 @@
 import AppKit
 
-/// 「按描述造一个 pane」的**唯一**一份实现。
+/// The **one** implementation of "build a pane from a description".
 ///
-/// `pane new` 与 `spec apply` 都从这里造 pane。第二份实现的代价在这个应用里是具体的：
-/// 引擎对带 command 的 surface 强制 wait-after-command（不接管 `closesOnChildExit` 的话
-/// 命令跑完 pane 就永远僵在那儿）、文件管理器 pane 要登记会话否则关闭确认会回来、
-/// 浏览器 pane 漏掉主题那一下底色就是白的——这三件事各写一遍必然漏掉一件。
+/// Both `pane new` and `spec apply` create their panes here. The price of a second implementation
+/// is concrete in this app: the engine forces wait-after-command on any surface that carries a
+/// command (without taking `closesOnChildExit` over ourselves, the pane sits there frozen forever
+/// once the command finishes), a file-manager pane has to register its session or the close
+/// confirmation comes back, and a browser pane that misses the theming step comes up with a white
+/// background - write those three out twice and one of them is guaranteed to be forgotten.
 @MainActor
 enum ControlPaneFactory {
     struct Request {
         var kind = "terminal"
-        /// 已经展开过 `~`、归一过 `..` 的绝对路径；nil = 继承锚点
+        /// An absolute path with `~` already expanded and `..` already normalized; nil = inherit
+        /// from the anchor
         var cwd: String?
         var cmd: String?
         var hold = false
@@ -28,14 +31,16 @@ enum ControlPaneFactory {
         }
     }
 
-    /// 造出来了，但**还没插进任何布局**。插进去之后调 `register`，插不进去调 `discard`
+    /// Built, but **not yet inserted into any layout**. Call `register` once it is in, `discard`
+    /// if it never gets in
     struct Made {
         var pane: PaneView
         var fileManagerSession: FileManagerLaunch.Session?
         var fileManagerFound = false
     }
 
-    /// 参数互斥与取值检查。**造之前**做完：`spec apply` 靠它保证"校验不过就一个 pane 都不建"
+    /// Mutual-exclusion and value checks on the arguments. Done **before** anything is built:
+    /// `spec apply` relies on it to guarantee "if validation fails, not a single pane is created"
     static func validate(_ request: Request) throws {
         switch request.kind {
         case "terminal", "file-manager", "browser": break
@@ -60,17 +65,20 @@ enum ControlPaneFactory {
         }
     }
 
-    /// 这个 kind 会不会真的用上 `cwd`。
+    /// Whether this kind actually makes any use of `cwd`.
     ///
-    /// 浏览器 pane 不会：`make` 的 browser 分支只接一个 url，`BrowserPaneView.workingDirectory`
-    /// 恒为 nil。`--cwd` 配 `--kind browser` 一直是**被接受且被忽略**的（不报错，免得
-    /// 一律 `--cwd "$PWD"` 的脚本每开一个浏览器 pane 就挂），所以隐私守卫那一套
-    /// 告警与 `--require-cwd` 也必须跟着跳过它——否则同一条被忽略的参数，
-    /// 只因为当前目录恰好是 ~/Downloads 就变成一句假告警，甚至一次失败
+    /// A browser pane does not: the browser branch of `make` takes only a url, and
+    /// `BrowserPaneView.workingDirectory` is always nil. `--cwd` together with `--kind browser` has
+    /// always been **accepted and ignored** (no error, so that a script which passes `--cwd "$PWD"`
+    /// unconditionally does not break every time it opens a browser pane), which means the privacy
+    /// guard's warnings and `--require-cwd` have to skip it as well - otherwise the very same
+    /// ignored argument turns into a bogus warning, or even a failure, just because the current
+    /// directory happens to be ~/Downloads
     static func consumesWorkingDirectory(_ kind: String) -> Bool { kind != "browser" }
 
-    /// 目标目录真的存在吗。`spec apply` 在**动手之前**对整份 spec 走一遍——
-    /// 半途才发现某个目录不在，工作区已经被拆了一半
+    /// Does the target directory actually exist. `spec apply` walks the whole spec through this
+    /// **before touching anything** - discovering half way in that some directory is missing leaves
+    /// the workspace already half torn down
     static func directoryProblem(_ cwd: String?) -> String? {
         guard let cwd else { return nil }
         var isDirectory: ObjCBool = false
@@ -81,15 +89,18 @@ enum ControlPaneFactory {
         return nil
     }
 
-    /// 地址栏那套启发式认不得、但浏览器 pane 真的能打开的 scheme。
-    /// `webkit-extension://` 是这里唯一的成员，也是 1.5.7 起的一等状态（内嵌扩展面板就是它）：
-    /// `url(forInput:)` 只认 http/https/file/about，扩展页会先被当成"像域名"补成
-    /// `https://webkit-extension://…`，不像域名的还会被百分号编码丢进搜索引擎——
-    /// 于是 `spec dump → apply` 会把一个开着的扩展面板换成一次网页搜索
+    /// Schemes the address-bar heuristics do not recognize but a browser pane really can open.
+    /// `webkit-extension://` is the only member, and since 1.5.7 it is first-class state (the
+    /// embedded extension panel is exactly this): `url(forInput:)` only knows
+    /// http/https/file/about, so an extension page first gets read as "looks like a domain" and
+    /// padded out into `https://webkit-extension://...`, and anything that does not look like a
+    /// domain gets percent-encoded and thrown at a search engine - which means
+    /// `spec dump -> apply` would replace an open extension panel with a web search
     static let passthroughSchemes: Set<String> = ["webkit-extension"]
 
-    /// spec / 存档里回来的**绝对**网址 → URL。人手打进地址栏的那条路仍走 `url(forInput:)`
-    ///（"quickterm" 这种词该去搜索，而不是被当成一个 scheme）
+    /// An **absolute** URL coming back from a spec / from saved state -> URL. The path for what a
+    /// human types into the address bar still goes through `url(forInput:)` (a word like
+    /// "quickterm" should reach a search engine, not be read as a scheme)
     static func resolveURL(_ raw: String) -> URL? {
         if let url = URL(string: raw), let scheme = url.scheme?.lowercased(),
            passthroughSchemes.contains(scheme) {
@@ -98,17 +109,20 @@ enum ControlPaneFactory {
         return BrowserPaneView.settings.url(forInput: raw)
     }
 
-    /// **两个网址指的是不是同一个页面。**
+    /// **Do these two URLs mean the same page.**
     ///
-    /// 直接比 `absoluteString` 会在一个地方必然出错：WebKit 落地之后的网址带着规范化的路径，
-    /// 而人（和 agent）写的是省略形式——`http://localhost:3000` 装进 WebView 之后就是
-    /// `http://localhost:3000/`。于是 `browser goto --url http://localhost:3000` 对一个
-    /// **已经停在那儿**的标签永远报"变了"（绝对设值的承诺当场作废，页面被无谓地重载一次），
-    /// 而 `spec apply` 里手写的 `{"kind":"browser","url":"http://localhost:3000"}`
-    /// 永远匹配不上活着的那个 pane，于是每 apply 一次就把它拆了重建一次。
+    /// Comparing `absoluteString` directly is guaranteed to be wrong in one place: the URL WebKit
+    /// settles on carries a normalized path, while humans (and agents) write the elided form -
+    /// `http://localhost:3000` becomes `http://localhost:3000/` once it is loaded into the WebView.
+    /// So `browser goto --url http://localhost:3000` would forever report "changed" for a tab that
+    /// is **already sitting there** (the absolute-assignment promise is void on the spot, and the
+    /// page is pointlessly reloaded), and a hand-written
+    /// `{"kind":"browser","url":"http://localhost:3000"}` in a `spec apply` would never match the
+    /// live pane, so every apply tears it down and rebuilds it.
     ///
-    /// 规范化只做 WebKit 自己会做的那几件（scheme / host 小写、空路径记作 `/`、默认端口去掉），
-    /// query 与 fragment 一个字都不碰：`?a=1&b=2` 与 `?b=2&a=1` 是两个不同的页面
+    /// Normalization only does what WebKit itself does (lowercase scheme / host, an empty path
+    /// counts as `/`, drop the default port); query and fragment are not touched by a single
+    /// character: `?a=1&b=2` and `?b=2&a=1` are two different pages
     static func sameURL(_ a: URL?, _ b: URL?) -> Bool {
         guard let a, let b else { return false }
         return canonical(a) == canonical(b)
@@ -142,7 +156,8 @@ enum ControlPaneFactory {
         return url
     }
 
-    /// 造。**不插布局**（`spec apply` 要先把整个布局值算好再一次赋值）
+    /// Build it. **Does not insert into the layout** (`spec apply` needs to compute the whole
+    /// layout value first and assign it in one go)
     static func make(_ request: Request, controller: MainWindowController,
                      inheriting anchorDirectory: String?) throws -> Made {
         try validate(request)
@@ -160,16 +175,19 @@ enum ControlPaneFactory {
             let directory = request.cwd ?? anchorDirectory
             let surface = controller.newSurface(workingDirectory: directory,
                                                 command: request.cmd, environment: request.env)
-            // 引擎对带 command 的 surface 强制 wait-after-command、自己不会 close：
-            // 想要"命令跑完 pane 就消失"必须由我们接管（--hold 就是明确要求别接管）
+            // The engine forces wait-after-command on a surface that carries a command and will
+            // never close on its own: if we want "the pane disappears when the command finishes",
+            // we have to take that over ourselves (--hold is the explicit request not to).
             if request.cmd != nil, !request.hold { surface.closesOnChildExit = true }
-            // 明确给了目录就**当场种进 pwd**（yazi pane 一直是这么做的）。
-            // 否则 `spec dump` 读到的 cwd 要等 shell 的第一个提示符发 OSC 7 才出现，
-            // 于是 `dump → apply → dump` 是否相等取决于两次 dump 之间等了多久——
-            // 那不是不动点，那是一场赛跑
-            // 被隐私守卫挡下来的目录**不种**：shell 根本没起在那儿，
-            // 种进去等于让 `state` 的 cwd 说一句当场就能被证伪的话
-            // （`pane new` 会在响应里回一条 cwd_denied 告警说明这件事）
+            // When a directory was given explicitly, **seed pwd with it right away** (the yazi
+            // pane has always done this). Otherwise the cwd that `spec dump` reads only shows up
+            // once the shell's first prompt emits OSC 7, and whether `dump -> apply -> dump` comes
+            // out equal then depends on how long you waited between the two dumps - that is not a
+            // fixed point, that is a race.
+            // A directory the privacy guard turned down is **not** seeded: no shell was started
+            // there at all, and seeding it would make `state`'s cwd say something that can be
+            // falsified on the spot (`pane new` returns a cwd_denied warning in the response to
+            // explain this).
             if let directory, WorkingDirectoryGate.usable(directory) != nil {
                 surface.pwd = URL(fileURLWithPath: directory).resolvingSymlinksInPath().path
             }
@@ -177,10 +195,12 @@ enum ControlPaneFactory {
         }
     }
 
-    /// 已经插进布局了：把该登记的登记上
+    /// It is in the layout now: register whatever needs registering
     static func register(_ made: Made, controller: MainWindowController) {
         guard let session = made.fileManagerSession else { return }
-        // 只有真的跑起文件管理器才登记会话（免关闭确认 + 退出读目录）——与 perform(.fileManager) 同规则
+        // Only register the session when the file manager really did start (that is what buys the
+        // close-confirmation exemption + reading the directory back on exit) - same rule as
+        // perform(.fileManager).
         if made.fileManagerFound {
             controller.registerFileManagerSession(made.pane, session)
         } else {
@@ -188,10 +208,11 @@ enum ControlPaneFactory {
         }
     }
 
-    /// 造出来却没能落进布局（插入失败 / 同一批里别的 pane 建失败）：**当场收掉**。
-    /// 终端靠放弃最后一份引用触发 `SurfaceView.deinit → ghostty_surface_free`；
-    /// 浏览器 pane 要跑一次 `paneWillClose()`（取消下载、告诉扩展窗口关了）；
-    /// 文件管理器要删掉那个 cwd 临时文件。漏掉任何一样都是一次静默泄漏
+    /// Built but never landed in the layout (insertion failed / another pane in the same batch
+    /// failed to build): **clean it up on the spot**. A terminal relies on dropping the last
+    /// reference to trigger `SurfaceView.deinit -> ghostty_surface_free`; a browser pane needs one
+    /// `paneWillClose()` (cancel downloads, tell the extension the window closed); a file manager
+    /// needs its cwd temp file deleted. Miss any one of them and it is a silent leak
     static func discard(_ made: Made, controller: MainWindowController) {
         if let session = made.fileManagerSession { FileManagerLaunch.cleanup(session) }
         (made.pane as? BrowserPaneView)?.paneWillClose()

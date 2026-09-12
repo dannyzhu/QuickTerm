@@ -40,8 +40,9 @@ extension NSWindow {
         return firstWindow === self
     }
 
-    // QuickTerm 裁剪：addTabbedWindowSafely（ObjC 异常捕获的原生窗口 tab 辅助）已移除，
-    // QuickTerm 不使用原生窗口 tab（工作区模型替代）。见 docs/porting-notes.md。
+    // QuickTerm trim: addTabbedWindowSafely (the native window-tab helper that wrapped the ObjC
+    // exception) has been removed. QuickTerm does not use native window tabs; the workspace model
+    // takes their place. See docs/porting-notes.md.
 }
 
 /// Native tabbing private API usage. :(

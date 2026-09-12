@@ -1,15 +1,18 @@
 import AppKit
 
-/// 短句柄注册表：`t7` / `b3`（Zellij 的类型前缀 id）。
-/// 进程内稳定、单调递增、**永不复用**——复用会让 agent 手里的旧句柄悄悄指向别的 pane。
-/// UUID 仍然在每条 JSON 里，是跨重启唯一稳定的身份；短句柄是人和模型实际会打出来的那一个。
+/// Registry of short handles: `t7` / `b3` (Zellij's type-prefixed ids).
+/// Stable within the process, monotonically increasing, and **never reused** — reuse would let
+/// a stale handle in an agent's hands quietly start pointing at a different pane.
+/// The UUID is still in every JSON record and is the only identity that survives a restart; the
+/// short handle is the one people and models actually type.
 @MainActor
 final class ControlHandleRegistry {
     static let shared = ControlHandleRegistry()
 
     private var handles: [UUID: String] = [:]
     private var owners: [String: UUID] = [:]
-    /// 共享计数器（不是每种一个）：句柄在全进程唯一，`t1 t2 b3 t4` 也能看出创建次序
+    /// One shared counter, not one per kind: handles are unique process-wide, and `t1 t2 b3 t4`
+    /// still shows the order they were created in
     private var counter = 0
 
     private init() {}
@@ -21,7 +24,7 @@ final class ControlHandleRegistry {
         }
     }
 
-    /// 取（或首次分配）一个 pane 的句柄
+    /// Fetch a pane's handle, allocating one the first time
     func handle(for pane: PaneView) -> String {
         if let existing = handles[pane.id] { return existing }
         counter += 1
@@ -31,12 +34,13 @@ final class ControlHandleRegistry {
         return handle
     }
 
-    /// 已分配过的句柄（不分配新的）——编码"这个 pane 现在的句柄是什么"以外的场合用
+    /// An already-allocated handle; never allocates. For everywhere that is not encoding
+    /// "what is this pane's handle right now"
     func existingHandle(for id: UUID) -> String? { handles[id] }
 
     func paneID(forHandle handle: String) -> UUID? { owners[handle.lowercased()] }
 
-    /// 只给用例：清空并复位计数器
+    /// Tests only: clear the tables and reset the counter
     func reset() {
         handles.removeAll()
         owners.removeAll()

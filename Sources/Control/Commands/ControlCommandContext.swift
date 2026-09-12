@@ -1,8 +1,9 @@
 import AppKit
 
-/// 一条命令执行期间的全部上下文。存在的理由很实际：Phase 2 的 19 条命令都要用到
-/// 同一组东西（参数、目标、解析器、编码器、对端身份、确认闸门钉住的那个主体），
-/// 挨个当参数传会让每个函数签名都有七八个参数，改一处要动十九处。
+/// Everything one command needs while it runs. The reason it exists is entirely practical: all
+/// 19 Phase 2 commands need the same set of things (args, target, resolver, encoder, peer
+/// identity, the subject the confirmation gate pinned), and threading those through one by one
+/// would give every signature seven or eight parameters, so changing one means touching nineteen.
 @MainActor
 struct ControlContext {
     let spec: ControlCommandSpec
@@ -13,16 +14,17 @@ struct ControlContext {
     let encoder: ControlStateEncoder
     let pinned: ControlCommandRunner.PinnedSubject?
 
-    // MARK: 取参数（**没写 = nil**，绝不替调用方脑补默认值——
-    // "没写 --zoom"和"--zoom off"是两件完全不同的事）
+    // MARK: Reading arguments (**not written = nil**; never invent a default on the caller's
+    // behalf - "no --zoom at all" and "--zoom off" are two completely different things)
 
     func string(_ name: String) -> String? {
         guard let raw = request.args[name]?.stringValue, !raw.isEmpty else { return nil }
         return raw
     }
 
-    /// **空串也算给了**（`--title ""` = 清掉标题，与"没写 --title"是两件不同的事）。
-    /// 别处一律用 `string(_:)`：那里空串与没写确实同义，而这里不是
+    /// **An empty string still counts as given** (`--title ""` = clear the title, which is not the
+    /// same thing as "no --title"). Everywhere else use `string(_:)`: there an empty string really
+    /// is synonymous with absent, here it is not
     func rawString(_ name: String) -> String? { request.args[name]?.stringValue }
 
     func strings(_ name: String) -> [String] {
@@ -35,7 +37,7 @@ struct ControlContext {
     func double(_ name: String) -> Double? { request.args[name]?.doubleValue }
     func flag(_ name: String) -> Bool { request.args[name]?.boolValue ?? false }
 
-    /// `on|off` 三态：nil = 没给这个开关
+    /// `on|off` as three states: nil = the switch was not given at all
     func onOff(_ name: String) throws -> Bool? {
         guard let raw = string(name) else { return nil }
         switch raw.lowercased() {
@@ -47,7 +49,7 @@ struct ControlContext {
         }
     }
 
-    /// `--where` → 拖放区域。`nil` = 用应用自己的默认落点
+    /// `--where` -> the drop zone. `nil` = let the app pick its own default landing spot
     func zone(_ name: String = "where") throws -> TerminalSplitDropZone? {
         guard let raw = string(name) else { return nil }
         switch raw {
@@ -55,14 +57,16 @@ struct ControlContext {
         case "left": return .left
         case "up": return .top
         case "down": return .bottom
-        case "stack": return .bottom   // 併入锚点所在的纵栈（scrolling 的"栈"就是列内往下加一层）
+        // Merge into the vertical stack the anchor sits in; in a scrolling layout a "stack" is
+        // just one more layer added down the column.
+        case "stack": return .bottom
         default:
             throw ControlErrorBody(.badRequest, "--\(name) takes right / left / up / down / stack only",
                                    candidates: ["right", "left", "up", "down", "stack"])
         }
     }
 
-    /// 参数里带的另一个目标（`--at` / `--with` / `--to`）
+    /// A second target carried in the arguments (`--at` / `--with` / `--to`)
     func parseTarget(_ name: String) throws -> ControlTarget? {
         guard let raw = string(name) else { return nil }
         do {
@@ -76,7 +80,8 @@ struct ControlContext {
 
 @MainActor
 extension ControlCommandRunner {
-    /// 落到一个具体 pane 上（不写 pane 段就取上下文里的焦点 pane）
+    /// Resolve down to one concrete pane (with no pane segment written, take the focused pane
+    /// from the context)
     struct PaneHit {
         var controller: MainWindowController
         var workspace: Int
@@ -93,7 +98,8 @@ extension ControlCommandRunner {
                                    hint: "quickterm list panes shows the handles that exist.")
         }
         resolution.controller.flushPendingCloses()
-        // flush 之后再核一次：淡出中的 pane 到点会被真正移除，落刀前它可能已经不在布局里了
+        // Check again after the flush: a pane that is fading out gets genuinely removed when its
+        // time is up, so by the moment we act it may no longer be in the layout at all.
         guard resolution.controller.model.allPanes.contains(where: { $0 === pane }) else {
             throw ControlErrorBody(.notFound, "The target pane is no longer in the layout (it may have just been closed)",
                                    hint: "Read quickterm state again.")
@@ -102,7 +108,7 @@ extension ControlCommandRunner {
                        pane: pane, echo: resolution.echo)
     }
 
-    /// 落到一块屏幕 + 一个工作区（可以没有 pane）
+    /// Resolve down to one screen + one workspace (there need not be a pane)
     func requireScope(_ ctx: ControlContext, _ target: ControlTarget?) throws -> ControlResolver.Resolution {
         let resolution = try ctx.resolver.resolve(target)
         resolution.controller.flushPendingCloses()
@@ -111,8 +117,8 @@ extension ControlCommandRunner {
 
     func handleName(_ pane: PaneView) -> String { ControlHandleRegistry.shared.handle(for: pane) }
 
-    /// diff 里的路径写法：与寻址语法同形（`1:2.t7`），
-    /// 这样 agent 读到的 diff 与它下一条命令要敲的目标是同一套词汇
+    /// Path notation for diffs: the same shape as the addressing grammar (`1:2.t7`), so the diff
+    /// an agent reads and the target it types in its next command are one vocabulary
     func path(_ controller: MainWindowController, _ workspace: Int? = nil, _ pane: PaneView? = nil) -> String {
         var out = String(controller.screenIndex + 1)
         if let workspace { out += ":\(workspace + 1)" }
@@ -134,8 +140,9 @@ extension ControlCommandRunner {
                                 zoomed: controller.controlIsZoomed(pane, workspace: workspace))
     }
 
-    /// 确认闸门批准的是**这一个**主体：落刀前再核一次身份。
-    /// 用户读确认框的十秒里，不需要确认的 mutate 命令完全可以把焦点 / 布局挪走
+    /// The confirmation gate approved **this one** subject: re-check its identity before acting.
+    /// During the ten seconds the user spends reading the prompt, a mutating command that needs no
+    /// confirmation is entirely free to move the focus / the layout out from under us
     func verifyPinned(_ ctx: ControlContext, controller: MainWindowController,
                       workspace: Int? = nil, pane: PaneView? = nil) throws {
         guard let pinned = ctx.pinned else { return }
@@ -158,8 +165,9 @@ extension ControlCommandRunner {
         }
     }
 
-    /// `spec apply` 版的同一件事：确认框上写的是**一批**工作区（屏幕 / 会话作用域下不止一个），
-    /// 落刀前逐个再核一次——这一批里任何一个漂了，整条命令都不落
+    /// The `spec apply` flavour of the same thing: the prompt named **a batch** of workspaces
+    /// (more than one under screen / session scope), so re-check them one by one before acting -
+    /// if any single one in the batch has drifted, the whole command lands nothing
     func verifyPinnedScopes(_ ctx: ControlContext,
                             targets: [(controller: MainWindowController, workspace: Int)]) throws {
         guard let pinned = ctx.pinned else { return }

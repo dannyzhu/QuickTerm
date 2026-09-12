@@ -1,9 +1,10 @@
 import XCTest
 @testable import QuickTerm
 
-/// Phase 2 的**横向**规则：幂等、--dry-run、--fail-if-noop、模态保护、限流、撤销、可见性。
-/// 这些不是某一条命令的性质，而是所有变更命令共用的一条控制流——所以尽量用
-/// "遍历命令表"的写法钉死：新加一条命令而忘了守规矩，用例会直接红。
+/// The **cross-cutting** rules of Phase 2: idempotence, --dry-run, --fail-if-noop, the modal
+/// guard, rate limiting, undo, visibility. None of these belongs to one command; they are one
+/// control flow every mutating command shares — which is why they are pinned by walking the
+/// command table wherever possible: add a command and forget the rules, and the case goes red.
 @MainActor
 final class ControlMutationTests: XCTestCase {
     private var harness: ControlHarness!
@@ -20,17 +21,19 @@ final class ControlMutationTests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: 幂等（绝对设值的全部意义）
+    // MARK: Idempotence (the entire point of an absolute set)
 
-    /// 每一个"设值"命令都跑两次：第二次必须什么都没改，并且在 `--fail-if-noop` 下退 7。
-    /// agent 看不到状态、会重试——不幂等的设值第二次就把自己撤销了
+    /// Every setter runs twice: the second run has to change nothing and exit 7 under
+    /// `--fail-if-noop`. An agent cannot see the state and will retry — a setter that is not
+    /// idempotent undoes itself on the second call
     func testEverySetterIsIdempotent() throws {
         let controller = try harness.controller
         let pane = try harness.newTerminal()
         let handle = ControlHandleRegistry.shared.handle(for: pane)
         let workspace = controller.model.activeIndex + 1
 
-        // 可见列数会写进 UserDefaults（测试宿主与用户的 app 共用同一份）：用完必须还回去
+        // The visible-column count is written to UserDefaults (the test host shares one with the
+        // user's app), so it has to be handed back when we are done
         let originalColumns = controller.visibleColumns
         defer { controller.setVisibleColumns(originalColumns) }
         let wantedColumns = originalColumns == 3 ? 4 : 3
@@ -44,8 +47,9 @@ final class ControlMutationTests: XCTestCase {
             ("workspace.set-layout", ":\(workspace)", ["layout": .string("dwindle")]),
             ("workspace.set-layout", ":\(workspace)", ["layout": .string("scrolling")]),
             ("workspace.equalize", ":\(workspace)", [:]),
-            // 起名 + 清名各跑一轮：第二条的第一次执行顺带把名字还回去，不留给后面的用例
-            ("workspace.set", ":\(workspace)", ["title": .string("幂等")]),
+            // One round to set the name and one to clear it: the first run of the second case
+            // hands the name back rather than leaving it for later cases
+            ("workspace.set", ":\(workspace)", ["title": .string("idempotent")]),
             ("workspace.set", ":\(workspace)", ["title": .string("")]),
             ("screen.set", "1", ["visible-columns": .int(wantedColumns)]),
             ("screen.set", "1", ["join-all-spaces": .string("off")]),
@@ -59,24 +63,25 @@ final class ControlMutationTests: XCTestCase {
             XCTAssertEqual(first["command"]?.stringValue, cmd)
             harness.spin(0.15)
 
-            // 第二次：同样的输入，什么都不该改
+            // The second run: same input, nothing should change
             let second = try harness.mutation(try harness.run(cmd, target: target, args: args))
             XCTAssertEqual(second["changed"]?.boolValue, false,
-                           "\(cmd) \(args) 第二次仍然报告改了东西——它不是绝对设值")
+                           "\(cmd) \(args) still reports a change on the second run -- it is not an absolute set")
             XCTAssertEqual(second["applied"]?.boolValue, false, cmd)
             XCTAssertEqual(second["changes"]?.arrayValue?.count ?? 0, 0, cmd)
 
-            // 第三次带 --fail-if-noop：必须是退出码 7，而不是静默成功
+            // The third run with --fail-if-noop: exit code 7, not a silent success
             var strict = args
             strict[ControlCommandTable.Flag.failIfNoop] = .bool(true)
             let third = try harness.run(cmd, target: target, args: strict)
-            XCTAssertFalse(third.ok, "\(cmd) --fail-if-noop 应该失败")
+            XCTAssertFalse(third.ok, "\(cmd) --fail-if-noop should fail")
             XCTAssertEqual(third.error?.code, ControlErrorCode.noop.rawValue, cmd)
             XCTAssertEqual(third.error?.exit, ControlExit.noop.rawValue, cmd)
         }
     }
 
-    /// `--fail-if-noop` 只在**真的什么都没改**时报错；第一次执行仍然是 0
+    /// `--fail-if-noop` only errors when **nothing actually changed**; the first run still
+    /// exits 0
     func testFailIfNoopDoesNotFireOnARealChange() throws {
         let pane = try harness.newTerminal()
         let handle = ControlHandleRegistry.shared.handle(for: pane)
@@ -89,15 +94,17 @@ final class ControlMutationTests: XCTestCase {
 
     // MARK: --dry-run
 
-    /// `--dry-run` 必须**一个字节都不改**（拿存档序列化前后逐字节比），
-    /// 同时把 diff 如实报出来——这是 agent 在动真格之前唯一的验证手段
+    /// `--dry-run` must not change **a single byte** (compared byte for byte through the
+    /// persistence serialisation), while still reporting the diff faithfully — it is the only way
+    /// an agent can check itself before doing the real thing
     func testDryRunReportsTheDiffAndMutatesNothing() throws {
         let controller = try harness.controller
         let pane = try harness.newTerminal()
         let handle = ControlHandleRegistry.shared.handle(for: pane)
         harness.spin(0.2)
 
-        // 先真的把一列调宽：否则"全部等分"本来就已经成立，equalize 的 dry-run 不会有 diff
+        // Actually widen a column first: otherwise "everything is already equal" holds and the
+        // dry run of equalize produces no diff at all
         _ = try harness.run("pane.resize", target: handle, args: ["width": .string("+0.05")])
         harness.spin(0.2)
 
@@ -118,33 +125,38 @@ final class ControlMutationTests: XCTestCase {
 
             XCTAssertEqual(payload["dryRun"]?.boolValue, true, cmd)
             XCTAssertEqual(payload["applied"]?.boolValue, false, cmd)
-            XCTAssertEqual(payload["changed"]?.boolValue, true, "\(cmd) 应该报告会改什么")
-            XCTAssertFalse(payload["changes"]?.arrayValue?.isEmpty ?? true, "\(cmd) 的 diff 是空的")
+            XCTAssertEqual(payload["changed"]?.boolValue, true, "\(cmd) should report what it would change")
+            XCTAssertFalse(payload["changes"]?.arrayValue?.isEmpty ?? true, "the diff of \(cmd) is empty")
             XCTAssertEqual(try harness.fingerprint(controller), before,
-                           "\(cmd) --dry-run 改动了模型")
+                           "\(cmd) --dry-run modified the model")
             XCTAssertEqual(controller.model.allPanes.count, paneCount,
-                           "\(cmd) --dry-run 建/关了 pane（pane new 的 dry-run 绝不能真的开一个 shell）")
+                           "\(cmd) --dry-run created or closed a pane "
+                           + "(a dry run of pane new must never start a real shell)")
         }
     }
 
-    /// 读命令带 --dry-run 是调用方误解了语义：明确报错，绝不静默忽略
+    /// --dry-run on a read command means the caller misread the semantics: error out explicitly,
+    /// never ignore it silently
     func testDryRunOnAReadCommandIsAnError() throws {
         let reply = try harness.run("state", args: [ControlCommandTable.Flag.dryRun: .bool(true)])
         XCTAssertFalse(reply.ok)
         XCTAssertEqual(reply.error?.code, ControlErrorCode.badRequest.rawValue)
     }
 
-    // MARK: 模态保护（**每一个**变更类命令）
+    // MARK: The modal guard (**every** mutating command)
 
-    /// 用户正被一个对话框拦着时，**任何**变更类命令都要被拒。
-    /// 遍历命令表，所以新加一条命令而忘了走同一个闸门，这条用例会直接红。
-    /// （Phase 1 的评审结论：闸门当时只挡住了破坏性那一类）
+    /// While the user is blocked behind a dialog, **any** mutating command has to be refused.
+    /// This walks the command table, so adding a command and forgetting to route it through the
+    /// same gate turns the case red. (The finding from the Phase 1 review: back then the gate only
+    /// stopped the destructive class.)
     func testModalGuardRefusesEveryMutatingCommand() throws {
         let pane = try harness.newTerminal()
         let handle = ControlHandleRegistry.shared.handle(for: pane)
-        // 敏感命令（send-text / capture-text）默认是关的，会先被"敏感命令默认关闭"那一道
-        // 拒掉（denied），于是根本走不到模态闸门 —— 这里要测的是闸门本身，所以先把它们打开。
-        // 同理，下面每一条都带上来源 token：capture-text 少了它也会在模态闸门之前就被拒
+        // The sensitive commands (send-text / capture-text) are off by default and would be
+        // refused (denied) by the "sensitive commands are off" gate first, never reaching the modal
+        // gate — and the modal gate is what this case is about, so turn them on. For the same
+        // reason every call below carries the origin token: without it capture-text is refused
+        // before the modal gate as well
         var config = ControlCommandRunner.Config()
         config.sendText = true
         config.captureText = true
@@ -157,20 +169,20 @@ final class ControlMutationTests: XCTestCase {
             let reply = try harness.run(spec.name, target: spec.acceptsTarget ? handle : nil,
                                         args: Self.minimalArgs(for: spec, handle: handle),
                                         token: ControlEnvironment.token)
-            XCTAssertFalse(reply.ok, "\(spec.name) 在模态挂着时被执行了")
+            XCTAssertFalse(reply.ok, "\(spec.name) executed while a modal was up")
             XCTAssertEqual(reply.error?.code, ControlErrorCode.busy.rawValue, spec.name)
             XCTAssertEqual(reply.error?.exit, ControlExit.busy.rawValue, spec.name)
             checked += 1
         }
-        XCTAssertGreaterThanOrEqual(checked, 16, "变更类命令应该有十几条，实得 \(checked)")
+        XCTAssertGreaterThanOrEqual(checked, 16, "there should be well over a dozen mutating commands, got \(checked)")
 
-        // 读永远不受影响
+        // Reads are never affected
         harness.runner.modalBusyProbe = { true }
-        XCTAssertTrue(try harness.run("state").ok, "read 类命令不该被对话框挡住")
+        XCTAssertTrue(try harness.run("state").ok, "a read-class command must not be held up by a dialog")
     }
 
-    /// 命令表里每条变更命令的最小合法参数（缺必填参数会先被参数校验挡下来，
-    /// 那样就测不到模态闸门了）
+    /// The minimal legal arguments for every mutating command in the table (a missing required
+    /// argument is caught by argument validation first, and then the modal gate is never reached)
     static func minimalArgs(for spec: ControlCommandSpec, handle: String) -> [String: JSONValue] {
         switch spec.name {
         case "action": return ["name": .string("new-terminal")]
@@ -189,41 +201,45 @@ final class ControlMutationTests: XCTestCase {
         }
     }
 
-    // MARK: 限流
+    // MARK: Rate limiting
 
-    /// 令牌桶本体（纯值类型 + 注入时钟）：会跳闸，也会自己恢复
+    /// The token bucket itself (a pure value type with an injected clock): it trips, and it
+    /// recovers on its own
     func testRateLimiterTripsAndRecovers() {
         var limiter = ControlRateLimiter(now: Date(timeIntervalSince1970: 0))
         let start = Date(timeIntervalSince1970: 0)
         var allowed = 0
         var limited = false
         for i in 0..<200 {
-            // 同一毫秒内连发：回填可以忽略
+            // Fired within the same millisecond: refill is negligible
             let verdict = limiter.admit(origin: "pane:A", now: start.addingTimeInterval(Double(i) * 0.001))
             switch verdict {
             case .allowed: allowed += 1
             case .limited(let retry, _):
                 limited = true
-                XCTAssertGreaterThan(retry, 0, "限流必须给出 retryAfterMs，否则 agent 只能瞎猜")
+                XCTAssertGreaterThan(retry, 0,
+                                     "rate limiting has to hand back a retryAfterMs, otherwise an "
+                                     + "agent can only guess")
             }
         }
-        XCTAssertTrue(limited, "两百条连发必须跳闸")
+        XCTAssertTrue(limited, "two hundred calls back to back have to trip it")
         XCTAssertLessThanOrEqual(allowed, Int(ControlRateLimiter.originLimit.capacity) + 2)
 
-        // 等一会儿就该恢复
+        // Wait a while and it should recover
         let later = start.addingTimeInterval(10)
-        XCTAssertEqual(limiter.admit(origin: "pane:A", now: later), .allowed, "十秒之后必须放行")
+        XCTAssertEqual(limiter.admit(origin: "pane:A", now: later), .allowed, "ten seconds later it has to let one through")
 
-        // 另一个来源不受牵连
+        // A different origin is not dragged down with it
         var fresh = ControlRateLimiter(now: start)
         for _ in 0..<Int(ControlRateLimiter.originLimit.capacity) {
             _ = fresh.admit(origin: "pane:A", now: start)
         }
         XCTAssertEqual(fresh.admit(origin: "pane:B", now: start), .allowed,
-                       "限的是来源，不是所有人")
+                       "the limit is per origin, not across everybody")
     }
 
-    /// 端到端：疯狂重试会拿到退出码 6 与 retryAfterMs，而不是把布局改成一团乱麻
+    /// End to end: a runaway retry loop gets exit code 6 and a retryAfterMs back, instead of
+    /// churning the layout into a mess
     func testRunnerRateLimitsARunawayLoop() throws {
         let pane = try harness.newTerminal()
         let handle = ControlHandleRegistry.shared.handle(for: pane)
@@ -237,18 +253,18 @@ final class ControlMutationTests: XCTestCase {
                 break
             }
         }
-        XCTAssertNotNil(limitedAt, "八十条连发都没跳闸：限流没生效")
+        XCTAssertNotNil(limitedAt, "eighty calls back to back never tripped it: the rate limiter is not doing anything")
         harness.runner.rateLimiter.reset()
-        XCTAssertTrue(try harness.run("pane.focus", target: handle).ok, "复位之后要能继续")
+        XCTAssertTrue(try harness.run("pane.focus", target: handle).ok, "it has to work again after a reset")
     }
 
-    // MARK: 撤销
+    // MARK: Undo
 
-    /// 撤销要**真的**把状态改回去（不是登记一个名字就算数）
+    /// Undo has to **actually** put the state back (registering a name does not count)
     func testUndoActuallyReversesAMutation() throws {
         let controller = try harness.controller
         let pane = try harness.newTerminal()
-        _ = try harness.newTerminal()   // 两个 pane 才有列宽可言
+        _ = try harness.newTerminal()   // Column widths only mean something with two panes
         harness.spin(0.3)
         let handle = ControlHandleRegistry.shared.handle(for: pane)
         let workspace = controller.model.activeIndex
@@ -258,7 +274,8 @@ final class ControlMutationTests: XCTestCase {
         let payload = try harness.mutation(try harness.run("pane.set", target: handle,
                                                            args: ["width": .double(0.75)]))
         XCTAssertEqual(payload["undo"]?.stringValue, "Control plane: pane set",
-                       "变更要登记撤销项，否则 ⌘Z 撤不了 agent 造成的损失")
+                       "a mutation has to register an undo entry, otherwise Cmd+Z cannot "
+                       + "take back what an agent did")
         XCTAssertEqual(controller.controlColumnWidth(of: pane, workspace: workspace) ?? 0, 0.75,
                        accuracy: 0.001)
         XCTAssertTrue(harness.app.undoManager.canUndo)
@@ -266,15 +283,16 @@ final class ControlMutationTests: XCTestCase {
         harness.app.undoManager.undo()
         harness.spin(0.2)
         XCTAssertEqual(controller.controlColumnWidth(of: pane, workspace: workspace) ?? 0, before,
-                       accuracy: 0.001, "撤销之后列宽必须回到原值")
-        XCTAssertTrue(harness.app.undoManager.canRedo, "撤销之后要能重做")
+                       accuracy: 0.001, "the column width has to be back at its old value after an undo")
+        XCTAssertTrue(harness.app.undoManager.canRedo, "redo has to be available after an undo")
     }
 
-    /// **关掉一个 pane 就让整个控制面撤销栈作废。**
+    /// **Closing a pane invalidates the entire control-plane undo stack.**
     ///
-    /// 快照里的 layouts / floatings 强引用着每一个 `PaneView`，而关闭全靠"放弃最后一份引用"
-    /// 触发 `SurfaceView.deinit`。留着快照 = 关掉的 shell 不退出，而且 ⌘Z 还能把一个
-    /// 已经跑完一次性 `paneWillClose()` 的 pane 原样塞回布局
+    /// The layouts / floatings inside a snapshot hold a strong reference to every `PaneView`, and
+    /// closing relies entirely on dropping the last reference to trigger `SurfaceView.deinit`.
+    /// Keeping the snapshot means the closed shell never exits, and Cmd+Z can shove a pane that has
+    /// already run its one-shot `paneWillClose()` straight back into the layout
     func testClosingAPaneInvalidatesTheUndoStack() throws {
         let controller = try harness.controller
         let keeper = try harness.newTerminal()
@@ -285,22 +303,24 @@ final class ControlMutationTests: XCTestCase {
         _ = try harness.mutation(try harness.run(
             "pane.set", target: ControlHandleRegistry.shared.handle(for: keeper),
             args: ["width": .double(0.6)]))
-        XCTAssertTrue(harness.app.undoManager.canUndo, "前提：这一步本来是可撤销的")
+        XCTAssertTrue(harness.app.undoManager.canUndo, "precondition: this step was undoable to begin with")
 
         controller.closePane(victim, confirmIfNeeded: false, animated: false)
         controller.flushPendingCloses()
         harness.spin(0.3)
         XCTAssertFalse(harness.app.undoManager.canUndo,
-                       "关掉 pane 之后，吊着它的撤销快照必须作废（否则它的 shell 一直不退）")
+                       "once a pane is closed, the undo snapshot pinning it has to be "
+                       + "invalidated (or its shell never exits)")
 
         harness.app.undoManager.undo()
         harness.spin(0.3)
         XCTAssertFalse(controller.model.allPanes.contains { $0 === victim },
-                       "已经关掉的 pane 绝不能被 ⌘Z 放回布局里")
+                       "Cmd+Z must never put an already-closed pane back into the layout")
     }
 
-    /// 关屏幕就该结束里面的进程：这块屏幕被控制命令改过之后照样要能被完整释放。
-    /// （撤销快照吊着它全部的 SurfaceView 时，surface 不释放、shell 不退出）
+    /// Closing a screen ends the processes inside it: a screen a control command has touched still
+    /// has to be released in full. (While an undo snapshot pins all of its SurfaceViews, the
+    /// surfaces are never released and the shells never exit.)
     func testUndoSnapshotsDoNotPinAClosedScreensPanes() throws {
         weak var weakSecond: MainWindowController?
         weak var weakPane: PaneView?
@@ -308,25 +328,29 @@ final class ControlMutationTests: XCTestCase {
             let second = harness.app.newScreen(on: NSScreen.main)
             harness.spin(0.5)
             weakSecond = second
-            let pane = try XCTUnwrap(second.paneList.first, "新屏幕里应该有一个 pane")
+            let pane = try XCTUnwrap(second.paneList.first, "the new screen should hold one pane")
             weakPane = pane
-            // 对这块屏幕跑一条**可撤销**的命令：撤销栈里就有一份含它全部 pane 的快照
+            // Run an **undoable** command against this screen: now the undo stack holds a
+            // snapshot containing every pane it has
             let payload = try harness.mutation(try harness.run(
                 "pane.set", target: ControlHandleRegistry.shared.handle(for: pane),
                 args: ["width": .double(0.6)]))
-            XCTAssertEqual(payload["undo"]?.stringValue, "Control plane: pane set", "前提：这一步登记了撤销")
+            XCTAssertEqual(payload["undo"]?.stringValue, "Control plane: pane set",
+                           "precondition: this step registered an undo entry")
             harness.app.closeScreen(second)
         }
         harness.spin(1.0)
-        XCTAssertNil(weakSecond, "被控制命令改过的屏幕照样要完整释放")
-        XCTAssertNil(weakPane, "撤销快照绝不能把一块已关屏幕里的 shell 一直吊着")
+        XCTAssertNil(weakSecond, "a screen a control command modified still has to be released in full")
+        XCTAssertNil(weakPane, "an undo snapshot must never keep a closed screen's shell alive")
         try harness.controller.window?.makeKeyAndOrderFront(nil)
         harness.spin(0.2)
     }
 
-    /// 撤销是"整份盖回布局"，也就是连 pane 集合一起换掉。所以从那以后 pane 集合变过
-    /// （用户自己开了新 pane）就必须**整条作废**——否则那些新 pane 会被无声抹掉，
-    /// 一个收尾都不跑（浏览器 pane 的下载没取消、文件管理器的临时文件没删）
+    /// Undo works by writing the whole layout back, which swaps out the pane set along with it.
+    /// So if the pane set has moved since (the user opened a pane themselves) the whole entry has
+    /// to be **dropped** — otherwise those new panes are wiped out silently, with not one piece of
+    /// cleanup running (a browser pane's downloads are never cancelled, a file manager's temp files
+    /// are never deleted)
     func testUndoIsRefusedWhenThePaneSetChangedSince() throws {
         let controller = try harness.controller
         let pane = try harness.newTerminal()
@@ -339,23 +363,24 @@ final class ControlMutationTests: XCTestCase {
                                                  args: ["width": .double(0.75)]))
         XCTAssertTrue(harness.app.undoManager.canUndo)
 
-        // 用户自己又开了一个 pane
+        // The user opened another pane themselves
         let fresh = try harness.newTerminal()
         harness.spin(0.3)
 
         harness.app.undoManager.undo()
         harness.spin(0.3)
         XCTAssertTrue(controller.model.allPanes.contains { $0 === fresh },
-                      "撤销绝不能把变更之后新建的 pane 一起抹掉")
+                      "an undo must never wipe out panes created after the mutation")
         XCTAssertNotEqual(controller.controlColumnWidth(of: pane,
                                                         workspace: controller.model.activeIndex) ?? 0,
                           before, accuracy: 0.0001,
-                          "布局集合已经变了：这一步撤销应该整条作废，而不是回滚一半")
+                          "the layout set has moved: this undo should be dropped whole, not rolled back halfway")
     }
 
-    /// 撤销 `pane new` 就是"把刚建出来的 pane 关掉"——那必须走**关闭**语义
-    /// （`removeFromAnyWorkspace`：浏览器 pane 取消下载、文件管理器删临时文件），
-    /// 不能让它直接从 layouts 里消失，那等于泄漏一个终端
+    /// Undoing `pane new` means closing the pane that was just created, and that has to go through
+    /// the **close** semantics (`removeFromAnyWorkspace`: a browser pane cancels its downloads, a
+    /// file manager deletes its temp files). Letting it simply vanish out of layouts leaks a
+    /// terminal
     func testUndoOfPaneNewClosesTheCreatedPane() throws {
         let controller = try harness.controller
         _ = try harness.newTerminal()
@@ -372,17 +397,19 @@ final class ControlMutationTests: XCTestCase {
         harness.app.undoManager.undo()
         harness.spin(0.4)
         XCTAssertFalse(controller.model.allPanes.contains { $0 === created },
-                       "撤销 pane new 之后那个 pane 应该真的没了")
+                       "after undoing pane new that pane should really be gone")
         XCTAssertEqual(Set(controller.model.allPanes.map(\.id)), existing,
-                       "而且只该少那一个：其余 pane 一个都不能丢")
+                       "and only that one: not one of the other panes may go missing")
         XCTAssertFalse(harness.app.undoManager.canRedo,
-                       "撤销顺带关掉了 pane，就不该再留一个能把它塞回来的重做项")
+                       "the undo closed the pane, so no redo entry that would shove it back may be left behind")
     }
 
-    // MARK: apply 失败 ≠ 变更
+    // MARK: A failed apply is not a mutation
 
-    /// `apply` 里失败的命令**什么都不算**：seq 不动、不进撤销栈、活动日志不能记成 applied。
-    /// （浮动 pane 不在平铺层里，`pane swap` 一定失败，是这条路最短的复现）
+    /// A command that fails inside `apply` **counts for nothing**: seq does not move, nothing goes
+    /// on the undo stack, and the activity log must not record it as applied. (A floating pane is
+    /// not in the tiled layer, so `pane swap` is guaranteed to fail — the shortest repro there
+    /// is.)
     func testFailedApplyIsNotCountedAsAMutation() throws {
         let a = try harness.newTerminal()
         let b = try harness.newTerminal()
@@ -400,34 +427,39 @@ final class ControlMutationTests: XCTestCase {
         let reply = try harness.run("pane.swap",
                                     target: ControlHandleRegistry.shared.handle(for: a),
                                     args: ["with": .string(ControlHandleRegistry.shared.handle(for: b))])
-        XCTAssertFalse(reply.ok, "浮动 pane 换不了位置")
+        XCTAssertFalse(reply.ok, "a floating pane cannot be swapped")
         XCTAssertEqual(reply.error?.code, ControlErrorCode.failed.rawValue)
-        XCTAssertEqual(harness.runner.seq, seqBefore, "没落地的命令不能推进 seq（agent 拿它判断快照是否过期）")
-        XCTAssertFalse(harness.app.undoManager.canUndo, "没落地的命令不能往撤销栈里塞东西")
-        XCTAssertNil(try harness.controller.model.controlFlash, "没落地的命令不该闪状态栏")
+        XCTAssertEqual(harness.runner.seq, seqBefore,
+                       "a command that never landed must not advance seq (agents use it to tell "
+                       + "whether a snapshot is stale)")
+        XCTAssertFalse(harness.app.undoManager.canUndo,
+                       "a command that never landed must not push anything onto the undo stack")
+        XCTAssertNil(try harness.controller.model.controlFlash,
+                     "a command that never landed must not flash the status bar")
         let entry = try XCTUnwrap(ControlActivityLog.shared.recent(1).first)
         XCTAssertEqual(entry.command, "pane.swap")
-        XCTAssertNotEqual(entry.outcome, "applied", "活动日志把一次失败记成了 applied")
+        XCTAssertNotEqual(entry.outcome, "applied", "the activity log recorded a failure as applied")
 
         _ = try harness.run("pane.set", target: ControlHandleRegistry.shared.handle(for: b),
                             args: ["float": .string("off")])
         harness.spin(0.3)
     }
 
-    /// 关 pane **不登记**撤销：进程已经被结束了，把布局放回去只会造出一个"好像还在"的假象
+    /// Closing a pane registers **no** undo entry: the process has already been ended, and putting
+    /// the layout back would only create the illusion that it is still there
     func testClosingDoesNotRegisterUndo() throws {
         let pane = try harness.newTerminal()
         let handle = ControlHandleRegistry.shared.handle(for: pane)
         harness.app.undoManager.removeAllActions()
         let payload = try harness.mutation(try harness.run("pane.close", target: handle,
                                                            args: ["force": .bool(true)]))
-        XCTAssertNil(payload["undo"], "关 pane 绝不能假装可以撤销")
+        XCTAssertNil(payload["undo"], "closing a pane must never pretend to be undoable")
         XCTAssertFalse(harness.app.undoManager.canUndo)
     }
 
-    // MARK: 可见性（状态栏闪烁 + 活动日志）
+    // MARK: Visibility (the status-bar flash and the activity log)
 
-    /// `mutate` 类命令静默执行的**前提**是事后可见
+    /// A `mutate` command may run silently only **on condition** that it is visible afterwards
     func testMutationFlashesTheStatusBarAndIsLogged() throws {
         let controller = try harness.controller
         let pane = try harness.newTerminal()
@@ -437,20 +469,23 @@ final class ControlMutationTests: XCTestCase {
 
         _ = try harness.mutation(try harness.run("pane.set", target: handle,
                                                  args: ["zoom": .string("on")]))
-        let flash = try XCTUnwrap(controller.model.controlFlash, "状态栏没有闪：变更就成了完全静默的")
-        XCTAssertTrue(flash.text.contains("pane.set"), "闪烁文案要点名是哪条命令，实得 \(flash.text)")
+        let flash = try XCTUnwrap(controller.model.controlFlash,
+                                  "the status bar did not flash: the mutation was completely silent")
+        XCTAssertTrue(flash.text.contains("pane.set"), "the flash text has to name the command, got \(flash.text)")
 
         let entry = try XCTUnwrap(ControlActivityLog.shared.recent(1).first)
         XCTAssertEqual(entry.command, "pane.set")
         XCTAssertEqual(entry.outcome, "applied")
-        XCTAssertTrue(entry.peer.contains("xctest"), "日志要记内核给的对端身份，实得 \(entry.peer)")
-        XCTAssertFalse(entry.changes.isEmpty, "日志里要有 diff")
+        XCTAssertTrue(entry.peer.contains("xctest"),
+                      "the log has to record the peer identity the kernel handed us, got \(entry.peer)")
+        XCTAssertFalse(entry.changes.isEmpty, "the log entry has to carry the diff")
 
         _ = try harness.run("pane.set", target: handle, args: ["zoom": .string("off")])
     }
 
-    /// 空操作也进日志（agent 的"我以为我改了"要有据可查），但**不闪状态栏**——
-    /// 什么都没发生的事不该占用户的注意力
+    /// A no-op is logged too (an agent's "but I thought I changed it" has to be checkable) but
+    /// **does not flash the status bar** — nothing happened, so nothing should take the user's
+    /// attention
     func testNoopIsLoggedButNotFlashed() throws {
         let controller = try harness.controller
         let pane = try harness.newTerminal()
@@ -466,10 +501,10 @@ final class ControlMutationTests: XCTestCase {
         XCTAssertEqual(ControlActivityLog.shared.recent(1).first?.outcome, "noop")
     }
 
-    // MARK: 命令表的自洽（Phase 5 的 MCP 工具表也要靠它）
+    // MARK: The command table is self-consistent (the Phase 5 MCP tool table leans on it too)
 
-    /// 每条命令的 `idempotent` 标注必须与"它是不是绝对设值"一致，
-    /// 而且线名 / CLI 写法 / 分组三者同源
+    /// The `idempotent` flag on every command has to match whether it really is an absolute set,
+    /// and the wire name / CLI spelling / group all have to come from the same source
     func testCommandTableIsSelfConsistent() {
         for spec in ControlCommandTable.commands {
             if let group = spec.group {
@@ -480,12 +515,14 @@ final class ControlMutationTests: XCTestCase {
                 XCTAssertEqual(spec.cli, spec.verb)
             }
             XCTAssertNotNil(ControlCommandTable.command(spec.cli),
-                            "命令行写法 \(spec.cli) 必须查得到同一条")
-            XCTAssertFalse(spec.examples.isEmpty, "\(spec.name) 没有示例：模型抄例子远比读散文可靠")
+                            "the command-line spelling \(spec.cli) has to look up the very same command")
+            XCTAssertFalse(spec.examples.isEmpty,
+                           "\(spec.name) has no examples: a model copying an example is far more "
+                           + "reliable than one reading prose")
         }
-        // "set" 类动词一律是幂等的绝对设值
+        // Every "set"-flavoured verb is an idempotent absolute set
         for spec in ControlCommandTable.commands where ["set", "set-layout", "goto", "equalize", "focus"].contains(spec.verb) {
-            XCTAssertTrue(spec.idempotent, "\(spec.name) 是设值命令，必须标为幂等")
+            XCTAssertTrue(spec.idempotent, "\(spec.name) is a setter and has to be marked idempotent")
         }
     }
 }

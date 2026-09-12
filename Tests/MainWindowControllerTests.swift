@@ -11,16 +11,16 @@ final class MainWindowControllerTests: XCTestCase {
     }
 
     func testFocusFollowsMouseEnabled() throws {
-        XCTAssertTrue(try controller.focusFollowsMouse, "悬停即焦点（spec §4.2）必须开启")
+        XCTAssertTrue(try controller.focusFollowsMouse, "focus-follows-mouse (spec §4.2) must be on")
     }
 
     func testEngineOverlayInjectsOpacity() throws {
-        // 配置链第 3 层端到端：覆盖文件存在且引擎读到了注入值
+        // Layer 3 of the config chain, end to end: the overlay file exists and the engine read the injected value.
         XCTAssertTrue(FileManager.default.fileExists(atPath: EngineOverlay.url.path))
         let ghostty = try XCTUnwrap((NSApp.delegate as? AppDelegate)?.ghostty)
-        // getter 语义是"遮罩不透明度" = 1 − 配置值：注入 0.96 → 读回 0.04
+        // The getter means "dim opacity" = 1 - the configured value: inject 0.96, read back 0.04.
         XCTAssertEqual(ghostty.config.unfocusedSplitOpacity, 1 - 0.96, accuracy: 0.001,
-                       "unfocused-split-opacity 应来自 QuickTerm 覆盖层（注入 0.96）")
+                       "unfocused-split-opacity must come from the QuickTerm overlay (which injects 0.96)")
     }
 
     func testNewPaneInsertAndClose() throws {
@@ -31,6 +31,7 @@ final class MainWindowControllerTests: XCTestCase {
         XCTAssertEqual(c.paneList.count, before + 1)
         let newPane = try XCTUnwrap(c.focusedSurface)
         c.closePane(newPane, confirmIfNeeded: false, animated: false)
-        XCTAssertEqual(c.paneList.count, before, "关闭后应回收（scrolling 删空列）")
+        XCTAssertEqual(c.paneList.count, before,
+                       "closing must reclaim the slot (the scrolling layout drops the emptied column)")
     }
 }

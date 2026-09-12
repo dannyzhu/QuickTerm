@@ -2,9 +2,10 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// QuickTerm：盖在整个 pane 上的浮层（⌘ 拖拽源）对外报出它盖住的 pane。
-/// 滚轮路由（`browserPaneClaimingScroll`）沿 superview 链找 pane，浮层是 pane 的**兄弟**子树，
-/// 找不到——有了这个协议就能越过浮层认出下面的 pane
+/// QuickTerm: the overlay covering the whole pane (the Cmd drag source) reports which pane it covers.
+/// Scroll routing (`browserPaneClaimingScroll`) walks up the superview chain looking for a pane, and
+/// the overlay is a **sibling** subtree of the pane, so that walk never finds it. This protocol lets
+/// the lookup see straight through the overlay to the pane underneath.
 protocol PaneOverlaying: AnyObject {
     var overlaidPane: PaneView? { get }
 }
@@ -97,7 +98,8 @@ extension Ghostty {
         /// pasteboard for drop targets to identify which surface is being moved.
         var surfaceView: PaneView? {
             didSet {
-                // QuickTerm：终端报告"指着链接"（pointerStyle = .link）时重算光标矩形，⌘ 下也能看到链接指针
+                // QuickTerm: recompute the cursor rects whenever the terminal reports "pointing at
+                // a link" (pointerStyle = .link), so the link pointer still shows while Cmd is held.
                 pointerObserver = (surfaceView as? Ghostty.SurfaceView)?.$pointerStyle
                     .receive(on: DispatchQueue.main)
                     .sink { [weak self] _ in
@@ -126,11 +128,15 @@ extension Ghostty {
         /// Whether the current drag was cancelled by pressing escape.
         private var dragCancelledByEscape: Bool = false
 
-        /// QuickTerm：按下但还没拖过阈值的那次 mouseDown。纯点击（抬起时仍在）整体转交给 pane 本体——
-        /// ⌘+点击链接靠引擎在 release 时 open_url，浮层吞掉按下/抬起就永远开不了；
-        /// 不能在按下时就转发：随后开始拖拽的话 surface 永远收不到 release，引擎会以为左键一直按着
+        /// QuickTerm: the mouseDown that has been pressed but has not yet passed the drag threshold.
+        /// A plain click (the event is still here on mouse-up) is handed to the pane itself in one
+        /// piece: Cmd+clicking a link relies on the engine calling open_url on release, and if the
+        /// overlay swallows the press/release pair the link can never open. Forwarding on the press
+        /// is not an option either: if a drag then starts, the surface never sees the release and the
+        /// engine believes the left button is still held down.
         private var pendingClick: NSEvent?
-        /// 拖过这个距离才开始 DnD（之前一动就拖，点击时手抖一下就变成拖 pane）
+        /// A drag has to travel this far before DnD starts. It used to begin on any movement at all,
+        /// so the slightest hand tremor during a click turned into dragging the pane.
         private static let dragThreshold: CGFloat = 4
 
         deinit {
@@ -149,11 +155,13 @@ extension Ghostty {
             // window's drag handler. This fixes issue #10110 where grab handles
             // would drag the window instead of initiating pane drags.
             // Don't call super - the drag will be initiated in mouseDragged.
-            pendingClick = event   // QuickTerm：记下，抬起时若没拖就当点击转交
+            // QuickTerm: remember it; if no drag happens, mouse-up forwards it as a click
+            pendingClick = event
         }
 
-        /// QuickTerm：没拖过阈值就抬起 = 纯点击，按下 + 抬起一并交给 pane 的键盘焦点视图
-        /// （终端 = SurfaceView → 引擎 PRESS/RELEASE；浏览器 = WKWebView）
+        /// QuickTerm: releasing without crossing the threshold is a plain click, so press and
+        /// release both go to the pane's keyboard focus view (terminal = SurfaceView -> the engine's
+        /// PRESS/RELEASE; browser = WKWebView).
         override func mouseUp(with event: NSEvent) {
             guard let down = pendingClick else { return }
             pendingClick = nil
@@ -162,9 +170,11 @@ extension Ghostty {
             target.mouseUp(with: event)
         }
 
-        /// QuickTerm：浮层不吃滚轮——按下 / 抬起怎么转交，滚轮就怎么转交（终端 → 引擎、浏览器 → 网页）。
-        /// 浮层是个普通 NSView，不覆写的话滚轮会顺着**它自己**的响应链往上走（SwiftUI 容器），
-        /// 永远到不了同级子树里的 surface / WKWebView：⌘ 状态哪怕短暂不同步，pane 也会"滚不动"
+        /// QuickTerm: the overlay does not eat the scroll wheel — it forwards it exactly the way it
+        /// forwards press and release (terminal -> the engine, browser -> the page). The overlay is a
+        /// plain NSView, and without this override the scroll travels up **its own** responder chain
+        /// (into the SwiftUI container) and never reaches the surface / WKWebView in the sibling
+        /// subtree: the briefest desync of the Cmd state and the pane simply stops scrolling.
         override func scrollWheel(with event: NSEvent) {
             guard let target = surfaceView?.clickTarget(atWindowPoint: event.locationInWindow) else {
                 super.scrollWheel(with: event)
@@ -189,9 +199,11 @@ extension Ghostty {
         }
 
         override func resetCursorRects() {
-            // QuickTerm：⌘ 悬停在链接上显示链接指针而不是抓手（⌘+点击链接是正式功能，得有提示）。
-            // 光标仲裁走命中视图（本浮层）自己的矩形，不能只是"不加矩形"——那样会沿本浮层的响应链往上走，
-            // 永远到不了终端滚动视图的 documentCursor
+            // QuickTerm: hovering a link with Cmd down shows the link pointer instead of the grab
+            // hand — Cmd+clicking a link is a real feature and needs an affordance. Cursor arbitration
+            // goes through the hit view's own rects (this overlay's), so simply "adding no rect" is
+            // not enough: that walks up this overlay's responder chain and never reaches the
+            // terminal scroll view's documentCursor.
             if !isTracking, let terminal = surfaceView as? Ghostty.SurfaceView, terminal.pointerStyle == .link {
                 addCursorRect(bounds, cursor: .pointingHand)
                 return
@@ -209,7 +221,7 @@ extension Ghostty {
 
         override func mouseDragged(with event: NSEvent) {
             guard !isTracking, let surfaceView = surfaceView else { return }
-            // QuickTerm：过了阈值才算拖拽
+            // QuickTerm: it only counts as a drag once the threshold is crossed
             if let down = pendingClick {
                 let dx = event.locationInWindow.x - down.locationInWindow.x
                 let dy = event.locationInWindow.y - down.locationInWindow.y
@@ -253,7 +265,7 @@ extension Ghostty {
             }
 
             onDragStateChanged?(true)
-            // QuickTerm：登记拖拽源（落区据此拒绝跨窗口拖放）
+            // QuickTerm: register the drag source; drop targets use this to reject cross-window drops
             PaneDragState.shared.begin(pane: surfaceView)
             let session = beginDraggingSession(with: [item], event: event, source: self)
 
@@ -291,8 +303,9 @@ extension Ghostty {
             _ session: NSDraggingSession,
             movedTo screenPoint: NSPoint
         ) {
-            // QuickTerm：跨窗口拖放明确拒绝——指针停在别的终端窗口上时给禁止光标，
-            // 不是拖过去没反应（closedHand 会把 AppKit 自己的禁止标记盖掉）
+            // QuickTerm: cross-window drops are refused explicitly — when the pointer sits over
+            // another terminal window, show the not-allowed cursor rather than letting the drag
+            // simply do nothing there (closedHand would paint over AppKit's own not-allowed badge).
             if PaneDragState.shared.pointsAtForeignWindow(screenPoint, from: window) {
                 NSCursor.operationNotAllowed.set()
                 return
@@ -325,7 +338,7 @@ extension Ghostty {
 
             isTracking = false
             onDragStateChanged?(false)
-            PaneDragState.shared.end()   // QuickTerm：拖拽源登记出栈
+            PaneDragState.shared.end()   // QuickTerm: pop the drag-source registration
         }
     }
 }

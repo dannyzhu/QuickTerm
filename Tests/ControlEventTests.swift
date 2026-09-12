@@ -1,13 +1,16 @@
 import XCTest
 @testable import QuickTerm
 
-/// Phase 4：事件流。
+/// Phase 4: the event stream.
 ///
-/// 这一组用例守的是四件事，每一件都对应一种 agent 真的会踩到的坑：
-/// 1. `seq` 单调且**每次变更都动**——它是"我手里的快照过期了没有"的唯一答案；
-/// 2. `poll --since` 回的**正好**是错过的那一批（不多回一条已经看过的，也不少回一条）；
-/// 3. 密集变更会合并成一条事件（一次重排不该产生五条 layout.changed）；
-/// 4. **任何事件都不携带 pane 的输出内容**。
+/// This group guards four things, each of them a trap an agent really does walk into:
+/// 1. `seq` is monotonic and **moves on every mutation** — it is the only answer to "is the
+///    snapshot I am holding stale?";
+/// 2. `poll --since` returns **exactly** the batch that was missed (not one event already seen,
+///    and not one event short);
+/// 3. rapid-fire changes coalesce into a single event (one reflow must not produce five
+///    layout.changed);
+/// 4. **no event ever carries the output of a pane**.
 @MainActor
 final class ControlEventTests: XCTestCase {
     private var harness: ControlHarness!
@@ -27,14 +30,16 @@ final class ControlEventTests: XCTestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(seconds))
     }
 
-    /// 只看结构类事件。用例宿主里跑着真的 shell：标题与 OSC 7 的 pwd 随时会自己变，
-    /// 那不是用例做的事，混进来只会让断言时灵时不灵
+    /// Structural events only. A real shell runs in the test host: the title and the OSC 7 pwd can
+    /// change on their own at any moment, none of which the case did, and letting them in only
+    /// makes the assertions flaky
     private static let structural = "pane.opened,pane.closed,layout.changed,workspace.changed,focus.changed"
 
     // MARK: seq
 
-    /// `seq` 每次成功的变更都要往前走，而且**只往前**。
-    /// 不动的话，agent 会一直拿着一份过期的快照做决定，而且完全不知道
+    /// `seq` moves forward on every successful mutation, and **only** forward.
+    /// If it stands still, an agent keeps making decisions off a stale snapshot without ever
+    /// noticing
     func testSeqAdvancesOnEveryMutationAndNeverGoesBackwards() throws {
         let controller = try harness.controller
         var seen = [harness.seq]
@@ -46,8 +51,9 @@ final class ControlEventTests: XCTestCase {
         try harness.run("workspace.goto", args: ["index": .int(target)])
         seen.append(harness.seq)
 
-        // 不动布局的一条（进程级设置）：没有任何类型化事件覆盖它，seq 也必须动——
-        // 先读当前值再翻过去，否则"本来就是这个值"会变成一次 no-op，测的就不是这件事了
+        // One that does not touch the layout (a process-wide setting): no typed event covers it,
+        // and seq still has to move. Read the current value first and then flip it, otherwise
+        // "it was already that value" turns into a no-op and the case stops testing this at all
         let get = try harness.run("app.get", args: ["key": .string("gaps")])
         let now = get.data?["settings"]?.arrayValue?.first?.objectValue?["value"]?.stringValue ?? "on"
         let flipped = now == "on" ? "off" : "on"
@@ -57,12 +63,13 @@ final class ControlEventTests: XCTestCase {
         seen.append(harness.seq)
 
         for (a, b) in zip(seen, seen.dropFirst()) {
-            XCTAssertLessThan(a, b, "每一条落地的变更都要推进 seq：\(seen)")
+            XCTAssertLessThan(a, b, "every mutation that lands has to advance seq: \(seen)")
         }
     }
 
-    /// 多屏幕下 seq 仍然是**一条**尺子：第二块屏幕上的变更也推进同一个计数器，
-    /// 而且 `events poll` 一次就能拿到两块屏幕上的事件（agent 不必每块屏各轮一次）
+    /// With several screens, seq is still **one** ruler: a change on the second screen advances
+    /// the same counter, and a single `events poll` picks up events from both screens (an agent
+    /// does not have to poll once per screen)
     func testSeqIsMonotonicAcrossScreens() throws {
         let app = harness.app
         let primary = try harness.controller
@@ -76,71 +83,77 @@ final class ControlEventTests: XCTestCase {
         }
 
         let afterOpen = harness.seq
-        XCTAssertGreaterThan(afterOpen, mark, "新建屏幕要推进 seq")
+        XCTAssertGreaterThan(afterOpen, mark, "opening a screen has to advance seq")
 
         let events = harness.events(since: mark)
         XCTAssertTrue(events.contains { $0.type == ControlEventType.screenOpened.rawValue },
-                      "新建屏幕要发 screen.opened：\(events.map(\.type))")
+                      "opening a screen has to emit screen.opened: \(events.map(\.type))")
         XCTAssertTrue(events.contains { $0.screen == second.screenIndex + 1 },
-                      "第二块屏幕上的事件要出现在同一条流里")
+                      "events from the second screen have to show up in the same stream")
 
-        // 两块屏幕上的事件共用一条 seq：全局严格递增，绝不会出现两条同号
+        // Events from both screens share one seq: strictly increasing globally, never two events
+        // carrying the same number
         let seqs = events.map(\.seq)
-        XCTAssertEqual(seqs, seqs.sorted(), "事件按 seq 升序")
-        XCTAssertEqual(Set(seqs).count, seqs.count, "seq 全局唯一（两块屏幕不是两条尺子）")
+        XCTAssertEqual(seqs, seqs.sorted(), "events come in ascending seq order")
+        XCTAssertEqual(Set(seqs).count, seqs.count, "seq is globally unique (two screens are not two rulers)")
     }
 
     // MARK: poll
 
-    /// `poll --since` 回的正好是**错过的那一批**：
-    /// 已经看过的一条都不回（否则 agent 会重复处理），漏掉的一条都不少
+    /// `poll --since` returns exactly **the batch that was missed**: not one event that has
+    /// already been seen (an agent would process it twice), and not one missed event short
     func testPollSinceReturnsExactlyTheMissedBatch() throws {
         let mark = harness.seq
         try harness.newTerminal()
         harness.spin(0.1)
 
         let first = try poll(since: mark, timeout: "0", types: Self.structural)
-        XCTAssertFalse(first.events.isEmpty, "第一次轮询要拿到刚才那一批")
-        XCTAssertTrue(first.events.allSatisfy { $0.seq > mark }, "绝不回 since 之前的事件")
+        XCTAssertFalse(first.events.isEmpty, "the first poll has to pick up the batch we just produced")
+        XCTAssertTrue(first.events.allSatisfy { $0.seq > mark }, "never return events from before since")
         let cursor = first.seq
         XCTAssertLessThanOrEqual(try XCTUnwrap(first.events.last?.seq), cursor,
-                                 "回的 seq 就是下一次 --since 该给的游标")
+                                 "the seq that comes back is the cursor to hand to the next --since")
         let firstSeqs = first.events.map(\.seq)
 
-        // 同一个游标再轮一次：什么都不该有（重复投递是最难查的那种 agent bug）
+        // Poll again with the same cursor: nothing should come back (duplicate delivery is the
+        // hardest class of agent bug to track down)
         let empty = try poll(since: cursor, timeout: "0", types: Self.structural)
-        XCTAssertTrue(empty.events.isEmpty, "已经看过的不该再回一次：\(empty.events.map(\.seq))")
-        XCTAssertEqual(empty.timedOut, true, "没有新事件就是一次 timedOut，不是错误")
+        XCTAssertTrue(empty.events.isEmpty,
+                      "anything already seen must not come back a second time: \(empty.events.map(\.seq))")
+        XCTAssertEqual(empty.timedOut, true, "no new events is a timedOut, not an error")
 
-        // 再动一次：只回这一次的，一条旧的都不混进来
+        // Change something again: only this round comes back, with no old event mixed in
         try harness.newTerminal()
         harness.spin(0.3)
         let second = try poll(since: cursor, timeout: "0", types: Self.structural)
         XCTAssertFalse(second.events.isEmpty)
         XCTAssertTrue(second.events.allSatisfy { $0.seq > cursor },
-                      "第二批里不该混进第一批的事件")
+                      "no event from the first batch may leak into the second")
         XCTAssertTrue(Set(second.events.map(\.seq)).isDisjoint(with: Set(firstSeqs)),
-                      "两批之间不得有任何重叠")
+                      "the two batches must not overlap at all")
     }
 
-    /// `--types` 只回要的那几类；`--limit` 封顶
+    /// `--types` returns only the kinds asked for; `--limit` caps the batch
     func testPollFiltersByTypeAndLimit() throws {
         let mark = harness.seq
         try harness.newTerminal()
         harness.spin(0.1)
         let filtered = try poll(since: mark, timeout: "0", types: "pane.opened")
         XCTAssertTrue(filtered.events.allSatisfy { $0.type == ControlEventType.paneOpened.rawValue },
-                      "--types 之外的一条都不该回：\(filtered.events.map(\.type))")
+                      "not a single event outside --types may come back: \(filtered.events.map(\.type))")
 
         let capped = try poll(since: mark, timeout: "0", limit: 1)
         XCTAssertLessThanOrEqual(capped.events.count, 1)
     }
 
-    /// **回归：`--limit` 截断的那一批，回的游标只走到最后一条真的送出去的事件。**
+    /// **Regression: when `--limit` truncates a batch, the cursor that comes back only reaches the
+    /// last event that was actually delivered.**
     ///
-    /// 曾经回的永远是全局 seq，于是"回 1 条、告诉你已经看到第 N 条"——中间那些既没送出去，
-    /// 也不会被 `missed` 标出来（`missed` 只管环被挤掉，这里环一条都没丢）。
-    /// 拿着回的 seq 一轮轮追下去，必须**既不漏也不重**
+    /// It used to always return the global seq, so you got "here is 1 event, and by the way you
+    /// have now seen through event N" — the ones in between were never delivered and were never
+    /// flagged by `missed` either (`missed` only covers events pushed out of the ring, and here
+    /// the ring dropped nothing). Chasing the returned seq poll after poll has to lose **nothing
+    /// and duplicate nothing**
     func testALimitedPollNeverSkipsPastUndeliveredEvents() throws {
         let mark = harness.seq
         try harness.newTerminal()
@@ -150,39 +163,43 @@ final class ControlEventTests: XCTestCase {
         ControlEventBus.shared.flush()
 
         let all = try poll(since: mark, timeout: "0", types: Self.structural)
-        XCTAssertGreaterThan(all.events.count, 2, "这条用例要有好几条事件才测得出截断")
-        XCTAssertNil(all.truncated, "没截断就不该标 truncated")
-        XCTAssertEqual(all.seq, harness.seq, "没截断时游标就是全局 seq")
+        XCTAssertGreaterThan(all.events.count, 2, "this case needs several events before truncation can be observed at all")
+        XCTAssertNil(all.truncated, "nothing was truncated, so truncated must not be set")
+        XCTAssertEqual(all.seq, harness.seq, "with nothing truncated the cursor is simply the global seq")
 
-        // 一次只取一条，照着回的游标一路追
+        // Take one event at a time and chase it along using the cursor that comes back
         var collected: [Int] = []
         var cursor = mark
         var sawTruncated = false
         for _ in 0...(all.events.count + 1) {
             let one = try poll(since: cursor, timeout: "0", types: Self.structural, limit: 1)
             guard let event = one.events.first else {
-                XCTAssertEqual(one.timedOut, true, "追完了就是一次 timedOut")
+                XCTAssertEqual(one.timedOut, true, "having caught up means a timedOut")
                 break
             }
             XCTAssertEqual(one.events.count, 1)
             if one.truncated == true {
                 sawTruncated = true
                 XCTAssertEqual(one.seq, event.seq,
-                               "截断时游标必须钉在最后一条真的送出去的事件上，而不是全局 seq")
+                               "on truncation the cursor has to be pinned to the last event "
+                               + "actually delivered, not to the global seq")
             } else {
-                // 最后一批：后面确实没有没送出去的了，游标可以直接跳到全局 seq
+                // The last batch: there really is nothing undelivered behind it, so the cursor
+                // may jump straight to the global seq
                 XCTAssertGreaterThanOrEqual(one.seq, event.seq)
             }
             collected.append(event.seq)
             cursor = one.seq
         }
-        XCTAssertTrue(sawTruncated, "一次一条追一批多条，中间必须出现过截断")
+        XCTAssertTrue(sawTruncated,
+                      "chasing a multi-event batch one at a time has to hit truncation along the way")
         XCTAssertEqual(collected, all.events.map(\.seq),
-                       "一条一条追下来要正好等于一次取全的那一批：不漏，也不重")
+                       "chasing one at a time has to land exactly on the batch a single full poll "
+                       + "returns: nothing lost, nothing repeated")
     }
 
-    /// 流也一样：`events follow --limit 1` 不该把一次扫描里的其余事件丢掉，
-    /// 也不该卡在那里等下一次变化才继续推
+    /// The stream behaves the same way: `events follow --limit 1` must not drop the rest of what
+    /// one scan produced, and must not sit there waiting for the next change before it pushes on
     func testFollowWithATinyLimitStillDeliversEverything() throws {
         let connection: UInt64 = 4343
         defer { harness.runner.connectionDidClose(connection) }
@@ -199,7 +216,7 @@ final class ControlEventTests: XCTestCase {
                   let encoded = try? ControlJSON.encoder.encode(payload),
                   let decoded = try? ControlJSON.decoder.decode(ControlEventsPayload.self, from: encoded)
             else { return }
-            XCTAssertLessThanOrEqual(decoded.events.count, 1, "--limit 1 就是一批一条")
+            XCTAssertLessThanOrEqual(decoded.events.count, 1, "--limit 1 means one event per batch")
             received += decoded.events
         }
         let mark = harness.seq
@@ -208,19 +225,19 @@ final class ControlEventTests: XCTestCase {
         ControlEventBus.shared.flush()
 
         let expected = try poll(since: mark, timeout: "0", types: Self.structural).events.map(\.seq)
-        XCTAssertGreaterThan(expected.count, 1, "一次新建 pane 至少产生两条结构事件")
+        XCTAssertGreaterThan(expected.count, 1, "creating one pane produces at least two structural events")
         XCTAssertEqual(received.filter { $0.seq > mark }.map(\.seq), expected,
-                       "一批一条也要把这一次扫描出来的全部推完")
+                       "one event per batch still has to push out everything that scan found")
     }
 
-    /// 认不得的写法一律报错，绝不悄悄当默认值
+    /// Anything unrecognized errors out; it is never quietly treated as a default
     func testPollRejectsBadArguments() throws {
         let bad = try harness.run("events.poll", args: ["types": .string("pane.exploded")])
         XCTAssertFalse(bad.ok)
         XCTAssertEqual(bad.error?.code, ControlErrorCode.badRequest.rawValue)
-        XCTAssertNotNil(bad.error?.candidates, "要把认得的类型列出来")
+        XCTAssertNotNil(bad.error?.candidates, "the types we do recognize have to be listed")
 
-        let badTimeout = try harness.run("events.poll", args: ["timeout": .string("一会儿")])
+        let badTimeout = try harness.run("events.poll", args: ["timeout": .string("in a bit")])
         XCTAssertFalse(badTimeout.ok)
         XCTAssertEqual(badTimeout.error?.code, ControlErrorCode.badRequest.rawValue)
 
@@ -228,17 +245,18 @@ final class ControlEventTests: XCTestCase {
         XCTAssertFalse(negative.ok)
     }
 
-    /// 读命令不认 `--dry-run`（读本来就什么都不改）
+    /// A read command does not accept `--dry-run` (a read changes nothing to begin with)
     func testPollRefusesMutationFlags() throws {
         let reply = try harness.run("events.poll", args: [ControlCommandTable.Flag.dryRun: .bool(true)])
         XCTAssertFalse(reply.ok)
         XCTAssertEqual(reply.error?.code, ControlErrorCode.badRequest.rawValue)
     }
 
-    // MARK: 合并
+    // MARK: Coalescing
 
-    /// 一次重排里的 N 次布局赋值只该产生**一条** layout.changed。
-    /// 不合并的话，一条 `spec apply` 就能把 agent 的上下文塞满同一件事的五个副本
+    /// N layout assignments inside one reflow should produce **one** layout.changed.
+    /// Without coalescing, a single `spec apply` can fill an agent's context with five copies of
+    /// the same fact
     func testRapidLayoutChangesCoalesce() throws {
         let controller = try harness.controller
         try harness.newTerminal()
@@ -247,10 +265,11 @@ final class ControlEventTests: XCTestCase {
 
         let index = controller.model.activeIndex
         guard case .scrolling(var strip) = controller.model.layouts[index], !strip.columns.isEmpty else {
-            throw XCTSkip("当前工作区不是 scrolling，或者没有列")
+            throw XCTSkip("the current workspace is not scrolling, or it has no columns")
         }
         let mark = harness.seq
-        // 同一轮 run loop 里连着改五次：合并的实现方式就是"一轮只扫一遍"
+        // Five changes back to back within one run-loop turn: coalescing is implemented as
+        // "scan once per turn"
         for width in [0.30, 0.32, 0.34, 0.36, 0.38] {
             strip.columns[0].widthFactor = width
             controller.model.layouts[index] = .scrolling(strip)
@@ -261,10 +280,11 @@ final class ControlEventTests: XCTestCase {
             .filter { $0.type == ControlEventType.layoutChanged.rawValue
                 && $0.workspace == index + 1 && $0.screen == controller.screenIndex + 1 }
         XCTAssertEqual(layoutEvents.count, 1,
-                       "五次赋值只该合并成一条 layout.changed，实际 \(layoutEvents.count) 条")
+                       "five assignments should coalesce into one layout.changed, got \(layoutEvents.count)")
     }
 
-    /// 什么都没变就一条事件都不该有（一次 no-op 的绝对设值不该污染事件流）
+    /// Nothing changed means not a single event (a no-op absolute set must not pollute the
+    /// stream)
     func testNoChangeProducesNoEvents() throws {
         let controller = try harness.controller
         let index = controller.model.activeIndex
@@ -275,14 +295,16 @@ final class ControlEventTests: XCTestCase {
             $0.type != ControlEventType.paneTitleChanged.rawValue
                 && $0.type != ControlEventType.paneCwdChanged.rawValue
         }
-        XCTAssertEqual(structural.count, 0, "没有变化就没有事件：\(structural.map(\.type))")
+        XCTAssertEqual(structural.count, 0, "no change means no events: \(structural.map(\.type))")
     }
 
-    // MARK: 绝不携带输出
+    // MARK: Never carries output
 
-    /// **一条事件能带的字段就这么几个，里面没有、也绝不能有 pane 的输出内容。**
-    /// 这条用例是结构性的：谁往 `ControlEvent` 上加一个 `output` / `text` / `scrollback`，
-    /// 这里立刻红。把 shell 的输出推到 socket 上等于把密码、token、ssh 会话内容原样交出去
+    /// **These are all the fields an event may carry, and none of them is, or may ever be, the
+    /// output of a pane.**
+    /// This case is structural: the moment anyone adds an `output` / `text` / `scrollback` field to
+    /// `ControlEvent`, it goes red. Pushing shell output onto the socket hands over passwords,
+    /// tokens and ssh session contents verbatim
     func testNoEventEverCarriesPaneOutput() throws {
         let populated = ControlEvent(
             seq: 1, ts: "t", type: .paneTitleChanged, screen: 1, screenID: "S", workspace: 2,
@@ -294,42 +316,45 @@ final class ControlEventTests: XCTestCase {
         XCTAssertEqual(Set(object.keys),
                        ["seq", "ts", "type", "screen", "screenID", "workspace",
                         "pane", "paneID", "kind", "layout", "title", "cwd", "redacted"],
-                       "事件的字段表是封闭的：不得出现任何承载 pane 输出的字段")
+                       "the event field list is closed: no field carrying pane output may appear")
 
-        // 类型表也是封闭的：没有 output / scrollback / bell 这一类
+        // The type list is closed as well: no output / scrollback / bell kinds
         XCTAssertEqual(Set(ControlEventType.allCases.map(\.rawValue)),
                        ["pane.opened", "pane.closed", "focus.changed", "workspace.changed",
                         "layout.changed", "screen.opened", "screen.closed",
                         "pane.title.changed", "pane.cwd.changed"])
 
-        // 真跑一遍：建 pane、改布局、切工作区，一条事件里也不该出现任何长文本
+        // Now for real: create a pane, change the layout, switch workspaces — not one event may
+        // contain a large blob of text
         let mark = harness.seq
         try harness.newTerminal()
         harness.spin(0.3)
         for event in harness.events(since: mark) {
             let encoded = String(decoding: try ControlJSON.encoder.encode(event), as: UTF8.self)
-            XCTAssertFalse(encoded.contains("\\u001B"), "事件里不该出现转义序列：\(encoded)")
-            XCTAssertLessThan(encoded.count, 2048, "事件是结构性的，不该有大块文本：\(encoded)")
+            XCTAssertFalse(encoded.contains("\\u001B"), "no escape sequence may appear in an event: \(encoded)")
+            XCTAssertLessThan(encoded.count, 2048, "events are structural and must not carry big chunks of text: \(encoded)")
         }
     }
 
-    /// 浏览器 pane 的标题 / cwd 要按 `state` 的同一条规则打码。
-    /// 漏掉这一条，`pane.title.changed` 就成了绕过 `expose-browser` 的旁路
+    /// The title / cwd of a browser pane gets redacted by the same rule `state` uses.
+    /// Miss this one and `pane.title.changed` becomes a side channel around `expose-browser`
     func testBrowserMetadataIsRedactedForTokenlessCallers() {
         let event = ControlEvent(seq: 9, ts: "t", type: .paneTitleChanged, screen: 1, workspace: 1,
                                  pane: "b3", kind: "browser",
-                                 title: "私密银行 - 账户总览", cwd: "/Users/danny")
+                                 title: "Private Bank - Account Overview", cwd: "/Users/danny")
         let redacted = ControlEventBus.redact(event)
         XCTAssertEqual(redacted.title, ControlEvent.redactedPlaceholder)
         XCTAssertEqual(redacted.cwd, ControlEvent.redactedPlaceholder)
-        XCTAssertEqual(redacted.redacted, true, "打过码要说出来，否则调用方以为标题真的叫 <redacted>")
-        XCTAssertEqual(redacted.pane, "b3", "句柄不是秘密：打码只针对内容")
+        XCTAssertEqual(redacted.redacted, true,
+                       "say so when something was redacted, or the caller thinks the title really "
+                       + "is <redacted>")
+        XCTAssertEqual(redacted.pane, "b3", "the handle is not a secret: redaction covers content only")
     }
 
     // MARK: follow
 
-    /// 流要真的推，而且**对端一走就停**。
-    /// 停不下来的话，服务端会一直往一个已经关掉的 fd 上写，直到应用退出
+    /// The stream really pushes, and **stops the moment the peer walks away**.
+    /// Without that stop, the server keeps writing to an already-closed fd until the app quits
     func testFollowStreamsAndStopsWhenTheClientGoesAway() throws {
         let connection: UInt64 = 4242
         var batches: [ControlEventsPayload] = []
@@ -345,25 +370,27 @@ final class ControlEventTests: XCTestCase {
             else { return }
             batches.append(decoded)
         }
-        XCTAssertEqual(batches.count, 1, "注册那一刻先回一批（哪怕是空的），调用方才知道从哪个 seq 开始")
+        XCTAssertEqual(batches.count, 1, "one batch comes back at registration time (empty is "
+                       + "fine) so the caller knows which seq to start from")
         XCTAssertEqual(batches[0].follow, true)
         XCTAssertEqual(ControlEventBus.shared.followerCount, 1)
 
         try harness.newTerminal()
         harness.spin(0.3)
-        XCTAssertGreaterThan(batches.count, 1, "新事件要被推过来")
+        XCTAssertGreaterThan(batches.count, 1, "new events have to be pushed through")
         XCTAssertFalse(batches.dropFirst().flatMap(\.events).isEmpty)
 
-        // 对端走了
+        // The peer walks away
         harness.runner.connectionDidClose(connection)
-        XCTAssertEqual(ControlEventBus.shared.followerCount, 0, "连接一关，流就要被摘掉")
+        XCTAssertEqual(ControlEventBus.shared.followerCount, 0, "closing the connection has to tear the stream down")
         let after = batches.count
         try harness.newTerminal()
         harness.spin(0.3)
-        XCTAssertEqual(batches.count, after, "摘掉之后一条都不该再推")
+        XCTAssertEqual(batches.count, after, "not one event may be pushed after the teardown")
     }
 
-    /// 同时挂太多条流要被拒（每条占住一条连接），并且指路到 poll
+    /// Too many streams at once gets refused (each one holds a connection open) and points the
+    /// caller at poll
     func testTooManyFollowersIsRefused() throws {
         var ids: [UInt64] = []
         defer { for id in ids { harness.runner.connectionDidClose(id) } }
@@ -382,26 +409,29 @@ final class ControlEventTests: XCTestCase {
             ControlReply.self, from: try ControlJSON.line(try XCTUnwrap(response)))
         XCTAssertFalse(reply.ok)
         XCTAssertEqual(reply.error?.code, ControlErrorCode.busy.rawValue)
-        XCTAssertTrue(reply.error?.hint?.contains("poll") ?? false, "要指路到 agent 该用的那一种")
+        XCTAssertTrue(reply.error?.hint?.contains("poll") ?? false,
+                      "it has to point at the one an agent should be using instead")
     }
 
-    // MARK: 长轮询
+    // MARK: Long polling
 
-    /// 长轮询挂着的时候来了事件 → 立刻回，不必等到点
+    /// An event arriving while a long poll is parked returns immediately, without waiting the
+    /// timeout out
     func testLongPollWakesUpOnTheNextEvent() throws {
         var payload: ControlEventsPayload?
         ControlEventBus.shared.poll(since: harness.seq, limit: ControlEventLimits.maxBatch,
                                     types: [ControlEventType.paneOpened.rawValue],
                                     exposesBrowser: true, timeout: 5) { payload = $0 }
-        XCTAssertNil(payload, "还没有事件，应该挂着")
+        XCTAssertNil(payload, "no events yet, so it should still be parked")
         try harness.newTerminal()
         harness.spin(0.3)
-        let got = try XCTUnwrap(payload, "有新事件就该立刻醒过来，而不是等满 5 秒")
+        let got = try XCTUnwrap(payload, "a new event has to wake it up right away instead of burning the full 5 seconds")
         XCTAssertFalse(got.events.isEmpty)
         XCTAssertNil(got.timedOut)
     }
 
-    /// 到点了就回一批空的并标 `timedOut`（**不是错误**：agent 拿同一个 seq 再轮一次即可）
+    /// On expiry it returns an empty batch flagged `timedOut` (**not an error**: the agent simply
+    /// polls again with the same seq)
     func testLongPollTimesOutWithAnEmptyBatch() throws {
         var payload: ControlEventsPayload?
         ControlEventBus.shared.poll(since: harness.seq, limit: 10,
@@ -413,18 +443,20 @@ final class ControlEventTests: XCTestCase {
         XCTAssertEqual(got.timedOut, true)
     }
 
-    // MARK: 命令表
+    // MARK: Command table
 
-    /// events 组的两条都必须是 `read` 类（它们什么都不改），而且都在命令表里
+    /// Both commands in the events group have to be `read` class (they change nothing) and both
+    /// have to be in the command table
     func testEventCommandsAreDeclaredAsReads() {
         let verbs = ControlCommandTable.commands(inGroup: "events")
         XCTAssertEqual(verbs.map(\.verb).sorted(), ["follow", "poll"])
         for spec in verbs {
-            XCTAssertEqual(spec.cls, .read, "\(spec.cli) 什么都不改，必须是 read 类")
-            XCTAssertFalse(spec.honorsMutationFlags, "读命令不该接受 --dry-run")
-            XCTAssertFalse(spec.examples.isEmpty, "每条命令的帮助都要以 EXAMPLES 结尾")
+            XCTAssertEqual(spec.cls, .read, "\(spec.cli) changes nothing, so it has to be read class")
+            XCTAssertFalse(spec.honorsMutationFlags, "a read command must not accept --dry-run")
+            XCTAssertFalse(spec.examples.isEmpty, "the help for every command has to end with EXAMPLES")
         }
-        // describe 要把事件类型表交出来：agent 会话开始读一次就够
+        // describe hands over the event type table: an agent reads it once at the start of a
+        // session and is done
         let document = ControlDescribeDocument.make(cliVersion: "t", appVersion: "t",
                                                     socket: nil, mode: "ask")
         XCTAssertEqual(Set(document.events.map(\.type)),
@@ -432,7 +464,7 @@ final class ControlEventTests: XCTestCase {
         XCTAssertEqual(document.phase, 5)
     }
 
-    // MARK: 工具
+    // MARK: Helpers
 
     private func poll(since: Int, timeout: String, types: String? = nil,
                       limit: Int? = nil) throws -> ControlEventsPayload {
@@ -440,7 +472,7 @@ final class ControlEventTests: XCTestCase {
         if let types { args["types"] = .string(types) }
         if let limit { args["limit"] = .int(limit) }
         let reply = try harness.run("events.poll", args: args)
-        XCTAssertTrue(reply.ok, "轮询失败：\(String(describing: reply.error))")
+        XCTAssertTrue(reply.ok, "poll failed: \(String(describing: reply.error))")
         let data = try XCTUnwrap(reply.data)
         let encoded = try ControlJSON.encoder.encode(data)
         return try ControlJSON.decoder.decode(ControlEventsPayload.self, from: encoded)

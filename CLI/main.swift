@@ -1,15 +1,16 @@
 import Darwin
 import Foundation
 
-/// `quickterm`：QuickTerm 的控制面命令行。
-/// 独立 target（`CLI/` + `Sources/Control/Wire` + `Sources/Config/WMAction.swift`），
-/// 不依赖 GhosttyKit / AppKit —— 纯 Swift，毫秒级启动。
-/// app target 的 `sources:` 是整个 `Sources`，`Sources/App/main.swift` 又是顶层代码，
-/// 所以第二个 `main.swift` 必须放在 `Sources/` 之外，否则会被编进 app 直接把构建打断。
+/// `quickterm`: QuickTerm's control-plane command line.
+/// A separate target (`CLI/` + `Sources/Control/Wire` + `Sources/Config/WMAction.swift`) that pulls
+/// in neither GhosttyKit nor AppKit — pure Swift, and it starts in milliseconds.
+/// The app target's `sources:` is the whole of `Sources`, and `Sources/App/main.swift` is top-level
+/// code, so this second `main.swift` has to live outside `Sources/`: inside it, it would be compiled
+/// into the app and break the build outright.
 
 let cliVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
 
-/// stdout 不是 TTY → JSON（agent 不必加任何开关）；是 TTY → 人类可读
+/// stdout is not a TTY -> JSON, so an agent never has to pass a flag; it is a TTY -> human-readable
 let stdoutIsTTY = isatty(STDOUT_FILENO) == 1
 
 func writeOut(_ text: String) {
@@ -20,7 +21,8 @@ func writeErr(_ text: String) {
     FileHandle.standardError.write(Data((text + "\n").utf8))
 }
 
-/// 错误一律是 stderr 上的 JSON（带稳定 code），人类模式下再补一行人话
+/// Errors are always JSON on stderr, carrying a stable `code`; in human mode we add one line of
+/// plain English after it.
 func fail(_ error: ControlErrorBody, plain: Bool) -> Never {
     if let data = try? ControlJSON.prettyEncoder.encode(ControlReply.errorEnvelope(error)),
        let text = String(data: data, encoding: .utf8) {
@@ -31,7 +33,7 @@ func fail(_ error: ControlErrorBody, plain: Bool) -> Never {
 }
 
 extension ControlReply {
-    /// 客户端侧构造的错误信封（形状与服务端一致）
+    /// Error envelope built on the client side; the shape matches the server's.
     struct Envelope: Encodable {
         var v = ControlProtocol.version
         var ok = false
@@ -42,8 +44,9 @@ extension ControlReply {
 
 func emit(_ reply: ControlReply, plain: Bool, spec: ControlCommandSpec? = nil) -> Never {
     if let error = reply.error { fail(error, plain: plain) }
-    // version 的 cli 一栏由**本二进制**填：应用不知道谁在调它，填了也只会是它自己的版本，
-    // 那样「升级后 PATH 上留着旧 quickterm」就永远看不出来了
+    // The `cli` field of `version` is filled in by **this binary**: the app has no idea who is
+    // calling it and would only ever report its own version, which would make "upgraded, but an old
+    // quickterm is still sitting on PATH" permanently invisible.
     if spec?.name == "version", var object = reply.data?.objectValue {
         object["cli"] = .string(cliVersion)
         let patched = ControlReply(v: reply.v, id: reply.id, ok: reply.ok, seq: reply.seq,
@@ -56,9 +59,10 @@ func emit(_ reply: ControlReply, plain: Bool, spec: ControlCommandSpec? = nil) -
         }
         exit(0)
     }
-    // `spec dump` 打印的**就是那份 spec 本身**，不套响应信封：
-    // `quickterm spec dump > w.json` 要能直接喂回 `quickterm spec apply -f w.json`，
-    // 否则每个人都得先 jq 一遍 —— 而那正是最容易出错的一步
+    // `spec dump` prints **the spec itself**, with no response envelope wrapped around it:
+    // `quickterm spec dump > w.json` has to feed straight back into
+    // `quickterm spec apply -f w.json`. Otherwise everyone has to run it through jq first — and
+    // that is precisely the step people get wrong.
     if spec?.name == "spec.dump", !plain, let body = reply.data?["spec"],
        let data = try? ControlJSON.prettyEncoder.encode(body),
        let text = String(data: data, encoding: .utf8) {
@@ -75,7 +79,8 @@ func emit(_ reply: ControlReply, plain: Bool, spec: ControlCommandSpec? = nil) -
 }
 
 extension ControlReply {
-    /// 原样回吐（再走一次 JSONEncoder：格式化好看，且证明它是合法 JSON）
+    /// Echo it back as-is. Running it through JSONEncoder once more formats it nicely and proves it
+    /// is valid JSON.
     func asJSON() -> JSONValue {
         var object: [String: JSONValue] = ["v": .int(v), "id": .string(id), "ok": .bool(ok)]
         if let seq { object["seq"] = .int(seq) }
@@ -94,7 +99,7 @@ extension ControlReply {
     }
 }
 
-// MARK: 解析
+// MARK: Parsing
 
 let argv = Array(CommandLine.arguments.dropFirst())
 var plainMode = stdoutIsTTY
@@ -122,11 +127,11 @@ case .command(let parsed):
     run(parsed)
 }
 
-// MARK: 执行
+// MARK: Execution
 
 func run(_ parsed: ParsedCommand) -> Never {
     var parsed = parsed
-    // 完全在本地完成的命令（不需要 QuickTerm 在跑）
+    // Commands that complete entirely locally; QuickTerm does not have to be running.
     if parsed.spec.local {
         runLocal(parsed)
     }
@@ -145,8 +150,9 @@ func run(_ parsed: ParsedCommand) -> Never {
             send(parsed, over: started)
         }
         if parsed.spec.name == "describe" {
-            // 应用没跑也要能把 schema 给出来：这是 agent 会话开始时的第一次调用，
-            // 让它拿着本地命令表也能干活，而不是只收到"没在运行"
+            // The schema has to come out even when the app is not running: this is the very first
+            // call an agent makes at the start of a session, so hand it the local command table and
+            // let it get to work instead of answering "not running".
             let document = ControlDescribeDocument.make(
                 cliVersion: cliVersion, appVersion: nil, socket: candidates.first, mode: nil)
             if let data = try? ControlJSON.prettyEncoder.encode(document),
@@ -190,8 +196,9 @@ func send(_ parsed: ParsedCommand, over client: ControlClient) -> Never {
             workspace: environment[ControlProtocol.Env.workspace].flatMap(Int.init),
             pid: getpid(),
             paneToken: environment[ControlProtocol.Env.paneToken]))
-    // `events follow` 是唯一一条不做"一问一答"的命令：连接保持打开，
-    // 事件一批批推过来，直到 QuickTerm 停掉服务或用户 Ctrl-C
+    // `events follow` is the one command that is not request/response: the connection stays open
+    // and events are pushed over in batches until QuickTerm stops the service or the user hits
+    // Ctrl-C.
     if parsed.spec.name == "events.follow" {
         do {
             try client.stream(request) { reply in
@@ -200,7 +207,8 @@ func send(_ parsed: ParsedCommand, over client: ControlClient) -> Never {
                     for line in Render.eventLines(reply) { writeOut(line) }
                 } else if let data = try? ControlJSON.encoder.encode(reply.asJSON()),
                           let text = String(data: data, encoding: .utf8) {
-                    // 流一律是 NDJSON（一行一个对象），**不美化**：下游是 `while read line`
+                    // A stream is always NDJSON, one object per line, and **never** pretty-printed:
+                    // downstream is a `while read line`.
                     writeOut(text)
                 }
             }
@@ -229,8 +237,9 @@ func send(_ parsed: ParsedCommand, over client: ControlClient) -> Never {
     }
 }
 
-/// `-f <文件>`（`-` 或不写 = 标准输入）。**读文件的是 CLI，不是 QuickTerm**：
-/// 两个进程的 cwd 与权限本来就不一样，而"服务端替你 open 一个任意路径"是个能被滥用的原语
+/// `-f <file>` (`-`, or omitted, means stdin). **The CLI reads the file, not QuickTerm**: the two
+/// processes have different working directories and different permissions to begin with, and "the
+/// server opens an arbitrary path on your behalf" is a primitive that invites abuse.
 func readSpecInput(_ parsed: ParsedCommand) -> String {
     let path = parsed.args["file"]?.stringValue
     let data: Data
@@ -287,13 +296,15 @@ func runLocal(_ parsed: ParsedCommand) -> Never {
     }
 }
 
-/// `quickterm mcp`：在标准输入输出上跑 MCP 服务。
-/// **每次 tools/call 才连一次 socket**——与 CLI 每条命令一次连接同一条规矩，
-/// 于是限流、确认、活动日志全都照旧生效，MCP 这一层没有任何自己的特权。
+/// `quickterm mcp`: run the MCP server over stdin/stdout.
+/// **One socket connection per tools/call** — the same rule the CLI follows for every command, so
+/// rate limiting, confirmation and the activity log all keep applying unchanged, and the MCP layer
+/// gets no privileges of its own.
 func runMCP(_ parsed: ParsedCommand) -> Never {
-    // 配置闸门（`[control] mcp`）：关掉之后 `quickterm mcp` 连工具表都不给。
-    // 这条与 `MCPServer.serve()` 里那道是同一个判断（同一张注册表），
-    // 放在这里只是为了让用户在管道变成 JSON-RPC 之前就看到那句人话
+    // Config gate (`[control] mcp`): with it switched off, `quickterm mcp` will not even hand out
+    // the tool list. This is the same check as the one inside `MCPServer.serve()` (same registry);
+    // it sits here only so the user sees the plain-English message before the pipe turns into
+    // JSON-RPC.
     if let refusal = MCPServer.configRefusal() { fail(refusal, plain: plainMode) }
     if parsed.args["list-tools"]?.boolValue == true {
         let tools = JSONValue.object(["tools": .array(MCPToolMap.tools.map(\.listEntry))])
@@ -325,7 +336,8 @@ func runMCP(_ parsed: ParsedCommand) -> Never {
         }
         return reply
     }
-    // 标准输出整条管道都是 JSON-RPC：任何一句人话都会让宿主的解析器当场报错
+    // The whole stdout pipe is JSON-RPC: a single line of plain English makes the host's parser
+    // error out on the spot.
     if let refusal = server.serve() { fail(refusal, plain: plainMode) }
     exit(0)
 }

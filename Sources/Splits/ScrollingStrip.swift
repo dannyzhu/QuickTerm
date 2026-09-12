@@ -1,13 +1,17 @@
 import AppKit
 
-/// Omarchy `scrolling` 布局的数据模型（spec §4.2-bis）：
-/// 工作区 = 无限横向列条带；每列宽 0.49×视口（可调），列内纵向栈叠。
-/// 与 SplitTree 同风格：不可变值语义；不存焦点——所有操作以"某个 pane"为锚，
-/// 由控制器用 focusedSurface 反查，悬停焦点因此天然同步。
+/// Data model for the Omarchy `scrolling` layout (spec §4.2-bis):
+/// a workspace is an endless horizontal strip of columns; each column is 0.49x the viewport wide
+/// (adjustable), and panes stack vertically inside a column.
+/// Same style as SplitTree: immutable value semantics, and no stored focus - every operation is
+/// anchored on "some pane", which the controller looks up through focusedSurface, so hover focus
+/// stays in sync for free.
 struct ScrollingStrip: Codable {
     struct Column: Codable {
-        /// 稳定身份（SwiftUI ForEach 用）：列首 pane 关掉时整列不再重建——否则列内其余 pane 的
-        /// SurfaceView 会脱离/重挂窗口（闪一帧、FR 被静默重置）。旧存档无此字段时新建。
+        /// Stable identity (for SwiftUI's ForEach): closing a column's first pane no longer
+        /// rebuilds the whole column - otherwise the SurfaceViews of the remaining panes detach
+        /// from the window and remount into it (one flashed frame, and first responder silently
+        /// reset). Older saved sessions have no such field, so one is minted on decode.
         var id = UUID()
         var panes: [PaneView]
         var widthFactor: Double = ScrollingStrip.defaultWidth
@@ -38,28 +42,32 @@ struct ScrollingStrip: Codable {
         }
     }
 
-    /// 露边（每侧，视口比例）：溢出时焦点列外侧露出邻列的一条边（gap+边框+一点底色，
-    /// ≈15pt @1000pt 视口），提示"那边还有"；内部焦点两侧对称。
-    /// 6% 用户反馈太宽（2026-09-03），收到其 1/4。
+    /// Peek (per side, as a fraction of the viewport): when the strip overflows, a sliver of the
+    /// neighbouring column shows outside the focused one (gap + border + a little background,
+    /// ~15pt in a 1000pt viewport) as a hint that there is more over there; a focused column in
+    /// the middle gets a symmetric sliver on both sides.
+    /// 6% came back from the user as too wide (2026-09-03), so this is a quarter of that.
     static let peek = 0.015
 
-    /// 露边的实际宽度（pt）：视口比例与"邻列留白 + 2pt 边框 + 4pt 底色"取大——
-    /// pane-gap 调大（如 15+）时 1.5% 视口会全是透明留白，邻列边框露不出来，提示就没了
+    /// The peek in actual points: the larger of the viewport fraction and "the neighbour's padding
+    /// + 2pt border + 4pt of background" - with a large pane-gap (15 or more), 1.5% of the
+    /// viewport is all transparent padding, the neighbour's border never shows, and the hint is
+    /// gone.
     static func peekPoints(viewport: CGFloat, paneGap: CGFloat) -> CGFloat {
         max(CGFloat(peek) * viewport, paneGap + 2 + 4)
     }
-    /// 默认列宽 = 每屏 2 列（0.485）
+    /// Default column width = 2 columns per screen (0.485)
     static var defaultWidth: Double { factor(forVisibleColumns: 2) }
     static let widthStep = 0.05
     static let widthRange = 0.25...0.90
 
-    /// "每屏可见 N 列" → 列宽因子 = (1 − 两侧露边) / N（N=2 → 0.485）
+    /// "N columns visible per screen" → width factor = (1 − both peeks) / N (N=2 → 0.485)
     static func factor(forVisibleColumns n: Int) -> Double {
         (1 - 2 * peek) / Double(min(max(n, 1), 6))
     }
 
     var columns: [Column] = []
-    /// zoom：该 pane 占满内容区（结构性变更时清空）
+    /// Zoom: this pane fills the content area (cleared by any structural change).
     var zoomedID: UUID?
 
     enum Direction { case left, right, up, down }
@@ -78,14 +86,16 @@ struct ScrollingStrip: Codable {
     var isEmpty: Bool { columns.isEmpty }
     var paneList: [PaneView] { columns.flatMap(\.panes) }
 
-    /// 结构签名（列序/行序）：变化时视口需按焦点重新对齐——
-    /// 换位/併拆不改焦点 ID 与列数，仅靠它们触发不了滚动跟随。
-    /// 刻意不含 widthFactor：右键拖拽调宽是逐事件写宽度，
-    /// 入签名会把手动平移的视口逐帧劫持回焦点列。
+    /// Structure signature (column order / row order): when it changes, the viewport has to
+    /// realign on focus - swapping or merging/splitting changes neither the focused id nor the
+    /// column count, so those alone can never trigger scroll-follow.
+    /// It deliberately excludes widthFactor: right-drag resizing writes a width per event, and
+    /// having the width in the signature would hijack a manually panned viewport back onto the
+    /// focused column on every frame.
     var layoutSignature: Int {
         var hasher = Hasher()
         for column in columns {
-            hasher.combine(column.panes.count)  // 分组定界：[a][b,c] ≠ [a,b][c]
+            hasher.combine(column.panes.count)  // group boundaries: [a][b,c] != [a,b][c]
             for pane in column.panes { hasher.combine(pane.id) }
         }
         return hasher.finalize()
@@ -96,7 +106,7 @@ struct ScrollingStrip: Codable {
         return paneList.first { $0.id == zoomedID }
     }
 
-    /// pane → (列, 行)
+    /// pane → (column, row)
     func position(of pane: PaneView) -> (col: Int, row: Int)? {
         for (c, column) in columns.enumerated() {
             if let r = column.panes.firstIndex(where: { $0 === pane }) {
@@ -106,9 +116,9 @@ struct ScrollingStrip: Codable {
         return nil
     }
 
-    // MARK: 结构操作（全部返回新值；结构变更清 zoom）
+    // MARK: Structural operations (all return a new value; a structural change clears zoom)
 
-    /// 焦点列右侧插入新列（Cmd+Return 语义，截图 3）
+    /// Insert a new column to the right of the focused one (Cmd+Return semantics, screenshot 3)
     func insertingColumnRight(of anchor: PaneView?, pane: PaneView,
                               widthFactor: Double = ScrollingStrip.defaultWidth) -> Self {
         var next = self
@@ -119,7 +129,8 @@ struct ScrollingStrip: Codable {
         return next
     }
 
-    /// 关 pane：空列删除（spec：焦点左移由控制器处理）
+    /// Close a pane; an emptied column is removed (per spec, moving focus left is the controller's
+    /// job).
     func removing(_ pane: PaneView) -> Self {
         guard let (c, r) = position(of: pane) else { return self }
         var next = self
@@ -131,7 +142,8 @@ struct ScrollingStrip: Codable {
         return next
     }
 
-    /// 方向焦点目标（左右跨列取同高度就近行；上下列内移动；不回绕）
+    /// Directional focus target: left/right crosses columns picking the nearest row at the same
+    /// height, up/down moves within the column, and neither wraps.
     func focusTarget(from pane: PaneView, direction: Direction) -> PaneView? {
         guard let (c, r) = position(of: pane) else { return nil }
         switch direction {
@@ -152,14 +164,14 @@ struct ScrollingStrip: Codable {
         }
     }
 
-    /// 线性循环（Alt+Tab / Cmd+[]）：列序×行序，回绕
+    /// Linear cycle (Alt+Tab / Cmd+[ ]): column order x row order, wrapping around.
     func linearTarget(from pane: PaneView, next: Bool) -> PaneView? {
         let all = paneList
         guard all.count > 1, let i = all.firstIndex(where: { $0 === pane }) else { return nil }
         return all[(i + (next ? 1 : all.count - 1)) % all.count]
     }
 
-    /// 换位：左右 = 整列换位；上下 = 列内换位
+    /// Swap: left/right swaps whole columns, up/down swaps within the column.
     func swapping(_ pane: PaneView, direction: Direction) -> Self {
         guard let (c, r) = position(of: pane) else { return self }
         var next = self
@@ -179,7 +191,8 @@ struct ScrollingStrip: Codable {
         return next
     }
 
-    /// Cmd+J：单 pane 列 → 併入左列纵栈；多 pane 列 → 焦点 pane 拆出为右侧独立列
+    /// Cmd+J: a single-pane column merges into the vertical stack of the column on its left; a
+    /// multi-pane column splits the focused pane out into its own column on the right.
     func mergingOrSplitting(_ pane: PaneView) -> Self {
         guard let (c, r) = position(of: pane) else { return self }
         var next = self
@@ -189,14 +202,16 @@ struct ScrollingStrip: Codable {
             next.columns[c - 1].panes.append(pane)
             next.columns.remove(at: c)
         } else {
-            // 拆出的新列沿用原列宽度（不能用两列默认值 0.485：每屏 3 列时会比别的列宽一半）
+            // The split-off column keeps the source column's width. It must not fall back to the
+            // two-column default of 0.485: at 3 columns per screen that comes out half again as
+            // wide as every other column.
             next.columns[c].panes.remove(at: r)
             next.columns.insert(Column(panes: [pane], widthFactor: columns[c].widthFactor), at: c + 1)
         }
         return next
     }
 
-    /// 调列宽（Cmd+Ctrl+←/→，±5%，25%–90%）
+    /// Resize a column (Cmd+Ctrl+←/→, +/-5%, clamped to 25%-90%)
     func resizingWidth(of pane: PaneView, delta: Double) -> Self {
         guard let (c, _) = position(of: pane) else { return self }
         var next = self
@@ -206,7 +221,7 @@ struct ScrollingStrip: Codable {
         return next
     }
 
-    /// 全列宽重置为统一因子（Cmd+Ctrl+= / 可见列数切换）
+    /// Reset every column to one uniform factor (Cmd+Ctrl+=, or changing the visible column count)
     func equalized(to factor: Double = ScrollingStrip.defaultWidth) -> Self {
         var next = self
         for i in next.columns.indices {
@@ -221,14 +236,17 @@ struct ScrollingStrip: Codable {
         return next
     }
 
-    /// 拖放（spec §4.2-bis）：左右缘 = 目标列旁插新列；上下缘 = 併入目标列栈；中心 = 交换
+    /// Drag and drop (spec §4.2-bis): the left or right edge inserts a new column beside the
+    /// target's; the top or bottom edge merges into the target column's stack; the center swaps.
     func dropping(_ payload: PaneView,
                   on destination: PaneView,
                   zone: TerminalSplitDropZone) -> Self {
         guard payload !== destination,
               let (pc, _) = position(of: payload) else { return self }
-        // 载荷原本独占一列 → 沿用那一列（稳定 id / 列宽）：SwiftUI 视作移动而非删列+建列，
-        // 否则 pane 会脱离/重挂窗口；从叠栈列拖出 → 新列沿用原列宽度
+        // If the payload had a column to itself, carry that column over (keeping its id and its
+        // width): SwiftUI then sees a move rather than a delete plus an insert, which is what keeps
+        // the pane from detaching and remounting into the window. Dragged out of a stacked column
+        // instead, the new column inherits the source column's width.
         let carried: Column? = columns[pc].panes.count == 1 ? columns[pc] : nil
         let sourceWidth = columns[pc].widthFactor
         var next = removing(payload)
@@ -255,13 +273,15 @@ struct ScrollingStrip: Codable {
         return next
     }
 
-    // MARK: 视口几何（纯函数，可测；渲染与滚动共用同一套有效列宽）
+    // MARK: Viewport geometry (pure and testable; rendering and scrolling share one set of
+    // effective column widths)
 
-    /// 有效列宽（pt，参照 Omarchy/Hyprland scrolling）：
-    /// - **填充模式**：名义宽度装得下时，按比例放大到恰好填满（间隙固定）——
-    ///   单列即满屏、两列时左中右间隙精确相等
-    /// - **溢出模式**：按名义 widthFactor（最小滚动 + 露边）
-    /// 底层 factor 不被改写（溢出时恢复名义值）。
+    /// Effective column widths in points (following Omarchy/Hyprland scrolling):
+    /// - **Fill mode**: when the nominal widths fit, scale them up proportionally to fill exactly
+    ///   (the gaps stay fixed) - a single column becomes full-screen, and with two columns the
+    ///   left, middle and right gaps come out precisely equal.
+    /// - **Overflow mode**: use the nominal widthFactor (minimal scrolling + peek).
+    /// The underlying factors are never rewritten, so overflowing restores the nominal values.
     func columnWidths(viewport: CGFloat, gap: CGFloat) -> [CGFloat] {
         guard !columns.isEmpty, viewport > 0 else { return [] }
         let nominal = columns.map { CGFloat($0.widthFactor) * viewport }
@@ -271,7 +291,8 @@ struct ScrollingStrip: Codable {
         guard nominalSum < available, nominalSum > 0 else { return nominal }
         let scale = available / nominalSum
         var scaled = nominal.map { $0 * scale }
-        // 浮点余差归入末列：总和精确等于可用宽度（填满即零偏移，无抖动）
+        // The floating-point remainder goes into the last column, so the sum equals the available
+        // width exactly (a filled strip means zero offset and no judder).
         if let last = scaled.indices.last { scaled[last] += available - scaled.reduce(0, +) }
         return scaled
     }
@@ -282,10 +303,13 @@ struct ScrollingStrip: Codable {
         return widths.reduce(0, +) + gap * CGFloat(widths.count - 1)
     }
 
-    /// 视口偏移：
-    /// - 内容总宽 ≤ 视口：整组**居中**（两侧等隙——两列 0.49 时左右间隙相等，参照 Omarchy）
-    /// - 溢出：最小滚动量让锚 pane 所在列完全可见（露边行为，截图 1/2）
-    /// 偏移为内容坐标向右为正；居中时可为负（负值 = 左侧留白）。
+    /// Viewport offset:
+    /// - Total content width <= viewport: **center** the whole group (equal gaps on both sides -
+    ///   with two columns at 0.49 the left and right gaps match, as in Omarchy).
+    /// - Overflowing: scroll the smallest amount that makes the anchor pane's column fully visible
+    ///   (the peek behavior, screenshots 1/2).
+    /// The offset is in content coordinates, positive to the right; while centering it can go
+    /// negative (negative = padding on the left).
     func targetOffset(for pane: PaneView,
                       current: CGFloat, viewport: CGFloat, gap: CGFloat,
                       paneGap: CGFloat = 5) -> CGFloat {
@@ -297,11 +321,12 @@ struct ScrollingStrip: Codable {
         }
         var x: CGFloat = 0
         for i in 0..<c { x += widths[i] + gap }
-        // 焦点列完整可见且外侧留一个露边（邻列露出真实内容；到两端自然贴边）
+        // The focused column fully visible with one peek left outside it (the neighbour shows real
+        // content; at either end the strip naturally sits flush).
         let peek = Self.peekPoints(viewport: viewport, paneGap: paneGap)
-        var minOffset = x + widths[c] + peek - viewport   // 右缘对齐 + 右露边
-        var maxOffset = x - peek                          // 左缘对齐 + 左露边
-        if minOffset > maxOffset {                        // 列宽到装不下露边：退回贴边
+        var minOffset = x + widths[c] + peek - viewport   // right edge aligned + peek on the right
+        var maxOffset = x - peek                          // left edge aligned + peek on the left
+        if minOffset > maxOffset {                        // too wide for a peek: fall back to flush
             minOffset = x + widths[c] - viewport
             maxOffset = x
         }
@@ -309,7 +334,7 @@ struct ScrollingStrip: Codable {
         return min(max(desired, 0), total - viewport)
     }
 
-    // MARK: 与 dwindle 互转（Cmd+L；保 pane 保序）
+    // MARK: Conversion to and from dwindle (Cmd+L; panes and their order are preserved)
 
     static func from(tree: SplitTree<PaneView>,
                      widthFactor: Double = ScrollingStrip.defaultWidth) -> Self {

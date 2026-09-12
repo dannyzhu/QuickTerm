@@ -1,15 +1,16 @@
 import AppKit
 import OSLog
 
-/// 应用内的控制面活动日志（环形缓冲，最近 200 条）。
+/// In-app activity log for the control plane (ring buffer, the last 200 entries).
 ///
-/// 为什么要有：`mutate` 类命令是**静默执行**的——不弹框、不问人。
-/// 静默的前提是事后可见：状态栏闪一下告诉用户"刚刚有人动了什么"，
-/// 而这份日志回答"到底动了哪些"。没有它，一个跑飞的 agent 留下的
-/// 唯一痕迹就是"布局莫名其妙变了"。
+/// Why it exists: `mutate` commands run **silently** — no dialog, nobody gets asked. Silence is
+/// only defensible if it stays visible after the fact: the status-bar flash tells the user that
+/// somebody just changed something, and this log answers what exactly they changed. Without it,
+/// the only trace a runaway agent leaves behind is "the layout went strange on its own".
 ///
-/// 同时写一份到 OSLog（`log stream --predicate 'subsystem == "dev.danny.quickterm"'`），
-/// 这样应用崩了、或者用户事后才发现不对劲，痕迹也还在。
+/// Every entry is mirrored into OSLog as well (`log stream --predicate 'subsystem ==
+/// "dev.danny.quickterm"'`), so the trail survives an app crash, or a user who only notices
+/// something is wrong long after the fact.
 @MainActor
 final class ControlActivityLog: ObservableObject {
     static let shared = ControlActivityLog()
@@ -21,15 +22,16 @@ final class ControlActivityLog: ObservableObject {
     struct Entry: Identifiable, Equatable {
         let id = UUID()
         var at: Date
-        /// 线上的命令名（`pane.new`）
+        /// The command's name on the wire (`pane.new`)
         var command: String
-        /// 内核给的对端进程名 + pid（**唯一可信的身份**）
+        /// Peer process name + pid as the kernel reports them (**the only trustworthy identity**)
         var peer: String
-        /// 调用方自称所在的 pane（带 token 才有；文案里始终写"自称"）
+        /// The pane the caller claims to be in (only set when it carried the token; the wording
+        /// always says "claims")
         var originPane: String?
-        /// 落点（`1:2.t7`）
+        /// Where it landed (`1:2.t7`)
         var target: String?
-        /// 结果：applied / noop / dry-run / 各种错误码
+        /// Outcome: applied / noop / dry-run / one of the error codes
         var outcome: String
         var changes: [ControlChange]
 
@@ -52,15 +54,18 @@ final class ControlActivityLog: ObservableObject {
             static func refused(_ code: String) -> String { refusedPrefix + code }
         }
 
-        /// 应用内那一份（活动日志面板）：值写全。看的人就是这台机器前面的用户本人
+        /// The in-app copy (the activity-log panel): values written out in full. Whoever reads
+        /// it is the user sitting at this machine.
         var line: String { render(redactingSensitiveValues: false, localizingOutcome: true) }
 
-        /// 写进 OSLog 的那一份：`sensitive` 的变更只留 `path`。
+        /// The copy written into OSLog: a `sensitive` change keeps only its `path`.
         ///
-        /// 这两份不一样**是有意的**：面板是给用户看的一瞥，而 OSLog 落在
-        /// /var/db/diagnostics——任何管理员读得到、sysdiagnose 会打包带走、应用关了还在。
-        /// 把一个默认要按 token 打码的网址/标题原样写进那里，等于给打码开了一扇后门
-        /// （`input.send-text` 早就是这么办的：正文从不入日志，只记「N 个字符」）
+        /// The two copies differ **on purpose**: the panel is a glance for the user, while OSLog
+        /// lands in /var/db/diagnostics — readable by any admin, swept up by sysdiagnose, still
+        /// there after the app is gone. A URL or title that is redacted by default unless the
+        /// caller holds the token opens a back door around that redaction the moment it is
+        /// written into that file verbatim. (`input.send-text` has worked this way from the
+        /// start: the payload never enters the log, only "N characters".)
         var logLine: String { render(redactingSensitiveValues: true, localizingOutcome: false) }
 
         private func render(redactingSensitiveValues redacting: Bool,
@@ -69,7 +74,7 @@ final class ControlActivityLog: ObservableObject {
             let origin = originPane.map { " ←\($0)" } ?? ""
             let where_ = target.map { " @\($0)" } ?? ""
             let diff = changes.isEmpty ? "" : "  " + changes.map {
-                if redacting, $0.sensitive { return "\($0.path): 已变更（值不入日志）" }
+                if redacting, $0.sensitive { return "\($0.path): changed (value kept out of the log)" }
                 return "\($0.path): \($0.from ?? "-") → \($0.to ?? "-")"
             }.joined(separator: ", ")
             let result = localizing ? localizedOutcome : outcome
@@ -107,7 +112,7 @@ final class ControlActivityLog: ObservableObject {
         Self.logger.notice("\(entry.logLine, privacy: .public)")
     }
 
-    /// 最近 N 条（新的在前）
+    /// The most recent N entries (newest first)
     func recent(_ n: Int = 50) -> [Entry] { Array(entries.suffix(n).reversed()) }
 
     func clear() { entries.removeAll() }

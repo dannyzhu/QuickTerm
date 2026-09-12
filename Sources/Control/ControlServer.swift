@@ -3,17 +3,20 @@ import Darwin
 import Foundation
 import OSLog
 
-/// 控制服务：socket 的所有者 + NDJSON 分帧 + 主线程 hop。
+/// The control server: owner of the socket, NDJSON framing, and the hop to the main thread.
 ///
-/// 线程模型（只有这一种，别的一律是 bug）：
-/// accept / read / write 在 `ioQueue`；**所有**命令执行经 `DispatchQueue.main.async` 到主线程；
-/// 绝不 `DispatchQueue.main.sync`（会和 AppKit 的 run loop 直接死锁）。
+/// The threading model (there is exactly one; anything else is a bug):
+/// accept / read / write run on `ioQueue`; **every** command execution reaches the main thread
+/// through `DispatchQueue.main.async`; never `DispatchQueue.main.sync`, which deadlocks
+/// outright against AppKit's run loop.
 final class ControlServer {
     static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "dev.danny.quickterm",
                                category: "ControlServer")
-    /// 单行上限：agent 幻觉出一个巨大的参数不该把内存吃光
+    /// Per-line ceiling: an agent hallucinating one enormous argument must not be able to eat
+    /// all of memory
     static let maxLineBytes = 1 << 20
-    /// 每条连接的变更速率（令牌桶）：agent 会很开心地在循环里建 40 个 pane
+    /// Mutation rate per connection (token bucket): an agent will happily create 40 panes in a
+    /// loop
     static let mutationBurst = 20
     static let mutationsPerSecond = 20.0
 
@@ -32,7 +35,7 @@ final class ControlServer {
         self.socketPathOverride = socketPath
     }
 
-    // MARK: 生命周期
+    // MARK: Lifecycle
 
     @MainActor
     func apply(_ config: ControlCommandRunner.Config) {
@@ -55,14 +58,14 @@ final class ControlServer {
             ControlEnvironment.socketPath = socket.path
         } catch {
             ControlEnvironment.socketPath = nil
-            Self.logger.error("控制 socket 启动失败：\(String(describing: error), privacy: .public)")
+            Self.logger.error("Control socket failed to start: \(String(describing: error), privacy: .public)")
         }
     }
 
     @MainActor
     func stop() {
         guard socket.isListening else { return }
-        ControlEventBus.shared.dropAllFollowers()   // 停服 = 每一条 events follow 都断了
+        ControlEventBus.shared.dropAllFollowers()   // server down = every events follow is cut
         socket.stop()
         ControlEnvironment.socketPath = nil
         ioQueue.async { [weak self] in
@@ -72,7 +75,7 @@ final class ControlServer {
         }
     }
 
-    // MARK: 连接
+    // MARK: Connections
 
     private func accept(_ peer: ControlSocket.Peer) {
         ioQueue.async { [weak self] in
@@ -86,8 +89,9 @@ final class ControlServer {
                                         },
                                         onClose: { [weak self] fd in
                                             self?.connections.removeValue(forKey: fd)
-                                            // 对端走了：把它挂着的 `events follow` 摘掉。
-                                            // 摘的是**连接编号**而不是 fd —— fd 号会被复用
+                                            // The peer left: drop the `events follow` it was
+                                            // holding. What gets dropped is the **connection
+                                            // number**, not the fd — fd numbers are reused
                                             DispatchQueue.main.async { [weak self] in
                                                 guard let self else { return }
                                                 MainActor.assumeIsolated {
@@ -97,7 +101,7 @@ final class ControlServer {
                                         })
             self.connections[peer.fd] = connection
             connection.resume()
-            Self.logger.debug("控制连接：\(peer.processName, privacy: .public) pid \(peer.pid) uid \(peer.uid)")
+            Self.logger.debug("Control connection: \(peer.processName, privacy: .public) pid \(peer.pid) uid \(peer.uid)")
         }
     }
 
@@ -106,7 +110,8 @@ final class ControlServer {
         do {
             request = try ControlJSON.decoder.decode(ControlRequest.self, from: line)
         } catch {
-            // id 都读不出来：用 "0" 应答，让客户端至少能报出一条结构化错误
+            // Not even the id could be read: answer as "0" so the client at least gets one
+            // structured error back
             connection.send(.failure(id: "0", seq: nil,
                                      error: ControlErrorBody(.badRequest, "The request is not a valid NDJSON object: \(error)")))
             return
@@ -136,7 +141,7 @@ final class ControlServer {
         return spec.cls.isMutation
     }
 
-    // MARK: 一条连接
+    // MARK: A single connection
 
     private final class Connection {
         let peer: ControlSocket.Peer
@@ -184,10 +189,11 @@ final class ControlServer {
                 if n > 0 {
                     buffer.append(contentsOf: chunk[0..<n])
                     if buffer.count > ControlServer.maxLineBytes {
-                        // **已经在 io 队列上：必须同步写**。走 send() 的话那次 queue.async
-                        // 会排在紧随其后的 close() 之后，再被 write() 的 `guard !closed` 吞掉，
-                        // 对端只看到 EOF —— 成了一个没有 code 的"连接被断了"，
-                        // 而不是我们承诺的结构化 bad_request
+                        // **Already on the io queue, so this has to be written synchronously**.
+                        // Going through send() would queue that write behind the close() that
+                        // follows right after it, where write()'s `guard !closed` swallows it,
+                        // and the peer would see nothing but EOF — a codeless "the connection
+                        // was dropped" instead of the structured bad_request we promised
                         sendNow(.failure(id: "0", seq: nil,
                                          error: ControlErrorBody(.badRequest, "A single request went over 1 MiB",
                                                                  hint: "Split the arguments up; the per-line limit is 1 MiB.")))
@@ -197,7 +203,7 @@ final class ControlServer {
                     drainLines()
                     continue
                 }
-                if n == 0 { close(); return }              // 对端关闭
+                if n == 0 { close(); return }              // the peer closed
                 if errno == EINTR { continue }
                 if errno == EAGAIN || errno == EWOULDBLOCK { return }
                 close()
@@ -214,16 +220,18 @@ final class ControlServer {
             }
         }
 
-        /// 从任意线程调用（命令的 completion 在主线程）；写永远排回 io 队列
+        /// Callable from any thread (a command's completion runs on the main thread); the write
+        /// itself always goes back onto the io queue
         func send(_ response: ControlResponse) {
             let data = Self.encode(response)
             queue.async { [weak self] in self?.write(data) }
         }
 
-        /// 已经在 io 队列上、且**紧接着要 close()** 时用这个：
-        /// `send()` 的 queue.async 排在 close() 之后就会被 `guard !closed` 丢掉。
-        /// 不 close 的路径仍走 `send()`——那里的 write 带着 200ms 停顿等待，
-        /// 同步跑在读循环里会被一个不读的客户端拖住整条 io 队列
+        /// Use this when already on the io queue and **a close() comes immediately after**:
+        /// `send()`'s queue.async would land after that close() and be dropped by `guard !closed`.
+        /// Paths that do not close still go through `send()` — the write there carries a 200 ms
+        /// stall budget, and running that synchronously inside the read loop would let one
+        /// client that is not reading hold up the entire io queue
         func sendNow(_ response: ControlResponse) {
             dispatchPrecondition(condition: .onQueue(queue))
             write(Self.encode(response))
@@ -245,7 +253,8 @@ final class ControlServer {
             data.withUnsafeBytes { raw in
                 guard let base = raw.baseAddress else { return }
                 var offset = 0
-                // 对端不读时最多等 200ms 就放弃：宁可丢一条响应，也不能让 io 队列被一个不读的客户端卡死
+                // Give up after at most 200 ms when the peer is not reading: better to drop one
+                // response than to let a client that never reads wedge the io queue
                 var stalls = 0
                 while offset < raw.count {
                     let n = Darwin.write(peer.fd, base.advanced(by: offset), raw.count - offset)

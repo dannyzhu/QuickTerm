@@ -1,22 +1,26 @@
 import AppKit
 
-/// 控制命令的执行体。**永远在主线程上跑**（每个入口都有 `dispatchPrecondition`）：
-/// `MainWindowController` 没有 `@MainActor` 标注、工程又是 Swift 5.10，
-/// 从 socket 回调线程写 `@Published` 编译得干干净净，然后在运行时崩成
-/// "publishing changes from background thread"。
+/// The body that executes control commands. **Always runs on the main thread** (every entry
+/// point carries a `dispatchPrecondition`): `MainWindowController` has no `@MainActor`
+/// annotation and the project is Swift 5.10, so writing a `@Published` from the socket callback
+/// thread compiles perfectly cleanly and then crashes at runtime with "publishing changes from
+/// background thread".
 ///
-/// 串行化用**标志位**而不是锁：`perform()` 是可重入的（引擎回调
-/// `ghosttyDidEqualizeSplits → perform(.equalize)`、键盘监视器、菜单项都会调它），
-/// 跨主线程 hop 持锁只会在第一个引擎回调进来时把 UI 直接锁死。
+/// Serialization uses a **flag**, not a lock: `perform()` is reentrant (the engine callback
+/// `ghosttyDidEqualizeSplits → perform(.equalize)`, the keyboard monitor and the menu items all
+/// call it), and holding a lock across a main-thread hop would wedge the UI outright the first
+/// time an engine callback came in.
 @MainActor
 final class ControlCommandRunner {
     struct Config {
-        /// `[control] socket`（旧名 `enabled`）
+        /// `[control] socket` (formerly `enabled`)
         var socket: Bool = true
-        /// `[control] mcp`：只作用于 `quickterm mcp` 那个进程（见 `ControlConfigGate`）。
-        /// **socket 这一侧不认它**：MCP 的每一条调用都是一条普通的控制请求，
-        /// "我是 MCP"是调用方自报的，服务端一个字都验不了——把一个验不了的字段
-        /// 当闸门用，只会给用户一个假的安全感
+        /// `[control] mcp`: applies only to the `quickterm mcp` process (see
+        /// `ControlConfigGate`).
+        /// **The socket side pays no attention to it**: every MCP call is an ordinary control
+        /// request, "I am MCP" is something the caller says about itself, and the server cannot
+        /// verify a word of it — using an unverifiable field as a gate only hands the user a
+        /// false sense of security
         var mcp: Bool = true
         var mode: String = "ask"
         var exposeBrowser: String = "token"
@@ -34,18 +38,19 @@ final class ControlCommandRunner {
             captureText = settings.controlCaptureText
         }
 
-        /// 这条 `sensitive` 命令被用户显式打开了吗。
-        /// **一条命令一个开关**：早先这里只有一个 `sendText`，于是"我要 agent 能读屏幕"
-        /// 会顺带把"agent 能往我的 shell 里打字"一起打开——那是两件完全不同的授权
+        /// Has the user explicitly switched this `sensitive` command on?
+        /// **One switch per command**: there used to be a single `sendText` here, so "I want the
+        /// agent to be able to read my screen" also switched on "the agent may type into my
+        /// shell" — two completely different grants
         func allowsSensitive(_ command: String) -> Bool {
             switch command {
             case "input.send-text": sendText
             case "pane.capture-text": captureText
-            default: false   // 认不得的敏感命令一律关着：默认值只能是安全的那一侧
+            default: false   // an unknown sensitive command stays off: a default can only be the safe side
             }
         }
 
-        /// 该命令没被打开时，告诉用户去哪儿开
+        /// When the command is not switched on, tell the user where to switch it on
         func sensitiveHint(_ command: String) -> String {
             switch command {
             case "input.send-text": "Set send-text = true under [control] in ~/.config/quickterm/config.toml"
@@ -54,36 +59,44 @@ final class ControlCommandRunner {
             }
         }
 
-        /// 监听与否 = 三个开关取最严：`socket = false`、旧的 `enabled = false`
-        /// （解析阶段已并进 socket）、`mode = "off"`，任何一个都等于不监听
+        /// Listening or not = the strictest of three switches: `socket = false`, the old
+        /// `enabled = false` (already folded into socket during parsing), and `mode = "off"` —
+        /// any one of them means not listening
         var isListening: Bool { socket && mode != "off" }
         var allowsMutation: Bool { isListening && mode != "readonly" }
-        /// **反过来写**：只要这条命令能被执行，破坏性 / 敏感命令就一定要确认。
-        /// 写成 `mode == "ask"` 的话，任何别的 mode 拼法（配置里写 "on"、将来多一个档位、
-        /// 甚至一个手滑的大小写）都会静默地把整个确认闸门关掉——
-        /// 闸门只能被显式的 off / readonly 绕开，绝不能被拼错绕开
+        /// **Written the other way round**: as long as a command can run at all, destructive /
+        /// sensitive commands have to be confirmed.
+        /// Writing this as `mode == "ask"` would mean that any other spelling of mode — "on" in
+        /// the config file, an extra setting added later, even a slip of the shift key — silently
+        /// switches the entire confirmation gate off.
+        /// The gate may be bypassed only by an explicit off / readonly, never by a typo
         var promptsForDestructive: Bool { allowsMutation }
     }
 
-    /// 确认闸门批准的**那一个**主体。用户读到的和这一刀落下的必须是同一个：
-    /// 确认框挂着的十秒里，别的 mutate 命令（`focus-right` 之类，它们不需要确认）
-    /// 完全可以把焦点挪走，于是"关闭焦点 pane"关掉的就成了另一个 pane。
+    /// **The one** subject the confirmation gate approved. What the user read and what the knife
+    /// lands on have to be the same thing: during the ten seconds the alert is up, other mutate
+    /// commands (`focus-right` and the like, which need no confirmation) can move the focus, and
+    /// then "close the focused pane" closes a different pane.
     ///
-    /// Phase 2 起主体不一定是一个 pane：`workspace clear` 钉的是"这个工作区里的这几个 pane"
-    /// （集合变了也算变），`screen close` 钉的是那一块屏幕
+    /// From Phase 2 on the subject is not necessarily one pane: `workspace clear` pins "these
+    /// panes in this workspace" (a changed set counts as changed), and `screen close` pins a
+    /// whole screen
     struct PinnedSubject {
         var controller: MainWindowController
         var workspace: Int
         var pane: PaneView?
         var handle: String?
-        /// `workspace clear` 用：确认时那个工作区里的 pane 集合
+        /// For `workspace clear`: the set of panes in that workspace at confirmation time
         var paneIDs: Set<UUID>?
-        /// `spec apply` 用：这一刀会动到的**每一个**（屏幕，工作区）与它当时的 pane 集合。
-        /// 一份 `quickterm.screen/1` 会覆盖整块屏幕的每一个工作区、`quickterm.session/1`
-        /// 是每一块屏幕——只钉住 `-t` 指的那一个，用户批准的就不是即将发生的那件事
+        /// For `spec apply`: **every** (screen, workspace) this will touch, each with the set of
+        /// panes it held at the time. One `quickterm.screen/1` covers every workspace on a whole
+        /// screen and `quickterm.session/1` covers every screen — pin only the one `-t` names and
+        /// what the user approved is not the thing that is about to happen
         var scopes: [PinnedScope] = []
-        /// 确认框里那句话的简短版（漂移时回给调用方，让它知道当时确认的是什么）。
-        /// **写英文**：它会原样进 `busy` 的错误正文，而命令行那一侧全是英文
+        /// The short form of the sentence in the alert (handed back to the caller when the
+        /// subject drifts, so it knows what had been confirmed).
+        /// **Written in English**: it goes verbatim into the body of the `busy` error, and the
+        /// command-line side is English throughout
         var description: String
         /// The same subject in the **UI language**, for the consent alert only: that text is
         /// shown in QuickTerm's own window and never travels back over the socket, so it
@@ -91,33 +104,39 @@ final class ControlCommandRunner {
         var consentText: String
     }
 
-    /// 被钉住的一个工作区（`PinnedSubject.scopes` 的元素）
+    /// One pinned workspace (an element of `PinnedSubject.scopes`)
     struct PinnedScope {
         var controller: MainWindowController
         var workspace: Int
-        /// 确认那一刻这个工作区里的 pane（**不含正在淡出的**：确认与落刀之间会 flush 一次）
+        /// The panes in this workspace at the moment of confirmation (**fading ones excluded**:
+        /// a flush happens between the confirmation and the knife going in)
         var paneIDs: Set<UUID>
     }
 
     let screens: ScreenRegistry
     let consent: ControlConsent
     var config = Config()
-    /// 单调状态序号。**所有者是 `ControlEventBus`**：Phase 4 起每一条类型化事件都推进它，
-    /// 于是"响应里的 seq"与"事件里的 seq"天然是同一条尺子——agent 可以拿变更响应回的 seq
-    /// 直接去 `events poll --since`，中间不会漏掉自己那条命令产生的事件
+    /// The monotonic state counter. **`ControlEventBus` owns it**: from Phase 4 on every typed
+    /// event advances it, so "the seq in the response" and "the seq in an event" are the same
+    /// ruler by construction — an agent can take the seq a mutation returned straight into
+    /// `events poll --since` and miss none of the events its own command produced
     var seq: Int { ControlEventBus.shared.seq }
-    /// 一次只执行一条命令。模态的嵌套 run loop 会在用户的对话框背后抽干主队列，
-    /// 那时第二条命令绝不能插进来
+    /// One command executes at a time. A modal's nested run loop drains the main queue behind
+    /// the user's dialog, and a second command must never slip in while that happens
     private var isExecuting = false
-    /// 按来源的变更限流（连接级那只桶盖不住"每条命令一条新连接"的 CLI）
+    /// Per-origin rate limiting for mutations (the connection-level bucket cannot cover a CLI
+    /// that opens a new connection for every command)
     var rateLimiter = ControlRateLimiter()
-    /// 当前这条命令的两个全局开关（`isExecuting` 保证同一时刻只有一条命令在跑）
+    /// The two global flags of the command currently running (`isExecuting` guarantees there is
+    /// only ever one at a time)
     private(set) var currentFlags: (dryRun: Bool, failIfNoop: Bool) = (false, false)
-    /// **可注入**：主线程上是否有模态挡着。用例靠它把"任何变更类命令在模态期间都被拒"
-    /// 钉成一条结构性用例（真的弹一个 NSAlert 会把测试宿主自己卡住）
+    /// **Injectable**: is a modal blocking the main thread? Tests use it to pin "every mutation
+    /// command is refused while a modal is up" as a structural test — putting up a real NSAlert
+    /// would wedge the test host itself
     var modalBusyProbe: () -> Bool = { NSApp.modalWindow != nil }
 
-    /// 一条变更真的落地了：先把它产生的类型化事件扫出来，一条都没有再补一次 seq
+    /// A mutation really landed: scan out the typed events it produced first, and bump seq
+    /// separately only if there were none at all
     func seqDidMutate() { ControlEventBus.shared.settleMutation() }
 
     func dryRun(_ request: ControlRequest) -> Bool {
@@ -129,8 +148,9 @@ final class ControlCommandRunner {
         self.consent = consent
     }
 
-    /// 一条连接走了。`events follow` 是唯一活得比一次请求还长的东西，
-    /// 对端消失就是它**唯一**的终止条件——没有这一步，一条流会一直往一个已经关掉的 fd 上写
+    /// A connection went away. `events follow` is the only thing that outlives a single request,
+    /// and the peer disappearing is its **only** termination condition — without this step a
+    /// stream goes on writing to an fd that is already closed
     func connectionDidClose(_ connection: UInt64) {
         dispatchPrecondition(condition: .onQueue(.main))
         ControlEventBus.shared.connectionDidClose(connection)
@@ -140,7 +160,7 @@ final class ControlCommandRunner {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
     }
 
-    // MARK: 入口
+    // MARK: Entry point
 
     func handle(_ request: ControlRequest, peer: ControlSocket.Peer,
                 completion: @escaping (ControlResponse) -> Void) {
@@ -178,7 +198,8 @@ final class ControlCommandRunner {
             }
         }
 
-        // 命令类：`action` 的类由具体动作决定，其余直接读表
+        // Command class: for `action` the class comes from the specific action, everything else
+        // is read straight off the table
         var cls = spec.cls
         var action: WMAction?
         if spec.name == "action", request.args["list"]?.boolValue != true {
@@ -196,13 +217,15 @@ final class ControlCommandRunner {
             action = parsed
             cls = ControlCommandTable.actionClass(parsed)
         } else if spec.name == "action" {
-            cls = .read   // --list 只是打印表
+            cls = .read   // --list only prints the table
         }
-        // `spec apply` 的破坏性取决于模式：默认的 --into-empty **毁不掉任何东西**
-        // （非空工作区一律拒绝，退出码 4），而 --replace / --reuse 会关掉现有的 pane。
-        // 命令表里声明成 destructive（describe 与 MCP 的 hint 按最坏情况给），
-        // 只有确实不会关任何东西的那个模式在这里降一级——反过来写（默认 mutate、
-        // 见到 --replace 才升级）的话，将来多一个会关 pane 的模式就会静默绕开确认闸门
+        // How destructive `spec apply` is depends on its mode: the default --into-empty
+        // **cannot destroy anything** (a non-empty workspace is always refused, exit code 4),
+        // while --replace / --reuse close existing panes.
+        // The command table declares it destructive (describe and the MCP hints state the worst
+        // case), and only the mode that genuinely closes nothing is downgraded here — written
+        // the other way round (default to mutate, upgrade on seeing --replace), a mode added
+        // later that does close panes would silently slip past the confirmation gate
         if spec.name == "spec.apply",
            request.args["replace"]?.boolValue != true, request.args["reuse"]?.boolValue != true {
             cls = .mutate
@@ -219,10 +242,12 @@ final class ControlCommandRunner {
                                   hint: config.sensitiveHint(spec.name)))
             return
         }
-        // **读别人屏幕上的字，至少要拿得到浏览器网址那一枚 token。**
-        // 没有 `QUICKTERM_TOKEN` 的调用方连一个浏览器 pane 的标题都读不到（默认打码），
-        // 那它更没有道理读到一个 shell 的可视区——那里可能停着刚 export 的凭据。
-        // 这道闸在确认闸门**之前**：一条注定要被拒的命令不该先把用户叫起来点一次"允许"
+        // **Reading the text off somebody else's screen takes at least the token that gates
+        // browser URLs.** A caller without `QUICKTERM_TOKEN` cannot even read a browser pane's
+        // title (redacted by default), so it has even less business reading a shell's visible
+        // area — where a credential that was just exported may still be sitting.
+        // This gate comes **before** the confirmation gate: a command that is going to be refused
+        // anyway must not first drag the user over to click "Allow"
         if spec.name == "pane.capture-text", request.token != ControlEnvironment.token {
             logRefusal(request.cmd, peer: peer, request: request, code: .denied, message: "no token")
             fail(ControlErrorBody(
@@ -237,9 +262,11 @@ final class ControlCommandRunner {
             return
         }
 
-        // 带这两个开关而**没有实现**它们的命令一律先拒掉，位置在限流与确认闸门**之前**：
-        // 读命令是调用方误解了语义（读本来就什么都不改）；`action` 更糟——它直通 `perform()`，
-        // 静默接受等于"预演"真的落了刀，而 `--dry-run` 还会顺手把确认闸门一起关掉
+        // Commands that carry these two flags without **implementing** them are refused up front,
+        // **before** the rate limiter and the confirmation gate: for a read command the caller has
+        // misread the semantics (a read changes nothing anyway); `action` is worse — it goes
+        // straight through to `perform()`, so accepting it silently means the "preview" really
+        // swung the knife, and `--dry-run` would switch the confirmation gate off on the way
         if !spec.honorsMutationFlags,
            request.args[ControlCommandTable.Flag.dryRun]?.boolValue == true
                || request.args[ControlCommandTable.Flag.failIfNoop]?.boolValue == true {
@@ -253,23 +280,27 @@ final class ControlCommandRunner {
             return
         }
 
-        // 变更类命令：用户正被一个挡住他的对话框拦着时，绝不能在他背后动布局。
-        // 有两种情况 `isExecuting` 根本盖不住：
-        // (1) `NSAlert.runModal` 的嵌套 run loop 仍在抽干主队列——`closePane` 的
-        //     "仍有进程在运行"确认是 `DispatchQueue.main.async` 出去的，等它真弹出来时
-        //     `perform()` 早已返回、`isExecuting` 早已复位；
-        // (2) 我们自己的确认 sheet 还挂着——这时插进来的 `focus-*` 会改掉焦点，
-        //     用户盯着"关闭焦点 pane？"点了允许，挨刀的却是另一个 pane。
-        // 刻意**不用** `consent.isModalBusy`：它含任意窗口的 attachedSheet，
-        // 网页里一个不关的 JS `confirm()` 就能把整个控制面永久顶成 busy（网页内容 DoS 掉 agent）
+        // Mutation commands: while the user is held up by a dialog in front of them, never move
+        // the layout behind their back. Two cases `isExecuting` does not cover at all:
+        // (1) `NSAlert.runModal`'s nested run loop is still draining the main queue — the
+        //     "processes are still running" confirmation in `closePane` goes out through
+        //     `DispatchQueue.main.async`, so by the time it actually appears `perform()` has long
+        //     returned and `isExecuting` has long been reset;
+        // (2) our own consent sheet is still up — a `focus-*` slipping in now moves the focus,
+        //     and the user looking at "Close the focused pane?" clicks Allow while a different
+        //     pane takes the knife.
+        // `consent.isModalBusy` is deliberately **not** used here: it covers attachedSheet on any
+        // window, so one JS `confirm()` in a web page that is never dismissed would pin the whole
+        // control plane at busy forever (web content DoSing the agent)
         if cls.isMutation, modalBusyProbe() || consent.isPrompting {
             fail(ControlErrorBody(.busy, "A dialog is open in QuickTerm, so mutation commands are held back",
                                   hint: "Dismiss the dialog in QuickTerm first.", retryAfterMs: 2000))
             return
         }
 
-        // 限流：变更命令按**来源**再限一次。CLI 每条命令开一条新连接，
-        // 连接级那只桶对 `for i in {1..200}; do quickterm pane new; done` 完全无效
+        // Rate limiting: mutation commands are limited a second time, by **origin**. The CLI
+        // opens a new connection per command, so the connection-level bucket does nothing at all
+        // against `for i in {1..200}; do quickterm pane new; done`
         if cls.isMutation, !(dryRun(request) && spec.honorsMutationFlags) {
             let origin = request.origin?.pane.map { "pane:\($0)" } ?? "pid:\(peer.pid)"
             if case .limited(let retry, let scope) = rateLimiter.admit(origin: origin) {
@@ -281,17 +312,22 @@ final class ControlCommandRunner {
             }
         }
 
-        // `--dry-run` 什么都不改，因此**不问**：确认框问的是"要不要动手"，
-        // 而这次根本不会动手。它能读到的东西 `state` 本来就给（同一套打码规则）
-        // 豁免绑在"这条命令真的实现了预演"上，而不是"带了这个开关"：
-        // 将来再加一条不算 diff 的直通命令时，忘了实现 dry-run 最坏是接受了一个没用的开关
-        // （下面 execute() 里那道闸门会直接拒），而不是悄悄拆掉确认闸门
+        // `--dry-run` changes nothing, so it **does not ask**: the alert asks "shall I go
+        // ahead", and this time nothing goes ahead. Whatever it can read, `state` hands out
+        // anyway, under the same redaction rules.
+        // The exemption is tied to "this command really implements the preview", not to "this
+        // flag was passed": when another pass-through command that computes no diff is added
+        // later, forgetting to implement dry-run at worst means accepting a useless flag — the
+        // gate down in execute() refuses it outright — instead of quietly dismantling the
+        // confirmation gate
         var needsConsent = cls.requiresConsent && config.promptsForDestructive
             && !(dryRun(request) && spec.honorsMutationFlags)
 
-        // send-text 的正文**在问用户之前**就校验：一条根本送不出去的文本
-        // （控制字符、超长）不该先把用户叫起来点一次"允许"。
-        // 顺手拿到给确认框看的那份预览——它只画在屏幕上，一个字都不进日志
+        // The send-text payload is validated **before** the user is asked: text that cannot be
+        // delivered at all (control characters, over-long) must not first drag the user over to
+        // click "Allow".
+        // While we are here, take the preview the alert will show — it is only ever drawn on
+        // screen, and not one character of it reaches the log
         var sendTextPreview: String?
         if spec.name == "input.send-text" {
             let raw = request.args["text"]?.stringValue ?? ""
@@ -307,33 +343,39 @@ final class ControlCommandRunner {
             sendTextPreview = Self.sendTextPreview(raw)
         }
 
-        // **唯一的免确认豁免，范围窄到只有一句话：调用方往它自己那个 pane 里打字。**
+        // **The only exemption from confirmation, and it is narrow enough to fit in one sentence:
+        // the caller typing into its own pane.**
         //
-        // 这不是"带了 token 就放行"——那种写法在 ControlEnvironment 的注释里被明确禁止，
-        // 而且真的写成那样就是个洞：`QUICKTERM_TOKEN` 每次启动只有**一枚**、注入**每一个** pane，
-        // 于是它只能证明"来自某个 pane"，永远证明不了"来自这个 pane"。曾经的实现把
-        // `origin.pane`（调用方自报的一串 UUID，服务端一个字都验不了）当成身份，
-        // 于是 `QUICKTERM_PANE=<别人的 uuid> quickterm input send-text … -t <别人>` 就能免确认地
-        // 往别人的 shell 里打字。
+        // This is not "carrying a token gets you through" — that shape is explicitly forbidden by
+        // the comments on ControlEnvironment, and written that way it really would be a hole:
+        // there is exactly **one** `QUICKTERM_TOKEN` per launch and it is injected into **every**
+        // pane, so it can prove "from some pane" and never "from this pane". An earlier
+        // implementation treated `origin.pane` (a UUID the caller reports about itself, which the
+        // server cannot verify at all) as identity, so
+        // `QUICKTERM_PANE=<somebody else's uuid> quickterm input send-text … -t <somebody else>`
+        // would type into somebody else's shell with no confirmation at all.
         //
-        // 现在的判定只认**可验证的**那一枚：`QUICKTERM_PANE_TOKEN` 是每 pane 一枚的
-        // `HMAC(每次启动的密钥, paneID)`，服务端拿 `-t` **真正解析到的那个 pane** 的 id 现算一遍去比。
-        // 比中了才说明调用进程确实跑在那个 pane（或它的子进程）里——而那个 tty 本来就是它自己的，
-        // 它不经过 QuickTerm 也能往上写。比不中就走每次都问的那条路
-        // （send-text 的授权还不进缓存，见下面 cacheable）
+        // The test now accepts only the **verifiable** marker: `QUICKTERM_PANE_TOKEN` is the
+        // per-pane `HMAC(per-launch secret, paneID)`, and the server recomputes it from the id of
+        // **the pane `-t` actually resolved to** and compares. Only a match shows that the calling
+        // process really is running inside that pane (or a child of it) — and that tty is its own
+        // anyway; it could write to it without going through QuickTerm. A mismatch takes the road
+        // where it is asked every time (and a send-text grant is not cached either, see
+        // `cacheable` below)
         if needsConsent, spec.name == "input.send-text", writesIntoOwnPane(request, target: target) {
             needsConsent = false
         }
 
-        // **先解析目标再问**。拿调用方的原始写法（`@focused`，或者干脆什么都没写）去问，
-        // 等用户答完再解析，中间那 10 秒是真的会变的：
-        // 用户读到的必须是一个具体的 pane，而且批准之后落刀前还要再核一次身份
+        // **Resolve the target first, then ask.** Asking with the caller's raw spelling
+        // (`@focused`, or nothing at all) and resolving after the user answers leaves ten seconds
+        // in which things really do change: what the user reads has to be one concrete pane, and
+        // after approval the identity is checked once more before the knife goes in
         var pinned: PinnedSubject?
         if needsConsent {
             do {
                 pinned = try pin(spec, action: action, target: target, request: request)
             } catch let error as ControlErrorBody {
-                fail(error)          // 目标本来就不合法：不必去打扰用户
+                fail(error)          // the target was never valid: no need to disturb the user
                 return
             } catch {
                 fail(ControlErrorBody(.internalError, "\(error)"))
@@ -351,7 +393,8 @@ final class ControlCommandRunner {
             execute()
             return
         }
-        // 敏感命令一条一个授权键：批准过"读屏幕"不等于批准"往 shell 里打字"
+        // Sensitive commands get one grant key each: having approved "read the screen" is not
+        // approval for "type into the shell"
         let grantScope: String? = cls == .sensitive ? spec.name : nil
         if consent.isModalBusy, !consent.hasGrant(pid: peer.pid, cls: cls, scope: grantScope) {
             fail(ControlErrorBody(.busy, "A dialog is open in QuickTerm, so destructive commands are held back",
@@ -364,13 +407,17 @@ final class ControlCommandRunner {
                                originPane: originHandle(for: request),
                                originVerified: originIsProven(request),
                                tokenPresent: request.token == ControlEnvironment.token,
-                               // send-text 的授权**绝不缓存**：往别人的 tty 里打字每一次都要问。
-                               // 破坏性命令按 (pid, 类) 缓存一次是因为"关 pane"这件事用户看得见，
-                               // 而注入的文本会在那个 shell 里执行任意东西，两次之间可以完全不同
+                               // A send-text grant is **never cached**: typing into somebody
+                               // else's tty is asked about every single time. Destructive
+                               // commands are cached once per (pid, class) because closing a
+                               // pane is something the user can see, whereas injected text runs
+                               // whatever it likes in that shell and can differ completely
+                               // from one call to the next
                                cacheable: spec.name != "input.send-text",
                                scope: grantScope,
-                               // 正文只画给用户看：它是这次确认与上一次唯一的区别，
-                               // 不给出来的话 `echo hi` 和 `curl … | sh` 在框里长得一模一样
+                               // The payload is drawn for the user alone: it is the only thing
+                               // separating this confirmation from the last one, and without it
+                               // `echo hi` and `curl … | sh` look identical in the alert
                                payload: sendTextPreview,
                                payloadLength: sendTextPreview == nil
                                    ? nil : (request.args["text"]?.stringValue ?? "").count,
@@ -388,41 +435,51 @@ final class ControlCommandRunner {
         }
     }
 
-    /// 确认框里那句"来自 pane t3"。**只有带着本次启动的 token 才显示**：
-    /// `origin.pane` 是调用方自报的（CLI 直接抄自己的 `$QUICKTERM_PANE`），
-    /// 服务端一个字都没法验。没有 token 就等于连"我来自某个 pane"都没证据，
-    /// 那就一个字都不写——绝不在用户做信任判断的那块屏上把自报当事实讲。
-    /// 就算有 token，措辞也仍是"自称"：token 只证明来自**某个** pane，不证明是**这个**
+    /// The "from pane t3" line in the alert. **Shown only when this launch's token came with the
+    /// request**: `origin.pane` is self-reported (the CLI copies its own `$QUICKTERM_PANE`
+    /// verbatim) and the server can verify none of it. Without the token there is not even
+    /// evidence for "I come from some pane", so nothing is written at all — never present a
+    /// self-report as fact on the screen where the user is making a trust decision.
+    /// Even with the token the wording stays "claims": the token proves the request came from
+    /// **some** pane, not from **this** one
     func originHandle(for request: ControlRequest) -> String? {
         guard request.token == ControlEnvironment.token else { return nil }
         guard let raw = request.origin?.pane, let uuid = UUID(uuidString: raw) else { return nil }
-        // 必须是当下真活着的 pane：句柄注册表从不清理，否则会报出一个十分钟前就关掉的 pane
+        // It has to be a pane that is alive right now: the handle registry is never pruned, so
+        // without this check it would name a pane that was closed ten minutes ago
         guard ControlResolver.addressablePanes(in: screens).contains(where: { $0.pane.id == uuid }) else {
             return nil
         }
         return ControlHandleRegistry.shared.existingHandle(for: uuid)
     }
 
-    /// 自报的来源 pane **被证明了吗**（`QUICKTERM_PANE_TOKEN` 与 `origin.pane` 对得上）。
-    /// 只影响确认框的措辞——"来自 pane t3"与"自称来自 pane t3"是两句不同的话，
-    /// 而用户正拿这一句做信任判断
+    /// Has the self-reported origin pane **been proven** (does `QUICKTERM_PANE_TOKEN` match
+    /// `origin.pane`)?
+    /// This affects the wording of the alert and nothing else — "from pane t3" and "claims to
+    /// come from pane t3" are two different sentences, and the user is making a trust decision
+    /// out of that one sentence
     func originIsProven(_ request: ControlRequest) -> Bool {
         guard let raw = request.origin?.pane, let uuid = UUID(uuidString: raw) else { return false }
         return ControlEnvironment.constantTimeEquals(request.origin?.paneToken,
                                                      ControlEnvironment.paneToken(for: uuid))
     }
 
-    /// `input send-text` 的免确认判定：**这条命令写的就是调用方自己那个 pane 吗**。
+    /// The `input send-text` exemption test: **is this command writing into the caller's own
+    /// pane**?
     ///
-    /// 判定只有一条，而且两边都不是调用方能随便写的：
-    /// 拿 `-t` **真正解析到的那个 pane** 的 id 现算一遍 `HMAC(每次启动的密钥, paneID)`，
-    /// 与请求带来的 `QUICKTERM_PANE_TOKEN` 定长比较。
+    /// There is exactly one test, and neither side of it is something the caller can simply write
+    /// down: recompute `HMAC(per-launch secret, paneID)` from the id of **the pane `-t` actually
+    /// resolved to**, and compare it in constant time against the `QUICKTERM_PANE_TOKEN` the
+    /// request carried.
     ///
-    /// 刻意**不**看 `origin.pane`：那是自报的。旧实现拿它当身份，于是
-    /// `QUICKTERM_PANE=<别人的 uuid>` 就能把任意 pane 伪装成"自己"。现在就算把 origin
-    /// 写成别人的 uuid（连 `-t @self` 也会因此解析到别人那儿），HMAC 也对不上，照样要确认。
+    /// `origin.pane` is deliberately **not** consulted: it is self-reported. The old
+    /// implementation treated it as identity, so `QUICKTERM_PANE=<somebody else's uuid>` could
+    /// disguise any pane as "my own". Now, even writing somebody else's uuid into origin (which
+    /// makes `-t @self` resolve over there as well) fails the HMAC, and the confirmation still
+    /// happens.
     ///
-    /// 解析失败、没带这枚标记、写的是别人的 pane —— 一律返回 false（false = 走确认，安全的那一侧）
+    /// Resolution failed, the marker was not carried, or it writes into somebody else's pane —
+    /// all of them return false (false = go and confirm, the safe side)
     func writesIntoOwnPane(_ request: ControlRequest, target: ControlTarget?) -> Bool {
         guard let claim = request.origin?.paneToken, !claim.isEmpty else { return false }
         var effective = target ?? ControlTarget()
@@ -432,10 +489,11 @@ final class ControlCommandRunner {
                                                      ControlEnvironment.paneToken(for: resolved.id))
     }
 
-    /// 确认框里那一行正文预览。**净化 + 截断，绝不原样画**：
-    /// `validateSendText` 拦掉的是 C0 / DEL / C1，而 U+2028 / U+2029（AppKit 真的会在这里断行）、
-    /// 双向控制符 U+202E、零宽字符全都还能过——原样画出去，调用方就能在对话框里
-    /// 伪造出几行看着像对话框自己说的话。上限 4096 字符也不可能塞进一个 NSAlert
+    /// The payload preview line in the alert. **Sanitized and truncated, never drawn verbatim**:
+    /// `validateSendText` blocks C0 / DEL / C1, but U+2028 / U+2029 (AppKit really does break a
+    /// line there), the bidi control U+202E and zero-width characters all still get through —
+    /// drawn as they are, a caller could forge a few lines inside the dialog that look like the
+    /// dialog speaking for itself. And 4096 characters could never fit in an NSAlert anyway
     static func sendTextPreview(_ raw: String, limit: Int = 120) -> String {
         var out = ""
         var shown = 0
@@ -452,9 +510,10 @@ final class ControlCommandRunner {
         return out
     }
 
-    /// **先解析目标再问**，并把解析结果钉住。破坏性命令的主体各不相同：
-    /// `pane close` 是一个 pane，`workspace clear` 是一个工作区里的那一组 pane，
-    /// `screen close` 是一整块屏幕——每一种都要在确认框里说清楚，也都要在落刀前再核一次
+    /// **Resolve the target first, then ask**, and pin what came back. Destructive commands each
+    /// have a different subject: `pane close` is one pane, `workspace clear` is the group of panes
+    /// in one workspace, `screen close` is an entire screen — each of them has to be spelled out
+    /// in the alert, and each of them is checked again before the knife goes in
     private func pin(_ spec: ControlCommandSpec, action: WMAction?, target: ControlTarget?,
                      request: ControlRequest) throws -> PinnedSubject? {
         let resolver = makeResolver(request)
@@ -475,15 +534,17 @@ final class ControlCommandRunner {
                                   resolution.workspace + 1),
                                 panes.count, handles.joined(separator: " ")))
         case "spec.apply":
-            // 钉住的是"这一批工作区里的这些 pane"：**作用域由 spec 正文说了算**，不是 `-t`。
-            // 一份屏幕 spec 覆盖整块屏幕的每一个工作区、一份会话 spec 覆盖每一块屏幕；
-            // 确认框里只写 `-t` 指的那一个的话，用户批准的是一件比实际小得多的事
+            // What gets pinned is "these panes across this batch of workspaces": **the scope is
+            // decided by the spec body**, not by `-t`. A screen spec covers every workspace on a
+            // whole screen and a session spec covers every screen; write only the one `-t` names
+            // into the alert and the user is approving something far smaller than what happens
             let resolution = try resolver.resolve(target)
             guard let text = request.args["spec"]?.stringValue, !text.isEmpty else {
                 throw ControlErrorBody(.badRequest, "No spec content was provided",
                                        hint: "quickterm spec apply -f <file>, or pipe the spec in on stdin")
             }
-            // 解析不了 / 落不下去的 spec 在这里就失败：不必先把用户叫起来确认一件做不成的事
+            // A spec that cannot be parsed, or cannot be applied, fails right here: no point
+            // calling the user over to confirm something that cannot be done
             let document = try SpecParser.parse(text)
             let targets = try Self.specTargets(document, controller: resolution.controller,
                                                workspace: resolution.workspace, screens: screens)
@@ -549,10 +610,11 @@ final class ControlCommandRunner {
         }
     }
 
-    /// 确认框的正文。名字里必须出现**具体的那个主体**（句柄 + 标题 + 屏幕/工作区），
-    /// 不能只回显调用方的写法——"关闭焦点 pane"这句话本身不构成同意。
-    /// 这里给出的标题是未打码的真标题：打码防的是调用方，而这段文字只给用户自己看，
-    /// 从不回到 socket 上去
+    /// The body of the alert. It has to name **the concrete subject** (handle + title + screen /
+    /// workspace) rather than merely echo the caller's spelling back — "close the focused pane"
+    /// is not, on its own, something anyone can consent to.
+    /// The title given here is the real, unredacted one: redaction protects against the caller,
+    /// while this text is for the user's eyes only and never travels back over the socket
     static func consentSummary(_ request: ControlRequest, spec: ControlCommandSpec, action: WMAction?,
                                target: ControlTarget?, subject: PinnedSubject?) -> String {
         // One line = one whole sentence. **Never glue fragments together** ("applies to X" +
@@ -585,8 +647,9 @@ final class ControlCommandRunner {
                 lines.append(L("consent.summary.location",
                                controller.screenIndex + 1, subject.workspace + 1))
             case "pane.capture-text":
-                // 读屏幕这件事必须在框里说成"读"：用户批准的是"把那个 pane 屏幕上的字交出去"，
-                // 而不是一句抽象的"执行敏感操作"
+                // Reading the screen has to be worded as reading in the alert: what the user is
+                // approving is "hand over the text on that pane's screen", not some abstract
+                // "perform a sensitive operation"
                 lines.append(L("consent.summary.capture-text", subject.consentText))
                 lines.append(L("consent.summary.location",
                                controller.screenIndex + 1, subject.workspace + 1))
@@ -594,7 +657,8 @@ final class ControlCommandRunner {
                 lines.append(L("consent.summary.applies-to", subject.consentText))
                 lines.append(L("consent.summary.location",
                                controller.screenIndex + 1, subject.workspace + 1))
-                // 浏览器 pane 还有别的标签时，close-pane 关的是当前标签而不是整个 pane（Chrome 语义）
+                // When a browser pane has other tabs, close-pane closes the current tab rather
+                // than the whole pane (Chrome's semantics)
                 let tabOnly = (subject.pane as? BrowserPaneView).map { $0.tabs.count > 1 } ?? false
                 if action == .closePane || spec.name == "pane.close", tabOnly {
                     lines.append(L("consent.summary.tab-only"))
@@ -606,7 +670,8 @@ final class ControlCommandRunner {
         return lines.joined(separator: "\n")
     }
 
-    /// 打错的动作名给出最接近的几个（agent 会幻觉出 `close_pane` / `focus-l`）
+    /// Offer the nearest few names for a mistyped action (agents hallucinate `close_pane` and
+    /// `focus-l`)
     static func suggestions(for raw: String) -> [String] {
         let needle = raw.lowercased()
         let all = WMAction.allCases.map(\.rawValue)
@@ -616,16 +681,18 @@ final class ControlCommandRunner {
         return Array(merged.prefix(8))
     }
 
-    // MARK: 执行
+    // MARK: Execution
 
-    /// 本次请求的编码器（决定浏览器 pane 的 URL / 标题是否打码）
+    /// The encoder for this request (it decides whether a browser pane's URL / title get
+    /// redacted)
     private func makeEncoder(_ request: ControlRequest) -> ControlStateEncoder {
         ControlStateEncoder(screens: screens, trusted: request.token == ControlEnvironment.token,
                             exposeBrowser: config.exposeBrowser, mode: config.mode)
     }
 
-    /// 本次请求的解析器。**打码的判定要一路带进解析器**：
-    /// 否则 `title:~` 谓词会拿未打码的真标题去匹配，成了一个绕过打码的探测通道
+    /// The resolver for this request. **The redaction decision has to be carried all the way
+    /// into the resolver**: otherwise the `title:~` predicate matches against the real,
+    /// unredacted title and becomes a probing channel around the redaction
     private func makeResolver(_ request: ControlRequest) -> ControlResolver {
         ControlResolver(screens: screens, origin: request.origin,
                         exposesBrowser: makeEncoder(request).exposesBrowser)
@@ -649,8 +716,9 @@ final class ControlCommandRunner {
             isExecuting = false
             currentFlags = (false, false)
         }
-        // 兜底：`handle()` 已经在限流与确认闸门之前拒过一次了（那才是正确的位置——
-        // 绝不能先把用户叫起来确认，再告诉他这条命令根本不认这个开关）
+        // Backstop: `handle()` already refused this once, before the rate limiter and the
+        // confirmation gate — which is the right place, because calling the user over to confirm
+        // and only then telling them the command does not know this flag is not acceptable
         if !spec.honorsMutationFlags, currentFlags.dryRun || currentFlags.failIfNoop {
             completion(.failure(id: request.id, seq: seq,
                                 error: ControlErrorBody(
@@ -659,9 +727,10 @@ final class ControlCommandRunner {
             return
         }
 
-        // 本地命令（`install-cli`、`mcp`）根本不该出现在这条 socket 上：它们整个在调用方那一侧完成。
-        // 不明说的话，它们会掉进下面的 default 分支，收到一句"本阶段还没有实现"——
-        // 那是句假话，而 agent 会照着它去等一个永远不会来的版本
+        // Local commands (`install-cli`, `mcp`) have no business appearing on this socket at
+        // all: they run entirely on the caller's side. Left unsaid, they fall into the default
+        // branch below and get told "not implemented in this phase" — which is false, and an
+        // agent will take it at face value and wait for a release that never comes
         if spec.local {
             completion(.failure(id: request.id, seq: seq,
                                 error: ControlErrorBody(
@@ -751,10 +820,13 @@ final class ControlCommandRunner {
 
             case "version":
                 completion(.success(id: request.id, seq: seq, resolved: nil,
-                                    // cli 留空：应用无从得知调用方二进制的版本，
-                                    // 由 CLI 用自己的 cliVersion 填上（见 CLI/main.swift）。
-                                    // 编成 appVersion 会让「CLI 与应用版本不一致」这个诊断永远显示一致，
-                                    // 而升级后 PATH 上留着旧二进制正是设计里点名要发现的情况
+                                    // cli is left empty: the app has no way to know the
+                                    // version of the caller's binary, so the CLI fills it in
+                                    // from its own cliVersion (see CLI/main.swift).
+                                    // Encoding appVersion here would make the "CLI and app
+                                    // versions disagree" diagnostic report agreement forever,
+                                    // and an old binary left on PATH after an upgrade is
+                                    // exactly the case the design set out to catch
                                     data: ControlVersionPayload(
                                         cli: nil, app: appVersion,
                                         protocolVersion: ControlProtocol.version,
@@ -762,15 +834,17 @@ final class ControlCommandRunner {
                                         socket: ControlEnvironment.socketPath, running: true)))
 
             case "events.poll", "events.follow":
-                // **唯一一条可以不同步应答的命令**：长轮询挂在那里等，流则一直推。
-                // `isExecuting` 在本函数返回时就复位了（defer），所以挂着的 poll
-                // 不会把别的命令一起堵死——那正是"事件流是那条长命的连接"的代价与前提
+                // **The one command that need not answer synchronously**: a long poll hangs there
+                // waiting, and a stream keeps pushing. `isExecuting` is reset when this function
+                // returns (defer), so a suspended poll does not block every other command — which
+                // is both the price and the premise of "the event stream is the long-lived
+                // connection"
                 let ctx = ControlContext(spec: spec, request: request, peer: peer, target: target,
                                          resolver: resolver, encoder: encoder, pinned: pinned)
                 try runEvents(ctx, completion: completion)
 
             default:
-                // Phase 2 的名词-动词层：统一的 (echo, 变更信封) 形状
+                // The Phase 2 noun-verb layer: one uniform (echo, mutation envelope) shape
                 guard let group = spec.group else {
                     throw ControlErrorBody(.unknownCommand, "Command \(spec.name) is not implemented in this phase")
                 }
@@ -807,7 +881,8 @@ final class ControlCommandRunner {
         let resolution = try resolver.resolve(target)
         let controller = resolution.controller
 
-        // 工作区序号型动作：越界要给出明确范围，绝不静默无操作
+        // Actions that carry a workspace index: out of range has to state the range explicitly,
+        // never silently do nothing
         if let index = action.workspaceIndex {
             let count = controller.model.layouts.count
             guard index < count else {
@@ -818,8 +893,10 @@ final class ControlCommandRunner {
             }
         }
 
-        // `action` 直通 `perform()`，而 `perform()` 只作用于**活动**工作区。
-        // 目标指了另一个工作区却照做，就是那种"agent 以为动了、其实动在别处"的静默错误
+        // `action` goes straight through to `perform()`, and `perform()` acts only on the
+        // **active** workspace. Going ahead anyway when the target names a different workspace is
+        // exactly the silent failure where the agent believes it changed one thing and changed
+        // another
         if target?.workspace != nil, resolution.workspace != controller.model.activeIndex,
            action.workspaceIndex == nil {
             throw ControlErrorBody(
@@ -828,8 +905,9 @@ final class ControlCommandRunner {
                 hint: "Run quickterm action goto-workspace-\(resolution.workspace + 1) first.")
         }
 
-        // 目标显式指了 pane：先把焦点交过去，**并且校验交成功了**才执行。
-        // 交接是异步重试的（最长 0.75s），校验失败一律返回 busy——绝不对着错的 pane 动手
+        // The target names a pane explicitly: hand the focus over first, and execute only once
+        // **the handover has been verified**. The handover retries asynchronously (up to 0.75 s),
+        // and a failed check always returns busy — never act on the wrong pane
         if target?.pane != nil, let pane = resolution.pane {
             guard resolution.workspace == controller.model.activeIndex else {
                 throw ControlErrorBody(
@@ -859,9 +937,11 @@ final class ControlCommandRunner {
                 hint: "Pass -t <terminal pane handle>")
         }
 
-        // 确认闸门批准的是**这一个** pane：落刀前再核一次身份。
-        // 用户读确认框的那十秒里，不需要确认的 mutate 命令（`focus-right`、`goto-workspace-N`…）
-        // 完全可以插进来把焦点挪走；那时宁可整条命令 busy 掉，也绝不把批准过的一刀落到别处
+        // The confirmation gate approved **this one** pane: check the identity again before the
+        // knife goes in. During the ten seconds the user spends reading the alert, mutate commands
+        // that need no confirmation (`focus-right`, `goto-workspace-N`, …) can slip in and move
+        // the focus; better to fail the whole command as busy than to let an approved cut land
+        // somewhere else
         if let pinned, let pinnedPane = pinned.pane {
             guard controller === pinned.controller, controller.focusedPane === pinnedPane,
                   !controller.model.closingPanes.contains(pinnedPane.id) else {
@@ -876,7 +956,7 @@ final class ControlCommandRunner {
 
         let before = Set(controller.model.allPanes.map(\.id))
         let confirmPending = action == .closePane && (controller.focusedPane?.wantsConfirmClose ?? false)
-        controller.perform(action, precise: precise)   // perform() 自己先 flushPendingCloses()
+        controller.perform(action, precise: precise)   // perform() flushPendingCloses() first itself
 
         let after = controller.model.allPanes.filter { !before.contains($0.id) }
         let positions = ControlStateEncoder.positions(in: controller.model.layout,
@@ -885,9 +965,11 @@ final class ControlCommandRunner {
             encoder.paneInfo(pane, controller: controller, workspace: controller.model.activeIndex,
                              at: positions[pane.id], float: false, zoomed: false)
         }
-        // 回显落点：新建了 pane 就报新建的那个（不是"此刻的焦点 pane"）。
-        // `requestFocus` 是带退避重试的异步交接（最长 0.75s），命令返回时焦点常常还没真正过去——
-        // 与其回一个当下碰巧是焦点的旧 pane，不如诚实地报出新 pane 并标 focusPending
+        // Echoing where it landed: if a pane was created, report that one, not "whichever pane
+        // holds the focus right now". `requestFocus` is an asynchronous handover with backoff
+        // retries (up to 0.75 s), and by the time the command returns the focus has often not
+        // actually moved yet — rather than return an old pane that happens to be focused at this
+        // instant, report the new pane honestly and flag focusPending
         let subject = after.first ?? (target?.pane != nil ? resolution.pane : nil) ?? controller.focusedPane
         let focusPending = subject.map { controller.focusedPane !== $0 } ?? false
         let echo = ResolvedTarget(
@@ -905,7 +987,7 @@ final class ControlCommandRunner {
             panes: created.isEmpty ? nil : created))
     }
 
-    // MARK: --fields 投影
+    // MARK: --fields projection
 
     private func project(_ payload: ControlStatePayload, fields: String?) throws -> any Encodable {
         guard let list = Self.fieldList(fields) else { return payload }
@@ -930,7 +1012,7 @@ final class ControlCommandRunner {
     }
 }
 
-/// `--fields` 之后的 state 负载（pane 变成投影过的对象）
+/// The state payload after `--fields` (each pane becomes a projected object)
 struct ControlStateProjected: Encodable {
     var schema: String
     var app: ControlStatePayload.AppInfo

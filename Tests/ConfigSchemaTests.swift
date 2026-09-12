@@ -2,13 +2,13 @@ import AppKit
 import XCTest
 @testable import QuickTerm
 
-/// 配置注册表（`Sources/Config/ConfigSchema.swift`）的用例。
+/// Cases for the config registry (`Sources/Config/ConfigSchema.swift`).
 ///
-/// 这个文件的存在本身就是那条项目规矩的**机械执行**：
-/// "每个配置项都必须出现在模板、解析器、两份 README 和用例里"——
-/// 靠人自觉会漏，靠 `testEveryKeyIsDocumented` 不会。
+/// This file exists to **mechanically enforce** one project rule: "every config key has to appear in the
+/// template, in the parser, in both READMEs and in a test". Left to human diligence that slips;
+/// `testEveryKeyIsDocumented` does not.
 final class ConfigSchemaTests: XCTestCase {
-    /// 仓库根目录（用例跑在构建产物里，README 只能从源码路径找）
+    /// The repo root (tests run out of the build products, so a README is only reachable by source path).
     private var repoRoot: URL {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
     }
@@ -27,54 +27,57 @@ final class ConfigSchemaTests: XCTestCase {
         return try String(contentsOf: repoRoot.appendingPathComponent("\(name).md"), encoding: .utf8)
     }
 
-    // MARK: 注册表 = 唯一事实来源
+    // MARK: The registry is the single source of truth
 
-    /// 每个配置项都在模板里、在两份 README 里，而且**三处的默认值一模一样**
+    /// Every config key appears in the template and in both READMEs, and **the default is identical in all three**.
     func testEveryKeyIsDocumented() throws {
         let template = ConfigStore.template
         let en = try readme("README")
         let zh = try readme("README.zh-CN")
         for spec in ConfigSchema.keys {
             let line = spec.templateAssignment   // "# home = \"https://www.google.com\""
-            XCTAssertTrue(template.contains(line), "模板缺少 \(spec.id)：\(line)")
-            XCTAssertTrue(en.contains(line), "README.md 缺少 \(spec.id)：\(line)")
-            XCTAssertTrue(zh.contains(line), "README.zh-CN.md 缺少 \(spec.id)：\(line)")
+            XCTAssertTrue(template.contains(line), "the template is missing \(spec.id): \(line)")
+            XCTAssertTrue(en.contains(line), "README.md is missing \(spec.id): \(line)")
+            XCTAssertTrue(zh.contains(line), "README.zh-CN.md is missing \(spec.id): \(line)")
         }
-        // 补全缺键时照抄的那一块，必须逐行出现在模板里（同一个渲染函数，钉死不漂）
+        // The block copied in when a key is missing has to appear line for line in the template: one renderer,
+        // pinned so the two cannot drift apart.
         for (spec, lines) in ConfigSchema.templateKeyBlocks {
             XCTAssertTrue(template.contains(lines.joined(separator: "\n")),
-                          "模板与补全块不一致：\(spec.id)")
+                          "the template and the fill-in block disagree: \(spec.id)")
         }
         for section in ConfigSection.allCases {
-            XCTAssertTrue(template.contains("[\(section.rawValue)]"), "模板缺少分组 [\(section.rawValue)]")
+            XCTAssertTrue(template.contains("[\(section.rawValue)]"), "the template is missing the [\(section.rawValue)] section")
         }
         for doc in [en, zh] {
             for section in ConfigSection.allCases where section.hasRegisteredKeys {
-                XCTAssertTrue(doc.contains("[\(section.rawValue)]"), "README 缺少分组 [\(section.rawValue)]")
+                XCTAssertTrue(doc.contains("[\(section.rawValue)]"), "the README is missing the [\(section.rawValue)] section")
             }
         }
     }
 
-    /// 注册表与"写进 Settings 的哪一个字段"一一对应（多一个少一个都是配置写了不生效）
+    /// The registry maps one-to-one onto the Settings field each key writes: one extra or one missing means
+    /// a config line that silently does nothing.
     func testEveryKeyHasABinding() {
         XCTAssertEqual(Set(ConfigSchema.keys.map(\.id)), Set(ConfigBindings.table.keys))
     }
 
-    /// 模板往返：整份模板全是注释 → 解析出来就是一套默认值；
-    /// 把任意一行取消注释 → 拿回的正是注册表声明的那个默认值
+    /// Template round trip: the template is all comments, so parsing it yields exactly the defaults;
+    /// uncomment any single line and you get back precisely the default the registry declares.
     func testTemplateRoundTrips() {
         XCTAssertEqual(ConfigStore.parse(ConfigStore.template), ConfigStore.Settings(),
-                       "模板里每一行都是注释，解析出来必须等于纯默认值")
+                       "every line in the template is a comment, so parsing it has to equal the bare defaults")
         for spec in ConfigSchema.keys {
             let text = "[\(spec.section.rawValue)]\n\(spec.key) = \(spec.defaultValue.literal)\n"
             XCTAssertEqual(ConfigSchema.resolve(text)[spec.id], spec.defaultValue,
-                           "模板里 \(spec.id) 写的默认值解析不回它自己")
+                           "the default the template shows for \(spec.id) does not parse back to itself")
         }
     }
 
-    // MARK: 旧写法永远有效
+    // MARK: Old spellings keep working forever
 
-    /// **表驱动跑完整张旧名单**（不是抽查）：每一个旧写法都必须与新写法解析成同一套 Settings
+    /// **Table-driven across the whole list of old names**, not a spot check: every legacy spelling has to
+    /// parse into the same Settings as its new name.
     func testEveryLegacySpellingParsesLikeItsNewName() {
         for spec in ConfigSchema.keys {
             for value in [spec.defaultValue.literal, Self.sample(for: spec)] {
@@ -83,13 +86,14 @@ final class ConfigSchemaTests: XCTestCase {
                     let head = ref.section.isEmpty ? "" : "[\(ref.section)]\n"
                     let legacy = ConfigStore.parse("\(head)\(ref.name) = \(value)\n")
                     XCTAssertEqual(legacy, modern,
-                                   "旧写法 [\(ref.section)] \(ref.name) = \(value) 与新写法不等价")
+                                   "the old spelling [\(ref.section)] \(ref.name) = \(value) is not equivalent to the new one")
                 }
             }
         }
     }
 
-    /// 一份**全用旧扁平写法**的配置，与同一份内容的新分组写法，解析结果必须一模一样
+    /// A config written **entirely in the old flat style** has to parse identically to the same content in
+    /// the new grouped style.
     func testFlatStyleConfigEqualsGroupedStyle() {
         var flat: [String: [String]] = [:]
         var grouped: [String: [String]] = [:]
@@ -110,15 +114,17 @@ final class ConfigSchemaTests: XCTestCase {
         }
         let a = ConfigStore.parse(render(flat))
         let b = ConfigStore.parse(render(grouped))
-        XCTAssertEqual(a, b, "旧扁平写法与新分组写法必须逐字段相等")
-        XCTAssertNotEqual(a, ConfigStore.Settings(), "样例值必须真的与默认值不同，否则这个用例什么都没证明")
+        XCTAssertEqual(a, b, "the old flat style and the new grouped style have to match field for field")
+        XCTAssertNotEqual(a, ConfigStore.Settings(),
+                          "the sample values have to really differ from the defaults, or this case proves nothing")
     }
 
-    /// **重构前那张键表逐条钉死**（这份清单是从改动前的 `ConfigStore.parse` 抄下来的，
-    /// 与注册表无关：注册表要是漏掉、改名、改脾气了哪一个键，这条用例就红）。
-    /// 用户手上那份全是旧扁平写法的 config.toml 必须一个字都不用改
+    /// **The pre-refactor key table, pinned row by row.** This list was copied out of `ConfigStore.parse` as
+    /// it stood before the change and owes the registry nothing: if the registry drops a key, renames one, or
+    /// changes its temperament, this case goes red.
+    /// The old, entirely flat config.toml a user already has must not need a single edit.
     func testPreChangeKeyListParsesExactlyLikeBefore() {
-        // (写法, 值, 断言)
+        // (spelling, value, assertion)
         let frozen: [(section: String, key: String, value: String,
                       check: (ConfigStore.Settings) -> Bool)] = [
             ("", "theme", "\"nord\"", { $0.themeName == "nord" }),
@@ -154,112 +160,113 @@ final class ConfigSchemaTests: XCTestCase {
             let head = item.section.isEmpty ? "" : "[\(item.section)]\n"
             let toml = "\(head)\(item.key) = \(item.value)\n"
             XCTAssertNotNil(ConfigSchema.byRef[ConfigKeyRef(item.section, item.key)],
-                            "注册表不再认得旧写法 [\(item.section)] \(item.key)")
+                            "the registry no longer knows the old spelling [\(item.section)] \(item.key)")
             XCTAssertTrue(item.check(ConfigStore.parse(toml)),
-                          "旧写法 [\(item.section)] \(item.key) = \(item.value) 解析结果变了")
+                          "the old spelling [\(item.section)] \(item.key) = \(item.value) now parses differently")
         }
-        // 一整份旧文件一次过（顺序、混排都照旧）
+        // A whole old file in one pass, original ordering and mixing included.
         var whole = frozen.filter { $0.section.isEmpty && $0.key != "dwindle-gap" && $0.key != "pane-gap" }
             .map { "\($0.key) = \($0.value)" }
-        whole.append("dwindle-gap = 9")   // 旧名单独在时仍然生效
+        whole.append("dwindle-gap = 9")   // The old name on its own still takes effect
         whole.append("[control]")
         whole.append(contentsOf: frozen.filter { $0.section == "control" && $0.value != "\"on\"" }
             .map { "\($0.key) = \($0.value)" })
         let all = ConfigStore.parse(whole.joined(separator: "\n") + "\n")
-        XCTAssertEqual(all.paneGap, 9, "只有 dwindle-gap 时它说了算")
+        XCTAssertEqual(all.paneGap, 9, "with only dwindle-gap present, it decides")
         XCTAssertEqual(all.workspaces, 8)
-        XCTAssertFalse(all.controlSocket, "旧的 [control] enabled = false 仍然关掉监听")
+        XCTAssertFalse(all.controlSocket, "the old [control] enabled = false still turns the listener off")
         XCTAssertFalse(ControlCommandRunner.Config(all).isListening)
-        // 越界脾气也照旧（clamp / 拒绝）
+        // Out-of-range temperament is unchanged too: clamp or reject.
         XCTAssertEqual(ConfigStore.parse("workspaces = 99").workspaces, 10)
         XCTAssertEqual(ConfigStore.parse("pane-padding = -3").panePadding, 0)
         XCTAssertEqual(ConfigStore.parse("browser-tab-width = 9999").browserTabWidth, 600)
-        XCTAssertEqual(ConfigStore.parse("theme = \"\"").themeName, "", "空 theme 仍然是「显式不选」")
+        XCTAssertEqual(ConfigStore.parse("theme = \"\"").themeName, "", "an empty theme still means \"explicitly none\"")
         XCTAssertEqual(ConfigStore.parse("browser-home = \"\"").browserHome,
-                       ConfigStore.Settings().browserHome, "空值仍然保留默认")
+                       ConfigStore.Settings().browserHome, "an empty value still keeps the default")
     }
 
-    /// 布尔：认得的写法一律认，**不认得的一律拒绝并留一条 diagnostic**。
-    /// 以前默认开的键写 off / 0 / no 会被悄悄读成"开"
+    /// Booleans: every spelling it knows is accepted, and **anything else is rejected with a diagnostic left
+    /// behind**. A key that defaults to on used to read off / 0 / no silently as "on".
     func testBoolSpellingsAndRejectionsAreReported() {
         for word in ["off", "0", "no", "OFF"] {
             XCTAssertFalse(ConfigStore.parse("[control]\nsocket = \(word)\n").controlSocket,
-                           "socket = \(word) 必须真的关掉")
+                           "socket = \(word) really has to turn it off")
             XCTAssertFalse(ConfigStore.parse("[control]\nmcp = \(word)\n").controlMCP)
             XCTAssertFalse(ControlConfigGate(text: "[control]\nsocket = \(word)\n").isListening)
         }
         for word in ["on", "1", "yes", "TRUE"] {
             XCTAssertTrue(ConfigStore.parse("[control]\nsocket = \(word)\n").controlSocket)
             XCTAssertTrue(ConfigStore.parse("[browser]\ninspectable = \(word)\n").browserInspectable,
-                          "默认关的键写 \(word) 就是开")
+                          "a key that defaults to off is on when written \(word)")
         }
         let bad = ConfigStore.parseDetailed("[control]\nsocket = maybe\n")
-        XCTAssertTrue(bad.settings.controlSocket, "认不出来 → 保留默认（默认是开）")
+        XCTAssertTrue(bad.settings.controlSocket, "unrecognized -> keep the default, which here is on")
         let note = bad.diagnostics.first { $0.id == "control.socket" }
-        XCTAssertNotNil(note, "认不出来的值必须留下一条「这行没生效」")
+        XCTAssertNotNil(note, "an unrecognized value has to leave a \"this line did nothing\" note")
         XCTAssertTrue(note?.messageZH.contains("socket") ?? false, note?.messageZH ?? "")
         XCTAssertTrue(note?.messageZH.contains("maybe") ?? false, note?.messageZH ?? "")
         XCTAssertEqual(note?.ref, ConfigKeyRef("control", "socket"))
-        // 合法的值一条 diagnostic 都不该有（模板自己更不该有）
+        // A valid value leaves no diagnostic at all, and the template least of all.
         XCTAssertTrue(ConfigStore.parseDetailed(ConfigStore.template).diagnostics.isEmpty)
         XCTAssertTrue(ConfigStore.parseDetailed("[control]\nsocket = off\n").diagnostics.isEmpty)
-        // 旧写法同样能真的关掉
+        // The old spelling really turns it off too.
         XCTAssertFalse(ConfigStore.parse("[control]\nenabled = off\n").controlSocket)
     }
 
-    /// 新旧同时出现：一般情况新名赢（与行序无关）
+    /// When both spellings appear the new name normally wins, regardless of line order.
     func testCanonicalWinsOverLegacy() {
         XCTAssertEqual(ConfigStore.parse("dwindle-gap = 4\n[appearance]\npane-gap = 7\n").paneGap, 7)
         XCTAssertEqual(ConfigStore.parse("[appearance]\npane-gap = 7\ndwindle-gap = 4\n").paneGap, 7)
-        XCTAssertEqual(ConfigStore.parse("dwindle-gap = 4\n").paneGap, 4, "只有旧名时旧名生效")
+        XCTAssertEqual(ConfigStore.parse("dwindle-gap = 4\n").paneGap, 4, "with only the old name present, the old name applies")
         XCTAssertEqual(ConfigStore.parse("browser-home = \"https://old\"\n[browser]\nhome = \"https://new\"\n")
             .browserHome, "https://new")
     }
 
-    // MARK: 越界行为（照抄历史，不许静悄悄改）
+    // MARK: Out-of-range behavior (copied from history; no quiet changes)
 
-    /// 数值 clamp，枚举 / 空串拒绝并保留默认——每一类各一条
+    /// Numbers clamp; enums and empty strings are rejected and keep the default. One case per kind.
     func testOutOfRangeBehaviourPerKind() {
         for spec in ConfigSchema.keys {
             switch spec.kind {
             case .int(let lo, let hi):
-                XCTAssertEqual(spec.coerce("999999"), .int(hi), "\(spec.id) 上界应 clamp")
-                XCTAssertEqual(spec.coerce("-999999"), .int(lo), "\(spec.id) 下界应 clamp")
-                XCTAssertNil(spec.coerce("abc"), "\(spec.id) 非数字应拒绝")
+                XCTAssertEqual(spec.coerce("999999"), .int(hi), "\(spec.id) has to clamp at the upper bound")
+                XCTAssertEqual(spec.coerce("-999999"), .int(lo), "\(spec.id) has to clamp at the lower bound")
+                XCTAssertNil(spec.coerce("abc"), "\(spec.id) has to reject a non-number")
                 XCTAssertEqual(spec.outOfRange, .clamp)
             case .double(let lo, let hi):
-                XCTAssertEqual(spec.coerce("99"), .double(hi), "\(spec.id) 上界应 clamp")
-                XCTAssertEqual(spec.coerce("-99"), .double(lo), "\(spec.id) 下界应 clamp")
-                XCTAssertNil(spec.coerce("abc"), "\(spec.id) 非数字应拒绝")
+                XCTAssertEqual(spec.coerce("99"), .double(hi), "\(spec.id) has to clamp at the upper bound")
+                XCTAssertEqual(spec.coerce("-99"), .double(lo), "\(spec.id) has to clamp at the lower bound")
+                XCTAssertNil(spec.coerce("abc"), "\(spec.id) has to reject a non-number")
                 XCTAssertEqual(spec.outOfRange, .clamp)
             case .enumeration(_, let strict):
                 if strict {
-                    XCTAssertNil(spec.coerce("yolo"), "\(spec.id) 是严格枚举，不认得的值必须拒绝")
+                    XCTAssertNil(spec.coerce("yolo"), "\(spec.id) is a strict enum: an unknown value has to be rejected")
                     XCTAssertEqual(spec.outOfRange, .reject)
                 } else {
                     XCTAssertEqual(spec.coerce("yolo"), .string("yolo"),
-                                   "\(spec.id) 历史上是「非空即收」，这次重构不改它的脾气")
+                                   "\(spec.id) has always taken anything non-empty, and this refactor leaves that temperament alone")
                     XCTAssertNil(spec.coerce(""))
                 }
             case .string, .path:
                 if spec.acceptsEmpty {
                     XCTAssertEqual(spec.coerce(""), .string(""))
                 } else {
-                    XCTAssertNil(spec.coerce(""), "\(spec.id) 空值不该覆盖默认")
+                    XCTAssertNil(spec.coerce(""), "an empty value for \(spec.id) must not override the default")
                 }
             case .bool:
-                // 布尔只认那张字面量表；表外的值一律拒绝（= 保留默认，并留一条 diagnostic）
+                // Booleans know only that table of literals; anything outside it is rejected, which means
+                // keeping the default and leaving a diagnostic.
                 for truthy in ["true", "TRUE", "1", "yes", "on"] {
-                    XCTAssertEqual(spec.coerce(truthy), .bool(true), "\(spec.id) 认不出真值 \(truthy)")
+                    XCTAssertEqual(spec.coerce(truthy), .bool(true), "\(spec.id) does not recognize the true spelling \(truthy)")
                 }
                 for falsey in ["false", "False", "0", "no", "off"] {
-                    XCTAssertEqual(spec.coerce(falsey), .bool(false), "\(spec.id) 认不出假值 \(falsey)")
+                    XCTAssertEqual(spec.coerce(falsey), .bool(false), "\(spec.id) does not recognize the false spelling \(falsey)")
                 }
-                XCTAssertNil(spec.coerce("maybe"), "\(spec.id) 怪值必须拒绝，绝不猜一个")
+                XCTAssertNil(spec.coerce("maybe"), "\(spec.id) has to reject an odd value and never guess one")
                 XCTAssertEqual(spec.outOfRange, .reject)
             }
         }
-        // 几条钉死的历史行为（回归）
+        // A few historical behaviors pinned as regressions.
         XCTAssertEqual(ConfigStore.parse("workspaces = 99").workspaces, 10)
         XCTAssertEqual(ConfigStore.parse("workspaces = 0").workspaces, 1)
         XCTAssertEqual(ConfigStore.parse("pane-opacity = 0.1").paneOpacity, 0.5, accuracy: 0.001)
@@ -268,9 +275,9 @@ final class ConfigSchemaTests: XCTestCase {
         XCTAssertEqual(ConfigStore.parse("browser-download-dir = \"\"").browserDownloadDir, "~/Downloads")
     }
 
-    // MARK: 样例值
+    // MARK: Sample values
 
-    /// 给一个键造一个"肯定不是默认值"的合法值
+    /// Build a legal value for a key that is guaranteed not to be its default.
     static func sample(for spec: ConfigKeySpec) -> String {
         switch spec.kind {
         case .bool:
@@ -289,44 +296,44 @@ final class ConfigSchemaTests: XCTestCase {
     }
 }
 
-// MARK: - [control] 的两个开关
+// MARK: - The two [control] switches
 
 final class ControlSwitchConfigTests: XCTestCase {
     func testDefaultsAreOn() {
         let defaults = ConfigStore.parse("")
-        XCTAssertTrue(defaults.controlSocket, "[control] socket 默认开")
-        XCTAssertTrue(defaults.controlMCP, "[control] mcp 默认开")
+        XCTAssertTrue(defaults.controlSocket, "[control] socket is on by default")
+        XCTAssertTrue(defaults.controlMCP, "[control] mcp is on by default")
         XCTAssertTrue(ControlCommandRunner.Config(defaults).isListening)
         XCTAssertTrue(ControlConfigGate(text: "").socket)
         XCTAssertTrue(ControlConfigGate(text: "").mcp)
     }
 
-    /// socket / 旧名 enabled / mode 三个开关的优先级表：**取最严的那个**
+    /// The precedence table for socket, the old name enabled, and mode: **the strictest one wins**.
     func testListenerPrecedenceTable() {
         let cases: [(toml: String, listening: Bool, why: String)] = [
-            ("", true, "什么都不写 = 开"),
-            ("[control]\nsocket = true\n", true, "新名 true"),
-            ("[control]\nsocket = false\n", false, "新名 false"),
-            ("[control]\nenabled = false\n", false, "旧名 false 仍然有效"),
-            ("[control]\nenabled = true\n", true, "旧名 true"),
-            ("[control]\nsocket = true\nenabled = false\n", false, "两个都在 → 取最严"),
-            ("[control]\nsocket = false\nenabled = true\n", false, "两个都在 → 取最严（与行序无关）"),
-            ("[control]\nenabled = true\nsocket = false\n", false, "两个都在 → 取最严（换个行序）"),
-            ("[control]\nmode = \"off\"\n", false, "mode = off 也等于不监听"),
-            ("[control]\nsocket = true\nmode = \"off\"\n", false, "socket 开也救不回 mode = off"),
-            ("[control]\nsocket = false\nmode = \"ask\"\n", false, "mode 正常也救不回 socket = false"),
-            ("[control]\nmode = \"readonly\"\n", true, "只读仍然监听"),
+            ("", true, "nothing written at all means on"),
+            ("[control]\nsocket = true\n", true, "the new name, true"),
+            ("[control]\nsocket = false\n", false, "the new name, false"),
+            ("[control]\nenabled = false\n", false, "the old name, false, still counts"),
+            ("[control]\nenabled = true\n", true, "the old name, true"),
+            ("[control]\nsocket = true\nenabled = false\n", false, "both present -> take the strictest"),
+            ("[control]\nsocket = false\nenabled = true\n", false, "both present -> the strictest, whatever the line order"),
+            ("[control]\nenabled = true\nsocket = false\n", false, "both present -> the strictest, lines swapped"),
+            ("[control]\nmode = \"off\"\n", false, "mode = off also means no listener"),
+            ("[control]\nsocket = true\nmode = \"off\"\n", false, "socket on cannot rescue mode = off"),
+            ("[control]\nsocket = false\nmode = \"ask\"\n", false, "a normal mode cannot rescue socket = false"),
+            ("[control]\nmode = \"readonly\"\n", true, "readonly still listens"),
         ]
         for item in cases {
             let settings = ConfigStore.parse(item.toml)
             XCTAssertEqual(ControlCommandRunner.Config(settings).isListening, item.listening, item.why)
-            // CLI 侧那份（不带 AppKit）必须给出同一个答案，否则两边会各说各话
+            // The CLI-side copy, which has no AppKit, has to give the same answer, or the two talk past each other.
             XCTAssertEqual(ControlConfigGate(text: item.toml).isListening, item.listening,
-                           "CLI 闸门与 app 解析不一致：\(item.why)")
+                           "the CLI gate and the app's parse disagree: \(item.why)")
         }
     }
 
-    /// 闸门与 app 的解析同源：三个 [control] 值逐一对齐
+    /// The gate and the app parse from one source: all three [control] values line up.
     func testGateMatchesAppParse() {
         for toml in ["", "[control]\nsocket = false\n", "[control]\nmcp = false\n",
                      "[control]\nenabled = false\nmcp = false\n", "[control]\nmode = \"readonly\"\n",
@@ -339,66 +346,67 @@ final class ControlSwitchConfigTests: XCTestCase {
         }
     }
 
-    /// 用例宿主里 `.load()` 不许去读开发者真正的 ~/.config/quickterm/config.toml：
-    /// `serve(gate: .load())` 这类默认参数是在调用点求值的，
-    /// 谁家配置里写了 `[control] mcp = false`，哪台机器上的用例就红
+    /// Inside a test host, `.load()` must not read the developer's real ~/.config/quickterm/config.toml:
+    /// a default argument like `serve(gate: .load())` is evaluated at the call site, so anyone whose own
+    /// config says `[control] mcp = false` would watch these cases go red on their machine.
     func testGateLoadIgnoresTheDeveloperConfigInTests() throws {
         let testHost = ["XCTestConfigurationFilePath": "/somewhere/Test.xctestconfiguration"]
         XCTAssertEqual(ControlConfigGate.load(environment: testHost), ControlConfigGate(),
-                       "用例宿主里没指定配置文件 → 一律默认全开")
-        // 真跑在用例里（本进程）也一样
+                       "no config file named in a test host -> everything defaults to on")
+        // The real thing, running inside this test process, behaves the same.
         XCTAssertEqual(ControlConfigGate.load(), ControlConfigGate())
-        // 显式指定了文件就照读（闸门用例走的就是这条路）
+        // A file named explicitly is read as usual, which is the path the gate cases take.
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("qt-gate-\(UUID().uuidString.prefix(8)).toml")
         defer { try? FileManager.default.removeItem(at: url) }
         try "[control]\nmcp = false\n".write(to: url, atomically: true, encoding: .utf8)
         var env = testHost
         env[ConfigPaths.environmentKey] = url.path
-        XCTAssertFalse(ControlConfigGate.load(environment: env).mcp, "指定了文件就必须读它")
+        XCTAssertFalse(ControlConfigGate.load(environment: env).mcp, "once a file is named it has to be read")
     }
 
-    /// `mcp = false` 只关 MCP，不关 socket；`socket = false` 也不改写 mcp
+    /// `mcp = false` turns off MCP only, not the socket, and `socket = false` does not rewrite mcp.
     func testTwoSwitchesAreIndependent() {
         let noMCP = ConfigStore.parse("[control]\nmcp = false\n")
-        XCTAssertTrue(noMCP.controlSocket, "关 MCP 不该顺手把命令行也关掉")
+        XCTAssertTrue(noMCP.controlSocket, "turning MCP off must not take the command line down with it")
         XCTAssertFalse(noMCP.controlMCP)
         let noSocket = ConfigStore.parse("[control]\nsocket = false\n")
-        XCTAssertTrue(noSocket.controlMCP, "两个开关各管各的（socket 关了 MCP 自然也连不上，但那是另一回事）")
+        XCTAssertTrue(noSocket.controlMCP,
+                      "the two switches are independent (with the socket off MCP cannot connect either, but that is a different matter)")
     }
 
-    // MARK: MCP 入口
+    // MARK: The MCP entry point
 
     func testMCPGateRefusesAndNamesTheConfigKey() throws {
-        XCTAssertNil(MCPServer.configRefusal(gate: ControlConfigGate()), "默认开 = 不拒绝")
+        XCTAssertNil(MCPServer.configRefusal(gate: ControlConfigGate()), "on by default means no refusal")
         let refusal = try XCTUnwrap(MCPServer.configRefusal(gate: ControlConfigGate(socket: true, mcp: false)),
-                                    "mcp = false 必须拒绝")
+                                    "mcp = false has to refuse")
         XCTAssertEqual(refusal.code, ControlErrorCode.denied.rawValue)
         XCTAssertEqual(refusal.exit, ControlExit.denied.rawValue)
         XCTAssertTrue(refusal.message.contains("[control]") && refusal.message.contains("mcp"),
-                      "错误里必须点名是哪个配置键：\(refusal.message)")
+                      "the error has to name the config key: \(refusal.message)")
         XCTAssertTrue(MCPServer.configRefusal(gate: ControlConfigGate(socket: true, mcp: false),
                                               path: "/tmp/whatever.toml")?
             .message.contains("/tmp/whatever.toml") ?? false,
-                      "还要点名是哪一份配置文件（冒烟 / 第二实例用的不是 ~ 那一份）")
+                      "and name which config file it is (smoke runs and a second instance do not use the one under ~)")
 
-        // serve() 是"真的开始说 MCP"的唯一出口：闸门钉在它上面，多一个入口也绕不过去
+        // serve() is the only way to actually start speaking MCP: the gate is nailed to it, so no extra entry point slips past.
         let server = MCPServer(cliVersion: "test") { _ in
-            XCTFail("被拒绝之后一条请求都不该发出去")
+            XCTFail("not one request may go out after a refusal")
             throw ControlErrorBody(.failed, "unreachable")
         }
         let refused = server.serve(input: .nullDevice, output: .nullDevice,
                                    gate: ControlConfigGate(socket: true, mcp: false))
         XCTAssertEqual(refused?.exit, ControlExit.denied.rawValue)
         XCTAssertNil(server.serve(input: .nullDevice, output: .nullDevice, gate: ControlConfigGate()),
-                     "开着的时候 serve 读到 EOF 正常返回")
+                     "while enabled, serve returns normally when it reads EOF")
     }
 
-    /// 端到端：随包的那个 `quickterm` 二进制，配置里 mcp = false 时必须拒绝服务
+    /// End to end: the bundled `quickterm` binary has to refuse service when the config says mcp = false.
     func testBundledCLIRefusesMCPWhenDisabled() throws {
         let cli = try XCTUnwrap(Bundle.main.sharedSupportURL?.appendingPathComponent("quickterm"))
         try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: cli.path),
-                          "构建产物里没有随包 CLI")
+                          "the build products contain no bundled CLI")
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent("qt-mcp-\(UUID().uuidString.prefix(8)).toml")
         defer { try? FileManager.default.removeItem(at: temporary) }
@@ -420,18 +428,18 @@ final class ControlSwitchConfigTests: XCTestCase {
         }
 
         let denied = try run("[control]\nmcp = false\n", ["mcp", "--plain"])
-        XCTAssertEqual(denied.code, ControlExit.denied.rawValue, "退出码要能被脚本分辨")
-        XCTAssertTrue(denied.err.contains("mcp"), "stderr 必须点名配置键：\(denied.err)")
+        XCTAssertEqual(denied.code, ControlExit.denied.rawValue, "the exit code has to be distinguishable from a script")
+        XCTAssertTrue(denied.err.contains("mcp"), "stderr has to name the config key: \(denied.err)")
 
-        // 别的入口也别想绕过去：--list-tools 同样被拒
+        // No other entry point gets around it either: --list-tools is refused just the same.
         XCTAssertEqual(try run("[control]\nmcp = false\n", ["mcp", "--list-tools", "--plain"]).code,
                        ControlExit.denied.rawValue)
-        // 开着的时候（默认）：标准输入立刻 EOF → 正常收工
+        // While enabled (the default): stdin hits EOF immediately and it finishes normally.
         XCTAssertEqual(try run("", ["mcp", "--plain"]).code, 0)
     }
 }
 
-// MARK: - socket = false 真的不绑
+// MARK: - socket = false really does not bind
 
 @MainActor
 final class ControlSocketSwitchTests: XCTestCase {
@@ -446,7 +454,7 @@ final class ControlSocketSwitchTests: XCTestCase {
     private func tempSocketPath() throws -> String {
         let path = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("qts-\(UUID().uuidString.prefix(8)).sock")
-        try XCTSkipUnless(ControlPaths.fits(path), "临时目录太长，装不进 sun_path")
+        try XCTSkipUnless(ControlPaths.fits(path), "the temp directory is too long to fit in sun_path")
         paths.append(path)
         return path
     }
@@ -457,7 +465,7 @@ final class ControlSocketSwitchTests: XCTestCase {
                              socketPath: path)
     }
 
-    /// `[control] socket = false`：既没有 socket 文件，服务对象也没被起起来
+    /// `[control] socket = false`: no socket file appears, and the server object is never started either.
     func testSocketFalseNeverBinds() throws {
         for toml in ["[control]\nsocket = false\n", "[control]\nenabled = false\n",
                      "[control]\nmode = \"off\"\n"] {
@@ -465,14 +473,14 @@ final class ControlSocketSwitchTests: XCTestCase {
             let server = try server(at: path)
             defer { server.stop() }
             server.apply(ControlCommandRunner.Config(ConfigStore.parse(toml)))
-            XCTAssertFalse(server.isListening, "不该监听：\(toml)")
+            XCTAssertFalse(server.isListening, "must not listen: \(toml)")
             XCTAssertNil(server.socketPath)
             XCTAssertFalse(FileManager.default.fileExists(atPath: path),
-                           "socket 文件都不该出现：\(toml)")
+                           "not even the socket file may appear: \(toml)")
         }
     }
 
-    /// 反过来：默认配置是真的会绑上（否则上一条用例证明不了任何事）
+    /// The other direction: the default config really does bind, or the case above would prove nothing.
     func testDefaultConfigBinds() throws {
         let path = try tempSocketPath()
         let server = try server(at: path)
@@ -480,18 +488,18 @@ final class ControlSocketSwitchTests: XCTestCase {
         server.apply(ControlCommandRunner.Config(ConfigStore.parse("")))
         XCTAssertTrue(server.isListening)
         XCTAssertTrue(FileManager.default.fileExists(atPath: path))
-        // 热重载把开关关掉 → 停服并把 socket 文件收走
+        // A hot reload that flips the switch off stops the server and takes the socket file away.
         server.apply(ControlCommandRunner.Config(ConfigStore.parse("[control]\nsocket = false\n")))
         XCTAssertFalse(server.isListening)
         XCTAssertFalse(FileManager.default.fileExists(atPath: path))
     }
 }
 
-// MARK: - 热重载
+// MARK: - Hot reload
 
 @MainActor
 final class ConfigHotReloadTests: XCTestCase {
-    /// 每一个声明了 `hotReload` 的键，保存即生效（走的是真正的 `reloadConfigFile()`）
+    /// Every key that declares `hotReload` takes effect on save, through the real `reloadConfigFile()`.
     func testEveryHotReloadableKeyAppliesOnSave() throws {
         let session = try XCTUnwrap((NSApp.delegate as? AppDelegate)?.session)
         let controller = try XCTUnwrap((NSApp.delegate as? AppDelegate)?.controller)
@@ -502,7 +510,7 @@ final class ConfigHotReloadTests: XCTestCase {
         defer {
             ConfigStore.configURLOverride = nil
             try? FileManager.default.removeItem(at: temporary)
-            session.apply(before)                            // 进程内状态复原
+            session.apply(before)                            // Restore the in-process state
             controller.setVisibleColumns(columnsBefore, persist: false)
         }
 
@@ -512,8 +520,8 @@ final class ConfigHotReloadTests: XCTestCase {
             guard !specs.isEmpty else { continue }
             lines.append("[\(section.rawValue)]")
             for spec in specs {
-                // 主题名故意用一个不存在的：验证到解析这一层就够了，
-                // 真去换主题会把测试宿主的配色留给后面每一条用例
+                // The theme name is deliberately one that does not exist: checking as far as parsing is enough,
+                // and really switching themes would leave the test host recolored for every case after this one.
                 let value = spec.id == "appearance.theme" ? "\"qt-not-a-theme\"" : ConfigSchemaTests.sample(for: spec)
                 lines.append("\(spec.key) = \(value)")
             }
@@ -524,9 +532,9 @@ final class ConfigHotReloadTests: XCTestCase {
         session.reloadConfigFile()
 
         let expected = ConfigStore.parse(text)
-        XCTAssertEqual(session.settings, expected, "热重载后进程内设置必须与文件一致")
-        XCTAssertNotEqual(session.settings, before, "样例值必须真的改变了什么")
-        // 抽查几条真的落到了使用方（不是只存进 Settings 里）
+        XCTAssertEqual(session.settings, expected, "after a hot reload the in-process settings have to match the file")
+        XCTAssertNotEqual(session.settings, before, "the sample values really have to change something")
+        // Spot-check a few that really reached their consumers, rather than only landing in Settings.
         XCTAssertEqual(BrowserPaneView.settings.home, expected.browserHome)
         XCTAssertEqual(session.fileManagerCommand, expected.fileManagerCommand)
         XCTAssertEqual(BrowserExtensionManager.shared.isEnabled, expected.browserExtensions)
@@ -536,7 +544,7 @@ final class ConfigHotReloadTests: XCTestCase {
     }
 }
 
-// MARK: - 模板补全（分组之后）
+// MARK: - Template fill-in (after the grouping)
 
 final class ConfigTemplateFillTests: XCTestCase {
     /// The template comments follow the UI language (`[general] language`). This class compares
@@ -562,8 +570,8 @@ final class ConfigTemplateFillTests: XCTestCase {
         return url
     }
 
-    /// 一份**全旧扁平写法**的配置文件（就是用户手上那一份的形状）：
-    /// 只补真正新增的键，绝不因为"新名没出现"就把每个键重补一遍
+    /// A config file written **entirely in the old flat style**, the shape of the one a user already has:
+    /// only genuinely new keys are filled in, and no key is filled in again just because "the new name is missing".
     func testOldStyleFileOnlyGainsGenuinelyNewKeys() throws {
         var old = ["# QuickTerm 配置", ""]
         for spec in ConfigSchema.keys where spec.section != .control {
@@ -575,35 +583,37 @@ final class ConfigTemplateFillTests: XCTestCase {
         let url = try temporaryFile(old.joined(separator: "\n") + "\n")
         defer { try? FileManager.default.removeItem(at: url) }
 
-        XCTAssertTrue(ConfigStore.ensureTemplateKeys(at: url), "缺 [control] → 要补")
+        XCTAssertTrue(ConfigStore.ensureTemplateKeys(at: url), "[control] is missing -> fill it in")
         let text = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(text.contains("# socket = true"), "新增的 socket 要补上")
-        XCTAssertTrue(text.contains("# mcp = true"), "新增的 mcp 要补上")
-        XCTAssertFalse(text.contains("# home = "), "旧写法 browser-home 已经在，不该再补一份新名")
-        XCTAssertFalse(text.contains("# workspaces = 5\n# workspaces"), "不该补重复行")
+        XCTAssertTrue(text.contains("# socket = true"), "the newly added socket key gets filled in")
+        XCTAssertTrue(text.contains("# mcp = true"), "the newly added mcp key gets filled in")
+        XCTAssertFalse(text.contains("# home = "), "the old spelling browser-home is already there; the new name must not be added on top")
+        XCTAssertFalse(text.contains("# workspaces = 5\n# workspaces"), "no duplicate lines")
         let controlIdx = try XCTUnwrap(text.range(of: "[control]")).lowerBound
         let keybindsIdx = try XCTUnwrap(text.range(of: "[keybinds]")).lowerBound
-        XCTAssertLessThan(controlIdx, keybindsIdx, "新建的分组要摆在自由段之前")
+        XCTAssertLessThan(controlIdx, keybindsIdx, "a newly created section goes in before the free-form ones")
 
         let parsed = ConfigStore.parse(text)
-        XCTAssertEqual(parsed.paneGap, 4, "用户设过的值原样保留")
+        XCTAssertEqual(parsed.paneGap, 4, "a value the user set is kept verbatim")
         XCTAssertEqual(parsed.dividerOpacity, 0, accuracy: 0.001)
         XCTAssertTrue(parsed.controlSocket)
         XCTAssertTrue(parsed.controlMCP)
-        XCTAssertFalse(ConfigStore.ensureTemplateKeys(at: url), "第二次没得补 → 不写")
-        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), text, "幂等")
+        XCTAssertFalse(ConfigStore.ensureTemplateKeys(at: url), "nothing to fill in the second time -> no write")
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), text, "idempotent")
 
-        // 补出来的 [control] 必须与全新安装写下的那一段**逐行一致**：
-        // 段说明、mode 的续行、send-text 那段"等于在那个 shell 里打字"的警告，一行都不能少
+        // The [control] block that gets filled in has to match the one a fresh install writes **line for line**:
+        // the section note, mode's continuation lines, and the send-text warning that this is the same as typing
+        // into that shell. Not one line may go missing.
         XCTAssertEqual(Self.section("control", of: text),
                        Self.section("control", of: ConfigStore.template),
-                       "补全出来的 [control] 与模板不一致（多行说明又被砍成一行了）")
-        XCTAssertTrue(text.contains("**等于在那个 shell 里打字**"), "send-text 的警告不能丢")
-        XCTAssertTrue(text.contains("没有\"免确认\"档"), "mode 的续行不能丢")
-        XCTAssertTrue(text.contains("control.sock"), "段说明（socket 落点）不能丢")
+                       "the filled-in [control] does not match the template (the multi-line note was flattened to one line again)")
+        XCTAssertTrue(text.contains("**等于在那个 shell 里打字**"), "the send-text warning must not be lost")
+        XCTAssertTrue(text.contains("没有\"免确认\"档"), "mode's continuation line must not be lost")
+        XCTAssertTrue(text.contains("control.sock"), "the section note, which says where the socket lands, must not be lost")
     }
 
-    /// 一份配置文件里某一段的内容（段头到下一个段头之前，去掉尾部空行）
+    /// The contents of one section of a config file: the header down to just before the next one, with
+    /// trailing blank lines dropped.
     static func section(_ name: String, of text: String) -> [String] {
         var out: [String] = []
         var inside = false
@@ -615,7 +625,7 @@ final class ConfigTemplateFillTests: XCTestCase {
                 if inside { out.append(line) }
                 continue
             }
-            // 自动补全的横幅不是模板的一部分，比较时忽略
+            // The autofill banner is not part of the template, so ignore it when comparing.
             guard inside, trimmed != ConfigStore.autofillBanner else { continue }
             out.append(line)
         }
@@ -623,7 +633,7 @@ final class ConfigTemplateFillTests: XCTestCase {
         return out
     }
 
-    /// 文件不存在 → 落整份模板；模板自己不需要补全
+    /// No file at all -> write the whole template; the template itself needs no filling in.
     func testFreshInstallWritesTemplate() throws {
         let fm = FileManager.default
         let fresh = fm.temporaryDirectory
@@ -631,10 +641,11 @@ final class ConfigTemplateFillTests: XCTestCase {
         defer { try? fm.removeItem(at: fresh.deletingLastPathComponent()) }
         XCTAssertTrue(ConfigStore.ensureTemplateKeys(at: fresh))
         XCTAssertEqual(try String(contentsOf: fresh, encoding: .utf8), ConfigStore.template)
-        XCTAssertFalse(ConfigStore.ensureTemplateKeys(at: fresh), "模板本身不缺键")
+        XCTAssertFalse(ConfigStore.ensureTemplateKeys(at: fresh), "the template itself is missing no key")
     }
 
-    /// 就地改写：新写法改新写法那一行，旧写法的文件就改旧写法那一行（不重排用户的文件）
+    /// Rewriting in place: a file in the new style has its new-style line changed, a file in the old style has
+    /// its old-style line changed, and the user's file is never reordered.
     func testRewriteFollowsWhicheverSpellingTheUserUses() throws {
         let flat = try temporaryFile("# QuickTerm\n# workspaces = 5\n\n[keybinds]\n")
         let grouped = try temporaryFile("[workspace]\n# workspaces = 5\n")
@@ -647,17 +658,17 @@ final class ConfigTemplateFillTests: XCTestCase {
             try ConfigStore.rewrite(key: "workspaces", value: "7")
             let text = try String(contentsOf: url, encoding: .utf8)
             XCTAssertTrue(text.contains("workspaces = 7"), text)
-            XCTAssertFalse(text.contains("# workspaces = 5"), "原来那行注释应被换掉：\(text)")
-            XCTAssertEqual(ConfigStore.parse(text).workspaces, 7, "改写出来的还得能解析回来")
+            XCTAssertFalse(text.contains("# workspaces = 5"), "the original commented line has to be replaced: \(text)")
+            XCTAssertEqual(ConfigStore.parse(text).workspaces, 7, "what comes out of a rewrite still has to parse back")
         }
-        // 文件里压根没有这个键 → 插进它所属的分组
+        // The key is nowhere in the file -> insert it into the section it belongs to.
         let bare = try temporaryFile("theme = \"nord\"\n")
         defer { try? FileManager.default.removeItem(at: bare) }
         ConfigStore.configURLOverride = bare
         try ConfigStore.rewrite(key: "workspaces", value: "3")
         let text = try String(contentsOf: bare, encoding: .utf8)
         XCTAssertEqual(ConfigStore.parse(text).workspaces, 3)
-        XCTAssertEqual(ConfigStore.parse(text).themeName, "nord", "别的内容不许动")
+        XCTAssertEqual(ConfigStore.parse(text).themeName, "nord", "nothing else may be touched")
         XCTAssertThrowsError(try ConfigStore.rewrite(key: "not-a-key", value: "1"))
     }
 }

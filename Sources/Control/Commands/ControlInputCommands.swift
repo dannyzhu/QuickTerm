@@ -1,25 +1,34 @@
 import AppKit
 
-/// `input send-text` —— 整个控制面里**唯一**一条能让别人的 shell 执行任意命令的命令。
+/// `input send-text` - the **only** command in the whole control plane that can make someone
+/// else's shell run an arbitrary command.
 ///
-/// 说清楚它到底是什么：这不是"给终端发一条消息"，是**在那个 tty 上打字**。
-/// 那里跑的可能是 root 的 shell，可能是一条活着的 ssh 会话，也可能是 vim 的普通模式；
-/// 送进去的每一个字符都会被那个程序按它自己的规则解释。tmux / kitty 的远程控制被武器化，
-/// 用的就是这个原语。所以它身上叠了四道闸门，每一道都独立生效：
+/// To be clear about what it actually is: this is not "sending a message to a terminal", it is
+/// **typing on that tty**. What runs there may be a root shell, a live ssh session, or vim in
+/// normal mode; every character sent in is interpreted by that program under its own rules. When
+/// the remote control of tmux / kitty gets weaponized, this is the primitive being used. That is
+/// why four gates are stacked on it, each of which holds independently:
 ///
-/// 1. **默认关闭**：`[control] send-text = true` 之前，命令连执行的机会都没有
-///    （`ControlCommandRunner.handle` 里对 `sensitive` 类的那一道，位置在限流与确认之前）；
-/// 2. **`sensitive` 类**：命令表里写死，describe / MCP 的 hint 都从那里生成；
-/// 3. **每次确认**：往调用方自己那个 pane 以外的任何地方注入，都要用户在 QuickTerm 里点一次
-///    "允许"，而且**这次批准不进缓存**（见 `ControlConsent.Request.cacheable`）；
-/// 4. **控制字符一律拒绝，换行只能靠 `--enter`**：没有这一条，一个"只是想填个输入框"的调用
-///    会顺手把命令执行掉；有了这一条，"送文本"与"让它跑"是两个必须分别写出来的意图。
+/// 1. **Off by default**: until `[control] send-text = true`, the command never even gets a chance
+///    to run (the `sensitive`-class gate in `ControlCommandRunner.handle`, which sits ahead of rate
+///    limiting and confirmation);
+/// 2. **`sensitive` class**: hard-coded in the command table, and the describe / MCP hints are
+///    generated from there;
+/// 3. **Confirmation every time**: injecting anywhere other than the caller's own pane takes one
+///    click on "allow" by the user inside QuickTerm, and **that approval is never cached** (see
+///    `ControlConsent.Request.cacheable`);
+/// 4. **Control characters are always refused, a newline only comes from `--enter`**: without this
+///    rule a call that "just wanted to fill in a text field" executes a command on the way past;
+///    with it, "send text" and "make it run" are two intents that have to be written out
+///    separately.
 ///
-/// 唯一的免确认口子是"写自己那个 pane"，判定在 `ControlCommandRunner.writesIntoOwnPane`：
-/// 那个 tty 本来就是调用进程自己的，它不经过 QuickTerm 也能往上写。
+/// The one confirmation-free opening is "writing into your own pane", decided in
+/// `ControlCommandRunner.writesIntoOwnPane`: that tty already belongs to the calling process,
+/// which can write to it without going through QuickTerm at all.
 @MainActor
 extension ControlCommandRunner {
-    /// 一次最多送多少个字符。agent 幻觉出一整个文件粘进 shell 是真实会发生的事
+    /// How many characters one call may send. An agent hallucinating an entire file and pasting it
+    /// into a shell is a thing that really happens
     static let maxSendTextLength = 4096
 
     func runInput(_ ctx: ControlContext) throws -> (echo: ResolvedTarget?, data: any Encodable) {
@@ -32,9 +41,11 @@ extension ControlCommandRunner {
     }
 
     private func inputSendText(_ ctx: ControlContext) throws -> (ResolvedTarget?, any Encodable) {
-        // **必须显式写 -t。** 别处的默认落点是"焦点 pane"，在这里那等于
-        // "往此刻碰巧被聚焦的那个 shell 里打字"——agent 看不见焦点，这个默认值只会制造
-        // 那种谁也查不出来的事故。要写焦点 pane 就明确地写 `-t @focused`
+        // **-t has to be written out.** Everywhere else the default landing spot is "the focused
+        // pane"; here that would mean "type into whichever shell happens to be focused right now",
+        // and an agent cannot see the focus, so such a default only manufactures the kind of
+        // accident nobody can trace afterwards. If you do mean the focused pane, say `-t @focused`
+        // explicitly.
         guard ctx.target?.pane != nil else {
             throw ControlErrorBody(
                 .badTarget, "input send-text needs an explicit target pane (-t)",
@@ -61,8 +72,9 @@ extension ControlCommandRunner {
                                    retryAfterMs: 200)
         }
 
-        // diff 里**绝不写出正文**：活动日志与状态栏闪烁是给用户看的，
-        // 而送进去的往往是命令行——把它原样记进一份长期留存的日志，本身就是一个新的外泄面
+        // **The body never appears in the diff**: the activity log and the status-bar flash are
+        // there for the user to read, and what gets sent in is usually a command line - writing it
+        // verbatim into a log that is kept around is a new leak surface all of its own.
         let changes = [ControlChange(path(hit.controller, hit.workspace, hit.pane),
                                      from: "(keyboard input)",
                                      to: "\(text.count) characters"
@@ -70,21 +82,23 @@ extension ControlCommandRunner {
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
             controllers: [hit.controller],
-            // **不可撤销**：打进 shell 的字不存在"放回去"这回事，
-            // 登记一个撤销项只会让用户以为 ⌘Z 能把已经跑起来的命令收回来
+            // **Not undoable**: there is no such thing as putting typed characters back into a
+            // shell, and registering an undo entry would only make the user believe Cmd+Z can
+            // take back a command that has already started running.
             undoCommand: nil,
             target: path(hit.controller, hit.workspace, hit.pane))
         var payload = try commit(mutation) {
             if !text.isEmpty { model.sendText(text) }
-            // 回车是 CR（0x0D），不是 LF：终端的 Enter 一直都是这个
+            // Return is CR (0x0D), not LF: that is what Enter has always been in a terminal.
             if enter { model.sendText("\r") }
         }
         payload.pane = paneInfo(hit, encoder: ctx.encoder)
         return (hit.echo, payload)
     }
 
-    /// 正文校验。**拒绝而不是过滤**：悄悄剥掉一个字符会让调用方以为送出去的是它写的那一串，
-    /// 而实际到达 shell 的是另一串——这正是注入类事故的形状
+    /// Validate the body. **Refuse, do not filter**: quietly stripping a character would leave the
+    /// caller believing it sent the string it wrote, while what reached the shell was a different
+    /// one - and that is exactly the shape an injection accident has
     static func validateSendText(_ raw: String) throws -> String {
         guard raw.utf16.count <= maxSendTextLength else {
             throw ControlErrorBody(

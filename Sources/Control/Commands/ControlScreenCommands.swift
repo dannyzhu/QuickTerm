@@ -1,10 +1,11 @@
 import AppKit
 
-/// `screen new|close|move|focus|set`。
+/// `screen new|close|move|focus|set`.
 ///
-/// 「屏幕」= 一个窗口 + 一组自己的工作区。这一组命令全部落在 `AppDelegate+Screens` 已有的
-/// 入口上（`newScreen` / `moveScreen` / `closeScreen`）——那里管着注册表、存档与序号复用，
-/// 绕过它自己建窗口的话，新窗口不会进注册表，也不会进存档。
+/// A "screen" = one window + its own set of workspaces. Every command in this group lands on the
+/// entry points `AppDelegate+Screens` already has (`newScreen` / `moveScreen` / `closeScreen`) -
+/// those own the registry, the saved state and index reuse, and a window built directly, going
+/// around them, ends up in neither the registry nor the saved state.
 @MainActor
 extension ControlCommandRunner {
     func runScreen(_ ctx: ControlContext) throws -> (echo: ResolvedTarget?, data: any Encodable) {
@@ -18,8 +19,8 @@ extension ControlCommandRunner {
         }
     }
 
-    /// `--display uuid:… / name:… / <1 起序号>`。**frame 不是身份**（`DisplayRef` 自己就这么写的），
-    /// 所以只认 uuid / 名字 / 序号
+    /// `--display uuid:... / name:... / <1-based index>`. **A frame is not an identity** (that is
+    /// what `DisplayRef` itself says), so only uuid / name / index are accepted
     static func resolveDisplay(_ raw: String) throws -> NSScreen {
         let screens = NSScreen.screens
         func fail(_ why: String) -> ControlErrorBody {
@@ -67,7 +68,9 @@ extension ControlCommandRunner {
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer,
             changes: [ControlChange("screens", from: "\(before)", to: "\(before + 1)")],
             controllers: [],
-            undoCommand: nil,   // 撤销一块屏幕 = 关掉它连同里面的进程：那不是撤销，是第二次破坏
+            // Undoing a screen would mean closing it along with the processes inside it: that is
+            // not an undo, that is a second round of damage.
+            undoCommand: nil,
             target: display?.localizedName)
         var payload = try commit(mutation) {
             let controller = app.newScreen(on: display, inheritingFrom: inherit)
@@ -104,9 +107,10 @@ extension ControlCommandRunner {
             controllers: [], undoCommand: nil,
             target: path(controller))
         var payload = try commit(mutation) {
-            // 我们自己的确认闸门已经问过一次了：`closeScreen` 里那句 `confirmCloseScreen()`
-            // 会**在控制命令的调用栈里**跑一个 NSAlert.runModal 嵌套 run loop——
-            // 主线程被自己卡住，socket 也就停了。`--force` 与"已经确认过"都走 confirmed: true
+            // Our own confirmation gate has already asked once: the `confirmCloseScreen()` inside
+            // `closeScreen` would run an NSAlert.runModal nested run loop **on the control
+            // command's own call stack** - the main thread blocks itself and the socket stops with
+            // it. Both `--force` and "already confirmed" go through confirmed: true.
             app.closeScreen(controller, confirmed: true)
         }
         payload.note = "Screen closed; the \(panes) panes inside it and their processes are gone"
@@ -130,7 +134,8 @@ extension ControlCommandRunner {
                              from: now?.localizedName ?? "—", to: display.localizedName)]
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
-            controllers: [controller], undoCommand: nil,   // 窗口几何不进撤销栈（快照里没有它）
+            // Window geometry stays off the undo stack (the snapshot does not carry it).
+            controllers: [controller], undoCommand: nil,
             target: path(controller))
         var payload = try commit(mutation) { app.moveScreen(controller, to: display) }
         payload.screen = ctx.encoder.screenInfo(controller, isKey: controller === screens.controlCurrent)
@@ -197,7 +202,8 @@ extension ControlCommandRunner {
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
             controllers: [controller], undoCommand: ctx.spec.cli, target: base)
         var payload = try commit(mutation) {
-            // 全部都是"设成这个值"：toggleSimpleFullscreen 是 toggle，所以先比对再决定翻不翻
+            // Everything here is "set it to this value": toggleSimpleFullscreen is a toggle, so
+            // compare first and only flip when the values actually differ.
             if let fullscreen, fullscreen != controller.isSimpleFullscreen {
                 controller.toggleSimpleFullscreen()
             }

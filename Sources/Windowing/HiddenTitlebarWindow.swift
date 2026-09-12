@@ -1,9 +1,10 @@
 import AppKit
 
-/// 隐藏标题栏配方（源自 Ghostty HiddenTitlebarTerminalWindow 的做法，MIT；
-/// QuickTerm 简化版：无原生 tab、无标题栏 accessory）。
-/// 保留 `.titled` 以获得正常阴影/外框/状态恢复；`.fullSizeContentView` 让内容
-/// 延伸到标题栏区域；标题与红绿灯隐藏。
+/// Hidden-titlebar recipe (lifted from Ghostty's HiddenTitlebarTerminalWindow, MIT; this is the
+/// simplified QuickTerm version: no native tabs, no titlebar accessory).
+/// Keep `.titled` so the window still gets the normal shadow / frame / state restoration;
+/// `.fullSizeContentView` lets the content extend into the titlebar area; the title and the traffic
+/// lights are hidden.
 class HiddenTitlebarWindow: TerminalWindow {
     override init(contentRect: NSRect, styleMask style: NSWindow.StyleMask,
                   backing: NSWindow.BackingStoreType, defer flag: Bool) {
@@ -14,7 +15,8 @@ class HiddenTitlebarWindow: TerminalWindow {
         reapplyHiddenStyle()
     }
 
-    // macOS 15 起设置 title 会重新显示标题栏元素，需要重刷样式
+    // As of macOS 15, setting `title` brings the titlebar elements back, so the style has to be
+    // reapplied every time.
     override var title: String {
         didSet { reapplyHiddenStyle() }
     }

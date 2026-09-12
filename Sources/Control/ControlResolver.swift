@@ -1,38 +1,46 @@
 import AppKit
 
-/// 目标解析：把 `screen:workspace.pane` 落到真实的控制器 / 工作区下标 / PaneView。
+/// Target resolution: turning `screen:workspace.pane` into a real controller / workspace index
+/// / PaneView.
 ///
-/// 两条不可动摇的规则：
-/// 1. **匹配到多个一律报错并列出候选**，绝不"取第一个"——静默改打别处是 agent 场景下最糟的失败；
-/// 2. 正在淡出（`model.closingPanes`）的 pane 不可寻址。
+/// Two rules that do not bend:
+/// 1. **More than one match is always an error, with the candidates listed** — never "take the
+///    first one": silently hitting a different target is the worst failure there is in an agent
+///    setting;
+/// 2. a pane that is fading out (`model.closingPanes`) is not addressable.
 @MainActor
 struct ControlResolver {
     let screens: ScreenRegistry
     let origin: ControlRequestOrigin?
-    /// 与 `ControlStateEncoder.exposesBrowser` 是同一个判定。打码生效时浏览器 pane
-    /// **不进 `title:~` 的候选池**：否则谓词本身就是一个逐字符探测标题的 oracle
-    /// （而且 `unique()` 连匹配个数都一起吐出来，布尔都不用猜），
-    /// `expose-browser = "never"` 明明说了不给看，state 打了码，这里却照给不误
+    /// The same decision as `ControlStateEncoder.exposesBrowser`. While redaction is in force,
+    /// browser panes **stay out of the `title:~` candidate pool**: otherwise the predicate is
+    /// itself an oracle for probing a title one character at a time (and `unique()` hands back
+    /// the number of matches too, so there is not even a boolean left to guess). Without this,
+    /// `expose-browser = "never"` says no and `state` redacts, while this path hands the title
+    /// over anyway
     var exposesBrowser: Bool = true
 
-    /// `title:~` 整条命令共用的匹配预算。调用方给的正则跑在主线程上，
-    /// 而 ICU 是回溯引擎且默认**既没有时限也没有回溯步数上限**：
-    /// 7 字节的 `(.|.)+z` 打在一条 60 字符的普通提示符标题上就能把主线程钉死几个钟头，
-    /// 整个 app（所有屏幕、终端渲染、控制 socket、连确认框本身）全部冻住，只能强制退出。
-    /// 而 `title:` 走的是 read 类命令：不要 token、不要确认、也不过速率限制
+    /// One matching budget, shared by the whole `title:~` command. The caller's regex runs on
+    /// the main thread, and ICU is a backtracking engine with **neither a time limit nor a cap
+    /// on backtracking steps** by default: seven bytes of `(.|.)+z` against one ordinary
+    /// 60-character prompt title will pin the main thread for hours, freezing the entire app —
+    /// every screen, terminal rendering, the control socket, the confirmation alert itself —
+    /// with nothing left but Force Quit.
+    /// And `title:` arrives as a read command: no token, no confirmation, no rate limit either
     static let titleMatchBudget: TimeInterval = 0.2
-    /// 正则本身的长度上限（编译期的兜底；真正的护栏是上面的预算）
+    /// Length ceiling on the pattern itself (a compile-time backstop; the real guardrail is the
+    /// budget above)
     static let maxTitlePatternLength = 512
 
     struct Resolution {
         var controller: MainWindowController
-        /// 内部 0 起（CLI 永远只见 1 起）
+        /// Zero-based internally (the CLI only ever sees one-based)
         var workspace: Int
         var pane: PaneView?
         var echo: ResolvedTarget
     }
 
-    /// 定位一个 pane：它在哪块屏幕的哪个工作区（0 起）
+    /// Locate a pane: which screen, and which workspace (zero-based) within it
     static func locate(_ pane: PaneView, in screens: ScreenRegistry) -> (MainWindowController, Int)? {
         for controller in screens.controllers {
             let model = controller.model
@@ -46,7 +54,8 @@ struct ControlResolver {
         return nil
     }
 
-    /// 全部可寻址的 pane（排除淡出中的、以及不属于任何工作区的 Scratchpad）
+    /// Every addressable pane (fading-out ones excluded, as is the Scratchpad, which belongs to
+    /// no workspace)
     static func addressablePanes(in screens: ScreenRegistry) -> [(pane: PaneView, controller: MainWindowController, workspace: Int)] {
         var out: [(PaneView, MainWindowController, Int)] = []
         for controller in screens.controllers {
@@ -63,12 +72,14 @@ struct ControlResolver {
         return out.map { (pane: $0.0, controller: $0.1, workspace: $0.2) }
     }
 
-    /// 带预算的单条标题匹配。**返回 nil = 预算用尽**（调用方必须让整条命令失败）。
+    /// One title match, under budget. **nil means the budget ran out** — and the caller then
+    /// has to fail the whole command.
     ///
-    /// `.reportProgress` 是 `NSRegularExpression` 唯一能中止一次长匹配的口子：
-    /// `uregex_setTimeLimit` 不经它暴露，而"丢到后台线程加个超时"只是把一条烧满 CPU、
-    /// 还停不下来的 ICU 线程漏出去——DoS 照旧。
-    /// 静态方法是为了能在没有窗口的用例层直接钉死这条护栏
+    /// `.reportProgress` is the only opening `NSRegularExpression` gives you to abort a long
+    /// match: `uregex_setTimeLimit` is not exposed through it, and "throw it on a background
+    /// thread with a timeout" only leaks an ICU thread that is pinning a CPU and cannot be
+    /// stopped — the DoS is still there.
+    /// It is a static method so tests can nail this guardrail down without a window
     static func titleMatches(_ title: String, regex: NSRegularExpression, deadline: Date) -> Bool? {
         var hit = false
         var timedOut = false
@@ -87,9 +98,10 @@ struct ControlResolver {
 
     func handle(_ pane: PaneView) -> String { ControlHandleRegistry.shared.handle(for: pane) }
 
-    // MARK: 上下文
+    // MARK: Context
 
-    /// 调用方所在的 pane（`QUICKTERM_PANE`），必须是当下真活着的 PaneView 才算数
+    /// The pane the caller is in (`QUICKTERM_PANE`); it counts only if it is a PaneView that is
+    /// alive right now
     private func originPane() -> (PaneView, MainWindowController, Int)? {
         guard let raw = origin?.pane, let uuid = UUID(uuidString: raw) else { return nil }
         for entry in Self.addressablePanes(in: screens) where entry.pane.id == uuid {
@@ -98,7 +110,8 @@ struct ControlResolver {
         return nil
     }
 
-    /// 上下文屏幕：显式 -t → 调用方所在 pane → controlCurrent（NSApp.isActive 才认 key 窗口）→ primary
+    /// The context screen: explicit -t → the caller's own pane → controlCurrent (the key window
+    /// only counts while NSApp.isActive) → primary
     private func contextController() throws -> MainWindowController {
         if let (_, controller, _) = originPane() { return controller }
         guard let controller = screens.controlCurrent else {
@@ -107,18 +120,19 @@ struct ControlResolver {
         return controller
     }
 
-    // MARK: 主入口
+    // MARK: Main entry point
 
     func resolve(_ target: ControlTarget?) throws -> Resolution {
         let target = target ?? ControlTarget()
 
-        // 1) 屏幕
+        // 1) Screen
         var controller: MainWindowController?
         if let screenRef = target.screen {
             controller = try resolveScreen(screenRef)
         }
 
-        // 2) pane 优先决定落点：句柄 / uuid / 谓词是全局唯一的，不需要上下文
+        // 2) The pane decides where this lands first: a handle / uuid / predicate is globally
+        //    unique, so it needs no context
         var pane: PaneView?
         var paneWorkspace: Int?
         if let paneRef = target.pane, Self.isGlobalRef(paneRef) {
@@ -137,7 +151,7 @@ struct ControlResolver {
 
         let host = try controller ?? contextController()
 
-        // 3) 工作区
+        // 3) Workspace
         let workspaceIndex: Int
         if let workspaceRef = target.workspace {
             workspaceIndex = try resolveWorkspace(workspaceRef, in: host)
@@ -155,7 +169,7 @@ struct ControlResolver {
             workspaceIndex = host.model.activeIndex
         }
 
-        // 4) 关系式 / @focused / @self（要有上下文才能算）
+        // 4) Relational / @focused / @self (these need the context before they can be resolved)
         if pane == nil, let paneRef = target.pane {
             pane = try resolveContextualPane(paneRef, in: host, workspace: workspaceIndex)
         }
@@ -179,7 +193,7 @@ struct ControlResolver {
         }
     }
 
-    // MARK: 各段
+    // MARK: The individual segments
 
     func resolveScreen(_ ref: ControlTarget.ScreenRef) throws -> MainWindowController {
         switch ref {
@@ -237,7 +251,7 @@ struct ControlResolver {
         }
     }
 
-    /// 全局引用（句柄 / uuid / 谓词）
+    /// A global reference (handle / uuid / predicate)
     private func resolveGlobalPane(_ ref: ControlTarget.PaneRef, scopedTo controller: MainWindowController?,
                                    workspace: ControlTarget.WorkspaceRef?, screenGiven: Bool)
         throws -> (pane: PaneView, controller: MainWindowController, workspace: Int) {
@@ -278,15 +292,18 @@ struct ControlResolver {
             guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
                 throw ControlErrorBody(.badTarget, "title:~\(pattern) is not a valid regular expression")
             }
-            // 打码生效时把浏览器 pane 整体挪出候选池——匹配数与 not_found 都要在安全池上算，
-            // 否则光看"匹配到几个"就能把打掉的标题一位一位问出来
+            // While redaction is in force, move browser panes out of the candidate pool
+            // entirely — both the match count and not_found have to be computed over the safe
+            // pool, or "how many matched" on its own is enough to read a redacted title back one
+            // character at a time
             let searchable = exposesBrowser ? pool : pool.filter { !($0.pane is BrowserPaneView) }
-            // 一份预算给整条命令，N 个 pane 不会把它乘上 N 倍
+            // One budget for the whole command; N panes must not multiply it by N
             let deadline = Date().addingTimeInterval(Self.titleMatchBudget)
             var matches: [(pane: PaneView, controller: MainWindowController, workspace: Int)] = []
             for entry in searchable {
-                // 超时后**整条命令失败**：拿一个只跑完一半的池子去算歧义 / not_found，
-                // 正是这份设计明令禁止的"静默给错答案"
+                // On timeout **the whole command fails**: computing ambiguity / not_found over
+                // a pool that was only half walked is precisely the "silently answer wrong" this
+                // design forbids outright
                 guard let hit = Self.titleMatches(entry.pane.paneTitle, regex: regex, deadline: deadline) else {
                     throw ControlErrorBody(.badTarget, "title:~\(pattern) timed out while matching (runaway regex backtracking)",
                                            hint: "Drop the nested quantifiers such as (a|aa)+ or (.|.)+, or just use -t <handle>")
@@ -327,7 +344,7 @@ struct ControlResolver {
         return only
     }
 
-    /// 关系式（要上下文）
+    /// Relational references (these need the context)
     private func resolveContextualPane(_ ref: ControlTarget.PaneRef, in controller: MainWindowController,
                                        workspace: Int) throws -> PaneView {
         switch ref {
@@ -369,7 +386,8 @@ struct ControlResolver {
         }
     }
 
-    /// 焦点 pane（排除淡出中的）；工作区不是活动工作区时退回该工作区的第一个 pane
+    /// The focused pane, fading-out ones excluded; when the workspace is not the active one,
+    /// fall back to that workspace's first pane
     private func focusedAddressablePane(in controller: MainWindowController, workspace: Int) -> PaneView? {
         let model = controller.model
         let panes = model.layouts[workspace].paneList + model.floatings[workspace].map(\.pane)
@@ -389,8 +407,9 @@ struct ControlResolver {
         case .up: .up
         case .down: .down
         }
-        // MainWindowController 里那份 Direction → Spatial.Direction 的映射是 fileprivate，
-        // 这里自带一份而不是去放宽它的可见性（映射本身是恒等的，没有可漂移的余地）
+        // The Direction → Spatial.Direction mapping inside MainWindowController is fileprivate,
+        // so this carries its own copy rather than widening that visibility (the mapping is the
+        // identity, so there is no room for the two to drift apart)
         let spatial: SplitTree<PaneView>.Spatial.Direction = switch direction {
         case .left: .left
         case .right: .right

@@ -1,23 +1,25 @@
 import AppKit
 import OSLog
 
-/// `~/.config/quickterm/config.toml`（spec §4.7）：极简 TOML 子集
-/// （`[section]` 分组 + `[keybinds]` + `[ghostty]` 原样透传段）。
+/// `~/.config/quickterm/config.toml` (spec §4.7): a minimal TOML subset (`[section]` groups
+/// plus the `[keybinds]` and `[ghostty]` sections, the latter passed through verbatim).
 ///
-/// **配置项本身在 `ConfigSchema` 那张注册表里声明**（分组、类型、范围、默认值、
-/// 中英文说明、旧写法）。这里只剩三件事：把注册表的值写进 `Settings`（`ConfigBindings`）、
-/// 落模板 / 补全缺键、以及就地改写一个键。
+/// **The settings themselves are declared in the `ConfigSchema` registry** (group, type, range,
+/// default value, the English and Chinese help text, the legacy spellings). Three jobs are left
+/// here: writing the registry's values into `Settings` (`ConfigBindings`), laying down the
+/// template and filling in missing keys, and rewriting one key in place.
 enum ConfigStore {
     static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "dev.danny.quickterm",
                                category: "Config")
 
     static var configURL: URL { ConfigPaths.defaultConfigURL }
 
-    /// **只给用例注入**：控制面的 `workspace count` 会改写配置文件，
-    /// 测试宿主绝不能去动用户真正的 ~/.config/quickterm/config.toml
+    /// **For test injection only**: the control plane's `workspace count` rewrites the config
+    /// file, and a test host must never touch the user's real
+    /// ~/.config/quickterm/config.toml.
     nonisolated(unsafe) static var configURLOverride: URL?
 
-    /// 实际读写的那一份
+    /// The file we actually read and write.
     static var activeConfigURL: URL { configURLOverride ?? configURL }
 
     enum RewriteError: Error, CustomStringConvertible {
@@ -37,29 +39,36 @@ enum ConfigStore {
         }
     }
 
-    /// 模板 = 注册表渲染出来的那一份（没有第二份手写模板）
+    /// The template is rendered from the registry; there is no second, hand-written copy.
     static var template: String { ConfigSchema.template }
 
-    /// 模板里每个配置项的那一块（赋值行 + 多行说明的续行；补全缺失键时复用）
+    /// Each setting's block in the template (the assignment line plus the continuation lines of
+    /// a multi-line help text); reused when filling in missing keys.
     static var templateKeyBlocks: [(spec: ConfigKeySpec, lines: [String])] { ConfigSchema.templateKeyBlocks }
 
-    // MARK: 就地改写
+    // MARK: Rewriting in place
 
-    /// 就地改写**一个注册表里的键**（`workspaces = 8`），保留其余内容与注释。
+    /// Rewrite **one key from the registry** in place (`workspaces = 8`), leaving everything else,
+    /// comments included, exactly as it was.
     ///
-    /// 四条规矩：
-    /// - 认这个键的**每一种写法**：新写法（`[workspace] workspaces`）与旧的扁平写法都算，
-    ///   用户写的是哪一种就改哪一种（升级不会把人家的文件重排一遍）；
-    /// - 键被注释掉了就把那一行换成生效的写法（模板里所有键都是注释形式）；
-    /// - 一份文件里都找不到 → 插到它所属的分组末尾（分组不存在就现建一个）；
-    /// - 一次写盘。写完由已有的 `AppSession.installConfigWatcher` 去热重载，
-    ///   调用方**不得**自己再落一次值（两条生效路径 = 两次键位表重建 + 一次竞态）
+    /// Four rules:
+    /// - Recognize **every spelling** of the key: the current one (`[workspace] workspaces`) and
+    ///   the old flat one both count, and whichever the user wrote is the one we edit, so an
+    ///   upgrade never reshuffles someone's file;
+    /// - a commented-out key is replaced by a live line (every key in the template is commented
+    ///   out);
+    /// - not found anywhere in the file -> append it at the end of the group it belongs to,
+    ///   creating that group if the file does not have it;
+    /// - one write to disk. The existing `AppSession.installConfigWatcher` picks it up and hot
+    ///   reloads; the caller **must not** also apply the value itself (two paths into effect =
+    ///   two keymap rebuilds and one race).
     static func rewrite(key: String, value: String) throws {
         guard let spec = ConfigSchema.spec(named: key) else { throw RewriteError.unknownKey(key) }
         let url = activeConfigURL
         var text = (try? String(contentsOf: url, encoding: .utf8))
         if text == nil {
-            // 文件还不存在（全新安装）：先落模板，再改
+            // The file does not exist yet (a fresh install): lay down the template first, then
+            // edit it.
             try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                      withIntermediateDirectories: true)
             try? template.write(to: url, atomically: true, encoding: .utf8)
@@ -92,13 +101,17 @@ enum ConfigStore {
         }
     }
 
-    // MARK: 模板补全
+    // MARK: Filling in the template
 
-    /// 保证配置文件存在且列全所有配置项（"所有配置项都要写在配置文件里"）：
-    /// - 文件不存在 → 写完整模板（含目录）；
-    /// - 已存在 → 补全缺失键（注释 + 默认值，插在它所属分组的末尾；分组不存在就现建），
-    ///   已有设置原样保留。**旧写法也算"已经有了"**：用扁平写法的老配置文件不会被补一份重复的。
-    /// 幂等；返回是否有写入。启动与打开设置时调用。
+    /// Guarantee that the config file exists and lists every setting ("every setting must be
+    /// written down in the config file"):
+    /// - file missing -> write the whole template, creating the directory too;
+    /// - file present -> fill in the missing keys (commented out, at their default value, at the
+    ///   end of the group they belong to, creating that group if needed), leaving existing
+    ///   settings untouched. **A legacy spelling also counts as "already there"**: an old config
+    ///   file written flat does not get a duplicate entry added.
+    /// Idempotent; returns whether anything was written. Called at startup and when the settings
+    /// are opened.
     @discardableResult
     static func ensureTemplateKeys(at url: URL = activeConfigURL) -> Bool {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else {
@@ -114,7 +127,8 @@ enum ConfigStore {
         let missing = ConfigSchema.keys.filter { !mentioned.contains($0.id) }
         guard !missing.isEmpty else { return false }
 
-        // 整块照抄模板（含多行说明的续行）：补上来的段落与全新安装写下的逐字一致
+        // Copy the template block verbatim, continuation lines of multi-line help included, so
+        // what gets filled in is word for word what a fresh install would have written.
         let templateBlock = Dictionary(uniqueKeysWithValues:
             ConfigSchema.templateKeyBlocks.map { ($0.spec.id, $0.lines) })
         var blocks: [String: [String]] = [:]
@@ -137,9 +151,10 @@ enum ConfigStore {
             : "# —— New QuickTerm settings (filled in automatically; commented out = the default) ——"
     }
 
-    /// 把若干行按分组插进一份配置文件：分组在 → 插在那一段末尾；分组不在 → 现建一段，
-    /// 摆在 `[keybinds]` / `[ghostty]` 这两个自由段之前（它们后面的内容是原样透传的，
-    /// 把配置项塞到 `[ghostty]` 后面只会让人以为那是给引擎的）
+    /// Insert lines into a config file, grouped by section: the section exists -> append at the
+    /// end of it; the section is missing -> create it, ahead of the two free-form sections
+    /// `[keybinds]` and `[ghostty]`. Everything after those is passed through verbatim, so a
+    /// setting parked below `[ghostty]` would read as if it were meant for the engine.
     private static func insert(blocks: [String: [String]], into lines: [String]) -> [String] {
         var pending = blocks
         var out: [String] = []
@@ -156,7 +171,7 @@ enum ConfigStore {
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("["), let close = trimmed.firstIndex(of: "]") {
-                flush(section)   // 上一段结束了
+                flush(section)   // the previous section just ended
                 section = String(trimmed[trimmed.index(after: trimmed.startIndex)..<close])
             }
             out.append(line)
@@ -164,12 +179,14 @@ enum ConfigStore {
         flush(section)
 
         guard !pending.isEmpty else { return out }
-        // 还没落的都是文件里根本没有的分组：按注册表顺序现建
+        // Whatever is left belongs to sections the file does not have at all: create them in
+        // registry order.
         var fresh: [String] = []
         for sectionCase in ConfigSection.allCases {
             guard let block = pending.removeValue(forKey: sectionCase.rawValue) else { continue }
-            // 段头 + 段说明：现建的分组要和全新安装的模板长得一样，
-            // 不能只有一个光秃秃的 [control]（那段说明里写着 socket 的落点）
+            // Header plus section note: a freshly created group has to look like the template a
+            // fresh install writes, not a bare [control] on its own — that note is where the
+            // socket's path is written down.
             fresh.append(contentsOf: ConfigSchema.sectionHeaderLines(sectionCase))
             fresh.append(contentsOf: block)
             fresh.append("")
@@ -187,8 +204,9 @@ enum ConfigStore {
         return out
     }
 
-    /// 一份配置文件里**每一行**（含被注释掉的）对注册表键的赋值。
-    /// 模板补全与就地改写都靠它 —— "这个键是不是已经写在文件里了"只能有一种判断
+    /// Every assignment to a registry key on **any line** of a config file, commented-out lines
+    /// included. Both the template fill-in and the in-place rewrite go through this: "is this key
+    /// already written in the file" gets to have exactly one answer.
     private static func assignments(in lines: [String]) -> [(Int, (ref: ConfigKeyRef, spec: ConfigKeySpec))] {
         var out: [(Int, (ref: ConfigKeyRef, spec: ConfigKeySpec))] = []
         var section = ""
@@ -209,7 +227,7 @@ enum ConfigStore {
         return out
     }
 
-    // MARK: 设置
+    // MARK: Settings
 
     struct Settings: Equatable {
         /// UI language (`[general] language`): auto (follow the system) | en | zh.
@@ -217,29 +235,39 @@ enum ConfigStore {
         var language: String = "auto"
         var themeName: String?
         var workspaces: Int = 5
-        /// pane 内终端四边留白（pt，注入引擎 window-padding-x/y；spec v6 默认 14（= Omarchy 官方终端 padding））
+        /// Terminal padding inside a pane, in pt, injected as the engine's window-padding-x/y.
+        /// The spec v6 default is 14, which is Omarchy's own terminal padding.
         var panePadding: Int = 14
-        /// 每屏可见列数（scrolling；nil = 未设置，走菜单选择/UserDefaults，默认 2）
+        /// Columns visible per screen in the scrolling layout. nil = unset, in which case the
+        /// menu selection / UserDefaults decides, defaulting to 2.
         var visibleColumns: Int?
-        /// pane 背景透明度（0.5–1.0，默认 0.92 = 非激活基准；文字不受影响）
+        /// Pane background opacity (0.5–1.0, default 0.92 = the inactive baseline); text is
+        /// never affected.
         var paneOpacity: Double = 0.92
-        /// 激活 pane 背景等效透明度（0.5–1.0，默认 0.98）
+        /// Effective background opacity of the focused pane (0.5–1.0, default 0.98).
         var activeOpacity: Double = 0.98
-        /// 顶部状态条背景透明度（0.0–1.0，默认 0.75；受 Cmd+Backspace 总开关控制）
+        /// Top status bar background opacity (0.0–1.0, default 0.75); governed by the
+        /// Cmd+Backspace master switch.
         var barOpacity: Double = 0.75
-        /// dwindle 分隔细线不透明度（0.0–1.0，默认 0.2；0 = 隐藏）
+        /// Opacity of the thin dwindle divider (0.0–1.0, default 0.2; 0 hides it).
         var dividerOpacity: Double = 0.2
-        /// 每 pane 每边留白（pt，0–20，默认 5 = 原 scrolling 值：相邻间距 10；scrolling / dwindle / 浮动一致）
+        /// Padding on every side of every pane (pt, 0–20, default 5 = the original scrolling
+        /// value, which puts 10 between neighbours). Identical for scrolling, dwindle and
+        /// floating panes.
         var paneGap: Int = 5
-        /// 非激活 pane 高斯模糊半径（0–10pt，默认 2.5；磨砂感）
+        /// Gaussian blur radius for inactive panes (0–10pt, default 2.5) — the frosted look.
         var inactiveBlur: Double = 2.5
-        /// 在 pane 上边框上画标题（默认开；只画显式设过的标题，最长 20 字）
+        /// Draw the title on a pane's top border (on by default). Only titles that were set
+        /// explicitly are drawn, truncated to 20 characters.
         var paneTitle: Bool = true
-        /// 工作区胶囊显示名字（默认开；只有起过名的工作区才显示，最长 12 字）
+        /// Show the name in the workspace pill (on by default). Only workspaces that were given
+        /// a name show one, truncated to 12 characters.
         var workspaceTitle: Bool = true
-        /// 文件管理器程序（`file-manager` 动作在新 pane 里运行；名字按 PATH + 常见安装目录查找，或绝对路径）
+        /// The file manager program the `file-manager` action runs in a new pane. A bare name is
+        /// looked up in PATH and in the usual install directories; an absolute path also works.
         var fileManagerCommand: String = FileManagerLaunch.defaultProgram
-        /// 浏览器 pane：首页 / 搜索模板 / UA（"safari" 伪装、"webkit" 不伪装、或自定义）/ Web Inspector
+        /// Browser panes: home page, search template, user agent ("safari" to masquerade,
+        /// "webkit" not to, or a custom string) and the Web Inspector.
         var browserHome: String = "https://www.google.com"
         var browserSearch: String = "https://www.google.com/search?q=%s"
         var browserUserAgent: String = "safari"
@@ -247,16 +275,20 @@ enum ConfigStore {
         var browserTabBar: String = "always"
         var browserTabWidth: Int = 200
         var browserTabMinWidth: Int = 80
-        /// 浏览器 pane 是否加载 WebExtensions（关掉 = 全部 unload，新标签也不挂 controller）
+        /// Whether browser panes load WebExtensions. Turning it off unloads all of them, and new
+        /// tabs get no controller attached either.
         var browserExtensions: Bool = true
-        /// 浏览器 pane 的下载目录（支持 `~`；不是个真目录时回退 ~/Downloads）
+        /// Download directory for browser panes (`~` is expanded; falls back to ~/Downloads when
+        /// it is not a real directory).
         var browserDownloadDir: String = "~/Downloads"
         var linkOpener: String = "browser-pane"
-        /// `[control] socket`（旧名 `enabled`）：false = 彻底不监听。默认**开**
+        /// `[control] socket` (formerly `enabled`): false means we do not listen at all.
+        /// **On** by default.
         var controlSocket: Bool = true
-        /// `[control] mcp`：false = `quickterm mcp` 拒绝服务。默认**开**。
-        /// 与 socket 分开，是因为两者的攻击面不同：用户完全可能自己用命令行，
-        /// 却不想任何 MCP 宿主（以及它读到的每一段网页 / CI 日志）连进来
+        /// `[control] mcp`: false makes `quickterm mcp` refuse to serve. **On** by default.
+        /// Kept separate from `socket` because the two have different attack surfaces: a user may
+        /// well want the CLI for themselves while wanting no MCP host — and every web page or CI
+        /// log that host reads — to be able to connect.
         var controlMCP: Bool = true
         var controlMode: String = "ask"
         var controlExposeBrowser: String = "token"
@@ -272,17 +304,19 @@ enum ConfigStore {
             return Settings()
         }
         let result = parseDetailed(toml)
-        // 值不合法的行会被丢掉、保留默认。**必须说一声**：
-        // `[control] socket = off` 这种写法以前会被悄悄读成"开"，用户以为自己关掉了
+        // A line whose value is not valid is dropped and the default kept. **Say so out loud**:
+        // a spelling like `[control] socket = off` used to be silently read as "on", leaving the
+        // user believing they had turned it off.
         for note in result.diagnostics {
-            logger.warning("配置未生效：\(note.messageZH, privacy: .public)")
+            logger.warning("Config line had no effect: \(note.messageEN, privacy: .public)")
         }
         return result.settings
     }
 
     static func parse(_ toml: String) -> Settings { parseDetailed(toml).settings }
 
-    /// 解析 + 那些**没生效**的行（设置界面将来要把它们显示在对应 tab 上）
+    /// Parse, plus the lines that **had no effect** (a future settings window will show each of
+    /// them on the tab it belongs to).
     static func parseDetailed(_ toml: String) -> (settings: Settings, diagnostics: [ConfigDiagnostic]) {
         var settings = Settings()
         let scan = ConfigTOML.scan(toml)
@@ -290,7 +324,8 @@ enum ConfigStore {
         for (id, value) in resolved.values {
             ConfigBindings.table[id]?(value, &settings)
         }
-        // [keybinds] 不是注册表项（键名 = 动作清单，见 WMAction）
+        // [keybinds] is not part of the registry: its key names are the action list, see
+        // WMAction.
         for entry in scan.entries where entry.section == "keybinds" {
             guard let action = WMAction(rawValue: entry.key) else { continue }
             if entry.value.lowercased() == "none" {
@@ -304,10 +339,10 @@ enum ConfigStore {
     }
 }
 
-/// 注册表项 → `Settings` 的哪一个字段。**只有赋值，没有校验**：
-/// 类型、范围、越界脾气全在 `ConfigSchema` 里声明并统一执行，
-/// 这张表要是自己再判一次，两边就又能各走各的了。
-/// `ConfigSchemaTests.testEveryKeyHasABinding` 钉死两张表一一对应
+/// Registry entry -> the `Settings` field it writes. **Assignment only, no validation**: the
+/// type, the range and the out-of-range behavior are all declared in `ConfigSchema` and enforced
+/// in one place. If this table checked anything a second time, the two could once again drift
+/// apart. `ConfigSchemaTests.testEveryKeyHasABinding` pins the two tables to each other.
 enum ConfigBindings {
     typealias Write = (ConfigValue, inout ConfigStore.Settings) -> Void
 
@@ -346,7 +381,7 @@ enum ConfigBindings {
 }
 
 extension KeyCombo {
-    /// 解析 "cmd+shift+left" 形式（spec §4.7 [keybinds] 值格式）
+    /// Parse the "cmd+shift+left" form (the [keybinds] value format from spec §4.7).
     static func parse(_ text: String) -> KeyCombo? {
         var flags: NSEvent.ModifierFlags = []
         var key: String?
@@ -364,7 +399,8 @@ extension KeyCombo {
     }
 }
 
-/// 目录级文件监听（编辑器原子替换也能捕获）→ 热重载
+/// Directory-level file watching, which also catches the atomic replace an editor does on save,
+/// and hot reloads from it.
 final class ConfigWatcher {
     private var source: DispatchSourceFileSystemObject?
     private let fd: Int32

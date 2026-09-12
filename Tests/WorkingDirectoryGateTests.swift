@@ -2,13 +2,16 @@ import XCTest
 import AppKit
 @testable import QuickTerm
 
-/// 启动挂死的回归线（2026-09-11）：
-/// 存档里的终端 cwd 落在 TCC 保护目录（~/Desktop ~/Documents ~/Downloads）时，
-/// 未获授权的二进制被 LaunchServices 拉起来后，libghostty 在 `ghostty_surface_new` 里的
-/// `openat` 会**永远**不返回——整个 app 卡死在 `applicationDidFinishLaunching`，一个窗口都没有。
+/// Regression line for the launch hang (2026-09-11):
+/// when a terminal's archived cwd sits inside a TCC-protected directory (~/Desktop ~/Documents
+/// ~/Downloads) and the binary was started by LaunchServices without that grant, the `openat` that
+/// libghostty performs inside `ghostty_surface_new` **never** returns: the whole app wedges in
+/// `applicationDidFinishLaunching` and not one window comes up.
 ///
-/// 这里用「永不应答的探针」把那种环境搬进用例：复原必须照常建出每一个 pane 并及时返回。
-/// （TCC 本身没法在单元测试里模拟，`open` 启动那一半是人工检查，见 docs/manual-launch-check.md）
+/// These cases move that environment into the suite with a probe that never answers: restore still has
+/// to build every pane, and still has to come back in time.
+/// (TCC itself cannot be simulated in a unit test; the `open`-launch half is checked by hand, see
+/// docs/manual-launch-check.md.)
 @MainActor
 final class WorkingDirectoryGateTests: XCTestCase {
     private var app: AppDelegate {
@@ -17,7 +20,7 @@ final class WorkingDirectoryGateTests: XCTestCase {
 
     private var tempDirs: [URL] = []
     private var registries: [ScreenRegistry] = []
-    /// 本用例里自建 AppSession 会踩到的进程级全局（`apply` 会把它们改成默认值）
+    /// Process-wide globals the AppSession built in this file stomps on (`apply` resets them to defaults).
     private var savedBrowserSettings: BrowserPaneView.Settings?
     private var savedBrowserExtensions: Bool?
     private var savedSocketPath: String?
@@ -29,8 +32,9 @@ final class WorkingDirectoryGateTests: XCTestCase {
         tempDirs.removeAll()
         registries.removeAll()
         if restoreGlobals {
-            // 自建的 AppSession 会把事件总线接到它自己那个（马上就要释放的）注册表上，
-            // 总线是弱引用 → 不接回来的话，本类之后的每一个用例看到的都是一条死总线
+            // The AppSession built here points the event bus at its own registry, which is about to be
+            // deallocated. The bus holds it weakly, so without reattaching, every later case in this
+            // class would be talking to a dead bus.
             if let app = NSApp.delegate as? AppDelegate {
                 ControlEventBus.shared.attach(screens: app.screens)
             }
@@ -42,7 +46,7 @@ final class WorkingDirectoryGateTests: XCTestCase {
         super.tearDown()
     }
 
-    /// 一个 pane 在存档里长什么样（直接拼 JSON：解码就是启动复原真正走的那一段）
+    /// What a pane looks like in the archive (hand-built JSON: decoding is the exact path launch restore takes).
     private func paneJSON(pwd: String?, uuid: UUID = UUID()) -> Data {
         let pwdField = pwd.map { "\"\($0)\"" } ?? "null"
         return Data("""
@@ -50,13 +54,13 @@ final class WorkingDirectoryGateTests: XCTestCase {
         """.utf8)
     }
 
-    /// 从一份 pane 存档里读出 cwd
+    /// Read the cwd back out of an archived pane.
     private func archivedPwd(_ data: Data) throws -> String? {
         struct Probe: Decodable { let pwd: String? }
         return try JSONDecoder().decode(Probe.self, from: data).pwd
     }
 
-    /// 探针永不应答（= 未获授权的二进制被 LaunchServices 拉起来时的 TCC 行为）
+    /// A probe that never answers, which is what TCC does to an unauthorized binary launched by LaunchServices.
     private func denyProtectedRoots() {
         WorkingDirectoryGate.resetForTesting()
         WorkingDirectoryGate.deadline = 0.05
@@ -72,9 +76,9 @@ final class WorkingDirectoryGateTests: XCTestCase {
 
     private var home: String { NSHomeDirectory() }
 
-    // MARK: 守卫本身
+    // MARK: The gate itself
 
-    /// 只有三个受保护根目录需要探测，其余路径（含 ~ 自身、~/Library、/tmp）原样放行
+    /// Only the three protected roots need probing; every other path (~ itself, ~/Library, /tmp) passes through.
     func testProtectedRootClassification() {
         let home = "/Users/probe"
         XCTAssertEqual(WorkingDirectoryGate.protectedRoot(for: "\(home)/Documents", home: home),
@@ -89,31 +93,33 @@ final class WorkingDirectoryGateTests: XCTestCase {
         XCTAssertNil(WorkingDirectoryGate.protectedRoot(for: "\(home)/Library/Caches", home: home))
         XCTAssertNil(WorkingDirectoryGate.protectedRoot(for: "/tmp", home: home))
         XCTAssertNil(WorkingDirectoryGate.protectedRoot(for: "/usr/local", home: home),
-                     "前缀相似但不是子目录：Documents2 之类不能误判")
+                     "a similar prefix is not a subdirectory: Documents2 and friends must not be misread")
         XCTAssertNil(WorkingDirectoryGate.protectedRoot(for: "\(home)/Documents2", home: home))
     }
 
-    /// 探不通 → 返回 nil（= 交给引擎的默认目录），且每个根目录只探一次
+    /// A probe that does not get through returns nil, leaving the engine's default directory, and each root
+    /// is probed only once.
     func testUnansweredProbeFallsBackAndIsMemoised() {
         var probed: [String] = []
         WorkingDirectoryGate.resetForTesting()
         WorkingDirectoryGate.deadline = 0.05
         WorkingDirectoryGate.prober = { root, deadline in
             probed.append(root)
-            Thread.sleep(forTimeInterval: deadline)   // 永不应答：等到超时
+            Thread.sleep(forTimeInterval: deadline)   // Never answers: sleep until the deadline
             return false
         }
         XCTAssertNil(WorkingDirectoryGate.usable("\(home)/Documents/quickterm"))
         XCTAssertNil(WorkingDirectoryGate.usable("\(home)/Documents/another/deep/path"))
-        XCTAssertEqual(probed, ["\(home)/Documents"], "同一个根目录只付一次探测代价")
+        XCTAssertEqual(probed, ["\(home)/Documents"], "the same root pays for the probe only once")
 
-        // 放行的路径根本不探
+        // A path that passes through is never probed at all.
         XCTAssertEqual(WorkingDirectoryGate.usable("/tmp/x"), "/tmp/x")
         XCTAssertNil(WorkingDirectoryGate.usable(nil))
         XCTAssertEqual(probed.count, 1)
     }
 
-    /// 探得通 → 原样放行（发布版有授权时就是这一条，行为与修复前完全一致）
+    /// A probe that gets through passes the path along verbatim. This is the release build with the grant
+    /// in place, behaving exactly as it did before the fix.
     func testAnsweredProbePassesThrough() {
         WorkingDirectoryGate.resetForTesting()
         WorkingDirectoryGate.prober = { _, _ in true }
@@ -121,23 +127,26 @@ final class WorkingDirectoryGateTests: XCTestCase {
         XCTAssertEqual(WorkingDirectoryGate.usable(path), path)
     }
 
-    /// 默认探针在能打开的目录上是即时的（拿 /tmp 当基准，不碰受保护目录）
+    /// The default probe is instantaneous on a directory it can open (/tmp as the baseline, no protected
+    /// directory touched).
     func testDefaultProberOpensReachableDirectory() {
         XCTAssertTrue(WorkingDirectoryGate.probeByOpening("/tmp", 1.0))
         XCTAssertFalse(WorkingDirectoryGate.probeByOpening("/quickterm-no-such-dir", 1.0))
     }
 
-    // MARK: 真实复原路径（这条才是当初漏掉的覆盖）
+    // MARK: The real restore path (this is the coverage that was missing)
 
-    /// 一份「像真的」的存档——两块屏幕、各 5 个工作区、多个终端（cwd 全在 ~/Documents 下）、
-    /// 一个带多标签的浏览器 pane——在探针永不应答的环境里复原：
-    /// 每个 pane 都要建出来，而且整段必须在超时的量级内返回（修复前是永远不返回）
+    /// A realistic archive: two screens, five workspaces each, several terminals whose cwds all live under
+    /// ~/Documents, and a browser pane with several tabs. Restore it in an environment where the probe never
+    /// answers: every pane still has to be built,
+    /// and the whole thing has to return on the order of the timeout (before the fix it never returned).
     func testRestoreWithUnansweredProbeStillBuildsEveryPane() throws {
         let app = try self.app
         let primary = try XCTUnwrap(app.controller)
         let docs = "\(home)/Documents"
 
-        // 存档：屏幕 A = 3 个终端（两个平铺 + 一个浮动），屏幕 B = 1 个终端 + 1 个三标签浏览器
+        // The archive: screen A = 3 terminals (two tiled, one floating), screen B = 1 terminal + a browser
+        // with three tabs.
         var terminals: [Ghostty.SurfaceView] = []
         func terminal(_ suffix: String) -> Ghostty.SurfaceView {
             let pane = primary.newSurface(workingDirectory: nil)
@@ -176,9 +185,10 @@ final class WorkingDirectoryGateTests: XCTestCase {
                            stackingOrder: [windowB.id, windowA.id]))
         for pane in terminals { pane.removeFromSuperview() }
 
-        // TCC 不应答的环境。注意闸门是在**解码**里付代价的：`SessionStore.decode` 就已经
-        // 把每个 pane 真的构造出来了（终端 = 起一个 shell），这正是启动挂死的那一段，
-        // 所以桩必须在 decode 之前装好，计时也要把 decode 括进去
+        // The environment where TCC never answers. The gate is paid for during **decoding**:
+        // `SessionStore.decode` already constructs every pane for real (a terminal means spawning a shell),
+        // and that is precisely the stretch that hung at launch.
+        // So the stub has to be installed before decode, and the timing has to bracket decode as well.
         var probeCount = 0
         WorkingDirectoryGate.resetForTesting()
         WorkingDirectoryGate.deadline = 0.05
@@ -188,7 +198,7 @@ final class WorkingDirectoryGateTests: XCTestCase {
             return false
         }
 
-        // 真实复原就是从 JSON 来的：走一整轮解码，pane 是重新构造出来的那一套
+        // A real restore comes out of JSON: run the whole decode, so these panes are freshly constructed ones.
         let started = Date()
         let state = try XCTUnwrap(SessionStore.decode(data))
         let restored = app.restoreSession(from: state)
@@ -202,19 +212,19 @@ final class WorkingDirectoryGateTests: XCTestCase {
         }
         spin()
 
-        XCTAssertEqual(restored.count, 2, "两块屏幕都要回来")
-        XCTAssertEqual(restored[0].model.allPanes.count, 3, "屏幕 A：两个平铺 + 一个浮动终端")
-        XCTAssertEqual(restored[1].model.allPanes.count, 2, "屏幕 B：一个终端 + 一个浏览器")
+        XCTAssertEqual(restored.count, 2, "both screens have to come back")
+        XCTAssertEqual(restored[0].model.allPanes.count, 3, "screen A: two tiled terminals plus one floating")
+        XCTAssertEqual(restored[1].model.allPanes.count, 2, "screen B: one terminal plus one browser")
         XCTAssertTrue(restored[0].model.layouts[0].paneList.first is Ghostty.SurfaceView)
         let decodedBrowser = try XCTUnwrap(
             restored[1].model.layouts[1].paneList.first as? BrowserPaneView)
-        XCTAssertEqual(decodedBrowser.tabs.count, 3, "浏览器 pane 的标签一个不少")
+        XCTAssertEqual(decodedBrowser.tabs.count, 3, "the browser pane keeps every tab")
         XCTAssertEqual(decodedBrowser.activeTabIndex, 1)
-        XCTAssertEqual(probeCount, 1, "四个终端共用一次 ~/Documents 探测")
-        XCTAssertLessThan(elapsed, 5, "复原必须及时返回——修复前这里是永远不返回")
+        XCTAssertEqual(probeCount, 1, "four terminals share a single ~/Documents probe")
+        XCTAssertLessThan(elapsed, 5, "restore has to return promptly: before the fix it never returned")
     }
 
-    /// 复原期间绝不写盘：半个模型落地会把用户的会话截断掉
+    /// Never write to disk while restoring: landing half a model on disk truncates the user's session.
     func testNoSaveLandsWhileRestoring() throws {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("quickterm-gate-\(UUID().uuidString)", isDirectory: true)
@@ -233,40 +243,42 @@ final class WorkingDirectoryGateTests: XCTestCase {
         store.scheduleSave()
         store.saveNow()
         spin(SessionStore.debounceInterval + 0.4)
-        XCTAssertEqual(store.writeCount, 0, "复原期间一次都不许落盘")
+        XCTAssertEqual(store.writeCount, 0, "not one write may land while restoring")
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
 
         store.endRestore()
         store.saveNow()
-        XCTAssertEqual(store.writeCount, 1, "复原结束后照常写盘")
+        XCTAssertEqual(store.writeCount, 1, "once restore is over, writing resumes as usual")
     }
 
-    // MARK: 被挡下来的目录不能污染存档
+    // MARK: A blocked directory must not poison the archive
 
-    /// TCC 挡下来之后 shell 起在引擎的默认目录（家目录），几毫秒后 OSC 7 就把它报回来。
-    /// 那个值**绝不能**写进存档——否则用户存的 ~/Documents 在第一次防抖存档（或退出时的
-    /// `saveNow`）就被改写成家目录，而且再也找不回来了
+    /// Once TCC blocks it the shell starts in the engine's default directory (the home directory), and a few
+    /// milliseconds later OSC 7 reports that back. That value must **never** reach the archive: the
+    /// ~/Documents the user saved would be rewritten to the home directory by the first debounced save
+    /// (or by `saveNow` on quit), and there would be no way to get it back.
     func testDeniedWorkingDirectorySurvivesTheOSC7Fallback() throws {
         denyProtectedRoots()
         let archived = "\(home)/Documents/quickterm"
         let pane = try JSONDecoder().decode(Ghostty.SurfaceView.self, from: paneJSON(pwd: archived))
         defer { pane.removeFromSuperview() }
 
-        // shell 报回引擎的回退目录
+        // The shell reports the engine's fallback directory back.
         pane.pwd = home
         XCTAssertEqual(try archivedPwd(JSONEncoder().encode(pane)), archived,
-                       "被挡下来的那次，存档里必须还是用户自己的目录")
-        // 同一个回退目录再报几次（每个提示符都会发一次）也不能改变结论
+                       "when the probe was blocked, the archive has to keep the user's own directory")
+        // Reporting the same fallback again (every prompt sends one) must not change the answer.
         pane.pwd = home
         XCTAssertEqual(try archivedPwd(JSONEncoder().encode(pane)), archived)
 
-        // 用户真的 cd 走了 → 从这一刻起照常存实际位置
+        // The user really did cd away, so from here on the live location is archived as usual.
         pane.pwd = "/tmp"
         XCTAssertEqual(try archivedPwd(JSONEncoder().encode(pane)), "/tmp",
-                       "真正的 cd 必须照常入档，否则这个 pane 就永远钉在旧目录上了")
+                       "a real cd has to be archived, or this pane stays nailed to the old directory forever")
     }
 
-    /// 有授权时（发布版 / 已授权的二进制）行为完全不变：存的就是 shell 报回来的实际位置
+    /// With the grant in place (release build, authorized binary) nothing changes: what gets archived is the
+    /// live location the shell reported.
     func testGrantedWorkingDirectoryStillPersistsTheLivePwd() throws {
         WorkingDirectoryGate.resetForTesting()
         WorkingDirectoryGate.prober = { _, _ in true }
@@ -277,20 +289,22 @@ final class WorkingDirectoryGateTests: XCTestCase {
         XCTAssertEqual(try archivedPwd(JSONEncoder().encode(pane)), home)
     }
 
-    /// 超时之后那次 `open` 才成功（授权窗一直开着，用户过一会儿才点「允许」）：
-    /// 缓存要改回可用，之后新建的 pane 就该拿到真实目录。超时 ≠ 拒绝
+    /// The `open` succeeds only after the deadline (the permission dialog stays up and the user clicks Allow
+    /// a while later): the cache has to flip back to usable, so panes created after that get the real
+    /// directory. A timeout is not a denial.
     func testLateProbeSuccessReopensTheRoot() {
         denyProtectedRoots()
         let root = "\(home)/Documents"
-        XCTAssertNil(WorkingDirectoryGate.usable("\(root)/x"), "先记成不可用")
-        WorkingDirectoryGate.noteLateSuccess(root)   // 探测线程晚一步回来了
+        XCTAssertNil(WorkingDirectoryGate.usable("\(root)/x"), "recorded as unusable first")
+        WorkingDirectoryGate.noteLateSuccess(root)   // The probe thread came back a step late
         XCTAssertEqual(WorkingDirectoryGate.usable("\(root)/x"), "\(root)/x",
-                       "晚到的成功要把这个根目录改回可用")
+                       "a late success has to mark this root usable again")
     }
 
-    // MARK: 上一次会话的副本
+    // MARK: The previous session's copy
 
-    /// 本进程第一次写盘前留一份上一次会话的副本：一次坏掉的启动不能把用户的会话变成绝笔
+    /// Keep a copy of the previous session before this process's first write: one broken launch must not be
+    /// allowed to overwrite the user's session for good.
     func testPreviousSessionArchiveIsKeptBeforeFirstWrite() throws {
         let dir = try makeTempDir()
         let url = dir.appendingPathComponent("state.json")
@@ -305,26 +319,28 @@ final class WorkingDirectoryGateTests: XCTestCase {
 
         store.saveNow()
         XCTAssertEqual(try Data(contentsOf: store.previousSessionURL), old,
-                       "第一次写盘前，盘上那份要原样留一份")
+                       "before the first write, whatever was on disk is kept verbatim")
         XCTAssertNotEqual(try Data(contentsOf: url), old)
 
         store.saveNow()
         XCTAssertEqual(try Data(contentsOf: store.previousSessionURL), old,
-                       "同一次会话的续写不能把那份副本盖掉")
+                       "later writes in the same session must not overwrite that copy")
     }
 
-    // MARK: 控制面环境（复原出来的 pane 也必须有）
+    // MARK: The control-plane environment (restored panes need it too)
 
-    /// socket **必须**在复原之前就绑好：环境变量是 spawn 那一刻烤进 pane 的，
-    /// 晚绑一步，整个会话里的终端就都没有 QUICKTERM_SOCKET / TOKEN / PANE_TOKEN 了
-    /// （`input send-text` 写自己那个 pane 会开始弹确认框；带 QUICKTERM_CONTROL_SOCKET
-    /// 起的第二个实例，它 pane 里的 CLI 会去驱动用户那台真正的 QuickTerm）
+    /// The socket **has** to be bound before restore: the environment is baked into a pane at spawn time, so
+    /// binding one step late leaves every terminal in the session without QUICKTERM_SOCKET / TOKEN /
+    /// PANE_TOKEN.
+    /// (`input send-text` into your own pane would start raising confirmation dialogs, and in a second
+    /// instance started with QUICKTERM_CONTROL_SOCKET the CLI inside its panes would drive the user's real
+    /// QuickTerm instead.)
     func testControlSocketIsBoundBeforeRestoreSoPanesInheritIt() throws {
         let dir = try makeTempDir()
-        // socket 路径必须装得进 sun_path 的 104 字节（与 ControlServerTests 同一条线）
+        // The socket path has to fit inside sun_path's 104 bytes (same line as ControlServerTests).
         let sock = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("qtg-\(UUID().uuidString.prefix(8)).sock")
-        try XCTSkipUnless(ControlPaths.fits(sock), "临时目录太长，装不进 sun_path 104 字节")
+        try XCTSkipUnless(ControlPaths.fits(sock), "the temp directory is too long to fit in sun_path's 104 bytes")
         defer { try? FileManager.default.removeItem(atPath: sock) }
         let registry = ScreenRegistry()
         registries.append(registry)
@@ -337,12 +353,12 @@ final class WorkingDirectoryGateTests: XCTestCase {
                                  controlSocketPath: sock)
         defer { session.controlServer.stop() }
 
-        // 这一行就是 `AppDelegate` 里 `loadInitialConfig()` 做的那一半——它跑在复原**之前**
+        // This line is the half `loadInitialConfig()` does in `AppDelegate`, and it runs **before** restore.
         session.applyGlobalConfig(ConfigStore.Settings())
-        XCTAssertTrue(session.controlServer.isListening, "复原之前 socket 就该绑好")
+        XCTAssertTrue(session.controlServer.isListening, "the socket must already be bound before restore")
         XCTAssertEqual(ControlEnvironment.socketPath, sock)
 
-        // 这一刻解码出来的 pane（= 启动复原建出来的那批）必须带齐控制面环境
+        // A pane decoded at this moment (the batch launch restore builds) has to carry the whole environment.
         let paneID = UUID()
         let pane = try JSONDecoder().decode(Ghostty.SurfaceView.self,
                                             from: paneJSON(pwd: "/tmp", uuid: paneID))
@@ -351,7 +367,7 @@ final class WorkingDirectoryGateTests: XCTestCase {
         XCTAssertEqual(pane.initialEnvironment[ControlProtocol.Env.token], ControlEnvironment.token)
         XCTAssertEqual(pane.initialEnvironment[ControlProtocol.Env.paneToken],
                        ControlEnvironment.paneToken(for: paneID),
-                       "自写免确认唯一的依据：每 pane 一枚的来源标记")
+                       "the only basis for skipping confirmation on a self-write: a per-pane origin token")
         XCTAssertEqual(pane.initialEnvironment[ControlProtocol.Env.pane], paneID.uuidString)
     }
 

@@ -1,8 +1,9 @@
 import Darwin
 import Foundation
 
-/// 连到 QuickTerm 的控制 socket，发一行 NDJSON，读一行响应。
-/// 连接可复用（Phase 4 的事件流就是同一条连接保持打开），但 Phase 1 每条命令一次往返。
+/// Connects to QuickTerm's control socket, writes one line of NDJSON, reads one line of reply.
+/// The connection is reusable (the Phase 4 event stream is this same connection held open), but in
+/// Phase 1 every command is a single round trip.
 struct ControlClient {
     enum ClientError: Error {
         case notRunning([String])
@@ -13,7 +14,7 @@ struct ControlClient {
     let path: String
     private let fd: Int32
 
-    /// 依次尝试候选路径；全部连不上 → notRunning
+    /// Tries the candidate paths in order; if none of them connects -> notRunning.
     static func connect(candidates: [String]) throws -> ControlClient {
         var tried: [String] = []
         for path in candidates {
@@ -46,7 +47,7 @@ struct ControlClient {
 
     func close() { Darwin.close(fd) }
 
-    /// 写一行 NDJSON 请求（不读回应）
+    /// Writes one NDJSON request line (does not read the reply).
     func write(_ request: ControlRequest) throws {
         let line = try ControlJSON.line(request)
         try line.withUnsafeBytes { raw in
@@ -61,9 +62,10 @@ struct ControlClient {
         }
     }
 
-    /// `events follow`：写一次请求，然后一直读，每读到一行就交给 `onReply`。
-    /// 对端关掉（QuickTerm 退出 / 服务停了）就正常返回——**流的终止只有这一种**，
-    /// 客户端这边从不主动断（用户按 Ctrl-C 才结束这个进程）
+    /// `events follow`: write the request once, then read forever, handing each line to `onReply`.
+    /// When the peer closes (QuickTerm quit, or the service was stopped) we return normally —
+    /// **that is the only way this stream ever ends**; the client side never hangs up on its own
+    /// (the user pressing Ctrl-C is what ends this process).
     func stream(_ request: ControlRequest, onReply: (ControlReply) -> Void) throws {
         try write(request)
         var buffer = Data()
@@ -82,7 +84,7 @@ struct ControlClient {
                 }
                 continue
             }
-            if n == 0 { return }                  // 对端关闭：流结束
+            if n == 0 { return }                  // peer closed: end of stream
             if errno == EINTR { continue }
             throw ClientError.system("socket read failed: \(String(cString: strerror(errno)))")
         }
@@ -112,8 +114,8 @@ struct ControlClient {
         }
     }
 
-    /// `--start`：拉起 QuickTerm 并等 socket 出现（最长 10s）。
-    /// 什么都不做地静默失败是 agent 唯一无法自救的行为
+    /// `--start`: launch QuickTerm and wait for the socket to appear (10s at most).
+    /// Failing silently and doing nothing is the one behavior an agent cannot recover from.
     static func launchAndWait(candidates: [String], timeout: TimeInterval = 10) -> ControlClient? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")

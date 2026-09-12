@@ -1,59 +1,75 @@
 import AppKit
 
-/// 进程级会话（spec v9 §2）：一个进程只该有一份的东西全归这里——
-/// config.toml 的加载与**唯一**监听、共享的 `KeybindingMap`、唯一的 `SystemStatsService`、
-/// 全局设置（文件管理器 / link-opener / 浏览器 pane 设置 / 扩展开关 / 主题与引擎 overlay），
-/// 以及非原生全屏那份进程级 `NSApp.presentationOptions` 的归属账本。
+/// The process-level session (spec v9 §2): everything that should exist exactly once per process
+/// lives here - loading config.toml and the **single** watcher on it, the shared `KeybindingMap`,
+/// the one `SystemStatsService`, the global settings (file manager / link-opener / browser pane
+/// settings / the extension switch / theme and engine overlay), and the ownership ledger behind the
+/// process-wide `NSApp.presentationOptions` used by non-native fullscreen.
 ///
-/// 与 `ScreenRegistry` 分工（所以不合并成一个类）：注册表回答「有哪些屏幕、动作落在哪个屏幕」，
-/// 本类回答「所有屏幕共用的那一份状态是什么」。两者生命周期一致但职责正交；
-/// 注册表被 App 级的其它协作方（扩展宿主聚合器）单独持有，混进配置/全屏账本会把它们绑死。
+/// How the work is split with `ScreenRegistry` (which is why the two are not one class): the
+/// registry answers "which screens exist, and which screen does this action land on", while this
+/// class answers "what is the one piece of state every screen shares". Their lifetimes match but
+/// their responsibilities are orthogonal; the registry is held separately by other App-level
+/// collaborators (the extension host aggregator), and folding the config and fullscreen ledger into
+/// it would tie those together.
 ///
-/// 持有关系：AppDelegate → AppSession → ScreenRegistry → MainWindowController；
-/// 控制器反向持有本对象必须是 `unowned`（见 `MainWindowController.session`），否则成环。
+/// Ownership chain: AppDelegate -> AppSession -> ScreenRegistry -> MainWindowController. A
+/// controller's back-reference to this object has to be `unowned` (see
+/// `MainWindowController.session`), otherwise it is a retain cycle.
 @MainActor
 final class AppSession {
     let screens: ScreenRegistry
     let themeManager: ThemeManager
-    /// 全进程唯一的系统状态轮询（2s Timer + NWPathMonitor + CoreAudio/IOKit）：
-    /// 注入每个屏幕的 RootView。每屏一个的时代 N 个窗口就是 N 份轮询
+    /// The one system-stats poller in the process (a 2s Timer plus NWPathMonitor plus
+    /// CoreAudio/IOKit), injected into every screen's RootView. Back when each screen had its own,
+    /// N windows meant N pollers.
     let stats = SystemStatsService()
 
-    /// 会话存档（多屏幕 v5）：读盘 / 迁移 / 防抖写盘的唯一入口
+    /// The session archive (multi-screen v5): the single entry point for reading from disk,
+    /// migration, and debounced writes
     let sessionStore: SessionStore
 
-    /// 控制面（CLI / AI agent）的确认闸门与服务。默认开、模式 ask；
-    /// `[control]` 变化时由 `applyGlobalConfig` 起停——所以改配置保存即生效，不必重启
+    /// The consent gate and the server for the control plane (the CLI and AI agents). On by
+    /// default, in ask mode; `applyGlobalConfig` starts and stops it when `[control]` changes, so
+    /// editing the config and saving takes effect immediately with no restart.
     let controlConsent: ControlConsent
     let controlServer: ControlServer
-    /// 只有显式注入了 socket 路径（临时目录）的用例才允许真的绑定：
-    /// 测试宿主绝不能占用用户正在跑的那个 QuickTerm 的 socket（与 SessionStore.writesAllowed 同一策略）
+    /// Only a test that explicitly injected a socket path (in a temp directory) is allowed to
+    /// really bind: the test host must never take over the socket of the QuickTerm the user is
+    /// actually running (the same policy as SessionStore.writesAllowed).
     private let controlAllowed: Bool
 
-    /// 最近一次生效的配置（新屏幕创建时直接拿它，不再各自读盘）
+    /// The most recently applied config (a new screen takes it from here instead of reading the
+    /// file itself)
     private(set) var settings = ConfigStore.Settings()
 
-    /// 共享键位表：控制器只读引用（`MainWindowController.keybindings` 是计算属性），
-    /// 重载时这里换一份，所有屏幕立刻同步——绝不由控制器各自重建
+    /// The shared keybinding table. Controllers only read it (`MainWindowController.keybindings` is
+    /// a computed property); on reload we swap in a new one here and every screen is in sync at
+    /// once - a controller never rebuilds its own.
     private(set) var keybindings = KeybindingMap()
 
-    /// 全局设置（配置派生，与窗口无关）：控制器上的同名属性是转发到这里的计算属性
+    /// Global settings (derived from the config, nothing to do with a window): the same-named
+    /// properties on the controller are computed properties forwarding to here.
     var fileManagerCommand = FileManagerLaunch.defaultProgram
-    /// 终端里 ⌘+点击的链接开在哪：browser-pane = 浏览器 pane；system = 系统默认浏览器
+    /// Where a Cmd+clicked link in a terminal opens: browser-pane = in a browser pane,
+    /// system = in the system default browser
     var linkOpener = "browser-pane"
 
-    /// `applyGlobalConfig` 的执行次数（测试计数桩：一次重载无论几个屏幕都只该 +1）
+    /// How many times `applyGlobalConfig` has run (a counter the tests assert on: one reload must
+    /// bump it by exactly 1, no matter how many screens exist)
     private(set) var globalConfigApplyCount = 0
 
-    /// 进程内唯一的 config.toml 监听
+    /// The one config.toml watcher in the process
     private var configWatcher: ConfigWatcher?
-    /// 内容去重（编辑器保存会连发多次文件系统事件）
+    /// Deduplicate by content: saving from an editor fires several filesystem events in a row.
     private var lastConfigContent: String?
 
-    /// 当前处于非原生全屏的屏幕（按窗口引用计数的账本，见下方 MARK）
+    /// The screens currently in non-native fullscreen (a per-window refcount ledger; see the MARK
+    /// further down)
     private var fullscreenOwners = Set<ObjectIdentifier>()
 
-    /// 显示器配置变化（插拔 / 唤醒 / 改分辨率）的防抖：一次插拔会连发好几条通知
+    /// Debounce for display configuration changes (plugging a display in or out, waking, changing
+    /// resolution): a single plug event fires several notifications in a row.
     static let screenChangeDebounce: TimeInterval = 0.5
     private var screenParametersObserver: Any?
     private var pendingScreenReflow: DispatchWorkItem?
@@ -68,8 +84,9 @@ final class AppSession {
         self.controlServer = ControlServer(screens: screens, consent: consent,
                                            socketPath: controlSocketPath)
         self.controlAllowed = controlSocketPath != nil || !AppDelegate.isRunningTests
-        // 事件总线挂上注册表，并把"此刻"记成基线：不这么做的话，第一次扫描会把
-        // 已经存在的每一块屏幕、每一个 pane 都当成"刚刚新建"报一遍
+        // Hook the event bus up to the registry and take "right now" as the baseline: without
+        // that, the first scan reports every screen and every pane that already exists as if it had
+        // just been created.
         ControlEventBus.shared.attach(screens: screens)
     }
 
@@ -79,9 +96,9 @@ final class AppSession {
         }
     }
 
-    // MARK: 显示器热插拔（spec v9 §3.5）
+    // MARK: Display hot-plug (spec v9 §3.5)
 
-    /// 装上进程内唯一的显示器变化监听
+    /// Install the one display-change observer in the process
     func installScreenParametersObserver() {
         guard screenParametersObserver == nil else { return }
         screenParametersObserver = NotificationCenter.default.addObserver(
@@ -91,7 +108,7 @@ final class AppSession {
         }
     }
 
-    /// 防抖 0.5s 后把每个屏幕重新贴合它当前所在的显示器
+    /// After a 0.5s debounce, refit every screen to the display it currently sits on
     func scheduleScreenReflow() {
         pendingScreenReflow?.cancel()
         let item = DispatchWorkItem { [weak self] in self?.reflowScreens() }
@@ -99,18 +116,21 @@ final class AppSession {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.screenChangeDebounce, execute: item)
     }
 
-    /// 逐屏重新约束（目标显示器没了 → AppKit 已经把窗口挪到别处，按它当前所在屏收）+ 排一次存档
+    /// Re-constrain screen by screen (if the target display is gone AppKit has already moved the
+    /// window elsewhere, so fit it to whichever display it is on now), then queue one archive save.
     func reflowScreens() {
         pendingScreenReflow = nil
         for controller in screens.controllers { controller.reflowForScreenChange() }
         sessionStore.scheduleSave()
     }
 
-    // MARK: 配置链第 4 层（config.toml，spec §4.7）
+    // MARK: Layer 4 of the config chain (config.toml, spec §4.7)
 
-    /// 启动时的首次加载：补全模板键 → 读盘 → 落全局设置。
-    /// 必须在建第一个屏幕**之前**调用：控制器 init 直接用 `settings`（不再自己读盘），
-    /// 而 `visibleColumns` / 工作区数在状态恢复前就得是最终值
+    /// The first load at startup: fill in the template keys, read the file, apply the global
+    /// settings.
+    /// It has to run **before** the first screen is created: a controller's init uses `settings`
+    /// directly (it no longer reads the file itself), and `visibleColumns` and the workspace count
+    /// must already hold their final values before state restoration runs.
     func loadInitialConfig() {
         // **The UI language has to be settled before the template is written.** The template
         // comments (and the autofill banner) follow `[general] language`, and writing the
@@ -122,17 +142,19 @@ final class AppSession {
         if let text = try? String(contentsOf: ConfigStore.activeConfigURL, encoding: .utf8) {
             Localization.shared.apply(configValue: ConfigStore.parse(text).language)
         }
-        // 已有配置文件补全新增键（注释形式，幂等）。
-        // **测试宿主一个字节都不写**（与 `SessionStore.writesAllowed`、控制 socket 同一条策略）：
-        // 跑一次用例就往用户真正的 ~/.config/quickterm/config.toml 里补一段，是谁都没同意过的事。
-        // 冒烟时用 QUICKTERM_CONFIG_FILE 指到别处，那一份该补还是要补
+        // Fill newly added keys into an existing config file (as comments, idempotently).
+        // **The test host writes not one byte** (the same policy as `SessionStore.writesAllowed`
+        // and the control socket): appending a section to the user's real
+        // ~/.config/quickterm/config.toml just because a test ran is something nobody agreed to.
+        // Smoke runs point QUICKTERM_CONFIG_FILE somewhere else, and that copy does get filled in.
         if !AppDelegate.isRunningTests || ConfigStore.configURLOverride != nil {
             ConfigStore.ensureTemplateKeys()
         }
         apply(ConfigStore.load())
     }
 
-    /// 装上进程内唯一的目录监听（编辑器原子替换也能捕获）
+    /// Install the one directory watcher in the process (so an editor's atomic replace is caught
+    /// too)
     func installConfigWatcher() {
         lastConfigContent = (try? String(contentsOf: ConfigStore.activeConfigURL, encoding: .utf8)) ?? ""
         configWatcher = ConfigWatcher(
@@ -142,7 +164,8 @@ final class AppSession {
         }
     }
 
-    /// 文件内容真变了才重载（保存会连发多次事件），然后走一次 apply
+    /// Reload only when the file content actually changed (a save fires several events), then run
+    /// one apply
     func reloadConfigFile() {
         let content = (try? String(contentsOf: ConfigStore.activeConfigURL, encoding: .utf8)) ?? ""
         guard content != lastConfigContent else { return }
@@ -150,15 +173,18 @@ final class AppSession {
         apply(ConfigStore.parse(content))
     }
 
-    /// 一次重载 = 全局部分做**一次** + 每个屏幕各做一次窗口部分。
-    /// （单窗口时代每个控制器都重写一遍键位表 / 引擎 overlay / 浏览器全局设置，N 个屏幕就是 N 遍）
+    /// One reload = the global half **once**, plus the window half once per screen.
+    /// (Back in the single-window days every controller rewrote the keybinding table, the engine
+    /// overlay and the global browser settings, so N screens meant doing all of that N times.)
     func apply(_ settings: ConfigStore.Settings) {
         applyGlobalConfig(settings)
         for controller in screens.controllers { controller.applyWindowConfig(settings) }
     }
 
-    /// 进程级那一半：键位表、浏览器 pane 全局设置、扩展开关、主题 / 引擎 overlay。
-    /// 一次重载只跑一次——引擎 overlay 写盘会触发全屏幕热重载，做 N 遍就是 N 次闪烁
+    /// The process-level half: the keybinding table, the global browser pane settings, the
+    /// extension switch, the theme and the engine overlay.
+    /// It runs exactly once per reload - writing the engine overlay to disk triggers a hot reload
+    /// on every screen, so doing it N times means N flashes.
     func applyGlobalConfig(_ settings: ConfigStore.Settings) {
         globalConfigApplyCount += 1
         self.settings = settings
@@ -178,16 +204,20 @@ final class AppSession {
                                          tabWidth: settings.browserTabWidth, tabMinWidth: settings.browserTabMinWidth,
                                          downloadDirectory: settings.browserDownloadDir)
         BrowserExtensionManager.shared.isEnabled = settings.browserExtensions
-        // 控制面：配置热重载即起停（enabled=false / mode="off" 就彻底不监听）
+        // Control plane: a config hot reload starts or stops it (with enabled=false or
+        // mode="off" nothing listens at all).
         var control = ControlCommandRunner.Config(settings)
         if !controlAllowed { control.socket = false }
-        // ⚠️ 这里**必须**在启动复原之前就把 socket 绑起来，别再加什么「复原跑完再监听」的闸门：
-        // `ControlEnvironment.socketPath` 只在 `ControlServer.start()` 里赋值，而复原出来的
-        // pane 和全新启动的第一个 pane 都是在 `restoreSession()` 里**同步**建出来的——
-        // 环境变量是 spawn 那一刻烤进去的，之后再开服也补不回去。晚开一步，
-        // 整个会话里的终端就都没有 QUICKTERM_SOCKET / TOKEN / PANE_TOKEN 了。
-        // 「命令看见半个世界」不需要靠闸门防：所有命令执行都经 `DispatchQueue.main.async`，
-        // 而 `restoreSession()` 是在主线程上同步跑完的，排在后面的块一个也插不进来
+        // The socket **must** be bound here, before session restore runs. Do not reintroduce any
+        // kind of "only start listening once restore is done" gate:
+        // `ControlEnvironment.socketPath` is only assigned inside `ControlServer.start()`, and both
+        // the restored panes and the very first pane of a fresh launch are created
+        // **synchronously** inside `restoreSession()` - the environment is baked in at the moment
+        // of spawn, and starting the server afterwards cannot patch it in. Start one step late and
+        // no terminal in the entire session has QUICKTERM_SOCKET / TOKEN / PANE_TOKEN.
+        // "A command seeing half a world" needs no gate either: every command runs through
+        // `DispatchQueue.main.async`, and `restoreSession()` runs to completion synchronously on
+        // the main thread, so no queued block can slip in between.
         controlServer.apply(control)
         themeManager.updateFromConfig(
             passthrough: settings.ghosttyPassthrough,
@@ -208,18 +238,21 @@ final class AppSession {
         }
     }
 
-    // MARK: 非原生全屏的进程级 presentationOptions（按窗口引用计数）
+    // MARK: Process-level presentationOptions for non-native fullscreen (refcounted per window)
 
-    /// 全屏要藏起来的两样（进程级：macOS 没有「只藏这台显示器的菜单栏」这种 API）
+    /// The two things fullscreen hides. They are process-level: macOS has no "hide the menu bar on
+    /// this display only" API.
     private static let fullscreenOptions: [NSApplication.PresentationOptions.Element] =
         [.autoHideDock, .autoHideMenuBar]
 
-    /// 有几个屏幕正处在非原生全屏
+    /// How many screens are currently in non-native fullscreen
     var fullscreenScreenCount: Int { fullscreenOwners.count }
 
-    /// 某个屏幕进入 / 退出非原生全屏。按窗口记账后再 acquire/release：
-    /// 同一个窗口重复进入不会多拿，关屏幕时（`teardown`）也只还回它真拿过的那一份——
-    /// 于是 A 退出全屏不会在 B 还全屏时把菜单栏放回来
+    /// A screen enters or leaves non-native fullscreen. The ledger is updated per window before
+    /// the acquire/release, so entering twice from the same window does not take an extra
+    /// reference, and closing a screen (`teardown`) only gives back the reference it really held -
+    /// which is what keeps A leaving fullscreen from restoring the menu bar while B is still
+    /// fullscreen.
     func setSimpleFullscreen(_ on: Bool, for controller: MainWindowController) {
         let id = ObjectIdentifier(controller)
         if on {
@@ -231,8 +264,9 @@ final class AppSession {
         }
     }
 
-    /// key 窗口切换时重算：AppKit 会在窗口/激活状态变化时改写 presentationOptions，
-    /// 以账本为准把它扳回来（账本空 = 一个屏幕都不在全屏 → 必须让出 Dock 与菜单栏）
+    /// Recompute when the key window changes: AppKit rewrites presentationOptions on window and
+    /// activation changes, so force it back to whatever the ledger says (an empty ledger means no
+    /// screen is fullscreen, and the Dock and menu bar have to be handed back).
     func refreshPresentationOptions() {
         var options = NSApp.presentationOptions
         for option in Self.fullscreenOptions {

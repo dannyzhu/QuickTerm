@@ -460,9 +460,11 @@ extension Ghostty {
             return Unmanaged<App>.fromOpaque(app_ud).takeUnretainedValue()
         }
 
-        // QuickTerm：存活 SurfaceView 登记表。引擎回调用 surface 的 userdata（裸指针）取回视图，
-        // 若视图已释放而 surface 仍在引擎表中（生命周期脱节），takeUnretainedValue 会在 objc_retain
-        // 上崩溃（实测：scrollbar 动作回调）。init 登记、deinit 注销，取回前先查表。
+        // QuickTerm: registry of live SurfaceViews. Engine callbacks recover the view from the
+        // surface's userdata (a raw pointer), and if the view has already been freed while the
+        // surface is still in the engine's table (the two lifetimes have come apart),
+        // takeUnretainedValue crashes inside objc_retain (measured: the scrollbar action callback).
+        // init registers, deinit unregisters, and every lookup checks the registry first.
         private static let liveSurfaceViewsLock = NSLock()
         private static var liveSurfaceViews = Set<UnsafeMutableRawPointer>()
 
@@ -482,8 +484,10 @@ extension Ghostty {
         }
 
         /// Returns the surface view from the userdata.
-        /// QuickTerm：userdata 不在存活登记表（视图已释放而 C surface 仍在，见 surfaceView(from:)）时返回 nil，
-        /// 调用方直接放弃该回调，而不是对悬垂指针 takeUnretainedValue 触发 objc_retain 崩溃。
+        /// QuickTerm: returns nil when the userdata is not in the live registry (the view is freed
+        /// while the C surface is still around; see surfaceView(from:)), so the caller drops that
+        /// callback rather than calling takeUnretainedValue on a dangling pointer and crashing in
+        /// objc_retain.
         static private func surfaceUserdata(from userdata: UnsafeMutableRawPointer?) -> SurfaceView? {
             guard let userdata else { return nil }
             guard isLive(userdata) else {
@@ -751,8 +755,9 @@ extension Ghostty {
                 url = URL(filePath: expandedPath)
             }
 
-            // QuickTerm：终端里 ⌘+点击的网页链接先交给窗口控制器（在浏览器 pane 里打开；
-            // link-opener = system 或非 http(s) 时控制器不接管，落到下面的系统打开）
+            // QuickTerm: a web link Cmd+clicked in the terminal goes to the window controller first,
+            // which opens it in a browser pane. With link-opener = system, or for a non-http(s)
+            // URL, the controller declines and we fall through to the system open below.
             if action.kind != .text {
                 var origin: PaneView?
                 if let target, target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface {
@@ -783,15 +788,19 @@ extension Ghostty {
             return true
         }
 
-        /// 系统默认应用出口（测试可替换；生产恒为 NSWorkspace）
+        /// The way out to the system default application. Tests substitute their own; in production
+        /// it is always NSWorkspace.
         nonisolated(unsafe) static var systemOpener: (URL) -> Void = { NSWorkspace.shared.open($0) }
 
-        /// 把链接交给一个**还活着的**窗口控制器。
+        /// Hand the link to a window controller that is **still alive**.
         ///
-        /// 先问 pane 自己的控制器（多屏幕：链接归它那块屏幕），它解析不出来（SwiftUI 重建层级期间
-        /// pane 会短暂脱离窗口，`window == nil`）再退到 key / main 窗口，最后退到任何一个终端窗口。
-        /// 这样只要 link-opener 不是 system，http(s) 链接就绝不会漏成"系统默认浏览器打开"——
-        /// 控制器自己对非 http(s) 与 system 模式返回 false，那两种情况照旧落到系统打开。
+        /// Ask the pane's own controller first (multi-screen: the link belongs to that pane's
+        /// screen). If that does not resolve — while SwiftUI rebuilds the hierarchy a pane briefly
+        /// leaves its window and `window == nil` — fall back to the key / main window, and finally
+        /// to any terminal window at all. That way, as long as link-opener is not system, an http(s)
+        /// link can never leak out as "opened in the system default browser": the controller itself
+        /// returns false for non-http(s) URLs and for system mode, and those two cases still fall
+        /// through to the system open.
         static func routeLink(_ url: URL, from origin: PaneView?) -> Bool {
             let owner = origin?.controller
             var candidates: [BaseTerminalController] = []
@@ -805,7 +814,8 @@ extension Ghostty {
             add(NSApp.mainWindow?.windowController as? BaseTerminalController)
             for window in NSApp.windows { add(window.windowController as? BaseTerminalController) }
             for controller in candidates {
-                // 锚点 pane 只对它自己的控制器有意义（别的屏幕不认这个 pane）
+                // The anchor pane only means anything to its own controller; another screen does
+                // not know this pane.
                 let anchor = controller === owner ? origin : nil
                 if controller.openLink(url, from: anchor) { return true }
             }
@@ -1704,13 +1714,17 @@ extension Ghostty {
             }
         }
 
-        /// QuickTerm：子进程退出。引擎对带 `command` 的 surface 强制 wait-after-command（apprt/embedded.zig），
-        /// 退出后只发本动作、不会自行 close。标记 closesOnChildExit 的 pane（文件管理器）由控制器接管：
-        /// 返回 true 抑制 "Process exited. Press any key" 提示，并在引擎回调栈之外通知控制器
-        /// （读 cwd 文件、原位开终端、关 pane）。
-        /// 启动即失败（运行时长 ≤ 引擎 abnormal-command-exit-runtime 250ms）时返回 false：让引擎打印
-        /// "failed to launch…/Press any key" 诊断并等待按键，否则 yazi 配置坏了只会看到 pane 一闪而没；
-        /// 按键后走 close_surface → 控制器同样收尾。
+        /// QuickTerm: the child process exited. The engine forces wait-after-command on any surface
+        /// that carries a `command` (apprt/embedded.zig), so on exit it only fires this action and
+        /// never closes the surface itself. For a pane marked closesOnChildExit (the file manager)
+        /// the controller takes over: return true to suppress the "Process exited. Press any key"
+        /// prompt, and notify the controller outside the engine's callback stack (read the cwd file,
+        /// open a terminal in place, close the pane).
+        /// When the command fails at launch (runtime <= the engine's abnormal-command-exit-runtime
+        /// of 250ms) return false instead: let the engine print its "failed to launch…/Press any
+        /// key" diagnostic and wait for a keypress, because otherwise a broken yazi config just
+        /// shows the pane flashing once and vanishing. The keypress then goes through close_surface
+        /// and the controller cleans up the same way.
         private static func showChildExited(
             _ app: ghostty_app_t,
             target: ghostty_target_s,

@@ -4,7 +4,8 @@ import GhosttyKit
 extension Ghostty {
     /// Maps to a `ghostty_config_t` and the various operations on that.
     class Config: ObservableObject {
-        /// QuickTerm 覆盖配置文件路径（配置链第 3 层）；AppDelegate 在创建 Ghostty.App 前设置。
+        /// Path to the QuickTerm override config file (layer 3 of the config chain). AppDelegate
+        /// sets it before creating the Ghostty.App.
         static var quickTermOverlayPath: String?
 
         // The underlying C pointer to the Ghostty config structure. This
@@ -70,19 +71,23 @@ extension Ghostty {
             if let path {
                 ghostty_config_load_file(cfg, path)
             } else {
-                // QuickTerm 配置链第 ② 层：按 libghostty loadDefaultFiles 的顺序自行加载
-                // 存在且非空的用户配置文件（不调 ghostty_config_load_default_files——
-                // 1.3.1 在无配置时会往 Application Support 写出 0 字节模板，见 GhosttyDefaultConfig）
+                // Layer ② of the QuickTerm config chain: load the user config files that exist
+                // and are non-empty ourselves, in the order libghostty's loadDefaultFiles uses.
+                // We deliberately do not call ghostty_config_load_default_files: on 1.3.1, when
+                // there is no config at all, it writes a 0-byte template out into Application
+                // Support. See GhosttyDefaultConfig.
                 let userFiles = GhosttyDefaultConfig.userConfigFiles()
                 for file in userFiles {
                     ghostty_config_load_file(cfg, file.path)
                 }
-                // 第 ①½ 层：一个用户文件都没有 → 内置兜底 Resources/ghostty-default.conf
-                // （仍在 overlay 之前，可被 ③④ 覆盖）
+                // Layer ①½: not a single user file exists → fall back to the bundled
+                // Resources/ghostty-default.conf. Still ahead of the overlay, so ③ and ④ can
+                // override it.
                 if userFiles.isEmpty, let fallback = GhosttyDefaultConfig.bundledPath {
                     ghostty_config_load_file(cfg, fallback)
                 }
-                // 诊断（stderr，与引擎自身日志同路；`QuickTerm.app/Contents/MacOS/QuickTerm 2>&1` 可见）
+                // Diagnostics on stderr, the same channel the engine's own log goes to; visible
+                // by running `QuickTerm.app/Contents/MacOS/QuickTerm 2>&1`.
                 fputs("[quickterm] engine config: user files \(userFiles.map(\.path)), fallback \(userFiles.isEmpty ? "on" : "off")\n", stderr)
             }
 
@@ -92,8 +97,9 @@ extension Ghostty {
                 ghostty_config_load_cli_args(cfg)
             }
 
-            // QuickTerm 配置链第 3 层（spec §4.7）：在默认文件（~/.config/ghostty/config）
-            // 与 CLI 参数之后、finalize 之前加载 QuickTerm 覆盖文件（主题/透明度等）。
+            // Layer 3 of the QuickTerm config chain (spec §4.7): load the QuickTerm override file
+            // (theme, opacity and the like) after the default files (~/.config/ghostty/config) and
+            // the CLI args, but before finalize.
             if let overlay = Config.quickTermOverlayPath,
                FileManager.default.fileExists(atPath: overlay) {
                 ghostty_config_load_file(cfg, overlay)

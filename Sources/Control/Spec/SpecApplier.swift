@@ -1,34 +1,44 @@
 import AppKit
 
-/// 把一份 `quickterm.workspace/1` 落到一个工作区上。
+/// Apply one `quickterm.workspace/1` document to one workspace.
 ///
-/// **顺序是这个类的全部内容**，因为这个代码库里有三个具体的坑：
+/// **Ordering is the entire content of this class**, because there are three concrete traps in this
+/// codebase:
 ///
-/// 1. **绝不走 `applyArchive` / `restore(from:)`**。那条路是"整窗口、为一块刚建出来的
-///    `restoring: true` 屏幕写的"：它把 pane 按赋值替换掉，于是
-///    `BrowserPaneView.paneWillClose()`（取消下载、通知扩展窗口关了）与文件管理器会话清理
-///    一个都不跑，还会顺手把 0.49 / 0.44 这类历史列宽改写掉。用它落 spec 的后果是
-///    静默泄漏，而且没有任何用例会红。被顶掉的 pane 一律走**真正的关闭路径**。
-/// 2. **先把整个布局值算完，再一次赋给 `model.layouts[i]`**。`layouts` 是 `@Published`，
-///    每次赋值都会走一遍焦点对账、pane 存档重订阅与 1.5s 防抖存档；分五次赋值就是
-///    五次重排、五次动画、五遍 sink。
-/// 3. **先建、后拆**。建 pane 是唯一可能失败的一步（目录没了、网址解析不出来）；
-///    把它放在拆之前，"落不下去就一个 pane 都不动"才是结构上成立的，而不是靠自觉。
+/// 1. **Never go through `applyArchive` / `restore(from:)`**. That path was written for "a whole
+///    window, on a screen that was just created with `restoring: true`": it replaces panes by
+///    assignment, so neither `BrowserPaneView.paneWillClose()` (cancel downloads, tell the
+///    extension the window closed) nor the file-manager session cleanup runs at all, and it
+///    rewrites historical column widths such as 0.49 / 0.44 on the way past. Using it to apply a
+///    spec means silent leaks, and not a single test would go red. Panes that get displaced always
+///    go through the **real close path**.
+/// 2. **Compute the whole layout value first, then assign it to `model.layouts[i]` once.**
+///    `layouts` is `@Published`, and every assignment runs a focus reconciliation, a pane
+///    save-state resubscribe and a 1.5s debounced save; five assignments are five relayouts, five
+///    animations and five passes through the sinks.
+/// 3. **Build first, tear down second.** Building panes is the only step that can fail (the
+///    directory is gone, the URL does not resolve); putting it ahead of the teardown is what makes
+///    "if it cannot land, not a single pane moves" structurally true rather than a matter of
+///    discipline.
 ///
-/// 主线程独占（`MainWindowController` 没有 `@MainActor`，Swift 5.10 也不会替我们检查）。
+/// Main thread only (`MainWindowController` is not `@MainActor`, and Swift 5.10 will not check this
+/// for us).
 @MainActor
 final class SpecApplier {
     enum Mode: String, CaseIterable {
-        /// 默认：只往**空**工作区里放东西，非空一律拒绝（退出码 4）——毁不掉任何东西
+        /// The default: only put things into an **empty** workspace, and always refuse a
+        /// non-empty one (exit code 4) - it cannot destroy anything
         case intoEmpty = "into-empty"
-        /// 破坏性：工作区里原有的 pane 全部走真正的关闭路径（整份一模一样时是空操作）
+        /// Destructive: every pane already in the workspace goes through the real close path (a
+        /// no-op when the whole thing already matches)
         case replace
-        /// 能对上的 pane 原地留着（跑着的 dev server 不会被重启），其余的关掉 / 新建
+        /// Panes that match stay exactly where they are (a running dev server is not restarted),
+        /// the rest are closed / created
         case reuse
     }
 
-    /// 落刀的几个阶段。**只给用例注入失败用**：拆过之后才失败 = 工作区已经被动过，
-    /// 报告里必须如实写上 partial
+    /// The stages of applying. **Only there for tests to inject a failure**: failing after the
+    /// teardown = the workspace has already been changed, and the report has to say partial
     enum Stage: String {
         case creating, assembling, tearingDown
     }
@@ -40,9 +50,10 @@ final class SpecApplier {
         var focus: PaneView?
     }
 
-    /// spec 遍历出来的一格
+    /// One slot as produced by walking the spec
     struct SlotSpec {
-        /// 位置键（`c:0.1` / `p:a.b` / `f:0`）——`focus` / `zoom` 靠它落位
+        /// The position key (`c:0.1` / `p:a.b` / `f:0`) - this is how `focus` / `zoom` find their
+        /// place
         var key: String
         var pane: PaneSpec
         var rect: CGRect?
@@ -53,7 +64,7 @@ final class SpecApplier {
         var spec: PaneSpec
         var request: ControlPaneFactory.Request
         var rect: CGRect?
-        /// 匹配到的活 pane（nil = 要新建）
+        /// The live pane this matched (nil = one has to be created)
         var existing: PaneView?
         var isFloating: Bool { key.hasPrefix("f:") }
     }
@@ -62,20 +73,24 @@ final class SpecApplier {
     let workspace: Int
     let spec: WorkspaceSpec
     let mode: Mode
-    /// 调用方能不能看到浏览器 pane 的网址（与 `state` 同一条规则）：看不到就一律不匹配，
-    /// 免得"匹配上了没有"本身变成一个猜网址的探测通道
+    /// Whether the caller may see a browser pane's URL (same rule as `state`): if not, nothing ever
+    /// matches, so that "did it match" cannot itself become a probe for guessing URLs
     let exposesBrowser: Bool
-    /// 屏幕信封里的 `visibleColumns`：那一层说过一次之后，嵌套的工作区就不再重复写
-    ///（见 `SpecCodec.screen`）。省掉 `width` 的列要按**它**折算列宽，否则一份
-    /// "屏幕说 4 列 + 每列不写 width" 的 spec 会落成当下那个可见列数的宽度
+    /// The `visibleColumns` from the screen envelope: once that level has said it, the nested
+    /// workspaces do not repeat it (see `SpecCodec.screen`). Columns that leave out `width` have
+    /// their width computed from **that** value, otherwise a spec saying "the screen shows 4
+    /// columns and no column writes a width" lands with the widths of the current visible column
+    /// count
     var visibleColumnsHint: Int?
-    /// **只给用例**：在某个阶段抛错，用来钉住"落刀之后失败要如实报 partial"。生产恒为 nil
+    /// **Tests only**: throw at a given stage, to pin down "a failure after acting has to report
+    /// partial honestly". Always nil in production
     var fault: ((Stage) throws -> Void)?
 
     private(set) var slots: [Slot] = []
-    /// 会被顶掉的 pane（走真正的关闭路径）
+    /// The panes that will be displaced (they go through the real close path)
     private(set) var displaced: [PaneView] = []
-    /// 活工作区已经与这份 spec 一模一样：一个 pane 都不用建、不用关
+    /// The live workspace already matches this spec exactly: not a single pane has to be created
+    /// or closed
     private(set) var totalMatch = false
     private(set) var didPreflight = false
 
@@ -95,21 +110,23 @@ final class SpecApplier {
             .filter { !closing.contains($0.id) }
     }
 
-    /// 这份 spec 落下去之后每屏可见几列
+    /// How many columns are visible per screen once this spec has landed
     var wantedVisibleColumns: Int {
         spec.visibleColumns ?? visibleColumnsHint ?? controller.visibleColumns
     }
 
-    /// 省掉 `width` 的列用多宽。**按这份 spec 要的可见列数折算**，而不是当下的那个：
-    /// `setVisibleColumns` 要等布局值算完之后才落（`apply()` 步骤 4），
-    /// 拿当下的因子当默认值的话，一份「visibleColumns 4 + 不写 width」的 spec 会落成
-    /// 旧因子的列宽，下一次 dump 就跟这份 spec 对不上了
+    /// How wide a column that leaves out `width` should be. **Computed from the visible column
+    /// count this spec asks for**, not the current one: `setVisibleColumns` only lands after the
+    /// layout value has been computed (step 4 of `apply()`), so taking the current factor as the
+    /// default would make a spec of "visibleColumns 4 plus no width anywhere" land with the widths
+    /// of the old factor, and the next dump would no longer match the spec
     var wantedColumnFactor: Double {
         ScrollingStrip.factor(forVisibleColumns: wantedVisibleColumns)
     }
 
-    /// 新建 pane 时继承的目录：优先目标工作区的焦点 pane，其次工作区里现有的 pane，
-    /// 再其次这块屏幕的焦点 pane（都没有就交给引擎的默认值）
+    /// The directory a newly created pane inherits: the focused pane of the target workspace
+    /// first, then any pane already in that workspace, then the focused pane of this screen (with
+    /// none of those, it is left to the engine's default)
     var anchorDirectory: String? {
         if workspace == controller.model.activeIndex,
            let cwd = controller.focusedPane?.workingDirectory { return cwd }
@@ -117,11 +134,12 @@ final class SpecApplier {
             ?? controller.focusedPane?.workingDirectory
     }
 
-    /// 预检发现的、**存在但用不上**的工作目录（macOS 受保护目录且没有授权）。
-    /// `spec apply` 会把它们变成响应里的 `cwd_denied` 告警（`--require-cwd` 则变成错误）
+    /// Working directories preflight found that **exist but cannot be used** (a macOS protected
+    /// directory with no permission granted). `spec apply` turns these into `cwd_denied` warnings
+    /// in the response (or into an error under `--require-cwd`)
     private(set) var deniedDirectories: [String] = []
 
-    // MARK: 预检（**一个 pane 都还没建、一个都还没关**）
+    // MARK: Preflight (**not a single pane built, not a single one closed**)
 
     func preflight() throws {
         dispatchPrecondition(condition: .onQueue(.main))
@@ -142,11 +160,13 @@ final class SpecApplier {
                 throw ControlErrorBody(.badRequest, "spec \(item.key): \(problem)",
                                        hint: "Create the directory first, or change the cwd in this spec.")
             }
-            // 目录存在，却因为缺少 macOS 的隐私授权而交不给引擎（受保护目录）：
-            // **不是错误**（这份 spec 照样铺得出来），但调用方必须被告知——
-            // 否则 `spec apply` 会安安静静地把每个 pane 都落在默认目录上
-            // （只问真的会用上 cwd 的 kind：浏览器 pane 从来不消费它，
-            //   为它报一条 cwd_denied 是在说一件没发生过的事，`--require-cwd` 还会整份 spec 拒掉）
+            // The directory exists but cannot be handed to the engine because the macOS privacy
+            // permission is missing (a protected directory): **this is not an error** (the spec
+            // still lays out fine), but the caller has to be told - otherwise `spec apply` quietly
+            // drops every pane into the default directory.
+            // (Only ask for the kinds that really consume cwd: a browser pane never does, so
+            //  reporting a cwd_denied for it describes something that never happened, and
+            //  `--require-cwd` would refuse the whole spec over it.)
             if let cwd = request.cwd, ControlPaneFactory.consumesWorkingDirectory(request.kind),
                WorkingDirectoryGate.usable(cwd) == nil,
                !deniedDirectories.contains(cwd) {
@@ -164,8 +184,9 @@ final class SpecApplier {
                                    "visibleColumns must be between \(SpecLimits.visibleColumns.lowerBound) and "
                                        + "\(SpecLimits.visibleColumns.upperBound), got \(columns)")
         }
-        // 名字：与 `workspace set --title` 同一条尺子（`SpecParser` 已经拦过一遍，
-        // 但 applier 也会被直接喂一份 `WorkspaceSpec`——两处都拦才叫"落不下去就不动手"）
+        // The name: measured with the same ruler as `workspace set --title` (`SpecParser` already
+        // screens it once, but the applier can also be handed a `WorkspaceSpec` directly - only
+        // screening in both places earns the claim "if it cannot land, nothing is touched").
         if let title = spec.title {
             guard title.count <= SpecLimits.maxTitleCharacters else {
                 throw ControlErrorBody(.badRequest,
@@ -176,8 +197,9 @@ final class SpecApplier {
             }
         }
 
-        // 位置引用要落得下去。**建之前**就核：zoom 指着一个不存在的格子时，
-        // 半途才发现意味着工作区已经被拆了一半
+        // The position references have to be able to land. Checked **before anything is built**:
+        // when zoom points at a slot that does not exist, discovering it half way through means the
+        // workspace is already half torn down.
         let keys = Set(built.map(\.key))
         for (name, ref) in [("focus", spec.focus), ("zoom", spec.zoom)] {
             guard let ref, let key = Self.key(for: ref) else { continue }
@@ -189,9 +211,10 @@ final class SpecApplier {
             }
         }
 
-        // 匹配：能对上的活 pane 留着。`--replace` 只认"整份都对得上"（那就是一次空操作）——
-        // 部分对上时它的语义就是"全拆了重建"，否则一个说 replace 的调用方会莫名留下
-        // 一个还在跑着 dev server 的 pane，而它以为自己刚把工作区清空了
+        // Matching: live panes that line up are kept. `--replace` only recognizes "the whole thing
+        // matches" (which is a no-op) - on a partial match its semantics are "tear everything down
+        // and rebuild", otherwise a caller who said replace would inexplicably be left with a pane
+        // still running a dev server while believing it had just emptied the workspace.
         let live = existingPanes
         let matched = Self.match(built.map(\.spec), against: live, mode: mode, controller: controller,
                                  exposesBrowser: exposesBrowser)
@@ -206,7 +229,7 @@ final class SpecApplier {
         didPreflight = true
     }
 
-    /// `--dry-run` / `--fail-if-noop` 读的那份 diff。**空 = 已经是这个样子了**
+    /// The diff `--dry-run` / `--fail-if-noop` read. **Empty = it already looks like this**
     func changes(at path: String) -> [ControlChange] {
         var out: [ControlChange] = []
         let liveLayout = controller.model.layouts[workspace].name
@@ -218,8 +241,9 @@ final class SpecApplier {
             out.append(ControlChange("\(path).visibleColumns",
                                      from: String(controller.visibleColumns), to: String(columns)))
         }
-        // 名字：**不写就不动它**（与 visibleColumns 同一条）。写了且不一样才算一次改动——
-        // 否则一份不提名字的 spec 会把 `--fail-if-noop` 的判断搅成"总是有变化"
+        // The name: **not written means leave it alone** (same rule as visibleColumns). It only
+        // counts as a change when it was written and differs - otherwise a spec that never mentions
+        // a name would turn the `--fail-if-noop` verdict into "there is always a change".
         if let wanted = Self.wantedTitle(spec), wanted != controller.model.title(at: workspace) {
             out.append(ControlChange("\(path).title",
                                      from: controller.model.title(at: workspace) ?? "(never named)",
@@ -232,14 +256,17 @@ final class SpecApplier {
                 to: ControlChange.count(slots.count, "pane") + " (created \(creating), "
                     + "closed \(displaced.count), reused \(slots.count - creating))"))
         }
-        // 一个 pane 都不用建、不用关：**剩下的全是"谁在哪一格"与几何**。
-        // 这两样都要真的比一遍——`commit()` 见到空 diff 就直接不落刀了，
-        // 于是"把两列并成一列"这种只动排布的 spec 会被静默丢掉，还报成 changed:false
+        // Nothing to create and nothing to close: **what is left is entirely "which pane sits in
+        // which slot" plus the geometry**. Both of those have to be genuinely compared - `commit()`
+        // simply does not act on an empty diff, so a spec that only rearranges, such as merging two
+        // columns into one, would be silently dropped and reported as changed:false.
         guard creating == 0, displaced.isEmpty else { return out }
         let live = SpecCodec.workspace(controller, index: workspace, options: .init(), nested: true)
 
-        // 排布：列的分组 / 树的形状 + 每一格里到底是哪个 pane（几何不进这个签名，
-        // 列宽与分裂比例下面各有各的比较，重复报一次只会让 diff 更难读）
+        // Arrangement: how the columns are grouped / the shape of the tree, plus which pane sits
+        // in each slot (geometry stays out of this signature; column widths and split ratios each
+        // get their own comparison below, and reporting them twice only makes the diff harder to
+        // read).
         let tiledPlan = slots.filter { !$0.isFloating }
         let tiled = tiledPlan.compactMap(\.existing)
         if tiled.count == tiledPlan.count, let next = try? buildLayout(tiled: tiled) {
@@ -251,7 +278,8 @@ final class SpecApplier {
                                          from: now, to: wantText))
             }
         }
-        // 浮动层：顺序与矩形（只挪一个浮动窗口的 spec 同样不能被当成空操作）
+        // The floating layer: order and rectangles (a spec that only moves one floating window
+        // must not count as a no-op either).
         let floatingPlan = slots.filter { $0.isFloating }
         let wantFloating = buildFloatings(floatingPlan.compactMap(\.existing))
         let liveFloating = controller.model.floatings[workspace]
@@ -290,15 +318,16 @@ final class SpecApplier {
         return out
     }
 
-    // MARK: 落地
+    // MARK: Applying
 
     func apply() throws -> Outcome {
         dispatchPrecondition(condition: .onQueue(.main))
-        precondition(didPreflight, "SpecApplier.apply() 之前必须先 preflight()")
+        precondition(didPreflight, "SpecApplier.apply() requires preflight() to have run first")
         var outcome = Outcome()
 
-        // 1) 建。**这是唯一可能失败的一步，所以它排在拆之前**：
-        //    失败了就把这一批已经建出来的收掉，工作区一个字节都没动过
+        // 1) Build. **This is the only step that can fail, which is why it comes before the
+        //    teardown**: on failure the panes built in this batch are cleaned up and not a byte of
+        //    the workspace has moved.
         var madeList: [ControlPaneFactory.Made] = []
         var panes: [PaneView] = []
         do {
@@ -317,8 +346,10 @@ final class SpecApplier {
                 outcome.created.append(made.pane)
             }
 
-            // 2) 把整个布局值算完（列 id 尽量沿用：`ScrollingStrip.Column.id` 一变，SwiftUI
-            //    会重建整列，列里的 SurfaceView 脱离再重挂——闪一帧、first responder 被静默重置）
+            // 2) Compute the whole layout value (reuse column ids wherever possible: the moment
+            //    `ScrollingStrip.Column.id` changes, SwiftUI rebuilds the entire column and the
+            //    SurfaceViews inside it detach and re-attach - one frame of flicker and a silently
+            //    reset first responder).
             try fault?(.assembling)
         } catch {
             for made in madeList { ControlPaneFactory.discard(made, controller: controller) }
@@ -335,8 +366,8 @@ final class SpecApplier {
             throw Self.body(error, partial: false)
         }
 
-        // 3) 拆：被顶掉的 pane 一律走**真正的关闭路径**（浏览器 pane 的 paneWillClose、
-        //    文件管理器的会话清理都在那条路上）
+        // 3) Tear down: a displaced pane always goes through the **real close path** (a browser
+        //    pane's paneWillClose and the file manager's session cleanup both live on that path).
         do {
             for pane in displaced {
                 outcome.closed.append(ControlHandleRegistry.shared.handle(for: pane))
@@ -349,15 +380,16 @@ final class SpecApplier {
             }
             controller.flushPendingCloses()
         } catch {
-            // 已经动过手了：把这一批新建的收掉（它们还没进任何布局），如实报 partial——
-            // 绝不假装什么都没发生
+            // We have already mutated: clean up the panes built in this batch (they never made it
+            // into any layout) and report partial honestly - never pretend nothing happened.
             for made in madeList { ControlPaneFactory.discard(made, controller: controller) }
             controller.flushPendingCloses()
             throw Self.body(error, partial: !outcome.closed.isEmpty)
         }
 
-        // 4) 一次赋值。可见列数要**先**落（它会把所有 scrolling 工作区按新因子重排一遍，
-        //    顺序反了的话 spec 里的列宽会被它冲掉）
+        // 4) One assignment. The visible column count has to land **first** (it re-lays out every
+        //    scrolling workspace with the new factor, so in the other order it would wash away the
+        //    column widths from the spec).
         if let columns = spec.visibleColumns, columns != controller.visibleColumns {
             controller.setVisibleColumns(columns, persist: true)
         }
@@ -368,7 +400,8 @@ final class SpecApplier {
         }
         for made in madeList { ControlPaneFactory.register(made, controller: controller) }
 
-        // 5) 焦点（只对活动工作区有意义：别把焦点交给一个没挂载的工作区）
+        // 5) Focus (only meaningful for the active workspace: never hand focus to a workspace that
+        //    is not mounted).
         let focus = Self.key(for: spec.focus).flatMap { key in
             slots.firstIndex { $0.key == key }.map { panes[$0] }
         } ?? panes.first
@@ -379,14 +412,14 @@ final class SpecApplier {
         return outcome
     }
 
-    /// 这份 spec 要把名字设成什么。外层 nil = 这份 spec 压根没提名字（别动它）；
-    /// 内层 nil（写了个空串）= 清掉名字
+    /// What this spec wants the name set to. An outer nil = the spec never mentions a name (leave
+    /// it alone); an inner nil (an empty string was written) = clear the name
     nonisolated static func wantedTitle(_ spec: WorkspaceSpec) -> String?? {
         guard let title = spec.title else { return nil }
         return .some(WorkspaceModel.normalizedTitle(title))
     }
 
-    // MARK: 组装（纯值运算）
+    // MARK: Assembly (pure value computation)
 
     private func buildLayout(tiled: [PaneView]) throws -> WorkspaceLayout {
         switch spec.layoutName {
@@ -457,21 +490,23 @@ final class SpecApplier {
         }
     }
 
-    /// 浏览器 pane 的其余标签。构造时开的是 `tabs[0]`（见 `request(from:)`），
-    /// 这里把剩下的按顺序补齐，再把 `url` 指的那一个设为活动标签
+    /// The remaining tabs of a browser pane. Construction opens `tabs[0]` (see `request(from:)`),
+    /// and this fills in the rest in order, then makes the one `url` points at the active tab
     private static func restoreTabs(_ spec: PaneSpec, in pane: BrowserPaneView) {
         guard let tabs = spec.tabs, tabs.count > 1 else { return }
-        // `resolveURL` 而不是 `url(forInput:)`：dump 出来的是绝对网址，
-        // 扩展页那种 scheme 交给地址栏启发式会变成一次搜索（见 ControlPaneFactory.passthroughSchemes）
+        // `resolveURL` rather than `url(forInput:)`: what a dump produces are absolute URLs, and
+        // handing a scheme like an extension page's to the address-bar heuristics turns it into a
+        // search (see ControlPaneFactory.passthroughSchemes).
         let urls = tabs.compactMap { ControlPaneFactory.resolveURL($0) }
         for url in urls.dropFirst() { _ = pane.addTab(url: url, activate: false) }
         let active = spec.url.flatMap { raw in urls.firstIndex { $0.absoluteString == raw } } ?? 0
         if pane.tabs.indices.contains(active) { pane.selectTab(at: active) }
     }
 
-    // MARK: 遍历（**建与组装必须用同一个顺序**）
+    // MARK: Walking (**building and assembly have to use the same order**)
 
-    /// 平铺层的格子：scrolling 按列、列内自上而下；dwindle 按 a → b 的深度优先
+    /// The slots of the tiled layer: scrolling goes column by column, top to bottom within a
+    /// column; dwindle is a depth-first walk of a -> b
     nonisolated static func tiledSlots(_ spec: WorkspaceSpec) -> [SlotSpec] {
         var out: [SlotSpec] = []
         switch spec.layoutName {
@@ -518,9 +553,10 @@ final class SpecApplier {
         return CGRect(x: numbers[0], y: numbers[1], width: numbers[2], height: numbers[3])
     }
 
-    /// 布局的**排布**签名（列的分组 / 树的形状 + 每一格里是哪个 pane，**不含几何**）。
-    /// `changes()` 靠它看出"pane 一个没变、只是重新摆了一下"——
-    /// 没有它的话那种 spec 会被 `commit()` 当成空操作直接丢掉
+    /// The **arrangement** signature of a layout (how the columns are grouped / the shape of the
+    /// tree, plus which pane sits in each slot, **with no geometry**). This is how `changes()`
+    /// spots "not a single pane changed, they were only rearranged" - without it, a spec like that
+    /// would be dropped by `commit()` as a no-op
     static func arrangement(of layout: WorkspaceLayout, closing: Set<UUID>) -> String {
         switch layout {
         case .scrolling(let strip):
@@ -541,7 +577,8 @@ final class SpecApplier {
         guard let node else { return "empty" }
         switch node {
         case .leaf(let view):
-            // 淡出中的那一片叶子当作已经不在（与 `SpecCodec.node` 同一条塌缩规则）
+            // A leaf that is fading out counts as already gone (the same collapse rule as
+            // `SpecCodec.node`).
             return closing.contains(view.id) ? "" : ControlHandleRegistry.shared.handle(for: view)
         case .split(let split):
             let a = arrangement(of: split.left, closing: closing)
@@ -552,7 +589,8 @@ final class SpecApplier {
         }
     }
 
-    /// 浮动层的签名：顺序 + 每一个的矩形（定到 3 位小数，与 diff 里的数字同精度）
+    /// The signature of the floating layer: the order plus each rectangle (pinned to 3 decimal
+    /// places, the same precision as the numbers in a diff)
     static func floatingSignature(_ items: [FloatingPane]) -> String {
         items.map { item in
             let rect = item.rect
@@ -562,7 +600,8 @@ final class SpecApplier {
         }.joined(separator: " ")
     }
 
-    /// 树的**几何**签名（形状 + 方向 + 比例，不含 pane 内容）：diff 用它判断"只是比例变了"
+    /// The **geometry** signature of a tree (shape + direction + ratios, with no pane content): the
+    /// diff uses it to decide "only the ratios changed"
     nonisolated static func geometry(of node: NodeSpec?) -> String {
         guard let node else { return "empty" }
         switch node {
@@ -573,15 +612,19 @@ final class SpecApplier {
         }
     }
 
-    // MARK: 匹配（`--reuse` 与"整份一模一样"的判定）
+    // MARK: Matching (`--reuse` and the "the whole thing already matches" verdict)
 
-    /// spec 的每一格 → 活 pane（或 nil = 要新建）。三轮，一轮比一轮松：
-    /// ① `id` 精确命中（`dump --include-ids` 出来的 spec）——**只在 `--reuse` 里**，且种类要对上；
-    /// ② 同种类 + 同 cwd / 同网址；
-    /// ③ 同种类、这一格**没写命令也没写 cwd/网址**（"随便给我一个终端"）。
-    /// 写了命令的格子是"要跑起来的东西"：`--reuse` 之外一律不拿现成的壳去顶它
-    /// （顶了的话那条命令一次都没跑，调用方却收到"成功、无变化"）。
-    /// 每个活 pane 最多被用掉一次
+    /// Every slot of the spec -> a live pane (or nil = one has to be created). Three rounds, each
+    /// looser than the last:
+    /// (1) an exact `id` hit (a spec produced by `dump --include-ids`) - **only under `--reuse`**,
+    ///     and the kind still has to match;
+    /// (2) same kind + same cwd / same URL;
+    /// (3) same kind, and the slot **writes neither a command nor a cwd/URL** ("just give me a
+    ///     terminal").
+    /// A slot that writes a command is "something that has to be running": outside `--reuse` an
+    /// existing shell is never used to satisfy it (doing so would mean that command never ran once
+    /// while the caller was told "success, nothing changed").
+    /// Each live pane is used at most once
     static func match(_ specs: [PaneSpec], against live: [PaneView], mode: Mode,
                       controller: MainWindowController, exposesBrowser: Bool) -> [PaneView?] {
         var out = [PaneView?](repeating: nil, count: specs.count)
@@ -593,14 +636,17 @@ final class SpecApplier {
         }
         func available() -> [PaneView] { live.filter { !used.contains(ObjectIdentifier($0)) } }
 
-        // 写了命令的格子是"要跑起来的东西"。`--replace` 的语义是拆了重建：拿一个现成的壳去顶它，
-        // 那条命令就一次都没跑过，而调用方收到的是"成功、无变化"。
-        // `--reuse` 反过来——"能对上的原地留着"正是"重试不要重启 dev server"的那条路
+        // A slot that writes a command is "something that has to be running". `--replace` means
+        // tear down and rebuild: satisfying it with an existing shell would mean that command never
+        // ran once while the caller was told "success, nothing changed".
+        // `--reuse` is the other way round - "whatever matches stays where it is" is exactly the
+        // path for "retrying must not restart the dev server".
         func wantsFreshProcess(_ spec: PaneSpec) -> Bool { spec.cmd != nil && mode != .reuse }
 
-        // ① id：**只在 `--reuse` 里**。id 是"就要这一个 pane"的指名道姓，只有 reuse 认这种指名；
-        // 别的模式下认它的后果是 `dump --include-ids` → 改一个 cwd → `apply --replace`
-        // 每一格都靠 id 对上，于是改动被整份丢掉，还报成"已经是这个样子了"
+        // (1) id: **only under `--reuse`**. An id names one specific pane, and reuse is the only
+        // mode that honors such naming; honoring it elsewhere means `dump --include-ids` -> edit
+        // one cwd -> `apply --replace` matches every slot by id, so the edit is dropped wholesale
+        // and reported as "it already looks like this".
         if mode == .reuse {
             for (i, spec) in specs.enumerated() {
                 guard let raw = spec.id, let id = UUID(uuidString: raw) else { continue }
@@ -624,23 +670,25 @@ final class SpecApplier {
 
     nonisolated static func kind(of spec: PaneSpec) -> String { spec.kind ?? "terminal" }
 
-    /// 文件管理器 pane 就是一个跑着 yazi 的终端：spec 里它是独立的一种，
-    /// 拿它去顶一个普通终端会让"退出即在原位开终端"的语义跟着搬家
+    /// A file-manager pane is just a terminal running yazi: in a spec it is a kind of its own, and
+    /// using one to satisfy a plain terminal would drag the "quitting opens a terminal in its
+    /// place" semantics along with it
     static func liveKind(_ pane: PaneView, controller: MainWindowController) -> String {
         controller.controlRole(of: pane) == "file-manager" ? "file-manager" : pane.kind.rawValue
     }
 
-    /// 同一个东西：种类相同，且终端的 cwd / 浏览器的网址对得上
+    /// The same thing: the kinds are equal and a terminal's cwd / a browser's URL lines up
     static func identityMatches(_ spec: PaneSpec, _ pane: PaneView,
                                 controller: MainWindowController, exposesBrowser: Bool) -> Bool {
         guard kind(of: spec) == liveKind(pane, controller: controller) else { return false }
         if let browser = pane as? BrowserPaneView {
-            // 没有 token 的调用方读不到活 pane 的网址：那就一律不匹配（宁可重建，
-            // 也不要让"匹配上了没有"变成一个猜网址的探测通道）
+            // A caller without a token cannot read a live pane's URL, so nothing ever matches
+            // (rebuild rather than let "did it match" become a probe for guessing URLs).
             guard exposesBrowser, let wanted = spec.url else { return false }
-            // 规范化之后再比：手写的 spec 里是 `http://localhost:3000`，
-            // 活着的那个 pane 报的是 `http://localhost:3000/`。照字面比就永远匹配不上，
-            // 于是每 apply 一次都把一个正停在目标页上的 pane 拆了重建
+            // Compare after normalization: a hand-written spec says `http://localhost:3000` while
+            // the live pane reports `http://localhost:3000/`. Compared literally they would never
+            // match, so every apply would tear down and rebuild a pane that is already sitting on
+            // the target page.
             return ControlPaneFactory.sameURL(browser.currentURL,
                                               ControlPaneFactory.resolveURL(wanted))
         }
@@ -648,13 +696,14 @@ final class SpecApplier {
         return samePath(cwd, live)
     }
 
-    /// 第三轮：spec 那一格没写 cwd / 网址
+    /// The third round: that slot of the spec writes no cwd / URL
     nonisolated static func looseMatch(_ spec: PaneSpec, _ pane: PaneView) -> Bool {
         pane is BrowserPaneView ? spec.url == nil : spec.cwd == nil
     }
 
-    /// 路径比较一律解到物理路径：`/tmp` 与 `/private/tmp` 是同一个目录，
-    /// 而 shell 的 OSC 7 报的是后者——不解的话每次 apply 都会把 pane 重建一遍
+    /// Path comparison always resolves down to the physical path: `/tmp` and `/private/tmp` are
+    /// the same directory, and the shell's OSC 7 reports the latter - without resolving, every
+    /// apply would rebuild the pane
     nonisolated static func samePath(_ a: String, _ b: String) -> Bool {
         resolved(a) == resolved(b)
     }
@@ -663,7 +712,7 @@ final class SpecApplier {
         URL(fileURLWithPath: SpecValidator.normalizedPath(path)).resolvingSymlinksInPath().path
     }
 
-    // MARK: 零件
+    // MARK: Parts
 
     static func request(from spec: PaneSpec) throws -> ControlPaneFactory.Request {
         var request = ControlPaneFactory.Request()
@@ -672,8 +721,9 @@ final class SpecApplier {
         request.cmd = spec.cmd
         request.hold = spec.hold ?? false
         request.env = spec.env ?? [:]
-        // 多标签的浏览器 pane 从 tabs[0] 开起（其余的 restoreTabs 补齐），这样标签顺序与 dump 出来的一致。
-        // 种类不对（终端写了 url）交给工厂去报错——那份互斥规则只有一处
+        // A multi-tab browser pane starts from tabs[0] (restoreTabs fills in the rest), which keeps
+        // the tab order identical to what was dumped. A wrong kind (a terminal that wrote a url) is
+        // left to the factory to reject - that mutual-exclusion rule lives in exactly one place.
         request.url = spec.tabs?.first ?? spec.url
         try ControlPaneFactory.validate(request)
         return request
@@ -686,11 +736,13 @@ final class SpecApplier {
 
     nonisolated static func number(_ value: Double) -> String { String(format: "%.3f", value) }
 
-    /// 抛出来的东西统一成 `ControlErrorBody`；落刀之后的失败换一个**独立的错误码**，
-    /// 这样 agent 能按 `code` 分辨"什么都没发生"与"改了一半"，而不必去读文案
+    /// Normalize whatever was thrown into a `ControlErrorBody`; a failure after acting gets its own
+    /// **separate error code**, so an agent can tell "nothing happened" from "half of it changed"
+    /// by `code` alone, without having to read the prose
     nonisolated static func body(_ error: any Error, partial: Bool) -> ControlErrorBody {
         let base = (error as? ControlErrorBody) ?? ControlErrorBody(.failed, "\(error)")
-        // 里层已经报过 partial 了就原样往外传：套两层前缀只会让文案更难读，码是一样的
+        // If an inner layer already reported partial, pass it out unchanged: two layers of prefix
+        // only make the message harder to read, and the code is the same either way.
         guard partial, base.code != ControlErrorCode.partialApply.rawValue else { return base }
         return ControlErrorBody(
             .partialApply, "spec was only half applied: \(base.message)",

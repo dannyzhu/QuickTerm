@@ -1,10 +1,11 @@
 import AppKit
 
-/// `spec dump|validate|apply` —— 一次性组合。
+/// `spec dump|validate|apply` - composition in one shot.
 ///
-/// 这是整套控制面里 agent 最该用的一条路：**一次调用摆好整个工作区**，
-/// 而不是发 N 条 `pane new` 再逐条调宽度（N 条命令 = N 次重排、N 次动画、N 个失败点，
-/// 而且中途失败会留下一个谁也说不清的半成品）。
+/// This is the path an agent should reach for above all others in the control plane: **lay out a
+/// whole workspace in a single call** instead of firing N `pane new` commands and then adjusting
+/// widths one by one (N commands = N relayouts, N animations, N failure points, and a failure part
+/// way through leaves behind a half-built thing nobody can describe).
 @MainActor
 extension ControlCommandRunner {
     func runSpec(_ ctx: ControlContext) throws -> (echo: ResolvedTarget?, data: any Encodable) {
@@ -28,8 +29,8 @@ extension ControlCommandRunner {
             document = .session(SpecCodec.session(screens, options: options))
         } else if let target = ctx.target, target.screen != nil,
                   target.workspace == nil, target.pane == nil {
-            // `-t 1` = 整块屏幕；`-t 1:2` / 不写 = 一个工作区。作用域跟着目标的写法走，
-            // 不再另发明一个 --scope 开关
+            // `-t 1` = a whole screen; `-t 1:2` / nothing = one workspace. The scope follows how
+            // the target was written rather than inventing a separate --scope switch.
             document = .screen(SpecCodec.screen(scope.controller, options: options))
         } else {
             document = .workspace(SpecCodec.workspace(scope.controller, index: scope.workspace,
@@ -60,7 +61,8 @@ extension ControlCommandRunner {
         let document = try Self.parseSpecArgument(ctx)
         let scope = try requireScope(ctx, ctx.target)
         var notes: [String] = []
-        // 作用域相关的检查（纯格式检查在 `SpecParser`，它不知道这台机器上有几个工作区 / 几块屏幕）
+        // Scope-dependent checks (the purely structural ones live in `SpecParser`, which has no
+        // idea how many workspaces / screens this machine has).
         switch document {
         case .workspace:
             break
@@ -88,7 +90,7 @@ extension ControlCommandRunner {
         return (nil, payload)
     }
 
-    /// `workspaces[]` 落不落得下去（工作区个数是配置驱动的，1–10）
+    /// Whether `workspaces[]` can land at all (the workspace count is config-driven, 1-10)
     static func checkWorkspaceIndices(_ screen: ScreenSpec, controller: MainWindowController) throws {
         let count = controller.model.layouts.count
         if let active = screen.activeWorkspace, active < 1 || active > count {
@@ -108,10 +110,11 @@ extension ControlCommandRunner {
                         + "\(controller.screenIndex + 1) only has \(count) (1–\(count))",
                     hint: "Change the count with quickterm workspace count N (1–10).")
             }
-            // 同一个工作区在一份 spec 里只能出现一次。两份都落下去的话，后一份的
-            // `model.layouts[i] = …` 会把前一份**按赋值**盖掉：前一份建出来的 pane
-            // 既不在任何布局里、也没走过关闭路径（浏览器的 paneWillClose、文件管理器的会话清理
-            // 一个都不跑），而报告还说它建成了
+            // One workspace may appear only once in a spec. If both entries landed, the second
+            // one's `model.layouts[i] = ...` would overwrite the first **by assignment**: the panes
+            // the first entry created would be in no layout at all and would never have gone
+            // through the close path (neither the browser's paneWillClose nor the file manager's
+            // session cleanup runs), while the report still claims they were created.
             guard seen.insert(index).inserted else {
                 throw ControlErrorBody(
                     .badRequest,
@@ -123,8 +126,9 @@ extension ControlCommandRunner {
         }
     }
 
-    /// `screens[]` 落到哪几块屏幕上。**个数、越界、重复**都在这里一次查完，
-    /// 而且 `spec validate` / `spec apply` / 确认闸门读的是同一份计划
+    /// Which screens `screens[]` lands on. **Count, out of range and duplicates** are all checked
+    /// here in one pass, and `spec validate` / `spec apply` / the confirmation gate all read the
+    /// same plan
     static func screenPlan(_ session: SessionSpec, screens: ScreenRegistry) throws
         -> [(controller: MainWindowController, spec: ScreenSpec)] {
         let live = screens.controllers.filter { !$0.isClosed }
@@ -159,8 +163,9 @@ extension ControlCommandRunner {
         return out
     }
 
-    /// 一份 spec 到底会动到哪些（屏幕，工作区）。**确认框与落刀读的是同一份**——
-    /// 确认框里只说一个工作区、实际却清掉整块屏幕的话，用户批准的就不是发生的那件事
+    /// Which (screen, workspace) pairs a spec will actually touch. **The confirmation prompt and
+    /// the act itself read the same list** - if the prompt named one workspace while the act
+    /// cleared a whole screen, what the user approved would not be what happened
     static func specTargets(_ document: SpecDocument, controller: MainWindowController,
                             workspace: Int, screens: ScreenRegistry) throws
         -> [(controller: MainWindowController, workspace: Int)] {
@@ -205,7 +210,7 @@ extension ControlCommandRunner {
         let mode = try Self.mode(ctx)
         let scope = try requireScope(ctx, ctx.target)
 
-        // 1) 先把整份计划算出来（**一个 pane 都还没建、一个都还没关**）
+        // 1) Compute the entire plan first (**not a single pane built, not a single one closed**).
         var appliers: [SpecApplier] = []
         var screenSettings: [(controller: MainWindowController, spec: ScreenSpec)] = []
         var controllers: [MainWindowController] = []
@@ -225,8 +230,10 @@ extension ControlCommandRunner {
                 let applier = SpecApplier(controller: controller, workspace: index,
                                           spec: workspace, mode: mode,
                                           exposesBrowser: ctx.encoder.exposesBrowser)
-                // 可见列数写在屏幕这一层（`SpecCodec.screen` 不在每个工作区里重复写一遍）：
-                // 省掉 width 的列要按它折算，否则一份"屏幕说 4 列"的 spec 会落成旧因子的列宽
+                // The visible column count is written at the screen level (`SpecCodec.screen` does
+                // not repeat it inside every workspace): columns that leave out width are scaled by
+                // it, otherwise a spec that says "the screen shows 4 columns" lands with column
+                // widths computed from the old factor.
                 applier.visibleColumnsHint = spec.visibleColumns
                 appliers.append(applier)
             }
@@ -249,8 +256,9 @@ extension ControlCommandRunner {
         var changes: [ControlChange] = []
         for applier in appliers {
             try applier.preflight()
-            // `--into-empty` 是默认模式：它**毁不掉任何东西**——非空一律拒绝，
-            // 而不是"顺手清一下"。想覆盖就明说 --replace（那一条会先要求确认）
+            // `--into-empty` is the default mode: it **cannot destroy anything** - a non-empty
+            // workspace is always refused rather than quietly cleared on the way past. To
+            // overwrite, say --replace out loud (and that one asks for confirmation first).
             if mode == .intoEmpty, !applier.existingPanes.isEmpty {
                 throw ControlErrorBody(
                     .confirmationRequired,
@@ -262,9 +270,11 @@ extension ControlCommandRunner {
             }
             changes += applier.changes(at: path(applier.controller, applier.workspace))
         }
-        // 存在但用不上的工作目录（受保护目录 + 缺授权）：默认照铺，但**必须说出来**；
-        // `--require-cwd` 的脚本要的是宁可失败也不要一个目录全落错的工作区，
-        // 而这一步还在"一个 pane 都没建、一个都没关"的阶段
+        // Working directories that exist but cannot be used (a protected directory + the missing
+        // permission): by default the layout is applied anyway, but this **has to be said out
+        // loud**. A script that passes `--require-cwd` wants a failure rather than a workspace
+        // where every directory landed in the wrong place, and this step still sits in the "not a
+        // single pane built, not a single one closed" phase.
         let deniedDirectories = appliers.flatMap(\.deniedDirectories).reduce(into: [String]()) {
             if !$0.contains($1) { $0.append($1) }
         }
@@ -290,8 +300,10 @@ extension ControlCommandRunner {
                                          to: String(key)))
         }
 
-        // 确认闸门批准的是**这一批**工作区（屏幕 / 会话作用域下不止一个）：落刀前逐个再核一次。
-        // 用户读确认框的那十秒里布局是会变的，而这一刀可能横跨整块屏幕
+        // The confirmation gate approved **this batch** of workspaces (more than one under screen
+        // / session scope): re-check them one by one before acting. The layout does change during
+        // the ten seconds the user spends reading the prompt, and this cut may run across a whole
+        // screen.
         try verifyPinnedScopes(ctx, targets: appliers.map { ($0.controller, $0.workspace) })
 
         var report = ControlSpecApplyReport(mode: mode.rawValue, scope: document.kind.rawValue,
@@ -321,8 +333,8 @@ extension ControlCommandRunner {
                     }
                     done += 1
                 } catch {
-                    // 前面已经落了几个工作区：这一条**必须**报成 partial，
-                    // 让 agent 知道它手里的状态已经过期了
+                    // Some workspaces have already landed: this **has to** be reported as partial
+                    // so the agent knows the state it holds is now stale.
                     throw SpecApplier.body(error, partial: done > 0)
                 }
             }
@@ -354,7 +366,7 @@ extension ControlCommandRunner {
                                paneID: focus?.pane.id.uuidString), payload)
     }
 
-    // MARK: 屏幕这一层
+    // MARK: The screen level
 
     static func screenChanges(_ spec: ScreenSpec, controller: MainWindowController,
                               path: String) -> [ControlChange] {
@@ -380,7 +392,8 @@ extension ControlCommandRunner {
         return out
     }
 
-    /// **在工作区落完之后**才动屏幕这一层：切工作区之前得先让目标工作区有东西
+    /// The screen level is only touched **after the workspaces have landed**: before switching to
+    /// a workspace there has to be something in it
     static func applyScreenSettings(_ spec: ScreenSpec, controller: MainWindowController) {
         if let columns = spec.visibleColumns, columns != controller.visibleColumns {
             controller.setVisibleColumns(columns, persist: true)
@@ -397,10 +410,12 @@ extension ControlCommandRunner {
         }
     }
 
-    // MARK: 参数
+    // MARK: Arguments
 
-    /// `-f <文件>` 的内容由 CLI 读好之后放在 `spec` 参数里（服务端绝不去读调用方的文件系统：
-    /// 两个进程的 cwd 与权限本来就不一样，而"服务端替你 open 一个路径"是个能被滥用的原语）
+    /// The contents of `-f <file>` are read by the CLI and passed in the `spec` argument (the
+    /// server never reads the caller's filesystem: the two processes have different cwds and
+    /// different permissions to begin with, and "the server opens a path on your behalf" is a
+    /// primitive that can be abused)
     static func parseSpecArgument(_ ctx: ControlContext) throws -> SpecDocument {
         guard let text = ctx.string("spec"), !text.isEmpty else {
             throw ControlErrorBody(.badRequest, "No spec content was provided",

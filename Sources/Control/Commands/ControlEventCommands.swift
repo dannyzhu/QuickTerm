@@ -1,16 +1,19 @@
 import AppKit
 
-/// `events poll` / `events follow`。
+/// `events poll` / `events follow`.
 ///
-/// **长轮询是主形式，流是次要的。** 一条永不结束的 NDJSON 流对模型来说是昂贵的东西：
-/// 每一行都要进上下文，还得自己判断什么时候该停下来去干活。`poll --since <seq>` 则是一次
-/// 普通的请求-应答，回答的正是 agent 真正想问的那句话——"我上次看过之后，都发生了什么"。
-/// `follow` 留给人和 shell 脚本（`quickterm events follow | while read line; …`）。
+/// **Long polling is the primary form, streaming is the secondary one.** A never-ending NDJSON
+/// stream is an expensive thing for a model: every line lands in the context, and it has to work
+/// out for itself when to stop reading and go do the work. `poll --since <seq>` is an ordinary
+/// request-response instead, and it answers the question an agent actually wants to ask - "what
+/// has happened since the last time I looked". `follow` is there for humans and shell scripts
+/// (`quickterm events follow | while read line; ...`).
 ///
-/// ⚠️ 两条命令都是 `read` 类，因此**都要走与 `state` 完全相同的打码规则**：
-/// 没有 token 的调用方读不到浏览器 pane 的标题。事件流要是漏掉这一条，
-/// 它就成了一个绕过 `expose-browser` 的旁路——用 `pane.title.changed` 把用户正在看的网页
-/// 一条条读出来，而 `state` 那边明明已经打了码。
+/// ⚠️ Both commands are `read` class, so **both go through exactly the same redaction rules
+/// as `state`**: a caller without a token cannot read the titles of browser panes. If the event
+/// stream skipped that, it would become a side channel around `expose-browser` - read out the web
+/// pages the user is looking at one `pane.title.changed` at a time, while `state` is dutifully
+/// redacting them.
 @MainActor
 extension ControlCommandRunner {
     func runEvents(_ ctx: ControlContext, completion: @escaping (ControlResponse) -> Void) throws {
@@ -19,9 +22,9 @@ extension ControlCommandRunner {
         let types = try ControlEventLimits.parseTypes(ctx.string("types"))
         let limit = min(max(ctx.int("limit") ?? ControlEventLimits.maxBatch, 1),
                         ControlEventLimits.maxBatch)
-        // `--since` 不写 = 从"此刻"开始：只等接下来发生的事。
-        // 这是唯一不会骗人的默认值——回补一整个环意味着 agent 第一次调用就会收到
-        // 一堆它根本没参与过的历史事件
+        // No `--since` = start from "right now": wait only for what happens next. That is the one
+        // default that does not lie - backfilling the whole ring would mean an agent's very first
+        // call hands it a pile of historical events it had nothing to do with.
         let since = ctx.int("since") ?? bus.seq
         guard since >= 0 else {
             throw ControlErrorBody(.badRequest, "--since cannot be negative (got \(since))",
@@ -35,15 +38,17 @@ extension ControlCommandRunner {
             let timeout = try ControlEventLimits.parseTimeout(ctx.string("timeout"))
             bus.poll(since: since, limit: limit, types: types, exposesBrowser: exposes,
                      timeout: timeout) { payload in
-                // 信封的 seq 是**全局状态计数器**（"我手里的快照过期了没有"），
-                // 负载里的 `seq` 是**事件游标**（"下一次 --since 给谁"）。
-                // 一批被 `--limit` 截断时两者会不一样，各说各的那件事，别混用
+                // The envelope's seq is the **global state counter** ("is the snapshot I hold
+                // stale"), while the `seq` inside the payload is the **event cursor** ("what to
+                // pass as --since next time"). When a batch is truncated by `--limit` the two
+                // differ; each answers its own question, so do not mix them up.
                 completion(.success(id: id, seq: bus.seq, resolved: nil, data: payload))
             }
 
         case "follow":
-            // 连接编号来自内核 accept 的那一刻（`ControlSocket.Peer`）：
-            // 对端一走，`ControlServer` 会把这条流摘掉。**这是 follow 唯一的终止条件**
+            // The connection id comes from the moment the kernel accepted the socket
+            // (`ControlSocket.Peer`): as soon as the peer goes away, `ControlServer` tears this
+            // stream down. **That is the only termination condition follow has.**
             let connection = ctx.peer.connectionID
             let ok = bus.follow(connection: connection, since: since, limit: limit, types: types,
                                 exposesBrowser: exposes) { payload in

@@ -4,49 +4,63 @@ import GhosttyKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// QuickTerm 主窗口控制器：工作区布局状态的唯一拥有者（spec §3 + §4.2-bis）。
-/// 继承 GhosttyEmbed 的 BaseTerminalController shim，使嵌入层的
-/// focus-follows-mouse / 分屏判定等路径直接生效。
-/// 每个 WM 动作按活动工作区布局（scrolling 默认 / dwindle）分派。
+/// QuickTerm's main window controller: the sole owner of the workspace layout state
+/// (spec §3 plus §4.2-bis).
+/// It subclasses GhosttyEmbed's BaseTerminalController shim so the embedding layer's paths -
+/// focus-follows-mouse, the split checks - work as they are.
+/// Every WM action is dispatched on the active workspace's layout (scrolling by default, or
+/// dwindle).
 final class MainWindowController: BaseTerminalController {
     let model = WorkspaceModel()
     let ghostty: Ghostty.App
-    /// 进程级会话（配置 / 键位 / 系统状态 / 全屏账本）。会话经注册表强持有本控制器，故必须 unowned
+    /// The process-level session (config, keybindings, system stats, the fullscreen ledger). The
+    /// session holds this controller strongly through the registry, so this has to be unowned.
     unowned let session: AppSession
-    /// 共享键位表：只读引用，控制器绝不自己重建（重载时 AppSession 换一份，所有屏幕同步）
+    /// The shared keybinding table: a read-only reference, never rebuilt by a controller (on
+    /// reload AppSession swaps in a new one and every screen is in sync).
     var keybindings: KeybindingMap { session.keybindings }
-    /// 进程唯一的系统状态轮询（注入 RootView）
+    /// The one system-stats poller in the process (injected into RootView)
     var stats: SystemStatsService { session.stats }
     var themeManager: ThemeManager { session.themeManager }
     private var keyMonitor: Any?
     private var mouseMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
-    /// 每个 pane 一条「标题 / cwd 变化」订阅（控制面事件用），随 pane 集合增删
+    /// One "title / cwd changed" subscription per pane (for control-plane events), added and
+    /// removed along with the pane set
     private var paneEventSubscriptions: [ObjectIdentifier: AnyCancellable] = [:]
-    /// 每个 pane 一条「存档内容变化」订阅（见 `resubscribePaneSaves`），随 pane 集合增删
+    /// One "archived content changed" subscription per pane (see `resubscribePaneSaves`), added and
+    /// removed along with the pane set
     private var paneSaveSubscriptions: [ObjectIdentifier: AnyCancellable] = [:]
     private var lastSplitAnimationAt: Date?
-    /// 关闭动效时长（与创建动效同源）；到点后才真正从布局移除、释放 surface
+    /// Close animation duration (the same source as the create animation); only when it elapses is
+    /// the pane really removed from the layout and the surface released.
     static let closeAnimationDuration: TimeInterval = 0.28
-    /// 关闭动效开关（系统"减弱动态效果"时关；测试可显式打开）
+    /// Close animation switch (off when the system has "Reduce motion" on; tests can turn it on
+    /// explicitly)
     var closeAnimationEnabled: Bool = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-    /// 淡出中的 pane 及其预先算好的焦点接班人（关闭开始时树还完整，接班关系才算得出）
+    /// Panes fading out, each with its focus successor computed up front - the tree is still intact
+    /// when the close begins, which is the only time the succession can be worked out.
     private var pendingCloses: [ObjectIdentifier: PendingClose] = [:]
-    /// 文件管理器程序（config `file-manager-command`，默认 yazi）——进程级设置，转发到 AppSession
+    /// The file manager program (config `file-manager-command`, yazi by default) - a process-level
+    /// setting, forwarded to AppSession.
     var fileManagerCommand: String {
         get { session.fileManagerCommand }
         set { session.fileManagerCommand = newValue }
     }
-    /// 终端里 ⌘+点击的链接开在哪（config link-opener）：browser-pane = 浏览器 pane；system = 系统默认浏览器
+    /// Where a Cmd+clicked link in a terminal opens (config link-opener): browser-pane = in a
+    /// browser pane, system = in the system default browser.
     var linkOpener: String {
         get { session.linkOpener }
         set { session.linkOpener = newValue }
     }
-    /// 运行中的文件管理器 pane → 会话（退出时读 cwd 文件决定是否原位开终端；关闭不弹进程确认）
+    /// Running file manager panes mapped to their session (on exit we read the cwd file to decide
+    /// whether to open a terminal in its place; closing one does not raise the running-process
+    /// confirmation)
     private var fileManagerSessions: [ObjectIdentifier: FileManagerLaunch.Session] = [:]
 
-    /// 控制面（`state` / `list` / `role:` 谓词）看到的 pane 角色。
-    /// 文件管理器 pane 就是一个跑着 yazi 的终端——`kind` 仍是 terminal，靠 role 区分
+    /// The pane role the control plane sees (`state`, `list`, the `role:` predicate).
+    /// A file manager pane is just a terminal running yazi - its `kind` is still terminal, and the
+    /// role is what tells them apart.
     func controlRole(of pane: PaneView) -> String? {
         if fileManagerSessions[ObjectIdentifier(pane)] != nil { return "file-manager" }
         return pane.kind == .terminal ? "shell" : nil
@@ -57,11 +71,15 @@ final class MainWindowController: BaseTerminalController {
     }
     private var scrollMonitor: Any?
     private var resizeTarget: PaneView?
-    /// ⌘+左键在浮动 pane 上的拖动会话：edges 空 = 移动（置顶），否则按边/角缩放
-    /// ⌘+左键在浮动 pane 上的拖动会话：按下即开始（置顶 / 光标），拖过阈值才算真拖；抬起时没拖过 = 纯点击，
-    /// 把按下 + 抬起一并交给 pane 本体（⌘+点击链接靠引擎在 release 时 open_url）
+    /// The Cmd+left-drag session on a floating pane: empty `edges` means move (and raise to the
+    /// top), anything else means resize by that edge or corner.
+    /// The session starts on mouse-down (raise, set the cursor), but it only counts as a real drag
+    /// once the movement passes the threshold; if the mouse comes up without that, it was a plain
+    /// click and both the down and the up are handed to the pane itself (Cmd+clicking a link relies
+    /// on the engine calling open_url on release).
     struct FloatingDragSession {
-        /// 会话跟着 pane 走，不存下标：按住期间 Cmd+T / 切工作区 / 移动 pane 会改 floating 数组
+        /// The session tracks the pane, not an index: while the button is held, Cmd+T, switching
+        /// workspaces and moving a pane all mutate the floating array.
         weak var pane: PaneView?
         let edges: FloatingPane.DragEdges
         let down: NSEvent
@@ -69,30 +87,36 @@ final class MainWindowController: BaseTerminalController {
         static let threshold: CGFloat = 3
     }
     private var floatingDrag: FloatingDragSession?
-    /// ⌘ 悬停在浮动 pane 上时由我们设置了光标（离开 / 松 ⌘ / 拖完时复位）
+    /// We set the cursor while Cmd-hovering a floating pane (reset on leaving, on releasing Cmd,
+    /// and when the drag finishes)
     private var floatingCursorActive = false
-    /// 浮动 pane 四周可拖动缩放的边框带宽（pt）
+    /// Width of the draggable resize band around a floating pane, in points
     static let floatingEdgeBand: CGFloat = 14
     private var stripPanSerial = 0
-    /// 本屏幕的序号（0 = 第一个屏幕，标题恒为 `QuickTerm`）；关掉后序号可被新屏幕复用
+    /// This screen's index (0 = the first screen, whose title is always `QuickTerm`); once closed
+    /// the index can be reused by a new screen.
     let screenIndex: Int
-    /// 本屏幕在存档里的稳定身份（跨启动不变；`PersistedState.keyWindowID` 指的就是它）
+    /// This screen's stable identity in the archive (unchanged across launches; this is what
+    /// `PersistedState.keyWindowID` refers to)
     let windowID: UUID
-    /// 窗口已经走过 windowWillClose（监视器/观察者已拆）
+    /// The window has already been through windowWillClose (monitors and observers are torn down)
     private(set) var isClosed = false
 
-    /// scrolling 每屏可见列数（2 默认；菜单循环 2→3→4；config `visible-columns` 优先）
+    /// Visible columns per screen in scrolling mode (2 by default; the menu cycles 2 -> 3 -> 4; the
+    /// config's `visible-columns` wins)
     private(set) var visibleColumns =
         UserDefaults.standard.object(forKey: "quickterm.visibleColumns") as? Int ?? 2
     var columnFactor: Double { ScrollingStrip.factor(forVisibleColumns: visibleColumns) }
 
-    /// 悬停即焦点（spec §4.2，忠实 Hyprland focus_follows_mouse）。
+    /// Hover to focus (spec §4.2, faithful to Hyprland's focus_follows_mouse).
     override var focusFollowsMouse: Bool { true }
 
-    /// 屏幕关掉之后（监视器已拆、pane 已归还）不再接受 pane 操作：脱离窗口的 pane 不得据此复活本控制器
+    /// Once the screen is closed (monitors torn down, panes handed back) it accepts no more pane
+    /// operations: a pane that has left the window must not resurrect this controller through one.
     override var acceptsPaneOperations: Bool { !isClosed }
 
-    /// 嵌入层要求的树视图（仅 dwindle 布局有意义；scrolling 返回空树）
+    /// The tree view the embedding layer requires (only meaningful for the dwindle layout;
+    /// scrolling returns an empty tree)
     override var surfaceTree: SplitTree<PaneView> {
         get {
             if case .dwindle(let tree) = model.layout { return tree }
@@ -103,19 +127,24 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 活动工作区全部 pane（平铺 + 浮动；线性循环与焦点扫描覆盖两层）
+    /// Every pane in the active workspace (tiled plus floating; linear cycling and the focus scan
+    /// cover both layers)
     var paneList: [PaneView] {
         model.layout.paneList + model.floating.map(\.pane)
     }
-    /// WM 键是否由本控制器消费：浏览器专属动作只在焦点是浏览器 pane 时消费
+    /// Whether this controller consumes a WM key: a browser-only action is only consumed while the
+    /// focus is on a browser pane.
     static func consumes(_ action: WMAction, focusedPane: PaneView?) -> Bool {
         if action.browserOnly { return focusedPane is BrowserPaneView }
         if action.terminalOnly { return focusedPane is Ghostty.SurfaceView }
         return true
     }
 
-    /// 菜单项的固定快捷键触发时是否执行动作：以 [keybinds] 与 pane 消费规则为准——解绑 / 改键后的组合、
-    /// 焦点 pane 不消费的动作（清屏时焦点在浏览器）都不执行（按键交还焦点终端）；鼠标点菜单项（非 keyDown）始终执行
+    /// Whether a menu item's fixed shortcut actually performs its action: [keybinds] and the pane
+    /// consumption rules decide. A combination that has been unbound or rebound, and an action the
+    /// focused pane does not consume (clear-screen while the focus is on a browser), both do
+    /// nothing, and the key is handed back to the focused terminal. Clicking the menu item with the
+    /// mouse (not a keyDown) always performs it.
     static func menuShortcutAllowed(_ action: WMAction, event: NSEvent?, keybindings: KeybindingMap,
                                    focusedPane: PaneView?) -> Bool {
         guard let event, event.type == .keyDown else { return true }
@@ -123,62 +152,72 @@ final class MainWindowController: BaseTerminalController {
         return consumes(action, focusedPane: focusedPane)
     }
 
-    /// 清屏目标：以窗口真 FR 为准。Scratchpad 不在 paneList 里，focusedPane 会退回到第一块平铺 pane——
-    /// 用它选目标会清掉用户看不见的终端的回滚
+    /// The clear-screen target: the window's real first responder decides. The Scratchpad is not in
+    /// `paneList`, so `focusedPane` would fall back to the first tiled pane - picking the target
+    /// that way clears the scrollback of a terminal the user cannot even see.
     var clearTarget: Ghostty.SurfaceView? {
         if let window, let fr = window.firstResponder as? Ghostty.SurfaceView { return fr }
         if model.scratchpadVisible, let scratch = model.scratchpadSurface { return scratch }
         return focusedSurface
     }
 
-    /// 对清屏目标执行引擎 clear_screen（清屏 + 清回滚）。false = 没有终端目标，或引擎没执行
-    /// （ghostty 把 clear_screen 标为 performable：alt screen 上（vim / less）不清、按键该交给程序）
+    /// Run the engine's clear_screen on the clear target (clears the screen and the scrollback).
+    /// false means there was no terminal target, or the engine did not perform it (ghostty marks
+    /// clear_screen as performable: on the alt screen, in vim or less, it does nothing and the key
+    /// belongs to the program).
     @discardableResult
     func clearFocusedTerminal() -> Bool {
         clearTarget?.surfaceModel?.perform(action: "clear_screen") == true
     }
 
-    /// 焦点 pane 是否在浮动层
+    /// Whether the focused pane is on the floating layer
     var focusedIsFloating: Bool {
         guard let f = focusedPane else { return false }
         return model.floating.contains { $0.pane === f }
     }
-    /// 全部工作区（含 scratchpad）所有 pane
+    /// Every pane across every workspace, including the scratchpad
     var allPanes: [PaneView] { model.allPanes }
 
     override var focusedPane: PaneView? {
-        // 真相优先（focused 标志在视图重挂时可能短暂残留）：FR 是某 pane 或其后代（浏览器 pane 的 WKWebView）
+        // Ground truth first (the `focused` flag can linger briefly while a view is remounted):
+        // the first responder is a pane, or a descendant of one (a browser pane's WKWebView).
         if let window, let holder = paneList.first(where: { $0.holdsFirstResponder(of: window) }) {
             return holder
         }
         return paneList.first { $0.focused } ?? paneList.first
     }
 
-    /// 单焦点不变量：任一 pane 成为 FR 时，清掉其他 pane 残留的 focused
-    /// （AppKit 在 FR 视图脱离窗口时不发 resign，见 SurfaceView.viewWillMove(toWindow:)）
+    /// The single-focus invariant: when any pane becomes first responder, clear the leftover
+    /// `focused` on every other pane. AppKit sends no resign when the first responder view leaves
+    /// the window - see SurfaceView.viewWillMove(toWindow:).
     override func paneDidBecomeFirstResponder(_ pane: PaneView) {
-        if pendingFocusTarget === pane { pendingFocusTarget = nil }   // 意图达成
+        if pendingFocusTarget === pane { pendingFocusTarget = nil }   // The intent has been met
         for other in model.allPanes where other !== pane && other.focused {
             other.focusDidChange(false)
         }
     }
 
-    /// 控制器明确要聚焦的 pane（意图）。存在时，重挂载的其他 surface 不得夺回焦点——
-    /// dwindle 新建：原 pane 在 leaf→split 重挂时会触发夺回，把刚交给新 pane 的焦点抢走。
+    /// The pane the controller explicitly wants focused (the intent). While it is set, no other
+    /// surface being remounted may reclaim focus - on a dwindle split, the original pane's
+    /// leaf-to-split remount triggers exactly such a reclaim and steals the focus we just handed to
+    /// the new pane.
     private var pendingFocusTarget: PaneView?
 
     override func paneMayReclaimFocus(_ pane: PaneView) -> Bool {
         pendingFocusTarget == nil || pendingFocusTarget === pane
     }
 
-    /// 所有控制器发起的聚焦走这里：登记意图 → moveFocus（等挂载）→ 布局动效结束后再校验一次
+    /// Every focus change the controller initiates goes through here: record the intent, call
+    /// moveFocus (which waits for the mount), then verify once more after the layout animation.
     func requestFocus(to pane: PaneView, from: PaneView? = nil) {
         pendingFocusTarget = pane
         PaneView.moveFocus(to: pane, from: from)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self, weak pane] in
             guard let self, let pane, self.pendingFocusTarget === pane else { return }
             if pane.window != nil, let window = self.window, !pane.holdsFirstResponder(of: window) {
-                PaneView.moveFocus(to: pane)   // 被重挂/动效期间的事件挤掉了，再交一次
+                // Knocked out by a remount, or by an event during the animation: hand it over
+                // once more.
+                PaneView.moveFocus(to: pane)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self, weak pane] in
                 if let self, let pane, self.pendingFocusTarget === pane { self.pendingFocusTarget = nil }
@@ -186,7 +225,8 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 焦点对账：focused 标志必须与窗口 first responder 一致（重挂后的定时兜底）
+    /// Focus reconciliation: the `focused` flag has to agree with the window's first responder
+    /// (the timed safety net after a remount).
     func reconcileFocus() {
         guard let window else { return }
         let holder = model.allPanes.first { $0.holdsFirstResponder(of: window) }
@@ -205,12 +245,16 @@ final class MainWindowController: BaseTerminalController {
     }
 
     /// - Parameters:
-    ///   - screen: 目标显示器（nil = 主显示器）；窗口在它的 visibleFrame 内居中，同屏已有窗口时层叠偏移
-    ///   - index: 屏幕序号（0 = 第一个，标题 `QuickTerm`）
-    ///   - restoring: true = 由 `SessionStore` 随后灌入存档（本控制器不自己开起步终端、也不自己读盘）
-    ///   - id: 存档里的窗口身份（恢复时沿用旧 id，新建时随机）
-    ///   - restoredFrame: 存档里的窗口 frame（会被收进目标显示器的可见区）
-    ///   - inheritedDirectory: 新屏幕首个终端继承的 cwd（来自源窗口焦点 pane）
+    ///   - screen: the target display (nil = the main display); the window is centered in its
+    ///     visibleFrame, cascaded when the display already has windows
+    ///   - index: the screen index (0 = the first one, titled `QuickTerm`)
+    ///   - restoring: true means `SessionStore` will pour the archive in afterwards (this
+    ///     controller neither opens a starter terminal nor reads from disk itself)
+    ///   - id: the window identity from the archive (reused when restoring, random when new)
+    ///   - restoredFrame: the window frame from the archive (it gets constrained into the target
+    ///     display's visible area)
+    ///   - inheritedDirectory: the cwd the new screen's first terminal inherits (from the source
+    ///     window's focused pane)
     init(ghostty: Ghostty.App, session: AppSession,
          screen: NSScreen? = nil, index: Int = 0, restoring: Bool = false,
          id: UUID = UUID(), restoredFrame: CGRect? = nil,
@@ -221,15 +265,17 @@ final class MainWindowController: BaseTerminalController {
         self.windowID = id
         let window = HiddenTitlebarWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1024, height: 720),
-            styleMask: [],  // HiddenTitlebarWindow 内部固定样式
+            styleMask: [],  // HiddenTitlebarWindow pins the style mask internally
             backing: .buffered, defer: false)
         window.title = ScreenRegistry.title(forIndex: index)
         super.init(window: window)
         window.windowController = self
         window.delegate = self
 
-        // 焦点对账兜底：布局/工作区/浮动层任何变化都会让 SwiftUI 重挂 SurfaceView，
-        // 重挂后 focused 标志可能与窗口 FR 脱节（见 SurfaceView.viewWillMove(toWindow:)）
+        // Focus reconciliation safety net: any change to the layout, the workspace or the floating
+        // layer makes SwiftUI remount the SurfaceView, and after a remount the `focused` flag can
+        // come adrift from the window's first responder (see
+        // SurfaceView.viewWillMove(toWindow:)).
         for publisher in [model.$layouts.map { _ in () }.eraseToAnyPublisher(),
                           model.$floatings.map { _ in () }.eraseToAnyPublisher(),
                           model.$titles.map { _ in () }.eraseToAnyPublisher(),
@@ -237,21 +283,27 @@ final class MainWindowController: BaseTerminalController {
             publisher.dropFirst().sink { [weak self] in
                 guard let self else { return }
                 self.scheduleFocusReconcile()
-                // 布局 / 浮动层 / 活动工作区任何变化都排一次防抖存档（1.5.x 只在退出时存一次，
-                // 崩溃或强制退出会丢掉整个会话）
+                // Any change to the layout, the floating layer or the active workspace queues a
+                // debounced save. 1.5.x saved only on quit, so a crash or a force quit threw the
+                // whole session away.
                 self.session.sessionStore.scheduleSave()
-                // pane 集合可能变了：重订阅每个 pane 的「存档内容变化」（终端 cwd / 浏览器网页）。
-                // @Published 在 willSet 发布——此刻 model.layouts 还是旧值，必须等它落定再读
+                // The pane set may have changed: resubscribe each pane's "archived content
+                // changed" (a terminal's cwd, a browser's page).
+                // @Published publishes in willSet, so `model.layouts` still holds the old value
+                // right now - we have to wait for it to settle before reading it.
                 DispatchQueue.main.async { [weak self] in self?.resubscribePaneSaves() }
             }
             .store(in: &cancellables)
         }
 
-        // 控制面事件（Phase 4）：单独一条 sink，**不并进上面那条**——
-        // 那条每次触发都会排一次防抖存档与一次焦点对账，而关闭动效（closingPanes）
-        // 只是"这个 pane 已经不可寻址了"，不该顺带多写一次盘。
-        // 这里只报一声"有东西可能变了"，具体发生了什么由 `ControlEventBus` 与上一份快照相减得出：
-        // 每处手写 emit 必然漏，而 `perform()` 可重入又会让同一件事被报好几遍
+        // Control-plane events (Phase 4): a separate sink, deliberately **not** folded into the one
+        // above - that one queues a debounced save and a focus reconciliation on every trigger,
+        // while the close animation (`closingPanes`) only means "this pane is no longer
+        // addressable" and should not cost an extra write to disk.
+        // All this does is announce "something may have changed"; what actually happened is derived
+        // by `ControlEventBus` diffing against the previous snapshot. Hand-written emits at every
+        // mutation site are guaranteed to miss cases, and `perform()` is reentrant, so the same
+        // event would be reported several times.
         for publisher in [model.$layouts.map { _ in () }.eraseToAnyPublisher(),
                           model.$floatings.map { _ in () }.eraseToAnyPublisher(),
                           model.$titles.map { _ in () }.eraseToAnyPublisher(),
@@ -275,8 +327,10 @@ final class MainWindowController: BaseTerminalController {
             // `[general] language` changes. AppKit code uses the global `L(_:_:)` instead.
             .environmentObject(Localization.shared))
 
-        // 主题热切换：overlay 变更 → 全部 surface 热重载（spec §3.2，< 200ms）。
-        // 引擎 app 级 reloadConfig 由 AppDelegate 统一做一次（多屏幕下不重复 N 次）
+        // Live theme switching: when the overlay changes, hot-reload every surface (spec §3.2,
+        // under 200ms).
+        // The engine's app-level reloadConfig is done once by AppDelegate, so it does not run N
+        // times across N screens.
         themeManager.addOverlayListener(token: self) { [weak self] in
             guard let self else { return }
             for pane in self.allPanes {
@@ -290,48 +344,61 @@ final class MainWindowController: BaseTerminalController {
         }
         applyAppearance()
 
-        // 配置链第 4 层：config.toml（键位/工作区数/主题/[ghostty] 透传）。
-        // 读盘、模板补全、监听与全局部分（键位表 / 引擎 overlay / 浏览器全局设置）全归 AppSession；
-        // 这里只把已经加载好的那份落到本屏幕上
+        // Layer 4 of the config chain: config.toml (keybindings, workspace count, theme, the
+        // [ghostty] passthrough).
+        // Reading the file, filling in the template, the watcher and the global half (the
+        // keybinding table, the engine overlay, the global browser settings) all belong to
+        // AppSession; here we only apply the already-loaded copy to this screen.
         applyWindowConfig(session.settings)
 
-        // 状态恢复（spec §4.8 / v9 §3）：读盘与迁移全归 `SessionStore`——它建完控制器后调
-        // `restore(from:)` 灌入布局（restoring = true）。这里只负责「不恢复」的那条路：
-        // 一个空白终端起步（继承源窗口焦点 pane 的 cwd）。
-        // 视图尚未被 SwiftUI 挂载：直接 makeFirstResponder 返回 true 却什么都不做（AppKit 报
-        // "different window ((null))"），用 Ghostty.moveFocus（等待挂载后再设）
+        // State restoration (spec §4.8 / v9 §3): reading and migrating the archive belong entirely
+        // to `SessionStore`, which creates the controller and then calls `restore(from:)` to pour
+        // the layout in (restoring = true). All we handle here is the "not restoring" path: start
+        // with one blank terminal, inheriting the cwd from the source window's focused pane.
+        // The view has not been mounted by SwiftUI yet, so calling makeFirstResponder directly
+        // returns true and does nothing (AppKit complains about a "different window ((null))") -
+        // hence Ghostty.moveFocus, which waits for the mount before setting it.
         if !restoring { ensureStarterPane(inheriting: inheritedDirectory) }
         place(on: screen, restoredFrame: restoredFrame)
         window.makeKeyAndOrderFront(nil)
 
-        // 引擎发的这三个通知都以 SurfaceView 为 object 且按 object: nil 注册：
-        // 多屏幕下每个控制器都会收到，处理函数开头一律先判归属（见 ghosttyDidCloseSurface 等）
-        // 进程退出 / close 动作 → 移除 pane
+        // All three engine notifications carry a SurfaceView as their object and are registered
+        // with object: nil, so with several screens every controller receives all of them - each
+        // handler starts by checking ownership (see ghosttyDidCloseSurface and friends).
+        // Process exit, or a close action: remove the pane.
         NotificationCenter.default.addObserver(
             self, selector: #selector(ghosttyDidCloseSurface(_:)),
             name: Ghostty.Notification.ghosttyCloseSurface, object: nil)
-        // 文件管理器 pane 子进程退出（引擎不会自行 close）→ 原位开终端 / 关 pane
+        // A file manager pane's child process exited (the engine does not close it on its own):
+        // open a terminal in its place, or close the pane.
         NotificationCenter.default.addObserver(
             self, selector: #selector(ghosttyChildExited(_:)),
             name: Ghostty.Notification.ghosttyChildExited, object: nil)
-        // dwindle 分隔条双击 → 引擎回发 didEqualizeSplits → 全树等分
+        // Double-clicking a dwindle divider: the engine posts didEqualizeSplits back, and the whole
+        // tree is equalized.
         NotificationCenter.default.addObserver(
             self, selector: #selector(ghosttyDidEqualizeSplits(_:)),
             name: Ghostty.Notification.didEqualizeSplits, object: nil)
 
-        // WM 级组合键：在事件分发前拦截；未命中一律放行给 surface（终端级键不受影响）。
-        // 浮动面板打开时优先接管 ↑↓/回车/Esc 导航。
+        // WM-level key combinations: intercepted before event dispatch, and anything that does not
+        // match is passed through to the surface, so terminal-level keys are unaffected.
+        // While an overlay panel is open it takes the up/down, return and escape navigation
+        // first.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let window = self.window, event.window === window else { return event }
             if self.model.activePanel != nil, self.handlePanelKey(event) { return nil }
             guard let hit = self.keybindings.action(for: event) else { return event }
-            // pane 专属动作：浏览器专属的焦点不在浏览器 pane 时不消费（Cmd+R / Cmd+= 等仍归终端），
-            // 终端专属的（清屏）焦点不在终端时放行；清屏按真 FR 选目标（Scratchpad 不在 paneList 里）
+            // Pane-specific actions: a browser-only one is not consumed while the focus is not on
+            // a browser pane (so Cmd+R, Cmd+= and the rest still belong to the terminal), and a
+            // terminal-only one (clear screen) is passed through while the focus is not on a
+            // terminal. Clear picks its target from the real first responder, since the Scratchpad
+            // is not in `paneList`.
             let target = hit.action.terminalOnly ? self.clearTarget : self.focusedPane
             guard Self.consumes(hit.action, focusedPane: target) else { return event }
             if hit.action == .clearTerminal {
-                // 引擎没执行（alt screen）→ 按 ghostty performable 语义把按键交给程序；
-                // 不能 return event：Shell 菜单的 ⇧⌘K 键等价会再把它吞掉
+                // The engine did not perform it (alt screen), so per ghostty's performable
+                // semantics the key goes to the program. We cannot `return event` here: the Shift+
+                // Cmd+K key equivalent on the Shell menu would swallow it again.
                 if !self.clearFocusedTerminal(), let surface = self.clearTarget { surface.keyDown(with: event) }
                 return nil
             }
@@ -339,28 +406,35 @@ final class MainWindowController: BaseTerminalController {
             return nil
         }
 
-        // ⌘ 状态跟踪（拖拽源浮层）+ ⌘+右键拖拽调整大小（spec §4.2）
+        // Tracking the Cmd state (for the drag source overlay) plus Cmd+right-drag resizing
+        // (spec §4.2)
         mouseMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.flagsChanged, .rightMouseDown, .rightMouseDragged, .rightMouseUp,
                        .leftMouseDown, .leftMouseDragged, .leftMouseUp, .mouseMoved]
         ) { [weak self] event in
             guard let self else { return event }
-            // ⌘ 状态是进程级的：不管事件落在哪个窗口、哪种类型都按事件自带的修饰键重新同步
-            // （NSAlert / sheet / popover 成为 key 时事件不属于任何终端窗口；⌘ 的抬起落在别的 app 上时
-            // 本地监视器根本看不到——漏掉就会让拖拽源浮层残留：抓手光标不消失、滚轮被浮层吃掉）。
-            // N 个控制器写同一个值，幂等；只在真变了时候写，省掉多余的 @Published 通知
+            // The Cmd state is process-level: resync it from the event's own modifier flags no
+            // matter which window the event landed in or what type it is. When an NSAlert, sheet or
+            // popover becomes key the events belong to no terminal window, and a Cmd release that
+            // happens over another app is never seen by a local monitor at all - missing either one
+            // leaves the drag source overlay stuck, with the grab cursor never going away and the
+            // overlay eating the scroll wheel.
+            // N controllers write the same value, which is idempotent; writing only on a real
+            // change saves the redundant @Published notifications.
             ModifierState.shared.sync(event.modifierFlags)
             if event.type == .flagsChanged {
-                // 光标复位只归事件所属窗口的控制器
+                // Only the controller of the event's own window resets the cursor.
                 guard event.window == nil || event.window === self.window else { return event }
                 if !event.modifierFlags.contains(.command), self.floatingDrag == nil { self.resetFloatingCursor() }
                 return event
             }
-            // 多屏幕：会话内的鼠标事件只认本窗口的（另一个屏幕上的拖动不得驱动本控制器的会话）
+            // Multi-screen: while a session is in flight, only this window's mouse events count -
+            // a drag on another screen must not drive this controller's session.
             if self.floatingDrag != nil || self.resizeTarget != nil,
                event.window !== self.window { return event }
-            // 拖动会话按鼠标键收尾，不按修饰键：先松 ⌘ 再松左键也必须正常结束，否则残留会话会劫持
-            // 下一次 ⌘ 拖动（平铺 pane 的 DnD 拖不动、光标挂死）
+            // A drag session is ended by the mouse button, not by the modifier: releasing Cmd
+            // before the left button still has to finish cleanly, otherwise the leftover session
+            // hijacks the next Cmd+drag (a tiled pane will not drag, and the cursor is stuck).
             if self.floatingDrag != nil, let handled = self.floatingSessionEvent(event) {
                 return handled ? nil : event
             }
@@ -386,31 +460,39 @@ final class MainWindowController: BaseTerminalController {
             }
             switch event.type {
             case .mouseMoved:
-                // ⌘ 悬停：浮动 pane 中间 = 抓手（指着链接时 = 链接指针），四边/四角 = 对应方向的缩放光标
+                // Cmd-hover: the middle of a floating pane gives the grab cursor (the link cursor
+                // while pointing at a link), the edges and corners the resize cursor for that
+                // direction.
                 let hit = self.floatingDragHit(event)
                 self.updateFloatingCursor(for: hit?.edges, pane: hit.map { self.model.floating[$0.index].pane })
                 return event
             case .leftMouseDown:
-                // ⌘+左键：浮动 pane 中间 = 自由移动（置顶）、四边/四角 = 缩放（对边不动）；
-                // 平铺 pane 放行给 DnD 拖拽源
+                // Cmd+left: the middle of a floating pane moves it freely (and raises it), the
+                // edges and corners resize it (with the opposite edge pinned). On a tiled pane it
+                // is passed through to the drag-and-drop source.
                 return self.beginFloatingDrag(with: event) ? nil : event
             case .leftMouseDragged, .leftMouseUp:
-                return event   // 无会话：放行（会话内的拖动/松开在上面已处理）
+                // No session: pass it through. Drags and releases inside a session were handled
+                // above.
+                return event
             case .rightMouseDown:
+                // No resizing a pane while it fades out.
                 self.resizeTarget = self.paneUnderPointer(event)
-                    .flatMap { self.model.closingPanes.contains($0.id) ? nil : $0 }   // 淡出中不缩放
+                    .flatMap { self.model.closingPanes.contains($0.id) ? nil : $0 }
                 return self.resizeTarget == nil ? event : nil
             case .rightMouseDragged, .rightMouseUp:
-                return event   // 无会话：放行
+                return event   // No session: pass it through
             default:
                 return event
             }
         }
 
-        // 滚轮：顶栏区域 → 循环工作区（spec §4.4）；
-        // 内容区 + scrolling 布局 + 横向为主 → 平移画布（spec §4.2-bis 附带项）
+        // Scroll wheel: over the top bar it cycles workspaces (spec §4.4); over the content area,
+        // in a scrolling layout, and predominantly horizontal, it pans the canvas (spec §4.2-bis,
+        // an incidental feature).
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-            // 滚轮也顺手同步 ⌘ 状态：错过一次抬起就"终端再也滚不动"的老账在这里也能自愈
+            // The wheel resyncs the Cmd state too: the old bug where missing one release meant
+            // "the terminal never scrolls again" heals itself here.
             ModifierState.shared.sync(event.modifierFlags)
             guard let self, let window = self.window, event.window === window,
                   let content = window.contentView else { return event }
@@ -424,20 +506,23 @@ final class MainWindowController: BaseTerminalController {
                 self.switchWorkspace(next)
                 return nil
             }
-            // ⌘ 拖拽源浮层盖着 pane 时（浮层是 pane 的兄弟子树，沿 superview 找不到 pane），
-            // 按它盖住的 pane 认领滚轮
+            // While the Cmd drag source overlay covers a pane (the overlay is a sibling subtree, so
+            // walking up superviews never finds the pane), claim the wheel for the pane it
+            // covers.
             func effectiveHit(_ point: NSPoint) -> NSView? {
                 let hit = content.hitTest(point)
                 return (hit as? PaneOverlaying)?.overlaidPane ?? hit
             }
-            // 溢出的浏览器标签条自己吃横向滚轮（监视器跑在视图派发之前，否则永远轮不到它）
+            // An overflowing browser tab bar takes the horizontal wheel itself (the monitor runs
+            // before view dispatch, so otherwise the bar would never get a chance at it).
             if let hit = effectiveHit(p),
                let bar = sequence(first: hit, next: { $0.superview })
                    .compactMap({ $0 as? BrowserTabBarView }).first,
                bar.isOverflowing {
                 return event
             }
-            // 激活的浏览器 pane 自己吃双指横滑（网页横向滚动 / 前进后退手势），不平移画布
+            // An active browser pane takes the two-finger horizontal swipe itself (horizontal page
+            // scrolling, the back/forward gesture) instead of panning the canvas.
             if let hit = effectiveHit(p), self.browserPaneClaimingScroll(under: hit) != nil {
                 return event
             }
@@ -455,8 +540,9 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 鼠标下的视图属于某个**持有键盘焦点**的浏览器 pane 时返回它：这时的滚轮 / 双指横滑归网页，
-    /// 不做画布平移。没激活的浏览器 pane 照旧平移画布（只是路过）
+    /// Returns the browser pane under the mouse when that pane **holds keyboard focus**: the wheel
+    /// and two-finger swipe then belong to the page, not to canvas panning. An inactive browser
+    /// pane pans the canvas as before - the pointer is only passing over it.
     func browserPaneClaimingScroll(under view: NSView) -> BrowserPaneView? {
         guard let window,
               let pane = sequence(first: view, next: { $0.superview }).compactMap({ $0 as? BrowserPaneView }).first,
@@ -464,25 +550,31 @@ final class MainWindowController: BaseTerminalController {
         return pane
     }
 
-    // MARK: config.toml（配置链第 4 层，spec §4.7）
-    // 读盘 / 监听 / 去重 / 全局部分都在 AppSession；这里只负责把一份 Settings 落到**本屏幕**上。
-    // 判断标准：改了会影响别的屏幕的（键位表、引擎 overlay、BrowserPaneView.settings、扩展开关）
-    // 一律归 applyGlobalConfig，一次重载只做一遍
+    // MARK: config.toml (layer 4 of the config chain, spec §4.7)
+    // Reading the file, watching it, deduplicating and the global half all live in AppSession; all
+    // this does is apply one Settings to **this screen**.
+    // The rule for deciding: anything whose change affects other screens (the keybinding table, the
+    // engine overlay, BrowserPaneView.settings, the extension switch) belongs to applyGlobalConfig
+    // and runs once per reload.
 
     func applyWindowConfig(_ settings: ConfigStore.Settings) {
-        // 空工作区提示用当前实际绑定（键位表来自 AppSession）
+        // The empty-workspace hint shows the binding actually in effect (the keybinding table
+        // comes from AppSession).
         model.newTerminalCombo = keybindings.displayBindings()
             .first { $0.action == .newTerminal }?.combo ?? "Cmd+Return"
-        for case let browser as BrowserPaneView in allPanes { browser.applySettings() }   // UA / Inspector 热重载
+        // Hot-reload the user agent and the inspector flag.
+        for case let browser as BrowserPaneView in allPanes { browser.applySettings() }
         model.setWorkspaceCount(settings.workspaces)
         if let n = settings.visibleColumns { setVisibleColumns(n, persist: false) }
     }
 
-    // MARK: 状态存取（spec §4.8 / v9 §3；读盘与迁移在 `SessionStore`，这里只管一个窗口的那一片）
+    // MARK: Reading and writing state (spec §4.8 / v9 §3; reading and migrating belong to
+    // `SessionStore`, this only covers one window's slice)
 
-    /// 本屏幕的存档切片（`SessionStore.snapshot()` 逐个窗口调用）。
-    /// **纯读取**：存档现在由防抖定时器触发，快照绝不能改动屏幕上的东西——
-    /// 淡出中的 pane 只从副本里滤掉（不 flush，否则会把正在播放的关闭动效截断）
+    /// This screen's slice of the archive (`SessionStore.snapshot()` calls it once per window).
+    /// **Read-only**: archiving is now driven by a debounce timer, so a snapshot must never change
+    /// anything on screen - panes that are fading out are filtered out of the copy only. We do not
+    /// flush them, because that would cut short a close animation that is still playing.
     func windowState() -> WindowState {
         var layouts = model.layouts
         var floatings = model.floatings
@@ -501,13 +593,15 @@ final class MainWindowController: BaseTerminalController {
             }
             for i in floatings.indices { floatings[i].removeAll { closing.contains($0.pane.id) } }
         }
-        // 全屏中窗口自己贴满显示器：要存的是退出全屏后要恢复的那个 frame
+        // While fullscreen the window fills the display, so what has to be archived is the frame
+        // to restore when fullscreen ends.
         return WindowState(
             id: windowID,
             layouts: layouts,
             floatings: floatings,
             activeIndex: model.activeIndex,
-            // 一个名字都没起过就整条字段不写：绝大多数存档里它是一串 null，没必要占地方
+            // If no workspace was ever named, omit the field entirely: in the vast majority of
+            // archives it would be a row of nulls taking up space for nothing.
             workspaceTitles: model.titles.contains(where: { $0 != nil }) ? model.titles : nil,
             visibleColumns: visibleColumns,
             display: DisplayRef(screen: window?.screen),
@@ -517,9 +611,13 @@ final class MainWindowController: BaseTerminalController {
             focusedPaneID: focusedPane.flatMap { closing.contains($0.id) ? nil : $0.id })
     }
 
-    /// 每个 pane 一条「存档内容变化」订阅（终端 cwd 走 `$pwd`，浏览器走 `archiveDidChange`）。
-    /// 布局事件之外 `cd` / 打开网页也要能进档——否则崩溃 / 强制退出后复原的是上一次布局变化时的目录与网页。
-    /// pane 集合变化（新建 / 恢复 / 拖入 / 关闭）都会经布局 sink 走到这里，重订阅即可
+    /// One "archived content changed" subscription per pane (a terminal's cwd through `$pwd`, a
+    /// browser through `archiveDidChange`).
+    /// A `cd` or opening a page has to reach the archive outside of layout events too - otherwise,
+    /// after a crash or a force quit, what comes back is the directory and the page as of the last
+    /// layout change.
+    /// Every change to the pane set (creating, restoring, dropping in, closing) arrives here
+    /// through the layout sink, and resubscribing is all that is needed.
     private func resubscribePaneSaves() {
         guard !isClosed else { return }
         let live = model.allPanes
@@ -528,7 +626,8 @@ final class MainWindowController: BaseTerminalController {
         for pane in live where paneSaveSubscriptions[ObjectIdentifier(pane)] == nil {
             let changes: AnyPublisher<Void, Never>
             if let terminal = pane as? Ghostty.SurfaceView {
-                // dropFirst：订阅那一刻的当前值不是「变化」；removeDuplicates：多数 shell 每个提示符都发一次 OSC 7
+                // dropFirst: the value at subscription time is not a "change". removeDuplicates:
+                // most shells emit OSC 7 at every prompt.
                 changes = terminal.$pwd.dropFirst().removeDuplicates().map { _ in () }.eraseToAnyPublisher()
             } else {
                 changes = pane.archiveDidChange.eraseToAnyPublisher()
@@ -537,9 +636,11 @@ final class MainWindowController: BaseTerminalController {
                 self?.session.sessionStore.scheduleSave()
             }
         }
-        // 控制面的 pane.title.changed / pane.cwd.changed 走同一条重订阅路径：
-        // 终端的标题与 OSC 7 的 pwd 都是 @Published，浏览器 pane 的网页变化走 archiveDidChange。
-        // **事件里只会出现标题与 cwd，绝不会出现 pane 的输出内容**
+        // The control plane's pane.title.changed / pane.cwd.changed go through the same
+        // resubscription path: a terminal's title and its OSC 7 pwd are both @Published, and a
+        // browser pane's page changes arrive via archiveDidChange.
+        // **Only the title and the cwd ever appear in an event; a pane's output content never
+        // does.**
         paneEventSubscriptions = paneEventSubscriptions.filter { ids.contains($0.key) }
         for pane in live where paneEventSubscriptions[ObjectIdentifier(pane)] == nil {
             let changes: AnyPublisher<Void, Never>
@@ -556,7 +657,8 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 起步 pane：没有任何 pane 时开一个终端（新建屏幕，以及存档为空的兜底）
+    /// The starter pane: open one terminal when there is no pane at all (a new screen, and the
+    /// fallback for an empty archive).
     func ensureStarterPane(inheriting directory: String? = nil) {
         guard model.allPanes.isEmpty else { return }
         let first = newSurface(workingDirectory: directory)
@@ -564,21 +666,27 @@ final class MainWindowController: BaseTerminalController {
         requestFocus(to: first)
     }
 
-    /// 灌入一份存档（每 pane 按存档 cwd 重开 shell、每个浏览器 pane 重开它的标签页）；
-    /// 空存档 → false（调用方开一个空白终端）
+    /// Pour an archive in: every pane reopens its shell at the archived cwd and every browser pane
+    /// reopens its tabs.
+    /// An empty archive returns false, and the caller opens a blank terminal.
     @discardableResult
     func restore(from state: WindowState) -> Bool {
-        // 列宽归一要用最终的列因子：可见列数必须先落（此时布局还空，不会触发重排）。
-        // config.toml 明确写了 `visible-columns` 时以配置为准——配置层永远压过存档
+        // Normalizing column widths needs the final column factor, so the visible column count has
+        // to be applied first (the layout is still empty at this point, so nothing is relaid out).
+        // When config.toml states `visible-columns` explicitly the config wins - the config layer
+        // always beats the archive.
         if session.settings.visibleColumns == nil, let columns = state.visibleColumns {
             setVisibleColumns(columns, persist: false)
         }
         let restored = applyArchive(layouts: state.layouts, floatings: state.floatings,
                                     activeIndex: state.activeIndex, titles: state.workspaceTitles)
         guard restored else { return false }
-        for case let browser as BrowserPaneView in allPanes { applyBrowserTheme(browser) }   // 恢复的浏览器 pane 也套主题
-        // 存档里的焦点 pane 优先（只在活动工作区里找：别把焦点交给一个没挂载的工作区）；
-        // 旧档 / 找不到 → 退回第一块 pane（与 v4 行为一致）
+        // Restored browser panes get the theme too.
+        for case let browser as BrowserPaneView in allPanes { applyBrowserTheme(browser) }
+        // The archived focus pane wins, looked up only inside the active workspace: do not hand
+        // focus to a workspace that is not mounted.
+        // An old archive, or an id that does not resolve, falls back to the first pane, exactly as
+        // v4 behaved.
         let target = state.focusedPaneID.flatMap { id in paneList.first { $0.id == id } } ?? focusedPane
         if let target { requestFocus(to: target) }
         joinsAllSpaces = state.joinAllSpaces
@@ -586,13 +694,15 @@ final class MainWindowController: BaseTerminalController {
         return true
     }
 
-    /// 布局/浮动层/活动工作区三件套的落地（v2–v5 共用；含历史列宽归一与浮动层补齐）
+    /// Apply the three pieces - layouts, floating layer, active workspace - shared by v2-v5;
+    /// includes normalizing historical column widths and padding out the floating layer.
     private func applyArchive(layouts: [WorkspaceLayout], floatings rawFloatings: [[FloatingPane]]?,
                               activeIndex: Int, titles: [String?]? = nil) -> Bool {
         let floatings = rawFloatings ?? Array(repeating: [], count: layouts.count)
         guard !(layouts.allSatisfy(\.isEmpty) && floatings.allSatisfy(\.isEmpty)) else { return false }
-        // 旧状态归一：0.49（露边 2% 时代）/ 0.44（露边 6% 时代）是历史默认列宽，
-        // 归到当前列因子；用户手动调过的宽度原样保留
+        // Normalize old state: 0.49 (from when the peek was 2%) and 0.44 (from when it was 6%) were
+        // the historical default column widths, so map them onto the current column factor. Widths
+        // the user adjusted by hand are kept exactly as they are.
         let legacyDefaults = [0.49, 0.44]
         model.layouts = layouts.map { layout in
             guard case .scrolling(var strip) = layout else { return layout }
@@ -607,14 +717,16 @@ final class MainWindowController: BaseTerminalController {
             model.floatings.append(contentsOf: Array(
                 repeating: [], count: model.layouts.count - model.floatings.count))
         }
-        // 名字先落，再让 setWorkspaceCount 去对齐长度（老档没有这一项 = 一个名字都没起过）
+        // Apply the names first and let setWorkspaceCount align the length afterwards (an old
+        // archive has no such field, which means no workspace was ever named).
         if let titles { model.titles = titles }
         model.setWorkspaceCount(max(model.layouts.count, 1))
         model.activeIndex = min(max(activeIndex, 0), model.layouts.count - 1)
         return true
     }
 
-    /// 浅色主题联动（spec §4.5）：窗口外观 + 引擎 color scheme
+    /// Light theme follow-through (spec §4.5): the window appearance plus the engine's color
+    /// scheme
     private func applyAppearance() {
         let light = themeManager.current.isLight
         window?.appearance = NSAppearance(named: light ? .aqua : .darkAqua)
@@ -624,9 +736,9 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    // MARK: 窗口放置与屏幕生命周期（多屏幕，spec v9 §1.2）
+    // MARK: Window placement and screen lifecycle (multi-screen, spec v9 §1.2)
 
-    /// 同一显示器上已有的 QuickTerm 屏幕窗口（层叠偏移用）
+    /// The QuickTerm screen windows already on the same display (used for the cascade offset)
     private static func siblingWindows(excluding window: NSWindow, on screen: NSScreen?) -> [NSWindow] {
         NSApp.windows.filter {
             $0 !== window && $0.isVisible && $0.windowController is MainWindowController
@@ -634,9 +746,12 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 放置窗口：给定显示器时在其 visibleFrame 内居中，同屏已有窗口则层叠偏移，最后一律 constrainFrameRect。
-    /// 未指定显示器且是本进程第一个窗口时保持历史行为（window.center()）。
-    /// `restoredFrame`（存档恢复）优先：原样落回去，只按目标显示器的可见区收一收
+    /// Place the window: with a display given, center it in that display's visibleFrame, cascade it
+    /// when the display already has windows, and always finish with constrainFrameRect.
+    /// With no display given and this being the process's first window, keep the historical
+    /// behavior (window.center()).
+    /// A `restoredFrame` (from the archive) wins: put it back exactly, constrained only into the
+    /// target display's visible area.
     private func place(on screen: NSScreen?, restoredFrame: CGRect? = nil) {
         guard let window else { return }
         if let restoredFrame {
@@ -655,7 +770,8 @@ final class MainWindowController: BaseTerminalController {
         var frame = window.frame
         frame.size.width = min(frame.width, visible.width)
         frame.size.height = min(frame.height, visible.height)
-        // 居中 + 层叠偏移（同屏第 n 个窗口向右下偏 n×24pt，第 7 个回到起点）
+        // Center, then cascade: the nth window on the same display is offset 24pt right and down
+        // per step, and the 7th wraps back to the start.
         let step = CGFloat(siblings.count % 6) * 24
         frame.origin = CGPoint(x: visible.midX - frame.width / 2 + step,
                                y: visible.midY - frame.height / 2 - step)
@@ -664,11 +780,13 @@ final class MainWindowController: BaseTerminalController {
         window.setFrame(window.constrainFrameRect(frame, to: target), display: false)
     }
 
-    /// 把本屏幕搬到另一台显示器：保持窗口大小（超出则收），按在原屏可见区里的相对位置落点
+    /// Move this screen to another display: keep the window size (shrinking it if it does not fit)
+    /// and land it at the same relative position it had within the old display's visible area.
     func move(to screen: NSScreen) {
         guard let window, window.screen !== screen else { return }
         let visible = screen.visibleFrame
-        // 全屏中窗口自己贴满旧显示器：真正要搬的是退出全屏后要恢复的那个 frame
+        // While fullscreen the window fills the old display, so what actually has to move is the
+        // frame that will be restored when fullscreen ends.
         var frame = savedFrame ?? window.frame
         frame.size.width = min(frame.width, visible.width)
         frame.size.height = min(frame.height, visible.height)
@@ -683,7 +801,9 @@ final class MainWindowController: BaseTerminalController {
         }
         let placed = window.constrainFrameRect(frame, to: screen)
         if savedFrame != nil {
-            // 全屏中：窗口跟着贴合新显示器，退出全屏时也要落在新显示器上（否则一退全屏就跳回去）
+            // While fullscreen: the window fills the new display, and leaving fullscreen has to
+            // land on the new display too - otherwise it jumps straight back the moment you
+            // leave.
             savedFrame = placed
             window.setFrame(screen.frame, display: true)
         } else {
@@ -691,7 +811,8 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 「在所有桌面显示」：Spaces 无法用公开 API 指定，能提供的只有 canJoinAllSpaces
+    /// "Show on all desktops": there is no public API to assign a window to a Space, so
+    /// canJoinAllSpaces is all we can offer.
     var joinsAllSpaces: Bool {
         get { window?.collectionBehavior.contains(.canJoinAllSpaces) ?? false }
         set {
@@ -707,10 +828,12 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 右键工作区胶囊：给这个**槽位**起名 / 改名。
-    /// 形状与终端的「Change Terminal Title」一模一样（NSAlert + 一行文本框 + 好 / 取消），
-    /// 留空 = 清掉名字、胶囊回到序号。只有这条路和 `quickterm workspace set --title` 能改名字——
-    /// 清空工作区、关掉最后一个 pane、spec apply 都不碰它
+    /// Right-click on a workspace pill: name or rename this **slot**.
+    /// The shape is identical to the terminal's "Change Terminal Title" (an NSAlert plus a one-line
+    /// text field plus OK / Cancel), and leaving it blank clears the name so the pill falls back to
+    /// its number. This path and `quickterm workspace set --title` are the only two things that
+    /// change a name - clearing the workspace, closing the last pane and `spec apply` all leave it
+    /// alone.
     func promptWorkspaceTitle(_ index: Int) {
         guard model.layouts.indices.contains(index), !AppDelegate.isRunningTests else { return }
         let alert = NSAlert()
@@ -725,12 +848,15 @@ final class MainWindowController: BaseTerminalController {
         alert.window.initialFirstResponder = field
         let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
-            // 上限与控制面那条命令同源；这里是人在打字，超了就截断而不是报错。
-            // 控制字符也一样得在这儿滤掉：这块 `NSTextField` 收得下粘贴进来的换行，
-            // 而一个带换行的名字会把胶囊排成两行、顶破 26pt 的状态条
+            // The cap comes from the same place as the control-plane command's, but a person is
+            // typing here, so anything over it is truncated instead of raising an error.
+            // Control characters have to be filtered here as well: this `NSTextField` happily
+            // accepts a pasted newline, and a name with a newline lays the pill out over two lines
+            // and bursts through the 26pt status bar.
             self.model.setTitle(WorkspaceModel.titleFromInput(field.stringValue), at: index)
         }
-        // 有窗口就走 sheet（与「Change Terminal Title」同）：模态框飘在别的屏幕上会让人找不着
+        // With a window, use a sheet, as "Change Terminal Title" does: a modal floating on some
+        // other screen is a dialog the user cannot find.
         if let window {
             alert.beginSheetModal(for: window, completionHandler: finish)
         } else {
@@ -738,7 +864,8 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 关闭这个屏幕前的确认（复用退出确认的计数与文案）；无活跃 pane 直接放行
+    /// Confirmation before closing this screen (reusing the quit confirmation's count and copy);
+    /// with no live pane it goes through without asking.
     func confirmCloseScreen() -> Bool {
         flushPendingCloses()
         let open = model.allPanes.count
@@ -751,8 +878,10 @@ final class MainWindowController: BaseTerminalController {
         return alert.runModal() == .alertFirstButtonReturn
     }
 
-    /// 拆掉一切会在窗口关掉后仍然活着的东西。窗口关闭时显式调用（不依赖 deinit 顺序）：
-    /// 监视器 / 通知 / 主题监听的闭包留着就会吊住控制器，弱引用用例会红
+    /// Tear down everything that would outlive the window. Called explicitly when the window
+    /// closes rather than relying on deinit ordering: the closures behind the monitors, the
+    /// notifications and the theme listener keep the controller alive, and the weak-reference tests
+    /// go red.
     private func teardown() {
         guard !isClosed else { return }
         isClosed = true
@@ -767,26 +896,32 @@ final class MainWindowController: BaseTerminalController {
         paneEventSubscriptions.removeAll()
         floatingDrag = nil
         resizeTarget = nil
-        // 非原生全屏的 presentationOptions 是进程级的：本窗口申请过就得还回去（按窗口记账，
-        // 只还自己那一份——别的屏幕还在全屏时 Dock 与菜单栏必须继续藏着）
+        // The presentationOptions behind non-native fullscreen are process-level: whatever this
+        // window acquired has to be handed back. The ledger is per window and we return only our
+        // own share - while another screen is still fullscreen the Dock and menu bar have to stay
+        // hidden.
         savedFrame = nil
         session.setSimpleFullscreen(false, for: self)
-        // 与 removeFromActiveLayout / removeFromAnyWorkspace 同一份 pane 级收尾：浏览器 pane
-        // 要取消进行中的下载、告诉扩展"窗口"关了（deinit 只 tearDown 标签，这些都不做）。
-        // 必须赶在拆视图层级之前：WebKit 处理 didCloseWindow 时会同步回查 tab.window(for:)
+        // The same per-pane teardown as removeFromActiveLayout / removeFromAnyWorkspace: a browser
+        // pane has to cancel in-flight downloads and tell extensions the "window" closed (deinit
+        // only tears the tabs down and does none of that).
+        // It has to happen before the view hierarchy is torn down: while handling didCloseWindow,
+        // WebKit calls back synchronously into tab.window(for:).
         ControlUndo.invalidate()
         for pane in model.allPanes {
             forgetFileManagerSession(pane)
             (pane as? BrowserPaneView)?.paneWillClose()
         }
-        // 显式拆掉视图层级：pane 由 SwiftUI 的视图树强持有，窗口对象被 AppKit 多留一会儿
-        // 就会让这个屏幕里的 shell 一直活着。关屏幕就该结束里面的进程
+        // Tear the view hierarchy down explicitly: the panes are held strongly by SwiftUI's view
+        // tree, so AppKit keeping the window object around a little longer keeps every shell on
+        // this screen alive. Closing a screen should end the processes inside it.
         window?.contentView = nil
         model.layouts = model.layouts.map { _ in .empty }
         model.floatings = model.floatings.map { _ in [] }
         model.scratchpadVisible = false
         model.scratchpadSurface = nil
-        // 保底：没登记在 allPanes 里的会话（正常应为空，上面的循环已经逐个清过）
+        // Safety net for sessions not registered in allPanes (normally empty - the loop above has
+        // already cleaned each one up).
         for session in fileManagerSessions.values { FileManagerLaunch.cleanup(session) }
         fileManagerSessions.removeAll()
     }
@@ -798,22 +933,26 @@ final class MainWindowController: BaseTerminalController {
             if let s = cur as? PaneView { return s }
             v = cur.superview
         }
-        // 命中覆盖层等兄弟视图时按几何位置回退查找——
-        // 必须按 z 序自顶向下：浮动层（数组末位最顶）优先于平铺层，
-        // 否则浮动 pane 叠在平铺上时 ⌘ 拖动/调大小会抓到下层平铺 pane
+        // When the hit lands on a sibling view such as an overlay, fall back to a search by
+        // geometry - and it has to go top-down in z order, with the floating layer (last array
+        // entry is topmost) before the tiled layer. Otherwise, with a floating pane sitting on a
+        // tiled one, a Cmd+drag or resize grabs the tiled pane underneath.
         let byZ = model.floating.reversed().map(\.pane) + model.layout.paneList
         return byZ.first {
             $0.window === window && $0.convert($0.bounds, to: nil).contains(event.locationInWindow)
         }
     }
 
-    /// ⌘+右键拖拽：dwindle 调就近分隔条；scrolling 按横向位移调列宽。
-    /// 两条都只是**这一个手势**到 `controlResizeSplit` / `controlResizeColumn` 的换算——
-    /// 真正的算法只有那一份，控制面的 `pane resize --dir` 调的是同一个函数
+    /// Cmd+right-drag: in dwindle it adjusts the nearest divider, in scrolling it adjusts the
+    /// column width by the horizontal displacement.
+    /// Both are only **this gesture's** conversion into `controlResizeSplit` /
+    /// `controlResizeColumn` - the real algorithm exists once, and the control plane's
+    /// `pane resize --dir` calls the very same function.
     private func resizeByDrag(pane: PaneView, dx: CGFloat, dy: CGFloat) {
         switch model.layout {
         case .dwindle:
-            // 单个事件的位移封顶 200pt：手势偶尔会甩出一个离谱的增量
+            // Cap a single event's displacement at 200pt: the gesture occasionally throws out an
+            // absurd delta.
             let amount = min(max(abs(dx) >= abs(dy) ? abs(dx) : abs(dy), 1), 200)
             let direction: SplitTree<PaneView>.Spatial.Direction =
                 abs(dx) >= abs(dy) ? (dx > 0 ? .right : .left) : (dy > 0 ? .down : .up)
@@ -827,32 +966,39 @@ final class MainWindowController: BaseTerminalController {
     required init?(coder: NSCoder) { fatalError("not supported") }
 
     deinit {
-        // 正常路径已在 windowWillClose 的 teardown 里拆干净；这里是没走关闭流程时的保底
+        // The normal path has already cleaned everything up in windowWillClose's teardown; this is
+        // the safety net for when the close flow never ran.
         NotificationCenter.default.removeObserver(self)
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
         if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
     }
 
-    // MARK: WM 动作（spec §5.1 + §4.2-bis；按活动布局分派）
+    // MARK: WM actions (spec §5.1 plus §4.2-bis; dispatched on the active layout)
 
     func perform(_ action: WMAction, precise: Bool = false) {
-        flushPendingCloses()   // 布局操作先在真实布局上做（淡出中的 pane 立即移除）
-        if ![.newTerminal, .fileManager, .newBrowser].contains(action) { model.appearingPane = nil }  // 非插入类变更不重播进场动效
+        // Layout operations act on the real layout: panes mid-fade are removed right away.
+        flushPendingCloses()
+        // A change that is not an insert must not replay the entry animation.
+        if ![.newTerminal, .fileManager, .newBrowser].contains(action) { model.appearingPane = nil }
         switch action {
         case .newTerminal:
             insertNewPane(newSurface(inheritingFrom: focusedPane))
 
         case .clearTerminal:
-            // 同 ghostty 的 clear_screen（Terminal.app Cmd+K 语义：清屏 + 清回滚）；只作用于真 FR 终端
+            // Same as ghostty's clear_screen (Terminal.app's Cmd+K semantics: clear the screen and
+            // the scrollback); only applies to the terminal that really is first responder.
             clearFocusedTerminal()
 
         case .fileManager:
-            // Omarchy Super+Shift+F：新 pane 里以焦点 pane 的目录启动 TUI 文件管理器
+            // Omarchy's Super+Shift+F: start the TUI file manager in a new pane, at the focused
+            // pane's directory.
             let start = focusedPane?.workingDirectory ?? FileManager.default.homeDirectoryForCurrentUser.path
             let made = makeFileManagerPane(startDirectory: start)
-            // 只有真的跑起文件管理器才登记会话（免关闭确认 + 退出读目录）；
-            // 程序缺失开出的提示 pane 是普通交互 shell，按普通 pane 处理
+            // Only register a session when the file manager really started (that is what skips the
+            // close confirmation and reads the directory on exit); the hint pane opened when the
+            // program is missing is an ordinary interactive shell and is treated as an ordinary
+            // pane.
             if insertNewPane(made.pane), made.launch.found {
                 fileManagerSessions[ObjectIdentifier(made.pane)] = made.launch.session
             } else {
@@ -875,7 +1021,8 @@ final class MainWindowController: BaseTerminalController {
         case .webExtensions: browserPane?.showExtensionsMenu()
 
         case .closePane:
-            // 浏览器 pane 多标签时 Cmd+W 关当前标签，最后一个标签才关 pane（Chrome 语义）
+            // With several tabs in a browser pane, Cmd+W closes the current tab and only the last
+            // tab closes the pane (Chrome's semantics).
             if let browser = browserPane, browser.tabs.count > 1 {
                 browser.closeActiveTab()
             } else if let focused = focusedPane {
@@ -898,7 +1045,8 @@ final class MainWindowController: BaseTerminalController {
             case .dwindle(let tree):
                 model.layout = .dwindle((try? tree.togglingSplitDirection(around: focused)) ?? tree)
             case .scrolling(let strip):
-                // Cmd+J：併入左列纵栈 ⇄ 拆出独立列（spec §4.2-bis）
+                // Cmd+J: merge into the vertical stack of the column to the left, or split back
+                // out into a column of its own (spec §4.2-bis).
                 model.layout = .scrolling(strip.mergingOrSplitting(focused))
                 requestFocus(to: focused)
             }
@@ -929,7 +1077,8 @@ final class MainWindowController: BaseTerminalController {
         case .cyclePanePrev: cycleFocus(next: false)
 
         case .toggleLayout:
-            // Cmd+L：dwindle ⇄ scrolling——pane 集合未变时恢复上次布局，否则保 pane 保序转换
+            // Cmd+L: dwindle and scrolling - restore the previous layout while the pane set is
+            // unchanged, otherwise use the pane- and order-preserving conversion.
             model.toggleLayout(columnFactor: columnFactor)
             if let focused = focusedPane { requestFocus(to: focused) }
 
@@ -967,16 +1116,17 @@ final class MainWindowController: BaseTerminalController {
         case .openSettings:
             openSettingsFile()
         case .exitFullscreen:
-            // 仅全屏时退出（Ctrl+Cmd+F 本身即开关；Cmd+Esc 为专用退出）
+            // Only leaves fullscreen (Ctrl+Cmd+F is itself the toggle; Cmd+Esc is the dedicated
+            // exit).
             if savedFrame != nil { toggleSimpleFullscreen() }
         case .toggleFloat:
             toggleFloat()
         }
     }
 
-    // MARK: 每屏可见列数（超宽屏支持）
+    // MARK: Visible columns per screen (ultra-wide display support)
 
-    /// 设置可见列数并把全部 scrolling 工作区统一重排为新因子
+    /// Set the visible column count and re-lay every scrolling workspace to the new factor
     func setVisibleColumns(_ n: Int, persist: Bool = true) {
         let clamped = min(max(n, 1), 6)
         guard clamped != visibleColumns || !model.layoutsMatch(factor: columnFactor) else {
@@ -996,20 +1146,22 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 主菜单循环：2 → 3 → 4 → 2
+    /// The main menu cycles 2 -> 3 -> 4 -> 2
     func cycleVisibleColumns() {
         let next = visibleColumns >= 4 ? 2 : visibleColumns + 1
         setVisibleColumns(next)
     }
 
-    // MARK: 浮动 pane（spec v7：Cmd+T / ⌘拖移动 / ⌘右拖调大小）
+    // MARK: Floating panes (spec v7: Cmd+T, Cmd+drag to move, Cmd+right-drag to resize)
 
     func toggleFloat(_ target: PaneView? = nil) {
         flushPendingCloses()
+        // An explicit target may have just been removed by the flush above.
         guard let focused = target ?? focusedPane,
-              paneList.contains(focused) else { return }   // 显式目标可能刚被 flush 移除
+              paneList.contains(focused) else { return }
         if let idx = model.floating.firstIndex(where: { $0.pane === focused }) {
-            // 塞回平铺：scrolling = 尾列右侧新列；dwindle = 规则插入
+            // Put it back into the tiling: scrolling = a new column right of the last one,
+            // dwindle = the regular insert.
             let fp = model.floating.remove(at: idx)
             switch model.layout {
             case .scrolling(let strip):
@@ -1027,8 +1179,8 @@ final class MainWindowController: BaseTerminalController {
             }
             requestFocus(to: fp.pane)
         } else {
-            // 浮起：类 Omarchy togglefloating——固定尺寸居中
-            // （宽 = 默认列宽 × 0.75，高 = 内容区 45%）
+            // Float it up, Omarchy-style togglefloating: a fixed size, centered (width = the
+            // default column width x 0.75, height = 45% of the content area).
             let rect = FloatingPane.defaultRect(columnFactor: columnFactor)
             removeFromActiveLayout(focused)
             model.floating.append(FloatingPane(pane: focused, rect: rect).clamped())
@@ -1036,25 +1188,31 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// dwindle 布局区尺寸（contentView 去掉顶部状态条；决定分裂方向的宽高比）。
-    /// 控制面往非活动工作区插 pane 时也要它——两处必须是同一份几何
+    /// The size of the dwindle layout area (contentView minus the status bar at the top); its
+    /// aspect ratio is what decides the split direction.
+    /// The control plane needs it too when inserting a pane into an inactive workspace - both
+    /// places have to use the same geometry.
     var dwindleLayoutSize: CGSize? {
         guard let content = window?.contentView else { return nil }
         let barH: CGFloat = model.barVisible ? StatusBarView.height : 0
         return CGSize(width: content.bounds.width, height: content.bounds.height - barH)
     }
 
-    /// **分裂树 / 条带真正铺开的那块地**（pt）= `dwindleLayoutSize` 再去掉 RootView 外圈
-    /// 那一圈 pane-gap 留白（`RootView.content` 里的 `.padding(theme.paneGap)`）。
+    /// **The area the split tree / strip is actually laid out in** (in points) =
+    /// `dwindleLayoutSize` minus RootView's outer ring of pane-gap padding (the
+    /// `.padding(theme.paneGap)` in `RootView.content`).
     ///
-    /// 不能拿 `window.contentLayoutRect` 当它：那是"去掉标题栏"的矩形，而 RootView
-    /// `.ignoresSafeArea(.container, edges: .top)`，布局压根从 contentView 顶边起算——
-    /// 横向永远多算一圈留白，纵向的误差还会随 `app set bar off` 变号。
-    /// 报尺寸（`size.points`）、`--points` 换算、最小尺寸夹取、⌘右键拖拽与 `resize-*`
-    /// 快捷键全部踩这一块底：**只有一份，就不会有"命令行能调到鼠标够不着的地方"**。
+    /// `window.contentLayoutRect` cannot stand in for it: that is the "minus the titlebar"
+    /// rectangle, while RootView uses `.ignoresSafeArea(.container, edges: .top)` and lays out from
+    /// the very top edge of contentView - so horizontally it always counts one ring of padding too
+    /// many, and vertically the error even flips sign with `app set bar off`.
+    /// Reported sizes (`size.points`), the `--points` conversion, the minimum-size clamp,
+    /// Cmd+right-drag and the `resize-*` shortcuts all stand on this one basis: **with exactly one
+    /// definition, the command line can never reach a place the mouse cannot**.
     ///
-    /// 注意这是 pane 的**槽位**，每个 pane 内部还有 PaneChrome 的一圈 pane-gap 留白
-    /// 与终端 pane-padding，终端画布因此比槽位更小（`size.cols/rows` 由引擎量得，不由此推）
+    /// Note that this is the pane's **slot**: inside each pane there is another ring of PaneChrome
+    /// pane-gap padding plus the terminal's pane-padding, so a terminal's canvas is smaller than
+    /// its slot (`size.cols/rows` is measured by the engine, never derived from this).
     var workspaceLayoutSize: CGSize? {
         guard let base = dwindleLayoutSize else { return nil }
         let inset = 2 * (themeManager.gapsEnabled ? themeManager.paneGap : 0)
@@ -1063,12 +1221,13 @@ final class MainWindowController: BaseTerminalController {
         return size
     }
 
-    /// hover 遮挡判定（SurfaceView mouseEntered/mouseMoved 回调；spec v7 修订）：
-    /// 模型几何——更高 z 的浮动 pane、Scratchpad、面板遮罩构成遮挡。
+    /// Hover occlusion test (called from SurfaceView's mouseEntered/mouseMoved; spec v7 revision).
+    /// It works on model geometry: a floating pane with a higher z, the Scratchpad, and a panel's
+    /// dimming layer all count as occluding.
     override func surfaceIsOccluded(_ pane: PaneView,
                                     at locationInWindow: NSPoint) -> Bool {
-        if model.activePanel != nil { return true }  // 面板遮罩在最顶层
-        if model.closingPanes.contains(pane.id) { return true }  // 淡出中：悬停不再夺焦点
+        if model.activePanel != nil { return true }  // A panel's dimming layer is above everything
+        if model.closingPanes.contains(pane.id) { return true }  // Mid-fade: hover cannot focus
         if model.scratchpadVisible { return model.scratchpadSurface !== pane }
         guard !model.floating.isEmpty,
               let point = normalizedContentPoint(locationInWindow) else { return false }
@@ -1078,10 +1237,12 @@ final class MainWindowController: BaseTerminalController {
             at: point)
     }
 
-    /// 窗口坐标 → 内容区归一化 top-left（内容区 = contentView 去掉顶部状态条；
-    /// 与 RootView 浮动层 GeometryReader 的坐标系一致）。
-    /// 注意 contentView 是 NSHostingView（flipped），convert 结果已是 top-left 基准；
-    /// isFlipped 分支为防御（宿主视图更换时不静默镜像）。
+    /// Window coordinates to normalized top-left content coordinates (the content area is
+    /// contentView minus the status bar at the top, which is the same coordinate system RootView's
+    /// floating-layer GeometryReader uses).
+    /// Note that contentView is an NSHostingView, which is flipped, so the result of convert is
+    /// already top-left based; the isFlipped branch is defensive, so that swapping the host view
+    /// out does not silently mirror everything.
     func normalizedContentPoint(_ locationInWindow: NSPoint) -> CGPoint? {
         guard let content = window?.contentView else { return nil }
         let barH: CGFloat = model.barVisible ? StatusBarView.height : 0
@@ -1098,9 +1259,11 @@ final class MainWindowController: BaseTerminalController {
         return model.floating.firstIndex { $0.pane === pane }
     }
 
-    /// ⌘ 拖动 / 悬停命中判定：按浮动 pane 的矩形（含留白与边框带，自顶向下）而非 NSView 命中——
-    /// 边框带落在 PaneChrome 的留白里，NSView 命中测试到不了那里
-    /// ⌘+左键按下：命中浮动 pane 就开会话（中间 = 移动并置顶，四边/四角 = 缩放）。true = 已接管
+    /// Hit testing for a Cmd+drag or Cmd-hover: it uses the floating pane's rectangle (padding and
+    /// edge band included, walked top-down) rather than an NSView hit test - the edge band lies
+    /// inside PaneChrome's padding, where an NSView hit test cannot reach it.
+    /// On Cmd+left-down: a hit on a floating pane opens a session (the middle moves it and raises
+    /// it, the edges and corners resize it). Returns true when the event has been taken over.
     @discardableResult
     func beginFloatingDrag(with event: NSEvent) -> Bool {
         guard let hit = floatingDragHit(event) else { return false }
@@ -1110,21 +1273,26 @@ final class MainWindowController: BaseTerminalController {
         return true
     }
 
-    /// 会话内的拖动 / 抬起。返回 true = 事件已消费，false = 放行，nil = 与会话无关。
-    /// 抬起时没拖过阈值 = 纯点击：按下 + 抬起一并交给 pane 的键盘焦点视图（终端 → 引擎 PRESS/RELEASE，
-    /// ⌘+点击链接才能触发 open_url；浏览器 → WKWebView）
+    /// A drag or release inside a session. true = the event was consumed, false = pass it through,
+    /// nil = it has nothing to do with the session.
+    /// Coming up without ever passing the threshold means it was a plain click: both the down and
+    /// the up are handed to the pane's keyboard focus view (a terminal gets engine PRESS/RELEASE,
+    /// which is what makes Cmd+clicking a link fire open_url; a browser gets the WKWebView).
     func floatingSessionEvent(_ event: NSEvent) -> Bool? {
         guard let drag = floatingDrag else { return nil }
         switch event.type {
         case .leftMouseDragged:
-            // pane 已不在浮动层（按住期间 Cmd+T / 切工作区 / 移走）：会话作废
+            // The pane has left the floating layer (Cmd+T, a workspace switch or a move while the
+            // button was held): the session is void.
             guard let pane = drag.pane, let index = model.floating.firstIndex(where: { $0.pane === pane }),
                   !model.closingPanes.contains(pane.id) else {
                 floatingDrag = nil
                 resetFloatingCursor()
                 return true
             }
-            // 过阈值前的位移不能丢：跨过阈值的那一下把从按下点起的累计位移一次补上（deltaY 向下为正，窗口坐标向上为正）
+            // The movement before the threshold must not be lost: the event that crosses it
+            // applies the whole accumulated displacement from the mouse-down point at once (deltaY
+            // is positive downwards, while window coordinates are positive upwards).
             var dx = event.deltaX, dy = event.deltaY
             if !drag.moved {
                 dx = event.locationInWindow.x - drag.down.locationInWindow.x
@@ -1163,14 +1331,16 @@ final class MainWindowController: BaseTerminalController {
     }
 
     func floatingDragHit(atWindowPoint point: NSPoint) -> (index: Int, edges: FloatingPane.DragEdges)? {
-        // 面板遮罩 / scratchpad 在浮动层之上（与 surfaceIsOccluded 的遮挡顺序一致）
+        // A panel's dimming layer and the scratchpad are above the floating layer (the same
+        // occlusion order surfaceIsOccluded uses).
         guard model.activePanel == nil, !model.scratchpadVisible else { return nil }
         guard let p = normalizedContentPoint(point), let content = window?.contentView else { return nil }
         let barH: CGFloat = model.barVisible ? StatusBarView.height : 0
         let W = max(content.bounds.width, 1), H = max(content.bounds.height - barH, 1)
-        for idx in model.floating.indices.reversed() {   // 数组末位最顶
+        for idx in model.floating.indices.reversed() {   // Last array entry is topmost
             let fp = model.floating[idx]
-            guard !model.closingPanes.contains(fp.pane.id) else { continue }   // 淡出中的不再拖
+            // No dragging a pane that is fading out.
+            guard !model.closingPanes.contains(fp.pane.id) else { continue }
             if let edges = FloatingPane.dragEdges(at: p, in: fp.rect,
                                                   bandX: Self.floatingEdgeBand / W,
                                                   bandY: Self.floatingEdgeBand / H) {
@@ -1180,12 +1350,15 @@ final class MainWindowController: BaseTerminalController {
         return nil
     }
 
-    /// ⌘ 悬停光标：nil = 不在浮动 pane 上（复位）；空 = 中间（抓手）；否则对应边/角的缩放光标
+    /// The Cmd-hover cursor: nil means the pointer is not over a floating pane (reset it), an empty
+    /// set means the middle (the grab cursor), anything else the resize cursor for that edge or
+    /// corner.
     private func updateFloatingCursor(for edges: FloatingPane.DragEdges?, pane: PaneView? = nil) {
         guard let edges else { resetFloatingCursor(); return }
         let cursor: NSCursor
         if edges.isMove {
-            // 终端报告指着链接：⌘+点击会开链接，光标给链接指针而不是抓手
+            // The terminal reports the pointer is over a link: Cmd+click will open it, so show the
+            // link cursor rather than the grab cursor.
             cursor = (pane as? Ghostty.SurfaceView)?.pointerStyle == .link ? .pointingHand : .openHand
         } else {
             let position: NSCursor.FrameResizePosition = switch (edges.contains(.left), edges.contains(.right),
@@ -1209,25 +1382,29 @@ final class MainWindowController: BaseTerminalController {
         guard floatingCursorActive else { return }
         floatingCursorActive = false
         NSCursor.arrow.set()
-        window?.resetCursorRects()   // 让终端 / 网页视图按自己的规则重设光标
+        window?.resetCursorRects()   // Let the terminal and web views set their own cursor again
     }
 
-    /// ⌘+左键拖动浮动 pane（deltaY 向下为正 = SwiftUI y 正方向）
+    /// Cmd+left-drag on a floating pane (deltaY is positive downwards, which matches SwiftUI's
+    /// positive y direction)
     private func moveFloating(at index: Int, dx: CGFloat, dy: CGFloat) {
         guard let content = window?.contentView, model.floating.indices.contains(index) else { return }
-        let barH: CGFloat = model.barVisible ? StatusBarView.height : 0   // 纵向分母与浮动层几何/缩放一致
+        // The vertical divisor is the same one the floating layer's geometry and resizing use.
+        let barH: CGFloat = model.barVisible ? StatusBarView.height : 0
         var fp = model.floating[index]
         fp.rect.origin.x += dx / max(content.bounds.width, 1)
         fp.rect.origin.y += dy / max(content.bounds.height - barH, 1)
         model.floating[index] = fp.clamped()
     }
 
-    /// ⌘+右键拖动：从右下角缩放（Hyprland 语义，任意位置按下）
+    /// Cmd+right-drag: resize from the bottom-right corner (Hyprland's semantics, from a mouse-down
+    /// anywhere in the pane)
     private func resizeFloating(at index: Int, dx: CGFloat, dy: CGFloat) {
         resizeFloating(at: index, edges: [.right, .bottom], dx: dx, dy: dy)
     }
 
-    /// ⌘+左键在边框带 / 角上拖动：被拖的边跟随指针，对边不动
+    /// Cmd+left-drag on an edge band or a corner: the dragged edge follows the pointer and the
+    /// opposite edge stays put
     private func resizeFloating(at index: Int, edges: FloatingPane.DragEdges, dx: CGFloat, dy: CGFloat) {
         guard let content = window?.contentView, model.floating.indices.contains(index) else { return }
         let barH: CGFloat = model.barVisible ? StatusBarView.height : 0
@@ -1237,7 +1414,7 @@ final class MainWindowController: BaseTerminalController {
             dy: dy / max(content.bounds.height - barH, 1))
     }
 
-    /// 置顶（数组末位 = 最顶）
+    /// Raise to the top (last array entry = topmost)
     private func raiseFloating(at index: Int) -> Int {
         guard index != model.floating.count - 1 else { return index }
         let fp = model.floating.remove(at: index)
@@ -1245,7 +1422,7 @@ final class MainWindowController: BaseTerminalController {
         return model.floating.count - 1
     }
 
-    // MARK: Scratchpad（spec §4.1）
+    // MARK: Scratchpad (spec §4.1)
 
     private func toggleScratchpad() {
         if model.scratchpadVisible {
@@ -1262,14 +1439,15 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    // MARK: 非原生全屏（精简版，spec §5.1 Ctrl+Cmd+F）
-    // 按窗口：各自的 savedFrame，进程级的 presentationOptions 交给 AppSession 记账
-    // （A 退出全屏时 B 还全屏 → 菜单栏不能放回来；关掉全屏中的屏幕只还它拿过的那一份）
+    // MARK: Non-native fullscreen (the simple kind, spec §5.1 Ctrl+Cmd+F)
+    // Per window: each has its own savedFrame, and the process-level presentationOptions are
+    // accounted for by AppSession (when A leaves fullscreen while B is still fullscreen the menu
+    // bar must not come back; closing a fullscreen screen returns only the share it took).
 
-    /// 本屏幕退出全屏后要恢复的 frame（nil = 不在全屏）
+    /// The frame this screen restores to when it leaves fullscreen (nil = not fullscreen)
     private(set) var savedFrame: NSRect?
 
-    /// 本屏幕是否处于非原生全屏
+    /// Whether this screen is in non-native fullscreen
     var isSimpleFullscreen: Bool { savedFrame != nil }
 
     func toggleSimpleFullscreen() {
@@ -1286,13 +1464,17 @@ final class MainWindowController: BaseTerminalController {
         session.sessionStore.scheduleSave()
     }
 
-    /// 显示器热插拔 / 分辨率变化后重新贴合（spec v9 §3.5；由 `AppSession` 防抖后逐屏调用）：
-    /// 目标显示器没了就用当前所在屏（AppKit 已经把窗口挪过去了），全屏窗口重贴满新屏。
-    /// 绝不因为解析失败而动布局——位置可以将就，内容不能丢
+    /// Refit after a display hot-plug or a resolution change (spec v9 §3.5; `AppSession` calls it
+    /// per screen after the debounce).
+    /// If the target display is gone, use whichever display the window is on now - AppKit has
+    /// already moved it - and a fullscreen window refills the new display.
+    /// The layout is never touched because something failed to resolve: the position can make do,
+    /// the content cannot be lost.
     func reflowForScreenChange() {
         guard !isClosed, let window, let screen = window.screen ?? NSScreen.main else { return }
         if isSimpleFullscreen {
-            // 退出全屏后要恢复的 frame 也得收进新屏，否则一退全屏就跑到屏幕外
+            // The frame to restore on leaving fullscreen has to be constrained into the new
+            // display as well, or leaving fullscreen lands off-screen.
             savedFrame = SessionStore.constrain(savedFrame ?? window.frame, into: screen.visibleFrame)
             if window.frame != screen.frame { window.setFrame(screen.frame, display: true) }
             return
@@ -1302,7 +1484,7 @@ final class MainWindowController: BaseTerminalController {
         if fitted != window.frame { window.setFrame(fitted, display: true) }
     }
 
-    // MARK: 浮动面板（Walker 风格）
+    // MARK: Overlay panels (Walker style)
 
     func openPanel(_ panel: OverlayPanel, selection: Int = 0) {
         if panel == .keybindings {
@@ -1315,18 +1497,20 @@ final class MainWindowController: BaseTerminalController {
     private var panelItemCount: Int {
         switch model.activePanel {
         case .themes: themeManager.themes.count
-        case .backgrounds: themeManager.backgroundChoices.count + 1  // 末位 = 选择图片…
+        // The last entry in the backgrounds panel is "choose an image".
+        case .backgrounds: themeManager.backgroundChoices.count + 1
         case .menu: MenuEntry.allCases.count
         case .keybindings, nil: 0
         }
     }
 
-    /// 上下键步长：背景面板是网格（3 列）——上下按行移动，其余面板按 1
+    /// The up/down step: the backgrounds panel is a grid (3 columns), so up and down move by a row;
+    /// every other panel moves by 1.
     private var panelRowStep: Int {
         model.activePanel == .backgrounds ? OverlayPanelView.backgroundsColumns : 1
     }
 
-    /// 面板键盘导航；返回 true = 已消费
+    /// Keyboard navigation inside a panel; true means the event was consumed
     private func handlePanelKey(_ event: NSEvent) -> Bool {
         switch KeybindingMap.normalizedKey(for: event) {
         case "escape":
@@ -1365,10 +1549,11 @@ final class MainWindowController: BaseTerminalController {
             if index < themeManager.backgroundChoices.count {
                 themeManager.selectBackground(index)
             } else {
-                pickUserBackground()  // 末位入口：系统文件选择器
+                pickUserBackground()  // The last entry: the system file picker
             }
         case .menu:
-            // 每屏列数：循环并保持菜单打开（便于连按）
+            // Visible columns per screen: cycle and keep the menu open, so it can be pressed
+            // repeatedly.
             if MenuEntry(rawValue: index) == .visibleColumns {
                 cycleVisibleColumns()
                 return
@@ -1386,16 +1571,18 @@ final class MainWindowController: BaseTerminalController {
             case .keybindings: perform(.keybindingHelp)
             case .settings: openSettingsFile()
             case .about: NSApp.orderFrontStandardAboutPanel(nil)
-            case .visibleColumns, nil: break  // visibleColumns 已在上方处理
+            case .visibleColumns, nil: break  // visibleColumns was handled above
             }
         case .keybindings, nil:
             model.activePanel = nil
         }
     }
 
-    /// 设置（Cmd+, / 菜单）：打开 QuickTerm config.toml（不存在则先写模板），
-    /// 若存在 ~/.config/ghostty/config 一并打开（配置链第 2 层，用户常改）
-    /// 自选背景：NSOpenPanel 选图 → 拷入 ~/.config/quickterm/backgrounds 并选中
+    /// Settings (Cmd+, or the menu): open QuickTerm's config.toml, writing the template first if it
+    /// does not exist, and open ~/.config/ghostty/config alongside it when that exists (layer 2 of
+    /// the config chain, which users edit often).
+    /// Custom background: pick an image with NSOpenPanel, copy it into
+    /// ~/.config/quickterm/backgrounds and select it.
     private func pickUserBackground() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
@@ -1409,7 +1596,8 @@ final class MainWindowController: BaseTerminalController {
 
     private func openSettingsFile() {
         let url = ConfigStore.configURL
-        ConfigStore.ensureTemplateKeys()  // 打开前补全缺失键，用户看到的是完整清单
+        // Fill in the missing keys before opening, so the user sees the complete list.
+        ConfigStore.ensureTemplateKeys()
         if !FileManager.default.fileExists(atPath: url.path) {
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -1423,24 +1611,26 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    // MARK: 工作区（spec §5.2）
+    // MARK: Workspaces (spec §5.2)
 
     func switchWorkspace(_ index: Int) {
         flushPendingCloses()
         model.appearingPane = nil
         guard index != model.activeIndex else { return }
-        model.switchTo(index)  // 值语义切换：瞬时、无动画（忠实 Omarchy）
+        // A value-semantics switch: instant, no animation (faithful to Omarchy).
+        model.switchTo(index)
         if let focused = focusedPane {
             requestFocus(to: focused)
         }
     }
 
-    /// 把焦点 pane 移到目标工作区并跟随（Cmd+Shift+数字）；插入遵循目标工作区布局
+    /// Move the focused pane to the target workspace and follow it (Cmd+Shift+number); the insert
+    /// follows the target workspace's own layout.
     func moveFocusedPane(to index: Int) {
         guard model.layouts.indices.contains(index), index != model.activeIndex,
               let focused = focusedPane else { return }
 
-        // 浮动 pane：连浮动状态一起搬去目标工作区
+        // A floating pane moves to the target workspace with its floating state intact.
         if let idx = model.floating.firstIndex(where: { $0.pane === focused }) {
             let fp = model.floating.remove(at: idx)
             model.floatings[index].append(fp)
@@ -1449,7 +1639,7 @@ final class MainWindowController: BaseTerminalController {
             return
         }
 
-        // 先算目标（失败不动源）
+        // Compute the destination first, so a failure leaves the source untouched.
         let newTarget: WorkspaceLayout
         switch model.layouts[index] {
         case .scrolling(let strip):
@@ -1476,7 +1666,7 @@ final class MainWindowController: BaseTerminalController {
         requestFocus(to: focused)
     }
 
-    // MARK: 布局分派的焦点/换位/调整
+    // MARK: Focus, swapping and resizing, dispatched per layout
 
     private func moveFocus(_ direction: ScrollingStrip.Direction) {
         guard let focused = focusedPane else { return }
@@ -1509,11 +1699,12 @@ final class MainWindowController: BaseTerminalController {
         guard let focused = focusedPane else { return }
         switch model.layout {
         case .dwindle:
-            // 与 ⌘右键拖拽、控制面 `pane resize --dir` 同一条路径（步长不同而已）
+            // The same path as Cmd+right-drag and the control plane's `pane resize --dir`, only
+            // the step size differs.
             controlResizeSplit(focused, workspace: model.activeIndex,
                                points: precise ? 10 : 100, direction: direction.spatial)
         case .scrolling(let strip):
-            // 列宽仅横向可调（spec §4.2-bis：↑/↓ 无操作）
+            // Column width is horizontal only (spec §4.2-bis: up and down do nothing).
             switch direction {
             case .left:
                 model.layout = .scrolling(strip.resizingWidth(of: focused, delta: -ScrollingStrip.widthStep))
@@ -1538,11 +1729,12 @@ final class MainWindowController: BaseTerminalController {
         if let target { requestFocus(to: target, from: focused) }
     }
 
-    // MARK: Surface 生命周期
+    // MARK: Surface lifecycle
 
-    /// 文件管理器 pane 的构造（**还没插进布局**）：`perform(.fileManager)` 与控制面的
-    /// `pane new --kind file-manager` 共用这一份——cwd 文件、登录 shell 包装、
-    /// `closesOnChildExit` 这几件事各写一份必然漂移
+    /// Construct a file manager pane **without inserting it into a layout**:
+    /// `perform(.fileManager)` and the control plane's `pane new --kind file-manager` share this
+    /// one implementation - the cwd file, the login shell wrapper and `closesOnChildExit` would
+    /// inevitably drift apart if each site wrote its own.
     func makeFileManagerPane(startDirectory: String)
         -> (pane: Ghostty.SurfaceView, launch: FileManagerLaunch) {
         let cwdFile = NSTemporaryDirectory() + "quickterm-fm-" + UUID().uuidString
@@ -1550,20 +1742,24 @@ final class MainWindowController: BaseTerminalController {
                                             startDirectory: startDirectory, cwdFile: cwdFile)
         let pane = newSurface(workingDirectory: startDirectory, command: launch.command,
                               environment: launch.environment)
-        pane.pwd = startDirectory      // yazi 不发 OSC 7：种入起始目录，Cmd+Return / 再开文件管理器都能继承
-        pane.closesOnChildExit = true  // 退出即关（引擎对带 command 的 surface 不自行 close）
+        // yazi emits no OSC 7, so seed the start directory: Cmd+Return and a second file manager
+        // both inherit it from here.
+        pane.pwd = startDirectory
+        // Quitting closes it - the engine does not close a surface that was given a command.
+        pane.closesOnChildExit = true
         return (pane, launch)
     }
 
-    /// 新建 surface；继承来源 pane 的当前目录（spec §4.1）
+    /// Create a new surface, inheriting the source pane's current directory (spec §4.1)
     func newSurface(inheritingFrom source: PaneView?) -> Ghostty.SurfaceView {
         newSurface(workingDirectory: source?.workingDirectory)
     }
 
-    /// 焦点是浏览器 pane 时的快捷引用（web-* 动作）
+    /// Shorthand for when the focus is on a browser pane (used by the web-* actions)
     private var browserPane: BrowserPaneView? { focusedPane as? BrowserPaneView }
 
-    /// 新建浏览器 pane：插进活动布局并聚焦（页面里 target=_blank / window.open 也走这里）
+    /// Create a browser pane: insert it into the active layout and focus it (a page's target=_blank
+    /// and window.open come through here too).
     @discardableResult
     override func openBrowserPane(url: URL, from: PaneView?) -> BrowserPaneView? {
         let pane = BrowserPaneView(url: url)
@@ -1576,25 +1772,30 @@ final class MainWindowController: BaseTerminalController {
         closePane(pane, confirmIfNeeded: false)
     }
 
-    /// 终端 ⌘+点击的 http(s) 链接：当前工作区已有浏览器 pane → 最近激活的那个里开新标签；没有 → 在终端旁新开一个。
-    /// 其它 scheme（mailto / ssh / 文件…）与 link-opener = system 时不接管，引擎走系统默认应用
+    /// An http(s) link Cmd+clicked in a terminal: if the current workspace already has a browser
+    /// pane, open a new tab in the most recently activated one; if not, open a new pane next to the
+    /// terminal.
+    /// Other schemes (mailto, ssh, file, ...) and link-opener = system are not taken over, and the
+    /// engine hands them to the system default application.
     override func openLink(_ url: URL, from: PaneView?) -> Bool {
         guard linkOpener.lowercased() != "system",
               let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else { return false }
-        // 从 Scratchpad 点的链接：先收起 Scratchpad，否则浏览器 pane 在遮罩下面、焦点也被它挡着
+        // A link clicked from the Scratchpad: dismiss the Scratchpad first, otherwise the browser
+        // pane sits under its dimming layer and the focus is blocked by it.
         if let from, from === model.scratchpadSurface, model.scratchpadVisible { model.scratchpadVisible = false }
         if let browser = mostRecentBrowserPane() {
-            // 别的 pane zoom 时浏览器 pane 没挂载（window == nil），标签会加在看不见的地方、焦点也交不过去
+            // While another pane is zoomed the browser pane is not mounted (window == nil), so the
+            // tab would be added somewhere invisible and focus could not be handed over.
             if browser.window == nil { clearZoom() }
             browser.openLink(url)
             requestFocus(to: browser, from: from)
         } else {
-            openBrowserPane(url: url, from: from)   // insertNewPane 自己会解除 zoom
+            openBrowserPane(url: url, from: from)   // insertNewPane clears the zoom itself
         }
         return true
     }
 
-    /// 解除当前布局的 zoom（有的话）
+    /// Clear the current layout's zoom, if there is one
     func clearZoom() {
         switch model.layout {
         case .dwindle(let tree):
@@ -1608,33 +1809,38 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 最近激活的浏览器 pane（全部工作区，含浮动；淡出中的不算）——扩展宿主用
+    /// The most recently activated browser pane across every workspace, floating included, ignoring
+    /// ones that are fading out - used by the extension host.
     func mostRecentBrowserPaneAnywhere() -> BrowserPaneView? {
         browserPanes.filter { !model.closingPanes.contains($0.id) }
             .max { $0.lastActivatedAt < $1.lastActivatedAt }
     }
 
-    /// 当前工作区（平铺 + 浮动）里最近激活过的浏览器 pane；淡出中的不算
+    /// The most recently activated browser pane in the current workspace (tiled plus floating),
+    /// ignoring ones that are fading out
     func mostRecentBrowserPane() -> BrowserPaneView? {
         paneList.compactMap { $0 as? BrowserPaneView }
             .filter { !model.closingPanes.contains($0.id) }
             .max { $0.lastActivatedAt < $1.lastActivatedAt }
     }
 
-    /// 控制面新建浏览器 pane 时也要套（`controlMakeBrowserPane`）：漏了底色就与主题对不上
+    /// The control plane has to apply this too when it creates a browser pane
+    /// (`controlMakeBrowserPane`): skip it and the background color does not match the theme.
     func applyBrowserTheme(_ pane: BrowserPaneView) {
         pane.applyTheme(background: NSColor(themeManager.background), foreground: NSColor(themeManager.foreground))
     }
 
-    /// 指定目录（与可选命令 / 额外环境）新建 surface。带 command 时引擎强制 wait-after-command，
-    /// 调用方需自行处理退出（见 SurfaceView.closesOnChildExit）
+    /// Create a surface in a given directory, optionally with a command and extra environment. With
+    /// a command the engine forces wait-after-command, so the caller has to handle the exit itself
+    /// (see SurfaceView.closesOnChildExit).
     func newSurface(workingDirectory: String?, command: String? = nil,
                     environment: [String: String] = [:]) -> Ghostty.SurfaceView {
         var config = Ghostty.SurfaceConfiguration()
         config.workingDirectory = workingDirectory
         config.command = command
-        // 控制面自举：QUICKTERM_SOCKET / PANE / SCREEN / WORKSPACE / TOKEN。
-        // uuid 必须先定好再注入——PANE 就是这个 uuid（`-t @self` 靠它）
+        // Control-plane bootstrap: QUICKTERM_SOCKET / PANE / SCREEN / WORKSPACE / TOKEN.
+        // The uuid has to be settled before the injection - PANE is that very uuid, and `-t @self`
+        // relies on it.
         let paneID = UUID()
         config.environmentVariables = ControlEnvironment.inject(
             into: environment, paneID: paneID,
@@ -1642,21 +1848,29 @@ final class MainWindowController: BaseTerminalController {
         return Ghostty.SurfaceView(ghostty.app!, baseConfig: config, uuid: paneID)
     }
 
-    /// 把新 pane 插进活动布局（scrolling：锚点右侧新列；dwindle：按锚点空间几何分裂 + 局部进场动效）并聚焦。
-    /// 锚点默认为焦点 pane；文件管理器退出"原位开终端"时锚点是即将关闭的那个 pane。
-    /// 返回是否真的插进了布局（dwindle 树非空却找不到可用锚点时为 false，调用方不得再引用该 pane）
-    /// 控制面（`Sources/Control`）也走这一条：重新实现它的不变量（列宽因子、dwindle 空间几何、
-    /// 局部进场动效、焦点交接）必然出 bug，所以从 private 放宽到 internal
+    /// Insert a new pane into the active layout and focus it (scrolling: a new column right of the
+    /// anchor; dwindle: a split by the anchor's spatial geometry plus the local entry animation).
+    /// The anchor defaults to the focused pane; when a file manager exits and we "open a terminal
+    /// in its place", the anchor is the pane that is about to close.
+    /// Returns whether the pane really made it into the layout (false when the dwindle tree is
+    /// non-empty but no usable anchor can be found, in which case the caller must not reference the
+    /// pane any further).
+    /// The control plane (`Sources/Control`) goes through this too: reimplementing its invariants
+    /// (the column width factor, dwindle's spatial geometry, the local entry animation, the focus
+    /// handover) would inevitably introduce bugs, which is why this was widened from private to
+    /// internal.
     @discardableResult
     func insertNewPane(_ pane: PaneView, anchor: PaneView? = nil) -> Bool {
         let anchor = anchor ?? focusedPane ?? paneList.first
         switch model.layout {
         case .scrolling(let strip):
-            // 焦点列右侧插入新列（截图 3 语义），宽度按"每屏可见列数"
+            // Insert a new column to the right of the focused one (the semantics of screenshot 3),
+            // its width taken from "visible columns per screen".
             model.layout = .scrolling(strip.insertingColumnRight(
                 of: anchor, pane: pane, widthFactor: columnFactor))
         case .dwindle(let tree):
-            // 锚点不在树里（如焦点是浮动 pane）→ 退回树的首叶
+            // The anchor is not in the tree (the focus is on a floating pane, say): fall back to
+            // the tree's first leaf.
             let target = anchor.flatMap { tree.root?.node(view: $0) != nil ? $0 : nil } ?? tree.root?.leaves().first
             if tree.isEmpty {
                 model.layout = .dwindle(SplitTree(view: pane))
@@ -1664,9 +1878,11 @@ final class MainWindowController: BaseTerminalController {
                       let t = try? tree.inserting(
                         view: pane, at: focused,
                         direction: tree.dwindleDirection(for: focused, in: dwindleLayoutSize)) {
-                // 局部动效（TerminalSplitTreeView 读 appearingPane）：原 pane 从占满收缩到
-                // ratio、新 pane 渐显；不整树重建。连按（<0.35s）第二次不播——父级在途动画
-                // 会因子树换身份被丢弃而跳变。动画结束后清标记。
+                // The local animation (TerminalSplitTreeView reads appearingPane): the original
+                // pane shrinks from full size down to its ratio while the new one fades in, with no
+                // rebuild of the whole tree. A second press in quick succession (under 0.35s) does
+                // not animate - an in-flight parent animation gets dropped when the subtree changes
+                // identity, and the result jumps. The marker is cleared when the animation ends.
                 let now = Date()
                 let animate = lastSplitAnimationAt.map { now.timeIntervalSince($0) > 0.35 } ?? true
                 model.appearingPane = animate ? pane.id : nil
@@ -1683,8 +1899,10 @@ final class MainWindowController: BaseTerminalController {
         return true
     }
 
-    /// 文件管理器 pane 结束（子进程退出或引擎 close）：目录有变 → 先在旁边开终端并作为焦点接班人，
-    /// 再关本 pane（关闭动效把空间交给新终端）。未登记的 pane 返回 false。
+    /// A file manager pane has finished (its child process exited, or the engine closed it): if the
+    /// directory changed, open a terminal next to it first and make that the focus successor, then
+    /// close this pane (the close animation hands the space over to the new terminal).
+    /// Returns false for a pane that was never registered.
     private func finishFileManager(_ view: PaneView) -> Bool {
         guard let session = fileManagerSessions.removeValue(forKey: ObjectIdentifier(view)) else { return false }
         var replacement: PaneView?
@@ -1700,10 +1918,13 @@ final class MainWindowController: BaseTerminalController {
 
     @objc private func ghosttyChildExited(_ notification: Foundation.Notification) {
         guard let view = notification.object as? PaneView else { return }
-        guard owns(view) else { return }   // 多屏幕：object: nil 注册，别的窗口的 pane 不管
+        // Multi-screen: registered with object: nil, so ignore panes owned by other windows.
+        guard owns(view) else { return }
         guard paneList.contains(view) else {
-            // 非活动工作区里退出（切走后 pkill / 崩溃）：直接从所在工作区移除（本通知已在引擎回调栈外）
-            removeFromAnyWorkspace(view)   // 内部清会话与临时文件
+            // It exited in an inactive workspace (a pkill or a crash after switching away): remove
+            // it straight from whichever workspace it is in - this notification is already outside
+            // the engine's callback stack.
+            removeFromAnyWorkspace(view)   // Clears the session and the temp file internally
             return
         }
         if !finishFileManager(view) {
@@ -1711,14 +1932,18 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 测试/扩展用：登记一个文件管理器会话（退出时按会话决定是否原位开终端）
+    /// For tests and extensions: register a file manager session (on exit, the session decides
+    /// whether a terminal opens in its place).
     func registerFileManagerSession(_ view: PaneView, _ session: FileManagerLaunch.Session) {
         fileManagerSessions[ObjectIdentifier(view)] = session
     }
 
-    /// 把会话**交出去**（不清理临时文件）：pane 搬到另一块屏幕时会话要跟着走，
-    /// 否则新东家不知道它是文件管理器 pane——关闭确认会回来、退出也不再原位开终端。
-    /// `forgetFileManagerSession` 是"关闭"语义（会删 cwd 文件），这里刻意不复用
+    /// **Hand the session over** without cleaning up the temp file: when a pane moves to another
+    /// screen the session has to travel with it, otherwise its new owner does not know it is a file
+    /// manager pane - the close confirmation comes back and quitting no longer opens a terminal in
+    /// its place.
+    /// `forgetFileManagerSession` means "close" (it deletes the cwd file), which is deliberately
+    /// not reused here.
     func controlTakeFileManagerSession(_ view: PaneView) -> FileManagerLaunch.Session? {
         fileManagerSessions.removeValue(forKey: ObjectIdentifier(view))
     }
@@ -1729,16 +1954,23 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 关闭一个 pane（scrolling 空列删除；dwindle 兄弟回收）；全部工作区皆空才关窗。
-    /// successor：调用方指定的焦点接班人（如"原位开终端"的新 pane），nil 则按布局规则算
+    /// Close a pane (scrolling drops an emptied column, dwindle reclaims the sibling); the window
+    /// only closes once every workspace is empty.
+    /// `successor`: a focus successor named by the caller (the new pane from "open a terminal in
+    /// its place", for instance); with nil it is computed from the layout rules.
     func closePane(_ view: PaneView, confirmIfNeeded: Bool = true, animated: Bool = true,
                    successor: PaneView? = nil) {
         guard paneList.contains(view), !model.closingPanes.contains(view.id) else { return }
-        // 文件管理器 pane 只是个查看器：有子进程也不弹"仍有进程在运行"的确认
+        // A file manager pane is just a viewer: even with a child process it does not raise the
+        // "a process is still running" confirmation.
         if confirmIfNeeded, view.wantsConfirmClose, fileManagerSessions[ObjectIdentifier(view)] == nil {
-            // 确认对话框异步弹出：本方法可能正处在引擎 close_surface 回调栈内（键绑定 → Zig keyCallback），
-            // 模态嵌套 run loop 期间若子进程退出会二次回调并同步释放 surface，返回后引擎栈仍触碰它（UAF）。
-            // 先让引擎栈退出，再进模态；弹出时 pane 可能已被别的路径关掉，重新校验。
+            // The confirmation dialog is raised asynchronously: this method can be running inside
+            // the engine's close_surface callback stack (a key binding into Zig's keyCallback), and
+            // if the child process exits during the modal's nested run loop the callback fires a
+            // second time and releases the surface synchronously, while the engine's stack still
+            // touches it after returning - a use-after-free.
+            // So let the engine's stack unwind first, then go modal. By the time the dialog appears
+            // the pane may have been closed by another path, so revalidate.
             DispatchQueue.main.async { [weak self, weak view] in
                 guard let self, let view, self.paneList.contains(view) else { return }
                 let alert = NSAlert()
@@ -1755,16 +1987,20 @@ final class MainWindowController: BaseTerminalController {
         beginClose(view, animated: animated, successor: successor)
     }
 
-    /// 关闭分两段（与创建动效对称）：先把焦点交给接班人并标记淡出——视图层播放收拢/渐隐——
-    /// 动效到点后 finishClose 才真正移除并释放 surface。窗口不可见或动效关闭时直接移除。
+    /// Closing happens in two stages, mirroring the create animation: first hand focus to the
+    /// successor and mark the pane as fading (the view layer plays the collapse and fade), and only
+    /// when the animation elapses does finishClose really remove it and release the surface.
+    /// With the window invisible, or the animation disabled, it is removed immediately.
     private func beginClose(_ view: PaneView, animated: Bool, successor explicit: PaneView? = nil) {
         guard animated, closeAnimationEnabled, window?.isVisible == true else {
             removePane(view, successor: explicit)
             return
         }
         let successor = explicit ?? closeSuccessor(of: view)
-        // 焦点交接是异步的：同一轮里前一个关闭刚把焦点意图指向本 pane（pendingFocusTarget）
-        // 时 focused 还是 false，也要把焦点接着往下传，别让意图落在一个淡出中的 pane 上
+        // Focus handover is asynchronous: when a close earlier in the same round has just pointed
+        // the focus intent at this pane (pendingFocusTarget), `focused` is still false - we still
+        // have to pass the focus further along, so the intent does not come to rest on a pane that
+        // is fading out.
         if paneHoldsFocus(view) || pendingFocusTarget === view, let next = successor ?? firstLivePane(excluding: view) {
             requestFocus(to: next, from: view)
         }
@@ -1780,34 +2016,40 @@ final class MainWindowController: BaseTerminalController {
     private func finishClose(_ view: PaneView) {
         guard let pending = pendingCloses.removeValue(forKey: ObjectIdentifier(view)) else { return }
         model.closingPanes.remove(view.id)
-        guard paneList.contains(view) else { return }   // 已被别的路径移除
+        guard paneList.contains(view) else { return }   // Already removed by another path
         let wasFocused = paneHoldsFocus(view)
-        removeFromActiveLayout(view)  // 放弃引用 → SurfaceView.deinit 释放 surface
-        // 焦点通常在 beginClose 已交出；仍在关闭方（如接班人期间被关掉）时再兜一次
+        // Dropping the reference lets SurfaceView.deinit release the surface.
+        removeFromActiveLayout(view)
+        // Focus has usually been handed over in beginClose; if it is still on the closing pane (the
+        // successor was itself closed in the meantime) catch it once more here.
         if wasFocused, let next = pending.successor.flatMap({ paneList.contains($0) ? $0 : nil })
             ?? firstLivePane(excluding: view) {
             requestFocus(to: next)
         }
     }
 
-    /// pane 是否持有焦点：标志或真相（地址栏字段编辑器是 FR 时标志可能落后于真相）
+    /// Whether the pane holds focus: either the flag or the ground truth (while the address bar's
+    /// field editor is first responder, the flag can lag behind the truth).
     private func paneHoldsFocus(_ view: PaneView) -> Bool {
         view.focused || (window.map { view.holdsFirstResponder(of: $0) } ?? false)
     }
 
-    /// 兜底焦点：第一个不在淡出中的 pane
+    /// Fallback focus: the first pane that is not fading out
     private func firstLivePane(excluding view: PaneView) -> PaneView? {
         paneList.first { $0 !== view && !model.closingPanes.contains($0.id) }
     }
 
-    /// 淡出中的 pane 立即移除：布局操作 / 工作区切换 / 存档之前调用，保证它们看到的是真实布局
+    /// Remove fading panes immediately: called before layout operations, workspace switches and
+    /// archiving, so that all of them see the real layout.
     func flushPendingCloses() {
         for pending in Array(pendingCloses.values) { finishClose(pending.view) }
     }
 
-    /// 关闭 view 后应接管焦点的 pane（scrolling：左邻优先；dwindle：兄弟子树最近叶；浮动：无）。
-    /// 在"其他淡出中的 pane 已移除"的布局上算：子进程同时退出等并发关闭（不经 perform，不 flush）
-    /// 不能把焦点交给一个正在消失的 pane。
+    /// The pane that should take focus once `view` closes (scrolling: the left neighbour first;
+    /// dwindle: the nearest leaf of the sibling subtree; floating: none).
+    /// It is computed on a layout with "every other fading pane already removed": concurrent
+    /// closes, such as several child processes exiting at once, do not go through `perform` and
+    /// therefore do not flush, and focus must not be handed to a pane that is on its way out.
     private func closeSuccessor(of view: PaneView) -> PaneView? {
         let fading = paneList.filter { $0 !== view && model.closingPanes.contains($0.id) }
         switch model.layout {
@@ -1819,27 +2061,34 @@ final class MainWindowController: BaseTerminalController {
                 ?? strip.focusTarget(from: view, direction: .down)
         case .dwindle(var tree):
             for p in fading { if let n = tree.root?.node(view: p) { tree = tree.removing(n) } }
-            // Hyprland dwindle 语义：焦点交给接管空间的兄弟子树中最近的 pane（下一个，否则上一个）
+            // Hyprland's dwindle semantics: focus goes to the nearest pane in the sibling subtree
+            // that takes over the space (the next one, otherwise the previous one).
             return tree.closeSuccessor(of: view)
         }
     }
 
-    /// 同步移除（无动效路径）
+    /// Synchronous removal (the path without an animation)
     private func removePane(_ view: PaneView, successor explicit: PaneView? = nil) {
         let wasFocused = paneHoldsFocus(view)
-        let successor = explicit ?? closeSuccessor(of: view)   // 删除前算：删完兄弟关系就没了
-        removeFromActiveLayout(view)  // 放弃引用 → SurfaceView.deinit 释放 surface
-        // 最后一个 pane 关闭后窗口保留（RootView 显示"新建终端"提示），不退出程序；
-        // 退出只由 Cmd+Q / 菜单触发（AppDelegate.applicationShouldTerminate 决定是否确认）
-        // paneList 含浮动层：平铺层清空但还有浮动 pane 时，焦点也要有去处
+        // Computed before the removal: afterwards the sibling relationship is gone.
+        let successor = explicit ?? closeSuccessor(of: view)
+        // Dropping the reference lets SurfaceView.deinit release the surface.
+        removeFromActiveLayout(view)
+        // The window stays after the last pane closes (RootView shows the "new terminal" hint) and
+        // the app does not quit; quitting is only triggered by Cmd+Q or the menu (and
+        // AppDelegate.applicationShouldTerminate decides whether to confirm).
+        // paneList includes the floating layer: when the tiled layer empties out but floating panes
+        // remain, focus still needs somewhere to go.
         if !paneList.isEmpty, wasFocused, let next = successor ?? paneList.first {
             requestFocus(to: next)
         }
     }
 
-    /// 在任一工作区里找到并移除（活动工作区用 removeFromActiveLayout，那条路径还管焦点）。
-    /// **这是"关闭"语义**：会跑 pane 级收尾（浏览器 paneWillClose、文件管理器会话清理）。
-    /// 搬家用 `controlDetach(_:)`，那条路径一个收尾都不能跑
+    /// Find the pane in any workspace and remove it (for the active workspace use
+    /// removeFromActiveLayout, which also handles focus).
+    /// **This means "close"**: it runs the per-pane teardown (a browser's paneWillClose, cleaning
+    /// up the file manager session).
+    /// For a move use `controlDetach(_:)`, which must not run a single one of those.
     func removeFromAnyWorkspace(_ view: PaneView) {
         ControlUndo.invalidate()
         forgetFileManagerSession(view)
@@ -1864,14 +2113,16 @@ final class MainWindowController: BaseTerminalController {
         }
     }
 
-    /// 同上，只作用于活动工作区。**同样是"关闭"语义**（会跑 pane 级收尾）
+    /// As above, but only for the active workspace. **This also means "close"** and runs the
+    /// per-pane teardown.
     func removeFromActiveLayout(_ view: PaneView) {
         ControlUndo.invalidate()
         forgetFileManagerSession(view)
         (view as? BrowserPaneView)?.paneWillClose()
         if let idx = model.floating.firstIndex(where: { $0.pane === view }) {
             model.floating.remove(at: idx)
-            floatingDrag = nil        // 索引已失效（拖动途中被到点移除时不能再用）
+            // The index is stale: it must not be reused when a pane is removed mid-drag.
+            floatingDrag = nil
             resetFloatingCursor()
             if resizeTarget === view { resizeTarget = nil }
             return
@@ -1886,12 +2137,14 @@ final class MainWindowController: BaseTerminalController {
     }
 
     @objc private func ghosttyDidEqualizeSplits(_ note: Foundation.Notification) {
-        // 多屏幕：引擎以双击分隔条的那个 surface 为 object，只有它所属的窗口等分
+        // Multi-screen: the engine sends the surface whose divider was double-clicked as the
+        // object, so only the window owning it equalizes.
         guard let view = note.object as? PaneView, owns(view) else { return }
         perform(.equalize)
     }
 
-    /// 这个 pane 属于本屏幕（含非活动工作区、浮动层与 Scratchpad）
+    /// This pane belongs to this screen (inactive workspaces, the floating layer and the Scratchpad
+    /// included)
     private func owns(_ view: PaneView) -> Bool {
         model.allPanes.contains { $0 === view }
     }
@@ -1904,21 +2157,25 @@ final class MainWindowController: BaseTerminalController {
             return
         }
         guard paneList.contains(view) else {
-            // 非活动工作区里的 pane（如切走后 shell 退出）：直接从所在工作区移除，不动焦点。
-            // 异步：本方法在引擎 close_surface 回调栈内，后台 pane 没有 SwiftUI 持有，
-            // 同步放弃引用会立刻 free 仍在引擎栈上的 surface
+            // A pane in an inactive workspace (its shell exited after switching away, say): remove
+            // it straight from whatever workspace it is in, leaving focus alone.
+            // Asynchronously: this method runs inside the engine's close_surface callback stack,
+            // and a background pane is not held by SwiftUI, so dropping the reference synchronously
+            // would immediately free a surface that is still on the engine's stack.
             DispatchQueue.main.async { [weak self] in self?.removeFromAnyWorkspace(view) }
             return
         }
         let processAlive = (notification.userInfo?["process_alive"] as? Bool) ?? false
-        if finishFileManager(view) { return }   // 文件管理器：按键触发的引擎 close 路径同样处理
+        // File manager: the key-triggered engine close path is handled the same way.
+        if finishFileManager(view) { return }
         closePane(view, confirmIfNeeded: processAlive)
     }
 
-    // MARK: SwiftUI 回调（dwindle 分隔条 / 双布局拖放）
+    // MARK: SwiftUI callbacks (dwindle dividers, drag and drop in both layouts)
 
     func handleSplitOperation(_ op: TerminalSplitOperation) {
-        flushPendingCloses()   // 拖放/拖分隔条不经 perform：先落到真实布局
+        // A drop or a divider drag does not go through perform, so settle the real layout first.
+        flushPendingCloses()
         guard case .dwindle(let tree) = model.layout else { return }
         switch op {
         case .resize(let resize):
@@ -1933,14 +2190,16 @@ final class MainWindowController: BaseTerminalController {
 
     private func handleDwindleDrop(_ drop: TerminalSplitOperation.Drop,
                                    tree: SplitTree<PaneView>) {
-        // 树的算法在 SplitTree+QuickTerm.dropping：控制面的 `pane move --where` 用的是同一份，
-        // 两处各写一遍的话，拖放与命令行迟早给出不同的落点
+        // The tree algorithm lives in SplitTree+QuickTerm.dropping, and the control plane's
+        // `pane move --where` uses the very same one - written twice, drag and drop and the command
+        // line would eventually disagree about where a pane lands.
         guard let newTree = tree.dropping(drop.payload, on: drop.destination, zone: drop.zone) else { return }
         model.layout = .dwindle(newTree)
         requestFocus(to: drop.payload)
     }
 
-    /// scrolling 布局拖放（spec §4.2-bis：左右缘=插新列、上下缘=併栈、中心=交换）
+    /// Drag and drop in the scrolling layout (spec §4.2-bis: the left and right edges insert a new
+    /// column, the top and bottom edges merge into a stack, the center swaps).
     func scrollingDrop(payload: PaneView,
                        destination: PaneView,
                        zone: TerminalSplitDropZone) {
@@ -1951,7 +2210,8 @@ final class MainWindowController: BaseTerminalController {
     }
 }
 
-/// 方向词的唯一换算（控制面的 `pane resize --dir` 也用它，不再各写一份）
+/// The single conversion for direction words (the control plane's `pane resize --dir` uses it too,
+/// rather than having its own copy).
 extension ScrollingStrip.Direction {
     var spatial: SplitTree<PaneView>.Spatial.Direction {
         switch self {
@@ -1963,36 +2223,46 @@ extension ScrollingStrip.Direction {
     }
 }
 
-// MARK: - 屏幕（窗口）生命周期
+// MARK: - Screen (window) lifecycle
 
 extension MainWindowController: NSWindowDelegate {
-    /// 关闭按钮 / performClose：有活跃 pane 时按退出确认的规则问一次
+    /// The close button and performClose: with live panes, ask once using the quit confirmation's
+    /// rules.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         confirmCloseScreen()
     }
 
-    /// 控制面登记的撤销项要能被 Edit ▸ 撤销 / ⌘Z 找到：`undo:` 沿响应链走到窗口，
-    /// 窗口来问它的 delegate 要 UndoManager。没有这一条，`AppDelegate.undoManager` 里
-    /// 登记的东西永远没人能触发（Phase 1 之前它就是这么闲置着的）。
-    /// 注意焦点在终端 pane 上时 ⌘Z 由 EditMenuDelegate 交还给终端（kitty 键盘协议），
-    /// 那是刻意的——终端里的 ⌘Z 属于终端；菜单项点击则任何时候都能撤销
+    /// Undo entries registered by the control plane have to be reachable from Edit > Undo and
+    /// Cmd+Z: `undo:` travels up the responder chain to the window, and the window asks its
+    /// delegate for an UndoManager. Without this, nothing registered in `AppDelegate.undoManager`
+    /// could ever be triggered - which is exactly how it sat unused before Phase 1.
+    /// Note that while the focus is on a terminal pane, EditMenuDelegate hands Cmd+Z back to the
+    /// terminal (the kitty keyboard protocol). That is deliberate: Cmd+Z inside a terminal belongs
+    /// to the terminal. Clicking the menu item undoes at any time.
     func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
         (NSApp.delegate as? AppDelegate)?.undoManager
     }
 
-    /// key 窗口一换就按 AppSession 的账本重算进程级 presentationOptions：
-    /// AppKit 会在激活 / 窗口切换时改写它，而「有没有屏幕在全屏」只有账本知道
+    /// Whenever the key window changes, recompute the process-level presentationOptions from
+    /// AppSession's ledger: AppKit rewrites them on activation and window switches, and only the
+    /// ledger knows whether any screen is fullscreen.
     func windowDidBecomeKey(_ notification: Foundation.Notification) {
         guard !isClosed else { return }
-        session.screens.recordKeyWindow(self)   // 控制面的"当前屏幕"（应用不在前台时唯一诚实的答案）
+        // The control plane's "current screen": the only honest answer while the app is not in
+        // the foreground.
+        session.screens.recordKeyWindow(self)
         session.refreshPresentationOptions()
-        session.sessionStore.scheduleSave()   // keyWindowID 变了：下次启动焦点落在正确的屏幕上
-        // 扩展眼里的"当前窗口"是缓存值（只有 didFocusWindow 会改）：多屏幕下换了 key 窗口却不上报，
-        // 扩展会一直把消息发到另一台显示器的 pane 上——图标看起来点了没反应
+        // keyWindowID changed: the next launch has to focus the right screen.
+        session.sessionStore.scheduleSave()
+        // The "current window" as extensions see it is a cached value that only didFocusWindow
+        // updates. With several screens, changing the key window without reporting it leaves
+        // extensions sending their messages to a pane on another display - the icon looks like
+        // clicking it does nothing.
         focusedBrowserPane?.makeCurrentForExtensions()
     }
 
-    /// 窗口移动 / 缩放结束 → 存档（拖动途中不写：live resize 每帧都发通知）
+    /// The window finished moving or resizing: archive it. Nothing is written mid-drag, since a
+    /// live resize posts a notification every frame.
     func windowDidMove(_ notification: Foundation.Notification) {
         guard !isClosed else { return }
         session.sessionStore.scheduleSave()
@@ -2005,8 +2275,9 @@ extension MainWindowController: NSWindowDelegate {
 
     func windowWillClose(_ notification: Foundation.Notification) {
         teardown()
-        // 注册表条目下一轮 runloop 再摘：本方法可能处在引擎回调栈内，
-        // 同步放弃最后一个强引用会立刻 free 仍在栈上的 surface
+        // Drop the registry entry on the next runloop turn: this method can be running inside the
+        // engine's callback stack, and releasing the last strong reference synchronously would
+        // immediately free a surface that is still on that stack.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             (NSApp.delegate as? AppDelegate)?.forgetScreen(self)
@@ -2014,24 +2285,25 @@ extension MainWindowController: NSWindowDelegate {
     }
 }
 
-// MARK: - 浏览器扩展宿主（pane = 扩展眼里的窗口）
+// MARK: - Browser extension host (a pane is a window as far as extensions are concerned)
 
 extension MainWindowController: BrowserExtensionHost {
-    /// 全部工作区（含浮动层与 scratchpad）里的浏览器 pane
+    /// The browser panes across every workspace, the floating layer and the scratchpad included
     var browserPanes: [BrowserPaneView] { allPanes.compactMap { $0 as? BrowserPaneView } }
 
-    /// 本窗口里真正持 first responder 的浏览器 pane（App 级聚合宿主先问这个）
+    /// The browser pane in this window that really holds first responder (the App-level aggregating
+    /// host asks this first)
     var firstResponderBrowserPane: BrowserPaneView? {
         guard let window else { return nil }
         return browserPanes.first { $0.holdsFirstResponder(of: window) }
     }
 
-    /// 持 first responder 的浏览器 pane；没有就取最近激活的那个
+    /// The browser pane holding first responder, falling back to the most recently activated one
     var focusedBrowserPane: BrowserPaneView? {
         firstResponderBrowserPane ?? mostRecentBrowserPaneAnywhere()
     }
 
-    /// 扩展的 windows.create：在活动工作区新开一个浏览器 pane
+    /// An extension's windows.create: open a new browser pane in the active workspace
     @discardableResult
     func openBrowserWindow(url: URL?) -> BrowserPaneView? {
         openBrowserPane(url: url ?? BrowserPaneView.settings.homeURL, from: focusedPane)

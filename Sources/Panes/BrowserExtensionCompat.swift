@@ -1,48 +1,79 @@
 import Foundation
 import WebKit
 
-/// WebKit 与 Chrome 的 WebExtension 运行时差异垫片。
+/// Shims for the runtime differences between WebKit's and Chrome's WebExtension implementations.
 ///
-/// 扩展装进 store 时改写目录：后台脚本前面先跑一段 `__quickterm-compat.js`，补齐 WebKit 缺的 API、
-/// 绕开 WebKit 特有的行为差异。目前修的两件事（都有真实扩展因此完全起不来）：
+/// When an extension is installed into the store its directory is rewritten so that a
+/// `__quickterm-compat.js` runs ahead of the background script, filling in the APIs WebKit lacks and
+/// working around WebKit-specific behavior. What it currently fixes (each of these kept a real
+/// extension from starting at all):
 ///
-/// 1. `webNavigation.onHistoryStateUpdated` / `onReferenceFragmentUpdated`：WebKit 没有这两个事件，
-///    Stylish 在后台顶层直接 `addListener` → TypeError → 后台加载失败、整个扩展死掉。补成永不触发的空事件。
-/// 2. `importScripts()`：WebKit 在每个被导入脚本求值后会清空 microtask 队列（Chrome 不会）。Tampermonkey
-///    用「`await null` 之后把启动标记置 false」判断监听器是否在启动阶段注册，而它启动时 `importScripts("/test.js")`
-///    一个空文件——在 WebKit 上标记就此翻转，随后 `tabs.onUpdated.addListener` 抛错、初始化中止，popup 永远转圈。
-///    空脚本求值本来就没有任何效果，垫片里的 `importScripts` 直接跳过它们（列表在安装时扫描生成）。
+/// 1. `webNavigation.onHistoryStateUpdated` / `onReferenceFragmentUpdated`: WebKit has neither event,
+///    and Stylish calls `addListener` on them at the top level of its background -> TypeError -> the
+///    background fails to load and the whole extension is dead. Filled in as events that never fire.
+/// 2. `importScripts()`: WebKit drains the microtask queue after evaluating each imported script,
+///    which Chrome does not. Tampermonkey decides whether a listener was registered during startup by
+///    setting a startup flag to false after `await null`, and at startup it calls
+///    `importScripts("/test.js")` on an empty file - on WebKit the flag flips right there, the
+///    following `tabs.onUpdated.addListener` throws, initialization aborts, and the popup spins
+///    forever. Evaluating an empty script has no effect in the first place, so the shim's
+///    `importScripts` skips those outright (the list is produced by a scan at install time).
 ///
-/// 3. 扩展页面的 URL scheme：Chrome 下是 `chrome-extension://<id>/…`，WebKit 下是 `webkit-extension://<id>/…`。
-///    不少 Chrome 构建把 `chrome-extension:` 写死在代码里判断"这是不是我自己的页面"（Tampermonkey 的后台据此拒掉
-///    popup 的请求，popup 一片空白）。把所有 .js 里的字面量 `chrome-extension:` 改成 `webkit-extension:`——对 WebKit
-///    来说这正是"移植"时该改的那一处，且 Chrome 专属的 `chrome-extension://` URL 在 WebKit 里本来也打不开。
+/// 3. The URL scheme for extension pages: `chrome-extension://<id>/...` under Chrome,
+///    `webkit-extension://<id>/...` under WebKit. Plenty of Chrome builds hardcode
+///    `chrome-extension:` to test "is this one of my own pages" (Tampermonkey's background rejects
+///    the popup's requests on that basis, and the popup comes up blank). So every literal
+///    `chrome-extension:` in every .js is rewritten to `webkit-extension:` - for WebKit that is
+///    exactly the line a port is supposed to change, and a Chrome-only `chrome-extension://` URL
+///    would not open under WebKit anyway.
 ///
-/// 4. 嵌在网页里的扩展页面（Stylish 的侧栏是网页里一个 `webkit-extension://…/index.html` iframe）跑在网页的
-///    WebContent 进程里，从那里直接调 `tabs.*` / `windows.*` / `action.*` / `scripting.*` / `alarms.*` / `contextMenus.*` /
-///    `cookies.*`，UI 进程当成非法 IPC（"Received an invalid message WebExtensionContext_TabsQuery"）直接杀掉整个页面进程。
-///    `runtime.sendMessage` / `storage` / `i18n` / `permissions` 从那里调是允许的，于是：网页 WebView 里注入
-///    `frameScript`，把这些命名空间换成经 `runtime.sendMessage` 转给后台的代理；后台的垫片（本文件的 compat.js）收到
-///    `__quickterm_relay` 消息后代为调用、回传结果。只接受来自扩展自己 origin 的请求。
+/// 4. An extension page embedded in a web page (Stylish's sidebar is a
+///    `webkit-extension://.../index.html` iframe inside the page) runs in the page's WebContent
+///    process, and calling `tabs.*` / `windows.*` / `action.*` / `scripting.*` / `alarms.*` /
+///    `contextMenus.*` / `cookies.*` directly from there is treated by the UI process as an illegal
+///    IPC ("Received an invalid message WebExtensionContext_TabsQuery") and it kills the entire page
+///    process. `runtime.sendMessage` / `storage` / `i18n` / `permissions` are allowed from there, so:
+///    the web WebView gets `frameScript` injected, which replaces those namespaces with proxies that
+///    relay through `runtime.sendMessage` to the background; the background's shim (the compat.js in
+///    this file) receives the `__quickterm_relay` message, makes the call on their behalf and sends
+///    the result back. Only requests from the extension's own origin are accepted.
 ///
-/// 5. `externally_connectable`（网页给扩展发消息）：WebKit 实现了这条通道，但只挂在网页的 `browser.runtime` 上，
-///    网页里没有 `chrome`。Chrome 生态的站点一律先看 `"chrome" in window` 再 `chrome.runtime.sendMessage(id, …)`，
-///    握手就此静默失败（userstyles.org 这样把登录 token 递给 Stylish，扩展永远显示未登录）。给匹配扩展
-///    `externally_connectable.matches` 的网页注入一层最小别名，见 `externalMessagingScript`。
+/// 5. `externally_connectable` (a web page messaging an extension): WebKit implements this channel,
+///    but only hangs it off the page's `browser.runtime` - there is no `chrome` in the page at all.
+///    Sites in the Chrome ecosystem invariably check `"chrome" in window` first and then call
+///    `chrome.runtime.sendMessage(id, ...)`, so the handshake fails silently (userstyles.org hands
+///    Stylish its login token this way, and the extension shows as permanently signed out). Inject a
+///    minimal alias into pages matching an extension's `externally_connectable.matches`; see
+///    `externalMessagingScript`.
 ///
-/// 6. 同一个网页里的扩展 iframe，**IndexedDB 是 WebKit 按顶层站点分区的另一份空库**——不是扩展进程页面与
-///    service worker 用的那份（`navigator.storage` 在那里是 undefined，`document.requestStorageAccess()` 一律被拒）。
-///    消息通道、`chrome.storage.*` 都是通的，所以现象很迷惑：后台明明有数据，侧栏面板却显示"未登录 / 没有数据"
-///    （Stylish 的面板直接从 IndexedDB 读已装样式与 Firebase 登录态）。修法：`frameScript` 在这种框架里把整个
-///    `indexedDB` 换成一层门面（`frameIndexedDBScript`），请求经 `runtime.sendMessage` 交给后台垫片
-///    （`backgroundIndexedDBScript`）在扩展真正的分区里执行——同一个 microtask 里发出的那批请求一起送、
-///    在后台一个真事务里跑完，事务的原子性（出错回滚、abort() 回滚）才跟原生对得上。`localStorage` 同样被分区，但它是同步 API，
-///    没法这样转发——只能仍是每个顶层站点各一份。
+/// 6. For an extension iframe inside a web page, **IndexedDB is a different, empty database that
+///    WebKit partitions by top-level site** - not the one the extension-process pages and the service
+///    worker use (`navigator.storage` is undefined there, and `document.requestStorageAccess()` is
+///    always refused). The message channel and `chrome.storage.*` both work, which makes the symptom
+///    thoroughly confusing: the background clearly has the data, yet the sidebar panel shows "signed
+///    out / no data" (Stylish's panel reads the installed styles and the Firebase login state
+///    straight out of IndexedDB). The fix: in such a frame `frameScript` replaces the whole of
+///    `indexedDB` with a facade (`frameIndexedDBScript`) whose requests go through
+///    `runtime.sendMessage` to the background shim (`backgroundIndexedDBScript`), which runs them in
+///    the extension's real partition. The batch of requests issued within one microtask is sent
+///    together and run inside one real transaction in the background, which is what makes
+///    transactional atomicity (rollback on error, rollback on abort()) line up with the native
+///    behavior. `localStorage` is partitioned the same way, but it is a synchronous API and cannot be
+///    relayed like this, so it stays one store per top-level site.
 ///
-/// 改写是幂等的：manifest 里 `__quickterm` 记着原始 `background` 与垫片版本，版本一致就不再动。
-/// 扩展更新（重装）会整目录替换，随之重新生成。
+/// The rewrite is idempotent: `__quickterm` in the manifest records the original `background` and the
+/// shim version, and a matching version means nothing is touched. Updating (reinstalling) an
+/// extension replaces the whole directory, and the rewrite is regenerated with it.
 enum BrowserExtensionCompat {
-    /// 垫片版本：脚本内容或改写规则变了就 +1，已装扩展下次启动会重新生成
+    /// Shim version: bump it whenever the injected script's **behavior** or the rewrite rules
+    /// change, and every installed extension regenerates on its next startup.
+    ///
+    /// Behavior, not bytes. Regenerating rewrites every installed extension's directory, so a diff
+    /// that cannot change what the shim does is not worth making every user pay for it - when the
+    /// comments inside the generated JS were translated to English (2026-09-12) this deliberately
+    /// stayed at 5, and installs from before then keep a Chinese-commented `__quickterm-compat.js`
+    /// on disk until the next real bump. If you are unsure whether your change is behavioral, it is:
+    /// bump it.
     static let version = 5
     static let compatFile = "__quickterm-compat.js"
     static let wrapperFile = "__quickterm-background.js"
@@ -50,7 +81,8 @@ enum BrowserExtensionCompat {
 
     enum Failure: Error { case badManifest }
 
-    /// 给扩展目录套上垫片。返回是否改写了文件（已是当前版本 / 没有后台脚本 → false）
+    /// Apply the shim to an extension directory. Returns whether any file was rewritten: already at
+    /// the current version, or no background script at all, both give false.
     @discardableResult
     static func apply(to directory: URL) throws -> Bool {
         let fm = FileManager.default
@@ -60,7 +92,8 @@ enum BrowserExtensionCompat {
             throw Failure.badManifest
         }
         let marker = manifest[manifestKey] as? [String: Any]
-        // 原始 background：已经改写过的取记录，否则取 manifest 里现成的
+        // The original background: read it from the record if we have rewritten this before, otherwise
+        // take whatever the manifest holds now.
         let original: [String: Any]?
         if let marker {
             original = marker["background"] as? [String: Any]
@@ -70,7 +103,8 @@ enum BrowserExtensionCompat {
         if let marker, marker["shim"] as? Int == version, shimFilesPresent(for: original, in: directory) {
             return false
         }
-        // scheme 字面量替换对没有后台的扩展同样有意义（popup / 选项页自己也会判断 URL）
+        // The scheme literal replacement matters even for an extension with no background: the popup
+        // and the options page test URLs themselves.
         try rewriteExtensionScheme(in: directory)
         guard let original, !original.isEmpty else {
             manifest[manifestKey] = ["shim": version]
@@ -96,7 +130,8 @@ enum BrowserExtensionCompat {
         if let scripts = original["scripts"] as? [String] {
             rewritten["scripts"] = ["/" + compatFile] + scripts
         }
-        // 只有 background.page（HTML）的：不改，仍然记下版本免得每次启动都扫一遍
+        // Extensions with only a background.page (HTML) are left alone, but the version is still
+        // recorded so we do not rescan on every startup.
         manifest["background"] = rewritten
         manifest[manifestKey] = ["shim": version, "background": original]
 
@@ -118,8 +153,10 @@ enum BrowserExtensionCompat {
     static let chromeScheme = "chrome-extension:"
     static let webKitScheme = "webkit-extension:"
 
-    /// 所有 .js / .mjs 里的 `chrome-extension:` → `webkit-extension:`（只碰含有该字面量的文件；非 UTF-8 的跳过）。
-    /// 两个 scheme 等长，压缩代码里的偏移量 / sourcemap 列号不受影响
+    /// Rewrite `chrome-extension:` to `webkit-extension:` in every .js / .mjs, touching only files that
+    /// actually contain the literal and skipping anything that is not UTF-8.
+    /// The two schemes are the same length, so offsets in minified code and sourcemap column numbers
+    /// are unaffected.
     static func rewriteExtensionScheme(in directory: URL) throws {
         for relative in scriptFiles(in: directory) where relative != compatFile {
             let url = directory.appendingPathComponent(relative)
@@ -131,9 +168,14 @@ enum BrowserExtensionCompat {
         }
     }
 
-    /// 包装脚本的根相对路径：放在原 worker 同一目录（classic worker 里相对路径的 importScripts 仍按原目录解析）。
-    /// worker 路径为空、或带 `..`（manifest 写 "../../x.js" 不能让我们往扩展目录外写文件）→ nil，不包装。
-    /// 纯字符串判断，不碰文件系统：目标文件还不存在时解析符号链接的结果不稳定（/var 与 /private/var 只解析一边）
+    /// Root-relative path of the wrapper script: it goes in the same directory as the original worker,
+    /// so that relative importScripts paths inside a classic worker still resolve against that
+    /// directory.
+    /// An empty worker path, or one containing `..` (a manifest writing "../../x.js" must not make us
+    /// write files outside the extension directory), returns nil and nothing is wrapped.
+    /// This is pure string work and never touches the file system: while the target file does not exist
+    /// yet, resolving symlinks gives unstable results (only one side of /var versus /private/var gets
+    /// resolved).
     static func wrapperPath(forWorker worker: String) -> String? {
         let workerPath = rootPath(worker)
         let components = workerPath.split(separator: "/", omittingEmptySubsequences: false)
@@ -143,7 +185,8 @@ enum BrowserExtensionCompat {
         return (workerDirectory as NSString).appendingPathComponent(wrapperFile)
     }
 
-    /// 当前版本该有的文件是否都在（垫片本体 + service_worker 的包装）；没有后台脚本的扩展没有这些文件
+    /// Whether all the files the current version should have are present: the shim itself plus the
+    /// service_worker wrapper. An extension with no background script has neither.
     private static func shimFilesPresent(for original: [String: Any]?, in directory: URL) -> Bool {
         guard let original, !original.isEmpty else { return true }
         let fm = FileManager.default
@@ -154,7 +197,8 @@ enum BrowserExtensionCompat {
         return true
     }
 
-    /// manifest 里的脚本路径统一成根相对（"bg.js" / "./a/b.js" / "/a/b.js" → "/a/b.js"）
+    /// Normalize a script path from the manifest to root-relative ("bg.js" / "./a/b.js" / "/a/b.js"
+    /// all become "/a/b.js").
     static func rootPath(_ path: String) -> String {
         var p = path
         while p.hasPrefix("./") { p.removeFirst(2) }
@@ -164,8 +208,10 @@ enum BrowserExtensionCompat {
 
     static let scriptExtensions: Set<String> = ["js", "mjs"]
 
-    /// 目录里全部脚本文件的相对路径（不含隐藏文件）。用 `enumerator(atPath:)` 拿相对路径：`enumerator(at:)` 给的是
-    /// 解析过符号链接的绝对 URL，store 目录本身是链接（放 Dropbox 之类）时前缀对不上、整个列表会空掉
+    /// Relative paths of every script file in the directory, hidden files excluded. It uses
+    /// `enumerator(atPath:)` to get relative paths: `enumerator(at:)` hands back absolute URLs with
+    /// symlinks resolved, so when the store directory is itself a link (parked in Dropbox, say) the
+    /// prefix no longer matches and the whole list comes out empty.
     static func scriptFiles(in directory: URL) -> [String] {
         guard let enumerator = FileManager.default.enumerator(atPath: directory.path) else { return [] }
         var result: [String] = []
@@ -180,21 +226,25 @@ enum BrowserExtensionCompat {
         return result.sorted()
     }
 
-    /// 目录里内容为空（或只有空白）的脚本文件，根相对路径；给垫片的 importScripts 跳过用
+    /// Root-relative paths of the script files in the directory that are empty, or contain only
+    /// whitespace; the shim's importScripts uses this list to skip them.
     static func emptyScripts(in directory: URL) -> [String] {
         scriptFiles(in: directory).filter { relative in
             let url = directory.appendingPathComponent(relative)
-            // 大文件不用读：先看 size，只有小于 1 KB 的才读内容判断是否全空白
+            // No need to read a large file: check the size first and only read the contents, to test
+            // for all-whitespace, when it is under 1 KB.
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? Int.max
             guard size < 1024, let text = try? String(contentsOf: url, encoding: .utf8) else { return false }
             return text.allSatisfy(\.isWhitespace)
         }.map { "/" + $0 }
     }
 
-    /// 值编解码（后台与 iframe 两侧共用一份，经 runtime.sendMessage 传 IndexedDB 的键 / 值 / 查询区间）
+    /// Value codec, shared by the background and the iframe sides, for passing IndexedDB keys, values
+    /// and query ranges over runtime.sendMessage.
     static let valueCodecScript = """
-      // 消息通道只过 JSON 样的值（Date 会变字符串、undefined 会丢）：两侧共用同一份编解码，
-      // 另外把 IDBKeyRange 也打成标记对象（查询参数经常是它）
+      // The message channel only carries JSON-shaped values (a Date turns into a string, undefined is
+      // lost), so both sides share one codec. It also tags IDBKeyRange into a marker object, since
+      // query arguments are very often one of those.
       const TAG = "__quickterm_v";
       const encode = (value, depth) => {
         const level = depth || 0;
@@ -233,11 +283,16 @@ enum BrowserExtensionCompat {
       };
     """
 
-    /// 后台侧的 IndexedDB 执行端（垫片里注册；只服务扩展自己 origin 的请求）
+    /// The IndexedDB executor on the background side, registered by the shim; it serves only requests
+    /// from the extension's own origin.
     static let backgroundIndexedDBScript = """
-      // 网页里嵌的扩展 iframe 拿到的 IndexedDB 是按顶层站点分区的空库（见 frameScript）：代为在扩展自己的分区里执行。
-      // 转发是异步的、IDB 事务撑不过一次消息往返，所以事务的粒度是「一批」：iframe 侧把同一个 microtask 里
-      // 攒下的请求一次送来，这里在一个真事务里按序跑完（见 runBatch）
+      // The IndexedDB an extension iframe embedded in a web page gets is an empty database partitioned
+      // by top-level site (see frameScript), so run the requests here in the extension's own partition
+      // on its behalf.
+      // The relay is asynchronous and an IDB transaction cannot survive a message round trip, so the
+      // unit of a transaction is one batch: the iframe side collects the requests issued within one
+      // microtask and sends them together, and here they run in order inside one real transaction
+      // (see runBatch).
       const handles = new Map();
       const dropHandle = (name) => {
         const db = handles.get(name);
@@ -253,7 +308,8 @@ enum BrowserExtensionCompat {
           request.onblocked = () => reject(new Error("QuickTerm indexedDB bridge: open is blocked"));
           request.onsuccess = () => {
             const db = request.result;
-            db.onversionchange = () => dropHandle(name);   // 别挡住扩展自己发起的升级
+            // Do not block an upgrade the extension itself started.
+            db.onversionchange = () => dropHandle(name);
             db.onclose = () => { if (handles.get(name) === db) handles.delete(name); };
             handles.set(name, db);
             resolve(db);
@@ -301,17 +357,22 @@ enum BrowserExtensionCompat {
         message: String((error && error.message) || error || "QuickTerm indexedDB bridge: the request failed"),
         name: (error && error.name) || "UnknownError",
       });
-      // iframe 侧攒在同一个 microtask 里的请求 = 后台一个真事务：请求按序发出，任一个出错就整批回滚
-      // （不 preventDefault，照原生让事务中止），回复里带上"错在第几个"，iframe 侧照原生顺序补事件。
-      // 事务撑不过消息往返，所以能做到原子的只有"一批"——iframe 侧在事件回调里再发的请求是下一个事务
+      // The requests the iframe side collected within one microtask become one real transaction here:
+      // they are issued in order, and if any one fails the whole batch rolls back (no preventDefault -
+      // let the transaction abort exactly as it natively would). The reply carries which request
+      // failed, and the iframe side then synthesizes the events in native order.
+      // A transaction cannot survive a message round trip, so a batch is the largest thing that can be
+      // atomic; requests the iframe side issues from an event callback belong to the next transaction.
       const runBatch = (db, storeNames, mode, ops) => new Promise((resolve, reject) => {
         let tx;
         try { tx = db.transaction(storeNames, mode); } catch (error) { reject(error); return; }
         const results = new Array(ops.length);
-        // 「这个请求真的跑完了吗」：整批中止时 results 里没跑完的那些是空洞（游标的请求会排到队尾、
-        // 同步抛出时前面的请求一个都还没回来），空洞过消息通道变成 null，跟"结果就是 null"分不开
+        // "Did this request actually complete?": when the batch aborts, the entries in `results` that
+        // never ran are holes (a cursor request queues itself at the back, and on a synchronous throw
+        // none of the earlier requests have come back yet). A hole becomes null over the message
+        // channel, indistinguishable from a result that genuinely is null.
         const done = new Array(ops.length).fill(false);
-        let broke = null;   // { index, error }：第一个出错的请求
+        let broke = null;   // { index, error }: the first request that failed
         let settled = false;
         tx.oncomplete = () => { if (!settled) { settled = true; resolve({ results, version: db.version }); } };
         tx.onabort = () => {
@@ -326,7 +387,9 @@ enum BrowserExtensionCompat {
           const target = op.index === null || op.index === undefined ? store : store.index(String(op.index));
           const args = decode(op.args) || [];
           if (op.kind === "cursor") {
-            // 游标撑不过消息往返：后台一次跑完，把结果拍平送回去，iframe 侧在这份快照上走 continue()
+            // A cursor cannot survive a message round trip: the background runs it to completion in one
+            // go and ships the rows back flattened, and the iframe side walks continue() over that
+            // snapshot.
             const keysOnly = op.method === "openKeyCursor";
             const limit = Math.max(1, Math.min(Number(op.limit) || 1000, 10000));
             const rows = [];
@@ -336,7 +399,8 @@ enum BrowserExtensionCompat {
               const cursor = request.result;
               if (!cursor) { results[index] = { rows, truncated: false }; done[index] = true; return; }
               rows.push({ key: cursor.key, primaryKey: cursor.primaryKey, value: keysOnly ? undefined : cursor.value });
-              // 多取一条才分得清"正好 limit 条"和"还有更多"：iframe 侧要靠这个区分走完与被截断
+              // Fetch one row past the limit: that is the only way to tell "exactly limit rows" from
+              // "there are more", which the iframe side needs to distinguish finished from truncated.
               if (rows.length <= limit) { cursor.continue(); return; }
               rows.length = limit;
               results[index] = { rows, truncated: true }; done[index] = true;
@@ -350,8 +414,9 @@ enum BrowserExtensionCompat {
           request.onerror = () => { if (!broke) broke = { index, error: request.error }; };
         };
         for (let i = 0; i < ops.length; i += 1) {
-          // 同步抛出（参数不合法、没有这个索引…）原生是在调用处抛、事务照跑；这里调用处早已返回，
-          // 只能当成"这个请求失败了"，跟着中止整批
+          // A synchronous throw (bad arguments, no such index, ...) natively throws at the call site
+          // while the transaction carries on; here the call site returned long ago, so the only option
+          // is to treat it as "this request failed" and abort the batch with it.
           try { issue(i, ops[i]); }
           catch (error) { broke = { index: i, error }; try { tx.abort(); } catch (_) {} break; }
         }
@@ -375,9 +440,12 @@ enum BrowserExtensionCompat {
         }
         if (p.op === "open") {
           const wanted = p.version === null || p.version === undefined ? null : Number(p.version);
-          // 库还不存在时不能直接 open（那会凭空建一个 v1、还把 upgradeneeded 吞掉）：先问 databases()。
-          // 不带版本号的 open 同样要走这一步——原生对不存在的库也会 upgradeneeded(0→1)，
-          // 直接 openPlain 的话扩展建表的那个回调永远不跑，之后 transaction() 一律 NotFoundError
+          // Do not open straight away when the database does not exist yet: that conjures up a v1 and
+          // swallows upgradeneeded. Ask databases() first.
+          // An open without a version number needs the same step: natively a nonexistent database also
+          // fires upgradeneeded(0 -> 1), and going straight to openPlain means the callback where the
+          // extension creates its object stores never runs, after which every transaction() is a
+          // NotFoundError.
           const list = await listDatabases();
           if (list) {
             const found = list.find((entry) => entry.name === name);
@@ -423,7 +491,8 @@ enum BrowserExtensionCompat {
         if (p.op === "batch") {
           const db = await openPlain(name);
           const ops = Array.isArray(p.ops) ? p.ops : [];
-          // 事务只锁这一批真的碰到的 store（iframe 侧 transaction() 声明的那份可能更宽）
+          // The transaction locks only the stores this batch actually touches; the set the iframe side
+          // declared to transaction() may well be wider.
           const names = [];
           for (const op of ops) {
             const store = String(op && op.store);
@@ -436,12 +505,13 @@ enum BrowserExtensionCompat {
       };
     """
 
-    /// 垫片脚本本体（后台脚本之前执行；classic 与 module worker 都能跑）
+    /// The shim script itself, evaluated ahead of the background script; it runs under both classic and
+    /// module workers.
     static func compatScript(emptyScripts: [String]) -> String {
         let list = (try? JSONSerialization.data(withJSONObject: emptyScripts, options: [.withoutEscapingSlashes]))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         return """
-        // QuickTerm WebKit 兼容垫片 v\(version)（安装时自动生成，勿手改）
+        // QuickTerm WebKit compatibility shim v\(version) - generated at install time, do not edit
         (() => {
           const g = globalThis;
           const noopEvent = () => ({
@@ -450,19 +520,23 @@ enum BrowserExtensionCompat {
           const define = (obj, key, value) => { try { if (obj && obj[key] === undefined) obj[key] = value; } catch (_) {} };
           for (const api of [g.chrome, g.browser]) {
             if (!api) continue;
-            // WebKit 没有这两个 webNavigation 事件；有扩展在顶层直接 addListener，缺了整个后台起不来
+            // WebKit has neither of these webNavigation events, and some extensions call addListener on
+            // them at the top level, so without them the whole background fails to start.
             if (api.webNavigation) {
               define(api.webNavigation, "onHistoryStateUpdated", noopEvent());
               define(api.webNavigation, "onReferenceFragmentUpdated", noopEvent());
             }
           }
-          // 嵌在网页里的扩展 iframe 直接调 tabs.* 等会被 WebKit 杀掉页面进程、而它的 IndexedDB 是按顶层站点
-          // 分区的另一份空库（都见 frameScript）：这两条都由这里代为执行
+          // An extension iframe embedded in a web page gets its page process killed by WebKit if it
+          // calls tabs.* and friends directly, and its IndexedDB is a different, empty database
+          // partitioned by top-level site (both covered in frameScript). This end executes both on its
+          // behalf.
           const RELAY = "__quickterm_relay";
           const STORAGE = "__quickterm_idb";
         \(valueCodecScript)
         \(backgroundIndexedDBScript)
-          const relayed = new Set();   // chrome 与 browser 多半是同一个对象：同一个 runtime 只挂一次
+          // chrome and browser are usually the same object: hook each runtime once.
+          const relayed = new Set();
           for (const api of [g.chrome, g.browser]) {
             if (!api || !api.runtime || !api.runtime.onMessage || relayed.has(api.runtime)) continue;
             relayed.add(api.runtime);
@@ -487,14 +561,17 @@ enum BrowserExtensionCompat {
               if (typeof f !== "function") { reply({ error: "QuickTerm relay: " + ns + "." + fn + " is not available" }); return false; }
               Promise.resolve().then(() => f.apply(target, Array.isArray(args) ? args : []))
                 .then((result) => {
-                  // 结果可能带不过消息通道（Window、宿主对象）：给个明确的错误而不是让框架等到"no response"
+                  // The result may not survive the message channel (a Window, a host object): report a
+                  // definite error rather than leaving the frame waiting for a "no response".
                   try { reply({ result: result === undefined ? null : result }); } catch (e) { fail(e); }
                 }, fail);
               return true;
             });
           }
-          // WebKit 的 importScripts 在每个脚本求值后清空 microtask 队列（Chrome 不会）。空脚本本来就没有效果，
-          // 直接跳过，免得靠「一个 microtask 之后」判断启动阶段的扩展（Tampermonkey）被打断
+          // WebKit's importScripts drains the microtask queue after evaluating each script, which Chrome
+          // does not. An empty script has no effect in the first place, so skip it outright and avoid
+          // interrupting an extension (Tampermonkey) that decides it is past startup "one microtask
+          // later".
           const EMPTY = new Set(\(list));
           const nativeImport = g.importScripts;
           if (typeof nativeImport === "function" && EMPTY.size) {
@@ -510,18 +587,23 @@ enum BrowserExtensionCompat {
         """
     }
 
-    /// iframe 侧的 IndexedDB 桥：`frameScript` 里用，见那里的注释
+    /// The IndexedDB bridge on the iframe side, used from `frameScript`; see the comments there.
     static let frameIndexedDBScript = """
-      // 网页里嵌的扩展 iframe 拿到的 IndexedDB / localStorage 是 WebKit 按顶层站点分区的**另一份空库**，
-      // 不是扩展进程页面与 service worker 用的那份（navigator.storage 也没有，requestStorageAccess 一律被拒）。
-      // 侧栏这类面板的登录态、数据全在扩展自己那份里，于是面板永远显示"未登录 / 没有数据"。
-      // 这里把整个 indexedDB 换成一层门面：每个请求都经 runtime.sendMessage 交给后台，在扩展真正的分区里执行。
+      // The IndexedDB and localStorage an extension iframe embedded in a web page gets are **a
+      // different, empty store** that WebKit partitions by top-level site, not the one the
+      // extension-process pages and the service worker use (navigator.storage is missing there too, and
+      // requestStorageAccess is always refused).
+      // The login state and the data a panel like a sidebar needs all live in the extension's own
+      // store, so the panel shows "signed out / no data" forever.
+      // This replaces the whole of indexedDB with a facade: every request goes through
+      // runtime.sendMessage to the background and runs in the extension's real partition.
       const bridgeIndexedDB = (runtime) => {
         const native = globalThis.indexedDB;
         if (!native || typeof globalThis.IDBRequest !== "function" || typeof runtime.sendMessage !== "function") return;
         const CHANNEL = "__quickterm_idb";
-        // 消息通道只过 JSON 样的值（Date 会变字符串、undefined 会丢）：两侧共用同一份编解码，
-        // 另外把 IDBKeyRange 也打成标记对象（查询参数经常是它）
+        // The message channel only carries JSON-shaped values (a Date turns into a string, undefined is
+        // lost), so both sides share one codec. It also tags IDBKeyRange into a marker object, since
+        // query arguments are very often one of those.
         const TAG = "__quickterm_v";
         const encode = (value, depth) => {
           const level = depth || 0;
@@ -567,7 +649,8 @@ enum BrowserExtensionCompat {
           if (response.error) throw failure(response.error, response.name);
           return decode(response.result);
         });
-        // 事件：on<type> 属性与 addEventListener 都要发到（event.target 得是对象本身，所以统一走 dispatchEvent）
+        // Events have to reach both the on<type> property and addEventListener, and event.target has to
+        // be the object itself, so everything goes through dispatchEvent.
         const fire = (target, type, event) => {
           const handler = target["on" + type];
           if (typeof handler === "function") target.addEventListener(type, handler, { once: true });
@@ -587,9 +670,11 @@ enum BrowserExtensionCompat {
           list.item = (i) => (i >= 0 && i < list.length ? list[i] : null);
           return list;
         };
-        // 门面对象要能通过 `x instanceof IDBRequest`（idb 之类的包装库全靠它认路）：把原型接到原生原型上。
-        // 原生原型上的 name / result / … 是只读 getter，class 里 `this.name = …` 在严格模式下会抛，
-        // 所以接完再把这些名字在自己的原型上覆写成可写数据属性
+        // The facade objects have to pass `x instanceof IDBRequest`, which is how wrapper libraries such
+        // as idb find their way. So splice the prototype onto the native one.
+        // name / result / ... on the native prototype are read-only getters, and `this.name = ...` inside
+        // a class throws in strict mode, so after splicing, redefine those names on our own prototype as
+        // writable data properties.
         const inherit = (klass, base, fields) => {
           try { if (typeof base === "function" && base.prototype) Object.setPrototypeOf(klass.prototype, base.prototype); } catch (_) {}
           for (const field of fields) {
@@ -629,7 +714,8 @@ enum BrowserExtensionCompat {
             this._truncated = !!truncated;
             this._load(0);
           }
-          // 快照是 send() 统一解码过的，这里不能再 decode 一次（Date 再解一次会变成 {}）
+          // send() already decoded the snapshot; do not decode it a second time (decoding a Date twice
+          // turns it into {}).
           _load(at) {
             const row = this._rows[at];
             this._at = at;
@@ -637,7 +723,8 @@ enum BrowserExtensionCompat {
             this.primaryKey = row ? row.primaryKey : undefined;
             if (!this._keysOnly) this.value = row ? row.value : undefined;
           }
-          // continue(key)：正向游标找第一条 >= key 的，反向（prev*）游标的快照是降序的，要找第一条 <= key 的
+          // continue(key): a forward cursor looks for the first row >= key, while a reverse (prev*)
+          // cursor's snapshot is in descending order, so it looks for the first row <= key.
           _seek(key, from) {
             const back = String(this.direction).indexOf("prev") === 0;
             for (let i = from; i < this._rows.length; i += 1) {
@@ -648,15 +735,17 @@ enum BrowserExtensionCompat {
             }
             return this._rows.length;
           }
-          // 原生的 continue() 返回 undefined、让原来那个 request 再触发一次 success；这里照做，
-          // 另外把 request 返回出去（idb 会把返回值再包一层 Promise，正好拿到下一个游标）
+          // Natively continue() returns undefined and makes the original request fire success once more.
+          // We do the same, and additionally return the request: idb wraps the return value in another
+          // Promise, which then resolves to the next cursor.
           _step(next) {
             const request = this.request;
             const transaction = request.transaction;
             return transaction._localStep(request, () => {
               if (next < this._rows.length) { this._load(next); succeed(request, this); return; }
               if (this._truncated) {
-                // 快照被截断了：走到末尾不能报"迭代结束"（那是把剩下的记录悄悄抹掉），明确失败
+                // The snapshot was truncated: reaching its end must not be reported as "iteration
+                // finished", which would quietly erase the remaining records. Fail explicitly.
                 const error = failure("QuickTerm indexedDB bridge: the cursor snapshot was truncated at "
                                       + this._rows.length + " rows", "UnknownError");
                 transaction.error = error;
@@ -738,7 +827,8 @@ enum BrowserExtensionCompat {
           _call(method, args, write, indexName) {
             const transaction = this.transaction;
             if (transaction._ops) {
-              // 升级事务：后台那边的 versionchange 事务撑不过消息往返，先录下来一起重放
+              // An upgrade transaction: the versionchange transaction on the background side cannot
+              // survive a message round trip, so record the operations and replay them together.
               if (!write) throw failure("QuickTerm indexedDB bridge: reads are not supported inside an upgrade transaction", "InvalidStateError");
               transaction._ops.push({ op: method, store: this.name, args: encode(args) });
               const request = new BridgeRequest(this, transaction);
@@ -754,16 +844,19 @@ enum BrowserExtensionCompat {
         inherit(BridgeObjectStore, globalThis.IDBObjectStore,
                 ["transaction", "name", "keyPath", "autoIncrement", "indexNames"]);
 
-        // 事务撑不过一次消息往返，但**同一个 microtask 里发出的那批请求**可以：攒起来一次送给后台，
-        // 后台在一个真事务里按序跑完。于是「一个请求出错 → 整个事务回滚」「abort() 回滚还没跑的」
-        // 都跟原生一致。在事件回调里接着发的请求排的是下一批（= 后台的下一个事务），见 porting-notes
+        // A transaction cannot survive a message round trip, but **the batch of requests issued within
+        // one microtask** can: collect them, send them to the background in one go, and it runs them in
+        // order inside one real transaction. That makes "one request fails -> the whole transaction
+        // rolls back" and "abort() rolls back whatever has not run" match the native behavior.
+        // Requests issued from an event callback queue into the next batch, which is the background's
+        // next transaction; see porting-notes.
         class BridgeTransaction extends EventTarget {
           constructor(db, storeNames, mode, manual) {
             super();
             this.db = db; this.mode = mode; this.error = null; this.durability = "default";
             this.objectStoreNames = nameList(storeNames.map(String));
             this.oncomplete = null; this.onerror = null; this.onabort = null;
-            this._live = new Set();     // 还没结束的请求（排队中 + 已发出）
+            this._live = new Set();     // requests that have not settled yet (queued plus in flight)
             this._queue = []; this._inflight = false; this._flushing = false;
             this._pending = 0; this._finished = false; this._ops = null;
             if (!manual) this._schedule();
@@ -777,14 +870,16 @@ enum BrowserExtensionCompat {
           }
           abort() { this._finish("abort"); }
           commit() { this._flush(); this._schedule(); }
-          // 原生事务在"所有请求都结束、且这一轮没有新请求"时自动提交：这里用一个 microtask 做同样的判断
+          // A native transaction commits automatically once every request has settled and no new request
+          // was issued in that turn; one microtask makes the same decision here.
           _schedule() {
             Promise.resolve().then(() => {
               if (this._finished || this._ops || this._inflight) return;
               if (this._pending === 0 && !this._queue.length) this._finish("complete");
             });
           }
-          // 原生的收尾顺序：出错那个请求的 error 冒泡成事务的 error → 还没结束的请求各收一个 AbortError → abort
+          // The native teardown order: the failing request's error bubbles up as the transaction's
+          // error, then every request still outstanding gets an AbortError, then abort.
           _finish(type) {
             if (this._finished) return;
             this._finished = true;
@@ -813,7 +908,8 @@ enum BrowserExtensionCompat {
             entry.settled = true; this._live.delete(entry); this._pending -= 1;
             return true;
           }
-          // 一次只有一批在路上：同一个事务里的请求要按发出的顺序结束
+          // Only one batch is in flight at a time: requests within one transaction have to settle in the
+          // order they were issued.
           _flush() {
             if (this._finished || this._inflight || !this._queue.length) return;
             const batch = this._queue;
@@ -829,23 +925,28 @@ enum BrowserExtensionCompat {
                       this._finish("error");
                     });
           }
-          // 原生的顺序：出错之前的请求照常 success，出错那个 error，然后事务 error + abort
+          // The native order: requests before the failure still succeed, the failing one errors, and
+          // then the transaction errors and aborts.
           _deliver(batch, data) {
             const results = data.results || [];
-            const done = Array.isArray(data.done) ? data.done : null;   // 只有中止的回复带它；提交了的那批全都跑完了
+            // Only an aborted reply carries this; a batch that committed ran in full.
+            const done = Array.isArray(data.done) ? data.done : null;
             const failedAt = typeof data.failed === "number" ? data.failed : -1;
             const delivered = failedAt < 0 ? batch.length : Math.min(failedAt, batch.length);
             for (let i = 0; i < delivered; i += 1) {
-              if (this._finished) return;   // 某个 success 回调里 abort() 了
+              if (this._finished) return;   // some success callback called abort()
               const entry = batch[i];
-              // 排在出错那个之前、但后台回滚时它还没跑完（游标还在迭代 / 同步抛出时前面的都还没回来）：
-              // 不能报 success，留在 _live 里由 _finish("error") 照原生发 AbortError
+              // Queued before the failing request but not yet complete when the background rolled back
+              // (a cursor still iterating, or nothing having come back yet on a synchronous throw):
+              // it must not report success. Leave it in _live and let _finish("error") send it an
+              // AbortError, exactly as the native implementation would.
               if (done && done[i] !== true) continue;
               if (!this._settle(entry)) continue;
               succeed(entry.request, entry.wrap ? entry.wrap(results[i]) : results[i]);
             }
             if (this._finished) return;
-            // 后台报回来的版本比本连接新 = 别处升级过了：事件推到下一个 microtask 发，别插在事务事件中间
+            // A version from the background newer than this connection's means someone else upgraded.
+            // Fire the event on the next microtask rather than wedging it between transaction events.
             if (data.version !== this.db.version) Promise.resolve().then(() => this.db._noteVersion(data.version));
             if (failedAt < 0) { this._flush(); this._schedule(); return; }
             const error = failure((data.error && data.error.message) || "The request failed",
@@ -875,7 +976,8 @@ enum BrowserExtensionCompat {
             };
             return this._enqueue(entry);
           }
-          // 游标在本地快照上走一步：不发消息，但要像一个请求那样撑住事务
+          // Stepping a cursor over the local snapshot: no message is sent, but it still has to hold the
+          // transaction open the way a real request does.
           _localStep(request, body) {
             const entry = { request, settled: false };
             this._live.add(entry); this._pending += 1;
@@ -900,8 +1002,11 @@ enum BrowserExtensionCompat {
           }
         };
 
-        // 开着的门面连接：别的地方（本框架、后台、别的标签）升级 / 删库时，照原生给它们发 versionchange。
-        // 弱引用存——有的库（firebase-auth）每次操作都新开一个连接、从不 close()，强引用会一直堆着
+        // The facade connections that are open: when something else (this frame, the background,
+        // another tab) upgrades or deletes the database, send them versionchange exactly as the native
+        // implementation would.
+        // Held weakly: some libraries (firebase-auth) open a fresh connection for every operation and
+        // never close() it, so strong references would pile up without end.
         const connections = new Set();
         const weakRef = (value) => {
           try { return new WeakRef(value); } catch (_) { return { deref: () => value }; }
@@ -931,9 +1036,12 @@ enum BrowserExtensionCompat {
             this._upgrade = null; this._closed = false; this._noticed = undefined; this._ref = null;
             trackConnection(this);
           }
-          // 后台那份库的版本变了（升级 / 删库）：原生此时给还开着的连接发 versionchange，
-          // 由它自己决定 close()。这里做不到"挡住升级"（后台没有 iframe 的生命周期），只能照发事件；
-          // 同一个变更只发一次，version 保持连接自己那份（原生的旧连接也停在旧版本）
+          // The version of the database in the background changed (an upgrade or a delete). Natively the
+          // connections still open get a versionchange at this point and decide for themselves whether
+          // to close(). We cannot actually block the upgrade - the background knows nothing about the
+          // iframe's lifetime - so all we can do is deliver the event.
+          // Each change is announced once, and `version` stays whatever this connection holds, since a
+          // stale native connection likewise stays on the old version.
           _noteVersion(version) {
             const next = version === null ? null : (typeof version === "number" ? version : undefined);
             if (next === undefined || this._closed) return;
@@ -981,9 +1089,12 @@ enum BrowserExtensionCompat {
             send({ op: "open", name: dbName, version: version === undefined ? null : Number(version) })
               .then((info) => {
                 if (!info || !info.upgrade) { announceVersionChange(dbName, info && info.version); return info; }
-                // 本框架里还开着的同名连接：原生此刻就收到 versionchange（升级的那个连接自己不算）
+                // Connections to the same name still open in this frame: natively they receive
+                // versionchange right now (the connection doing the upgrade itself excepted).
                 announceVersionChange(dbName, info.version);
-                // 需要升级：本地放一个"录制"版本的 versionchange 事务，让扩展照常建库，再把这些操作交给后台重放
+                // An upgrade is needed: stage a "recording" versionchange transaction locally so the
+                // extension builds its schema as usual, then hand those operations to the background to
+                // replay.
                 const db = new BridgeDatabase({ name: dbName, version: info.version, stores: info.stores || [] });
                 const transaction = new BridgeTransaction(db, Array.from(db.objectStoreNames), "versionchange", true);
                 transaction._ops = [];
@@ -991,8 +1102,10 @@ enum BrowserExtensionCompat {
                 request.result = db;
                 request.transaction = transaction;
                 fire(request, "upgradeneeded", versionChangeEvent("upgradeneeded", info.oldVersion, info.version));
-                // 回调里 abort() 了升级事务：原生此时版本不动、open 请求以 AbortError 失败——
-                // 录下来的那些操作一个都不能交给后台重放（后台的 op:"open" 什么都没改，现在收手还来得及）
+                // The callback aborted the upgrade transaction: natively the version stays put and the
+                // open request fails with AbortError, so not one of the recorded operations may be
+                // replayed by the background. Its op:"open" changed nothing, so backing out now is
+                // still in time.
                 if (transaction._finished) {
                   db._upgrade = null; transaction._ops = null; request.transaction = null;
                   db.close();
@@ -1014,7 +1127,9 @@ enum BrowserExtensionCompat {
           }
           deleteDatabase(name) {
             const request = new BridgeOpenRequest();
-            announceVersionChange(name, null);   // 原生：删库前给还开着的连接发 versionchange（newVersion 为 null）
+            // Native behavior: connections still open get versionchange (newVersion null) before
+            // the delete.
+            announceVersionChange(name, null);
             send({ op: "deleteDatabase", name: String(name) })
               .then(() => succeed(request, undefined), (error) => failRequest(request, error));
             return request;
@@ -1031,29 +1146,44 @@ enum BrowserExtensionCompat {
       };
     """
 
-    /// 注入到**网页** WebView 全部框架的脚本（document start，page world）：只在 `webkit-extension:` 框架里生效，
-    /// 干两件事——
-    /// 1. 把从网页进程直接调会被杀的命名空间（tabs / windows / …）换成经后台转发的代理。事件（onXxx）与常量
-    ///    保留原样——注册监听不会触发那条 IPC。已知取舍：回调形式拿不到 runtime.lastError；带函数的参数
-    ///    （scripting.executeScript 的 func）过不了消息序列化；后台若对所有消息都同步 reply，会抢在转发结果之前。
-    /// 2. 把 `indexedDB` 换成经后台执行的门面（见文件头第 6 条）：这种框架里的 IndexedDB 被 WebKit 按顶层站点
-    ///    分区，读到的是另一份空库。已知取舍：事务的粒度是"同一个 microtask 里发出的那一批"——那一批在后台是
-    ///    一个真事务（一个请求出错整批回滚、abort() 回滚还没发出的），跨事件回调再发的请求是下一个事务；
-    ///    升级事务里只能建表 / 建索引 / 写入（读不了，操作录下来交给后台重放），
-    ///    游标是后台一次跑完的快照（上限 5000 条；超出时走到快照末尾明确报错，不假装迭代正常结束），
-    ///    值按 JSON 语义过通道（Date 与 IDBKeyRange 单独编码，Blob / File / ArrayBuffer 过不去），
-    ///    `versionchange` 只在本框架自己发起升级 / 删库、或下一次请求发现后台那份版本变了时补发（后台推不到这种框架）。
-    ///    `runtime.sendMessage` 本身在这种框架里是通的（回调、Promise、connect 端口都实测过），所以桥只加在存储这一层。
-    ///    桥只在**后台真的挂上了垫片**（manifest.background 有改写痕迹）时才装：执行端不在的话每次调用都会失败，
-    ///    那还不如留着原生那份分区库。
+    /// The script injected into every frame of a **web** WebView (document start, page world). It only
+    /// does anything inside a `webkit-extension:` frame, where it does two things:
+    /// 1. Replaces the namespaces that get the page process killed when called directly (tabs /
+    ///    windows / ...) with proxies that relay through the background. Events (onXxx) and constants
+    ///    are left as they are, since registering a listener does not trigger that IPC. Known
+    ///    trade-offs: the callback form cannot surface runtime.lastError; arguments carrying functions
+    ///    (scripting.executeScript's `func`) do not survive message serialization; and a background
+    ///    that replies synchronously to every message will answer ahead of the relayed result.
+    /// 2. Replaces `indexedDB` with a facade executed by the background (see point 6 at the top of this
+    ///    file): IndexedDB inside such a frame is partitioned by top-level site by WebKit, so what it
+    ///    reads is a different, empty database. Known trade-offs: the unit of a transaction is "the
+    ///    batch issued within one microtask" - that batch is one real transaction in the background
+    ///    (one failing request rolls back the whole batch, abort() rolls back whatever has not been
+    ///    sent), and requests issued from an event callback land in the next transaction; an upgrade
+    ///    transaction can only create stores, create indexes and write (it cannot read, and the
+    ///    operations are recorded and replayed by the background); a cursor is a snapshot the
+    ///    background runs to completion in one go (capped at 5000 rows, and going past the end of a
+    ///    truncated snapshot fails explicitly rather than pretending the iteration ended normally);
+    ///    values cross the channel with JSON semantics (Date and IDBKeyRange are encoded specially,
+    ///    while Blob / File / ArrayBuffer do not make it across); and `versionchange` is only
+    ///    synthesized when this frame itself upgrades or deletes the database, or when the next request
+    ///    notices the background's version has changed (the background cannot push into such a frame).
+    ///    `runtime.sendMessage` itself does work inside such a frame - callbacks, Promises and connect
+    ///    ports were all verified - so the bridge is added only at the storage layer.
+    ///    The bridge is only installed when the background **really has the shim attached** (the
+    ///    rewrite left its trace in manifest.background): without the executor on the other end every
+    ///    call would fail, which is worse than leaving the native partitioned database in place.
     static let frameScript = """
     (() => {
-      // 只管嵌在网页里的扩展 iframe；扩展页面做主帧时跑在扩展进程里（普通配置的 WebView 根本进不去扩展主帧）
+      // Only extension iframes embedded in a web page matter here: an extension page as the main frame
+      // runs in the extension process, and a WebView with an ordinary configuration cannot load an
+      // extension main frame at all.
       if (location.protocol !== "webkit-extension:" || window === window.top) return;
       const RELAY = "__quickterm_relay";
       const SAFE = new Set(["runtime", "storage", "i18n", "permissions", "extension", "dom", "devtools", "test"]);
       const MARK = Symbol.for("QuickTerm.relayed");
-      // API 方法多半挂在原型上：沿原型链收集属性名（到 Object.prototype 为止）
+      // API methods usually live on the prototype, so collect property names up the prototype chain,
+      // stopping at Object.prototype.
       const propertyNames = (object) => {
         const names = new Set();
         for (let o = object; o && o !== Object.prototype; o = Object.getPrototypeOf(o)) {
@@ -1072,8 +1202,9 @@ enum BrowserExtensionCompat {
         promise.then((value) => callback(value), () => callback(undefined));
         return undefined;
       };
-      // WebKit 的命名空间对象上 defineProperty 不生效（宿主对象的静态属性），只能整个换掉根对象：
-      // 复制一份普通对象，安全的命名空间原样引用，危险的换成代理
+      // defineProperty has no effect on WebKit's namespace objects (static properties of a host
+      // object), so the only option is to replace the root object outright: copy it into a plain
+      // object, reference the safe namespaces as they are, and swap the dangerous ones for proxies.
       const wrap = (root) => {
         if (!root || typeof root !== "object" || root[MARK]) return root;
         const runtime = root.runtime;
@@ -1100,12 +1231,18 @@ enum BrowserExtensionCompat {
         } catch (_) {}
       }
     \(frameIndexedDBScript)
-      // IndexedDB 桥的执行端在后台垫片（__quickterm-compat.js）里。没把垫片挂上后台的扩展——没有 background、
-      // 只有 background.page（HTML，不改写）、service_worker 路径越界、或者装的时候垫片没写成——装了桥只会让
-      // 每一次 IDB 调用都以"no response from the extension background"失败，比不装还糟：那种情况下留着原生的
-      // （按顶层站点分区的）indexedDB，iframe 自己读写自己至少是自洽的，跟加桥之前一模一样。
-      // 判断只看改写留在 manifest.background 里的痕迹（`apply(to:)` 最后才写 manifest，垫片没落盘就不会有痕迹）；
-      // manifest 读不上来时按"挂了"算——宁可保住桥，也不要静默退回"面板没数据"那个 bug
+      // The executor end of the IndexedDB bridge lives in the background shim
+      // (__quickterm-compat.js). For an extension whose background never got the shim - no background
+      // at all, only a background.page (HTML, which is not rewritten), a service_worker path outside
+      // the directory, or a shim that failed to be written at install time - installing the bridge
+      // would only make every IDB call fail with "no response from the extension background", which is
+      // worse than not installing it: in that case the native (top-level-site partitioned) indexedDB
+      // stays, and the iframe reading and writing its own store is at least self-consistent, exactly as
+      // it was before the bridge existed.
+      // The test looks only at the trace the rewrite left in manifest.background (`apply(to:)` writes
+      // the manifest last, so no trace exists unless the shim reached disk); if the manifest cannot be
+      // read, assume the shim is there - better to keep the bridge than to fall back silently into the
+      // "the panel has no data" bug.
       const backgroundIsShimmed = (runtime) => {
         let manifest;
         try { manifest = typeof runtime.getManifest === "function" ? runtime.getManifest() : null; }
@@ -1126,21 +1263,31 @@ enum BrowserExtensionCompat {
 
     static let frameUserScript = WKUserScript(source: frameScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
 
-    // MARK: - 扩展框架里的 User-Agent
+    // MARK: - The User-Agent inside extension frames
 
-    /// 首行标记：同一个 userContentController 里认得出这段（内容随实测到的 UA 变，不能按对象同一性去重）
+    /// First-line marker, so this script can be recognized inside one userContentController. Its
+    /// contents change with the measured UA, so it cannot be deduplicated by object identity.
     static let userAgentMarker = "// QuickTerm extension frame user agent"
 
-    /// 网页里嵌的扩展 iframe（`webkit-extension://…` 框架跑在网页的 WebView 里）跟着网页拿到我们给站点的 UA
-    /// 伪装（`browser.user_agent`，默认 Safari），而同一个扩展的后台 / worker / 扩展页面拿到的是 WebKit 自己的 UA。
-    /// Chrome 下不存在这种分裂：扩展的框架报的一直是浏览器自己的 UA，页面侧的 UA 覆盖也进不到扩展的框架里。
-    /// 后果是**同一个扩展的两半以为自己在两个浏览器里**，库会只在 iframe 那半边走上另一条分支——真实案例：
-    /// Stylish 的侧栏在 Safari UA 下让 firebase-auth 打开"proactive"初始化，去 await 那个只在浏览器里才有意义的
-    /// gapi popup/redirect resolver；而这个 MV3 构建里加载远程脚本的 `_loadJS` 是个空实现（MV3 不许远程代码），
-    /// 那个 promise 于是永远不 settle：`onAuthStateChanged` 一次都不触发、`getCurrentUser()` 永远挂着，
-    /// 面板顶着默认值显示"未登录"（登录记录明明在 IndexedDB 里、样式也照常注入）。
-    /// 修法：这种框架里把 `navigator.userAgent` / `appVersion` 换回 WebKit 自己那份，和扩展的另一半对齐。
-    /// 只改扩展自己 origin 的框架，网页照旧看到伪装（HTTP 请求头仍是伪装那份——扩展自己看不到自己的请求头）
+    /// An extension iframe embedded in a web page (a `webkit-extension://...` frame running inside the
+    /// page's WebView) inherits the site-facing UA disguise we apply (`browser.user_agent`, Safari by
+    /// default), while the same extension's background, workers and extension pages get WebKit's own
+    /// UA.
+    /// Chrome has no such split: an extension's frames always report the browser's own UA, and a
+    /// page-side UA override never reaches an extension's frames.
+    /// The consequence is that **the two halves of one extension believe they are in two different
+    /// browsers**, and a library takes a different branch in the iframe half alone. A real case:
+    /// under the Safari UA, Stylish's sidebar makes firebase-auth enable its "proactive"
+    /// initialization and await the gapi popup/redirect resolver, which only means anything in a
+    /// browser - and in this MV3 build `_loadJS`, which loads remote scripts, is an empty stub (MV3
+    /// forbids remote code). That promise therefore never settles: `onAuthStateChanged` never fires
+    /// once, `getCurrentUser()` hangs forever, and the panel sits on its defaults showing "signed out"
+    /// even though the login record is right there in IndexedDB and the styles are being injected as
+    /// usual.
+    /// The fix: inside such a frame, swap `navigator.userAgent` / `appVersion` back to WebKit's own and
+    /// line up with the extension's other half.
+    /// Only frames on the extension's own origin are changed; web pages still see the disguise (and the
+    /// HTTP request headers stay disguised too - an extension cannot see its own request headers).
     static func userAgentScript(_ userAgent: String) -> String {
         """
         \(userAgentMarker)
@@ -1154,7 +1301,8 @@ enum BrowserExtensionCompat {
               return navigator[name] === value;
             } catch (_) { return false; }
           };
-          // 实例上盖住原型的 getter；WebKit 哪天不让在实例上定义了，就改原型
+          // Shadow the prototype getter on the instance; if WebKit ever stops allowing a definition on
+          // the instance, fall back to the prototype.
           if (!define(navigator, "userAgent", ua)) define(Navigator.prototype, "userAgent", ua);
           const appVersion = ua.replace(/^Mozilla\\//, "");
           if (!define(navigator, "appVersion", appVersion)) define(Navigator.prototype, "appVersion", appVersion);
@@ -1166,14 +1314,17 @@ enum BrowserExtensionCompat {
         WKUserScript(source: userAgentScript(userAgent), injectionTime: .atDocumentStart, forMainFrameOnly: false)
     }
 
-    // MARK: - externally_connectable：网页 → 扩展的消息通道
+    // MARK: - externally_connectable: the page-to-extension message channel
 
-    /// 网页侧垫片源码的首行标记：同一个 userContentController 里认得出"这是外部消息垫片"
-    /// （内容随已装扩展变化，不能像 frameUserScript 那样按对象同一性去重）
+    /// First-line marker in the page-side shim's source, so "this is the external messaging shim" can be
+    /// recognized inside one userContentController. Its contents change with the set of installed
+    /// extensions, so unlike frameUserScript it cannot be deduplicated by object identity.
     static let externalMessagingMarker = "// QuickTerm externally_connectable"
 
-    /// manifest 里 `externally_connectable.matches`：允许给这个扩展发消息的网页地址（Chrome match pattern）。
-    /// 没声明 / 形状不对 → 空。读的是装进 store 后的 manifest：改写只动 `background`，这个键原样保留
+    /// `externally_connectable.matches` from the manifest: the page addresses allowed to message this
+    /// extension, as Chrome match patterns.
+    /// Nothing declared, or the wrong shape, gives an empty list. This reads the manifest as installed
+    /// into the store: the rewrite only touches `background` and leaves this key untouched.
     static func externallyConnectableMatches(in directory: URL) -> [String] {
         guard let data = try? Data(contentsOf: directory.appendingPathComponent("manifest.json")),
               let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1182,33 +1333,39 @@ enum BrowserExtensionCompat {
         return matches.compactMap { $0 as? String }.filter { !$0.isEmpty }
     }
 
-    /// 网页侧的 `chrome.runtime` 垫片（page world、全部框架、document start）。
+    /// The page-side `chrome.runtime` shim (page world, every frame, document start).
     ///
-    /// WebKit **实现了** externally_connectable（后台的 `runtime.onMessageExternal` 会照常收到消息），
-    /// 但只把入口挂在网页的 `browser.runtime.{sendMessage,connect}` 上——网页里根本没有 `chrome`。
-    /// Chrome 生态的站点判断"扩展装没装 / 把 token 递给扩展"用的都是 `"chrome" in window` +
-    /// `chrome.runtime.sendMessage(<扩展 id>, msg, cb)`，于是那条握手在 QuickTerm 里静默失败
-    /// （userstyles.org 把登录 token 这样递给 Stylish，扩展因此一直显示未登录、没有样式）。
+    /// WebKit **does implement** externally_connectable - the background's
+    /// `runtime.onMessageExternal` receives the messages exactly as it should - but it only hangs the
+    /// entry point off the page's `browser.runtime.{sendMessage,connect}`, and there is no `chrome` in
+    /// the page at all.
+    /// Sites in the Chrome ecosystem test "is the extension installed" and hand it a token with
+    /// `"chrome" in window` plus `chrome.runtime.sendMessage(<extension id>, msg, cb)`, so that
+    /// handshake fails silently in QuickTerm (userstyles.org passes Stylish its login token this way,
+    /// which is why the extension kept showing as signed out with no styles).
     ///
-    /// 这里只补最小的一层别名：`chrome.runtime.sendMessage` / `connect` 直接转给 `browser.runtime`，
-    /// 真正的投递与鉴权仍是 WebKit 自己做的（发给没声明本页的扩展只会拿到 undefined）。
-    /// 只在**至少一个已装扩展声明了 externally_connectable 且本框架地址匹配**时才定义，
-    /// 且绝不覆盖页面上已有的 `chrome`；除消息外不暴露任何 API。
+    /// This adds the thinnest possible alias: `chrome.runtime.sendMessage` / `connect` forward straight
+    /// to `browser.runtime`, and the actual delivery and authorization are still WebKit's own (sending
+    /// to an extension that did not declare this page just yields undefined).
+    /// It is defined only when **at least one installed extension declared externally_connectable and
+    /// this frame's address matches**, it never overwrites a `chrome` that already exists on the page,
+    /// and it exposes no API beyond messaging.
     static func externalMessagingScript(matches: [String]) -> String {
         let list = (try? JSONSerialization.data(withJSONObject: matches, options: [.withoutEscapingSlashes]))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         return #"""
-        \#(externalMessagingMarker)（按已装扩展的 externally_connectable 生成，勿手改）
+        \#(externalMessagingMarker) - generated from the installed extensions' externally_connectable, do not edit
         (() => {
           const g = globalThis;
-          // 页面上已经有 chrome（真 Chrome、或别的注入）：一概不动
+          // The page already has a chrome (real Chrome, or something else injected it): leave it alone.
           if (typeof g.chrome !== "undefined") return;
           const runtime = g.browser && g.browser.runtime;
           if (!runtime || typeof runtime.sendMessage !== "function") return;
           const PATTERNS = \#(list);
           const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
           const glob = (value) => new RegExp("^" + value.split("*").map(escapeRe).join("[\\s\\S]*") + "$");
-          // Chrome match pattern：<scheme>://<host><path>，scheme 的 * 只代表 http/https，host 的 *. 含自身
+          // Chrome match pattern: <scheme>://<host><path>. A * scheme means http/https only, and a *.
+          // host includes the bare host itself.
           const parse = (pattern) => {
             if (pattern === "<all_urls>") return { scheme: "*", host: "*", path: /^[\s\S]*$/ };
             const m = /^(\*|[a-zA-Z][a-zA-Z0-9+.-]*):\/\/(\*|(?:\*\.)?[^/*]*)(\/[\s\S]*)$/.exec(pattern);
@@ -1232,14 +1389,16 @@ enum BrowserExtensionCompat {
             return p.path.test(path);
           });
           if (!matches) return;
-          // Chrome 给普通网页的 runtime 也只有 sendMessage / connect（没有 id、没有 onMessage），这里照此对齐
+          // The runtime Chrome gives an ordinary web page also has only sendMessage / connect - no id,
+          // no onMessage - so match that exactly.
           const api = {
             sendMessage: function sendMessage(...args) {
               const callback = typeof args[args.length - 1] === "function" ? args.pop() : null;
               let promise;
               try { promise = Promise.resolve(runtime.sendMessage.apply(runtime, args)); }
               catch (error) { promise = Promise.reject(error); }
-              if (!callback) return promise;   // 无回调 = Promise 形式（Chrome MV3 语义）
+              // No callback means the Promise form (Chrome MV3 semantics).
+              if (!callback) return promise;
               promise.then((value) => callback(value), () => callback(undefined));
               return undefined;
             },
@@ -1247,7 +1406,8 @@ enum BrowserExtensionCompat {
           if (typeof runtime.connect === "function") {
             api.connect = function connect(...args) { return runtime.connect.apply(runtime, args); };
           }
-          // 站点常写 `if (chrome.runtime.lastError)`：Chrome 里没出错时读到 undefined
+          // Sites routinely write `if (chrome.runtime.lastError)`, and in Chrome that reads undefined
+          // when nothing went wrong.
           try { Object.defineProperty(api, "lastError", { get: () => undefined, configurable: true }); } catch (_) {}
           try {
             Object.defineProperty(g, "chrome", { value: { runtime: api }, writable: true, configurable: true, enumerable: true });
@@ -1256,7 +1416,8 @@ enum BrowserExtensionCompat {
         """#
     }
 
-    /// 当前应注入网页的外部消息垫片；没有任何扩展声明 externally_connectable → nil（什么都不注入）
+    /// The external messaging shim that should currently be injected into web pages; nil, meaning
+    /// nothing is injected, when no extension declared externally_connectable.
     static func externalMessagingUserScript(matches: [String]) -> WKUserScript? {
         let unique = Array(Set(matches)).sorted()
         guard !unique.isEmpty else { return nil }
@@ -1264,7 +1425,7 @@ enum BrowserExtensionCompat {
                             injectionTime: .atDocumentStart, forMainFrameOnly: false)
     }
 
-    /// JS 字符串字面量（JSON 编码的字符串在 JS 里是合法字面量）
+    /// A JS string literal: a JSON-encoded string is a valid literal in JS.
     static func jsString(_ s: String) -> String {
         (try? JSONSerialization.data(withJSONObject: [s], options: [.withoutEscapingSlashes]))
             .flatMap { String(data: $0, encoding: .utf8) }

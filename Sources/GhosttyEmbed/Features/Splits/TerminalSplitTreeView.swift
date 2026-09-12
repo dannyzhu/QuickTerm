@@ -7,7 +7,8 @@ import SwiftUI
 enum TerminalSplitOperation {
     case resize(Resize)
     case drop(Drop)
-    /// QuickTerm：分隔条双击 → 全树等分（控制器 perform(.equalize)）
+    /// QuickTerm: double-clicking the divider equalizes the whole tree (the controller runs
+    /// perform(.equalize)).
     case equalize
 
     struct Resize {
@@ -30,9 +31,11 @@ enum TerminalSplitOperation {
 struct TerminalSplitTreeView: View {
     let tree: SplitTree<PaneView>
     let action: (TerminalSplitOperation) -> Void
-    /// QuickTerm：刚分裂出的新 pane（其所在的新分裂节点播放局部收缩/渐显动效）
+    /// QuickTerm: the pane that was just split off. The new split node it lives in plays the local
+    /// shrink / fade-in animation.
     var appearingPane: UUID? = nil
-    /// QuickTerm：正在淡出的 pane（其父分裂节点播放收拢动效、叶子渐隐）
+    /// QuickTerm: panes that are fading out. Their parent split node plays the collapse animation
+    /// while the leaf itself fades.
     var closingPanes: Set<UUID> = []
 
     var body: some View {
@@ -43,10 +46,12 @@ struct TerminalSplitTreeView: View {
                 action: action,
                 appearingPane: appearingPane,
                 closingPanes: closingPanes)
-            // QuickTerm：不再对整棵树做 .id(structuralIdentity)——那会让任何结构变化重建
-            // 全部 pane（全应用闪屏、每个 pane 重播弹入、FR 视图脱离窗口）。上游 issue 7546
-            // 担心的"同一位置换了 surface 却复用视图"由叶子的 .id(surface.id) 解决，
-            // 结构变化只重建受影响的子树。
+            // QuickTerm: no more .id(structuralIdentity) on the whole tree — that made any
+            // structural change rebuild every pane (the entire app flashes, every pane replays its
+            // pop-in, the first-responder view leaves the window). What upstream issue 7546 was
+            // worried about, a surface being swapped at the same position while the view is reused,
+            // is solved by the leaf's own .id(surface.id), and a structural change then rebuilds
+            // only the affected subtree.
         }
     }
 }
@@ -55,7 +60,8 @@ private struct TerminalSplitSubtreeView: View {
     let node: SplitTree<PaneView>.Node
     var isRoot: Bool = false
     let action: (TerminalSplitOperation) -> Void
-    /// QuickTerm：刚分裂出的新 pane id（传给分裂分支视图决定是否播放进场动效）
+    /// QuickTerm: id of the pane that was just split off; handed down to the split branch view to
+    /// decide whether it plays the entrance animation.
     var appearingPane: UUID? = nil
     var closingPanes: Set<UUID> = []
 
@@ -64,27 +70,35 @@ private struct TerminalSplitSubtreeView: View {
         case .leaf(let leafView):
             TerminalSplitLeaf(surfaceView: leafView, isSplit: !isRoot, action: action,
                               closing: closingPanes.contains(leafView.id))
-                .id(leafView.id)   // 同一位置换了 surface 时重建视图（见上游 issue 7546）
+                .id(leafView.id)   // new surface at the same position -> rebuild (upstream 7546)
 
         case .split:
-            // 分裂分支放在独立视图里：叶子原位变成分裂时它是全新 SwiftUI 身份，
-            // 进场动效的 State(initialValue:) 才会生效（放在本视图上会沿用叶子时期的旧状态）
+            // The split branch lives in its own view: when a leaf turns into a split in place that
+            // view is a brand new SwiftUI identity, which is the only way the entrance animation's
+            // State(initialValue:) takes effect. Put it on this view instead and it inherits the
+            // stale state from back when this position was a leaf.
             SplitBranchView(node: node, action: action, appearingPane: appearingPane,
                             closingPanes: closingPanes)
         }
     }
 }
 
-/// QuickTerm：分裂节点渲染 + 新分裂的局部进场动效 + 关闭子叶的局部收拢动效。
-/// 进场：原 pane 从占满收缩到 ratio（真实几何，随槽位缩小），新 pane 内容按**最终尺寸**布局、
-/// 随槽位扩大被"揭开"并渐显（不经历中间宽度 → 新 shell 不会以 1 列 PTY 启动）。
-/// 关闭（对称）：关闭方的槽位收拢到 0（内容钉在关闭前尺寸、原地被裁掉，叶子自身渐隐），
-/// 幸存子树钉在**最终尺寸**（占满本节点）从近端被揭开；动效到点后控制器才真正删节点，
-/// 幸存者重挂时尺寸不变、不再重排。
-/// `animating` / `closingSide` 在首次出现时锁存，之后模型清除标记不会打断在途动画。
+/// QuickTerm: renders a split node, plus the local entrance animation for a new split and the local
+/// collapse animation for a closing child leaf.
+/// Entrance: the original pane shrinks from filling the node down to `ratio` (real geometry, it
+/// shrinks along with its slot), while the new pane's content is laid out at its **final size** and
+/// gets "uncovered" and faded in as its slot grows. It never passes through intermediate widths, so
+/// the new shell never starts up against a 1-column PTY.
+/// Closing (the mirror image): the closing side's slot collapses to 0 (its content pinned at the
+/// size it had before the close, clipped away in place, with the leaf itself fading), while the
+/// surviving subtree is pinned at its **final size** (filling this node) and uncovered from the near
+/// edge. The controller only really deletes the node once the animation lands, so the survivor's
+/// size is unchanged when it is re-attached and nothing reflows.
+/// `animating` / `closingSide` are latched the first time they appear, so the model clearing those
+/// flags afterwards cannot interrupt an animation in flight.
 private struct SplitBranchView: View {
     @EnvironmentObject var ghostty: Ghostty.App
-    // 1pt 分隔细线按 divider-opacity 半透明
+    // the 1pt divider hairline is made translucent by divider-opacity
     @EnvironmentObject var theme: ThemeManager
 
     let node: SplitTree<PaneView>.Node
@@ -92,22 +106,28 @@ private struct SplitBranchView: View {
     let appearingPane: UUID?
     let closingPanes: Set<UUID>
 
-    @State private var animating: Bool       // 锁存：本节点是否播放进场动效
-    @State private var progress: CGFloat     // 0 = 原 pane 占满、新 pane 不可见；1 = 到位
-    @State private var settled: Bool         // 动画结束：解除新 pane 的尺寸钉住
-    @State private var closingSide: ClosingSide?      // 锁存：哪一侧直接子叶在关闭
-    @State private var closingLeaf: UUID?             // 锁存：关闭中的那片叶（判定锁存是否仍有效）
-    @State private var closeProgress: CGFloat = 0     // 0 = 正常几何；1 = 关闭方槽位收拢完毕
-    @State private var closingStartSize: CGSize?      // 关闭方在关闭前的尺寸（钉住用）
+    @State private var animating: Bool       // latched: does this node play the entrance animation
+    @State private var progress: CGFloat     // 0 = original fills it, new pane hidden; 1 = in place
+    @State private var settled: Bool         // animation done: unpin the new pane's size
+    @State private var closingSide: ClosingSide?      // latched: which direct child leaf is closing
+    @State private var closingLeaf: UUID?             // latched: the closing leaf (validates the latch)
+    @State private var closeProgress: CGFloat = 0     // 0 = normal geometry; 1 = closing slot collapsed
+    @State private var closingStartSize: CGSize?      // the closing side's size before the close (pinning)
 
     enum ClosingSide { case left, right }
 
-    /// 已播过（或已直接到位）收拢的关闭叶：某分裂视图接手一片叶时据此决定是重播 0.28s 还是直接到位。
-    /// 只看"上一轮 closingPanes 里有没有"不够——一个分裂节点同时有两片叶在关闭时只锁存一片，
-    /// 另一片只渐隐、未收拢，晋升到父节点时才是它第一次收拢。
+    /// Closing leaves whose collapse has already played (or already snapped into place). When a
+    /// split view takes over a leaf, this is what decides between replaying the 0.28s animation and
+    /// jumping straight to the end state.
+    /// Looking only at "was it in the previous round's closingPanes" is not enough: when one split
+    /// node has two leaves closing at the same time it latches only one of them, and the other
+    /// merely fades without collapsing — its first real collapse happens when it is promoted to the
+    /// parent node.
     private static var collapsed = Set<UUID>()
 
-    /// 直接子叶身份 + 关闭集合：任一变化都要重新评估锁存（节点被兄弟子树顶替 / 新的关闭开始）
+    /// The identity of the direct child leaves plus the closing set: a change in either means the
+    /// latch has to be re-evaluated (the node was displaced by a sibling subtree, or a new close
+    /// started).
     private struct CloseKey: Equatable {
         let leftLeaf: UUID?
         let rightLeaf: UUID?
@@ -124,7 +144,7 @@ private struct SplitBranchView: View {
             self.closing = closing
         }
 
-        /// 哪一侧直接子叶在关闭（右/下优先）
+        /// Which side's direct child leaf is closing; right/bottom wins.
         var pending: (side: ClosingSide, leaf: UUID)? {
             if let r = rightLeaf, closing.contains(r) { return (.right, r) }
             if let l = leftLeaf, closing.contains(l) { return (.left, l) }
@@ -160,8 +180,10 @@ private struct SplitBranchView: View {
             case .vertical: .vertical
             }
             let key = CloseKey(node: node, closing: closingPanes)
-            // 锁存只在"锁存的叶仍是本节点的直接子叶"时生效：关闭结束、兄弟子树顶到本视图位置
-            // （SwiftUI 复用同位置的 .split 视图与其 @State）时，派生值立刻回到正常几何，不等复位。
+            // The latch only counts while the latched leaf is still a direct child of this node.
+            // Once the close finishes and a sibling subtree takes over this view's position (SwiftUI
+            // reuses the .split view at that position along with its @State), the derived values go
+            // back to normal geometry immediately instead of waiting for the reset.
             let latchedValid = closingLeaf.map(key.isDirectChild) ?? false
             let side: ClosingSide? = latchedValid ? closingSide : nil
             GeometryReader { geo in
@@ -169,9 +191,10 @@ private struct SplitBranchView: View {
                     splitViewDirection,
                     .init(get: {
                         let ratio = CGFloat(split.ratio)
-                        // 进场动效期：从"原 pane 占满"(1) 收缩到 ratio
+                        // Entrance animation: shrink from "the original pane fills it" (1) to ratio
                         var r = animating ? ratio * progress + (1 - progress) : ratio
-                        // 关闭动效期：关闭方槽位收拢到 0，幸存方长满
+                        // Close animation: the closing side's slot collapses to 0, the survivor
+                        // grows to fill
                         switch side {
                         case .right: r += (1 - r) * closeProgress
                         case .left: r *= (1 - closeProgress)
@@ -185,10 +208,16 @@ private struct SplitBranchView: View {
                     dividerLayoutSize: splitterLayoutSize,
                     resizeIncrements: .init(width: 1, height: 1),
                     left: {
-                        // 关闭右/下孩子：左/上孩子是幸存者，钉在最终尺寸（占满本节点）、左上对齐，
-                        // 槽位扩大时从近端揭开；一直钉到本节点被删（重挂时尺寸不变）。
-                        // 关闭左/上孩子：它自己是关闭方，钉在关闭前尺寸、左上对齐，槽位收拢时被裁掉。
-                        // 修饰链保持同型（frame(nil) = 不约束），避免切换时重建子视图。
+                        // Closing the right/bottom child: the left/top child is the survivor,
+                        // pinned at its final size (filling this node) and aligned top-leading, so
+                        // it is uncovered from the near edge as the slot grows. It stays pinned
+                        // until this node is deleted, so its size does not change when it is
+                        // re-attached.
+                        // Closing the left/top child: that child is the closing side, pinned at its
+                        // pre-close size and aligned top-leading, clipped away as its slot
+                        // collapses.
+                        // The modifier chain keeps the same shape throughout (frame(nil) = no
+                        // constraint) so switching between these cases does not rebuild the child.
                         let size: CGSize? = switch side {
                         case .right: geo.size
                         case .left: closingStartSize
@@ -200,14 +229,21 @@ private struct SplitBranchView: View {
                             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
                                    alignment: .topLeading)
                             .clipped()
-                            // 动效期不响应鼠标：clipped 只裁视觉，钉在最终尺寸的幸存者
-                            // 溢出到关闭方槽位的部分仍可被点中/悬停而抢焦点
+                            // No mouse during the animation: clipped only trims what is drawn, so
+                            // the part of the survivor that overflows into the closing side's slot
+                            // while pinned at its final size is still clickable and hoverable, and
+                            // would steal focus.
                             .allowsHitTesting(side == nil)
                     },
                     right: {
-                        // 进场动效期把新 pane 钉在最终尺寸（左上对齐、按槽位裁剪）= 揭开效果；结束后解除钉住。
-                        // 关闭左/上孩子：右/下孩子是幸存者，钉在最终尺寸、右下对齐（内容留在最终位置，
-                        // 槽位向左/上扩大时从近端揭开）。关闭自己：钉在关闭前尺寸、右下对齐（原地被盖住）。
+                        // During the entrance animation the new pane is pinned at its final size
+                        // (top-leading, clipped to the slot), which is what produces the uncovering
+                        // effect; the pin is released when it ends.
+                        // Closing the left/top child: the right/bottom child is the survivor, pinned
+                        // at its final size and aligned bottom-trailing, so its content stays where
+                        // it will end up and is uncovered from the near edge as the slot grows
+                        // left/up. Closing itself: pinned at its pre-close size, bottom-trailing,
+                        // covered over in place.
                         let pin = animating && !settled
                         let final = finalRightSize(total: geo.size, split: split)
                         let size: CGSize? = switch side {
@@ -219,8 +255,10 @@ private struct SplitBranchView: View {
                         TerminalSplitSubtreeView(node: split.right, action: action,
                                                  appearingPane: appearingPane, closingPanes: closingPanes)
                             .frame(width: size?.width, height: size?.height, alignment: align)
-                            // min+max 同给：frame 无条件采用槽位提议尺寸，clipped 才裁到槽位、
-                            // 对齐才生效（只给 max 时子视图大于提议会撑开并居中溢出）
+                            // min and max are both given so the frame unconditionally takes the
+                            // slot's proposed size; only then does clipped trim to the slot and only
+                            // then does the alignment apply. With max alone, a child larger than the
+                            // proposal expands the frame and overflows centered.
                             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
                                    alignment: align)
                             .clipped()
@@ -228,26 +266,31 @@ private struct SplitBranchView: View {
                             .allowsHitTesting(side == nil)
                     },
                     onEqualize: {
-                        action(.equalize)   // QuickTerm：不再经引擎（叶子可能不是终端）
+                        // QuickTerm: no longer routed through the engine, since a leaf is not
+                        // necessarily a terminal
+                        action(.equalize)
                     }
                 )
                 .onChange(of: key, initial: true) { _, key in
-                    // 1) 锁存的叶已不是直接子叶（关闭结束/本视图被兄弟子树顶替复用）→ 复位，
-                    //    让本视图能播放下一次关闭
+                    // 1) The latched leaf is no longer a direct child (the close finished, or this
+                    //    view was reused after a sibling subtree displaced it) -> reset, so this
+                    //    view can play the next close.
                     if let leaf = closingLeaf, !key.isDirectChild(leaf) {
                         closingLeaf = nil
                         closingSide = nil
                         closingStartSize = nil
                         closeProgress = 0
                     }
-                    // 2) 新的关闭 → 锁存一次并启动动画；之后模型清掉 closingPanes（flush/到点）
-                    //    不回退在途动画
+                    // 2) A new close -> latch once and start the animation. The model clearing
+                    //    closingPanes afterwards (on flush, or when the animation lands) does not
+                    //    roll back an animation already in flight.
                     guard closingLeaf == nil, let pending = key.pending else { return }
                     closingLeaf = pending.leaf
                     closingSide = pending.side
                     closingStartSize = childSize(pending.side, total: geo.size, split: split)
-                    // 这片叶的收拢若早已在（被顶替掉的）子分裂视图里播放过（本视图复位后接手），
-                    // 直接到位，不把幸存者弹回去重播一遍
+                    // If this leaf's collapse already played in the (now displaced) child split
+                    // view and this view picked it up after resetting, jump straight to the end
+                    // state instead of snapping the survivor back to replay it.
                     let alreadyCollapsed = Self.collapsed.contains(pending.leaf)
                     Self.collapsed.insert(pending.leaf)
                     if alreadyCollapsed {
@@ -270,13 +313,14 @@ private struct SplitBranchView: View {
         }
     }
 
-    /// 分隔线的布局占位（与传给 SplitView 的一致；gaps 关闭时 1pt）
+    /// The divider's layout footprint, matching what we hand to SplitView; 1pt with gaps off.
     private var splitterLayoutSize: CGFloat {
         SplitViewMetrics.splitterLayoutSize(gapsEnabled: theme.gapsEnabled)
     }
 
-    /// 新 pane（右/下孩子）的最终尺寸——与 SplitView.rightRect 同算法
-    /// （分隔线布局尺寸 SplitViewMetrics.splitterLayoutSize 居中于边界、增量 1）
+    /// The final size of the new pane (the right/bottom child) — the same algorithm as
+    /// SplitView.rightRect: the divider's layout size (SplitViewMetrics.splitterLayoutSize) straddles
+    /// the boundary, with an increment of 1.
     private func finalRightSize(total: CGSize, split: SplitTree<PaneView>.Node.Split) -> CGSize {
         let ratio = CGFloat(split.ratio)
         let half = splitterLayoutSize / 2
@@ -292,9 +336,10 @@ private struct SplitBranchView: View {
         }
     }
 
-    /// 某一侧孩子当前（按 ratio）的尺寸——与 SplitView.leftRect/rightRect 同算法
-    /// （左/上取整后即其尺寸，右/下 = 总量 − 左 − 分隔线布局尺寸），
-    /// 钉住时才不会比现有槽位差零点几 pt 触发一次无谓的 PTY 重排
+    /// The current size of the child on one side (per `ratio`) — the same algorithm as
+    /// SplitView.leftRect/rightRect: left/top is its size after rounding, right/bottom = total -
+    /// left - the divider's layout size. Matching it exactly is what keeps a pin from landing a
+    /// fraction of a point off the existing slot and triggering a pointless PTY reflow.
     private func childSize(_ side: ClosingSide, total: CGSize,
                            split: SplitTree<PaneView>.Node.Split) -> CGSize {
         let ratio = CGFloat(split.ratio)
@@ -315,27 +360,29 @@ private struct SplitBranchView: View {
 }
 
 private struct TerminalSplitLeaf: View {
-    @EnvironmentObject var theme: ThemeManager   // QuickTerm：pane 留白（pane-gap）
+    @EnvironmentObject var theme: ThemeManager   // QuickTerm: pane padding (pane-gap)
     let surfaceView: PaneView
     let isSplit: Bool
     let action: (TerminalSplitOperation) -> Void
-    /// QuickTerm：关闭中 → 渐隐并停止响应鼠标（悬停不再夺焦点）
+    /// QuickTerm: while closing, fade out and stop taking mouse input, so hovering no longer steals
+    /// focus.
     var closing: Bool = false
-    /// 渐隐由状态驱动而非直接绑 closing：一出生就 closing 的叶（flush 后同轮换了结构身份）
-    /// 没有值变化可动画，会直接不可见
+    /// The fade is driven by state rather than bound to `closing` directly: a leaf that is already
+    /// closing the moment it is born (its structural identity changed in the same round as the
+    /// flush) has no value change to animate and would just be invisible.
     @State private var faded = false
 
     @State private var dropState: DropState = .idle
     @State private var isSelfDragging: Bool = false
-    // QuickTerm：⌘ 按住状态（浮出拖拽源）
+    // QuickTerm: whether Cmd is held, which is what surfaces the drag source
     @ObservedObject private var modifierState = ModifierState.shared
     @State private var dragSourceDragging: Bool = false
     @State private var dragSourceHovering: Bool = false
 
     var body: some View {
         GeometryReader { geometry in
-            // QuickTerm 裁剪：InspectableSurface（inspector 分屏包装）→ 纯 SurfaceWrapper
-            PaneContentView(pane: surfaceView, isSplit: isSplit)   // QuickTerm：按 pane 种类分发内容
+            // QuickTerm trim: InspectableSurface (the inspector split wrapper) -> plain SurfaceWrapper
+            PaneContentView(pane: surfaceView, isSplit: isSplit)   // QuickTerm: dispatch by pane kind
             .background {
                 // If we're dragging ourself, we hide the entire drop zone. This makes
                 // it so that a released drop animates back to its source properly
@@ -357,10 +404,13 @@ private struct TerminalSplitLeaf: View {
                 }
             }
             .overlay {
-                // QuickTerm（spec §4.2）：按住 ⌘ 时整个 pane 成为拖拽源——
-                // 拖到目标中心=交换、边缘=分裂插入；松开 ⌘ 即消失，不影响正常鼠标操作
-                // 拖拽进行中也保持挂载：先松 ⌘ 再松左键时不能把活着的 NSDraggingSource 拆掉，
-                // 否则 draggingSession(endedAt:) 落不到在窗口里的视图，PaneDragState 收不了尾
+                // QuickTerm (spec §4.2): holding Cmd turns the whole pane into a drag source — drop
+                // on the target's center to swap, on an edge to split and insert. It disappears the
+                // moment Cmd is released and never gets in the way of normal mouse work.
+                // It also stays mounted while a drag is in progress: if Cmd is released before the
+                // left button, we must not tear down a live NSDraggingSource, or
+                // draggingSession(endedAt:) never reaches a view that is still in the window and
+                // PaneDragState never gets to clean up.
                 if modifierState.commandHeld || dragSourceDragging {
                     Ghostty.SurfaceDragSource(
                         surfaceView: surfaceView,
@@ -376,13 +426,14 @@ private struct TerminalSplitLeaf: View {
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Terminal pane")
-            // QuickTerm：pane 视觉（焦点边框 / gaps_in / 弹入动画），见 PaneChrome.swift
+            // QuickTerm: pane visuals (focus border / gaps_in / pop-in animation); see PaneChrome.swift
             .modifier(PaneChrome(surfaceView: surfaceView))
-            // 关闭动效：渐隐（几何收拢由父 SplitBranchView 负责；根单叶只渐隐）
+            // Close animation: fade out. The geometric collapse is the parent SplitBranchView's
+            // job; a lone leaf at the root only fades.
             .opacity(faded ? 0 : 1)
             .allowsHitTesting(!closing)
             .onChange(of: closing, initial: true) { _, closing in
-                if !closing { faded = false; return }   // 身份复用兜底：不在关闭中就必须可见
+                if !closing { faded = false; return }   // identity reuse: not closing = visible
                 guard !faded else { return }
                 withAnimation(.easeOut(duration: 0.28)) { faded = true }
             }
@@ -401,19 +452,19 @@ private struct TerminalSplitLeaf: View {
         let action: (TerminalSplitOperation) -> Void
 
         func validateDrop(info: DropInfo) -> Bool {
-            // QuickTerm：跨窗口拖放明确拒绝（一个 pane 只能挂在一个窗口里）
+            // QuickTerm: cross-window drops are refused outright; a pane lives in exactly one window
             guard PaneDragState.shared.allowsDrop(on: destinationSurface) else { return false }
             return info.hasItemsConforming(to: [.ghosttySurfaceId])
         }
 
         func dropEntered(info: DropInfo) {
-            // QuickTerm：跨窗口拖放不亮落区
+            // QuickTerm: a cross-window drag does not light up the drop zone
             guard PaneDragState.shared.allowsDrop(on: destinationSurface) else { return }
             dropState = .dropping(.calculate(at: info.location, in: viewSize))
         }
 
         func dropUpdated(info: DropInfo) -> DropProposal? {
-            // QuickTerm：跨窗口拖放给禁止光标
+            // QuickTerm: a cross-window drag gets the not-allowed cursor
             guard PaneDragState.shared.allowsDrop(on: destinationSurface) else {
                 return DropProposal(operation: .forbidden)
             }
@@ -432,7 +483,7 @@ private struct TerminalSplitLeaf: View {
         func performDrop(info: DropInfo) -> Bool {
             let zone = TerminalSplitDropZone.calculate(at: info.location, in: viewSize)
             dropState = .idle
-            // QuickTerm：跨窗口拖放明确拒绝
+            // QuickTerm: cross-window drops are refused outright
             guard PaneDragState.shared.allowsDrop(on: destinationSurface) else { return false }
 
             // Load the dropped surface asynchronously using Transferable
@@ -465,7 +516,7 @@ enum TerminalSplitDropZone: String, Equatable {
     case bottom
     case left
     case right
-    // QuickTerm 扩展（spec §4.2）：拖到目标中心 = 交换位置
+    // QuickTerm extension (spec §4.2): dropping on the target's center swaps the two panes
     case center
 
     /// Determines which drop zone the cursor is in based on proximity to edges.
@@ -473,7 +524,7 @@ enum TerminalSplitDropZone: String, Equatable {
     /// Divides the view into four triangular regions by drawing diagonals from
     /// corner to corner. The drop zone is determined by which edge the cursor
     /// is closest to, creating natural triangular hit regions for each side.
-    /// QuickTerm：中央 40%×40% 区域为 .center（交换）。
+    /// QuickTerm: the central 40%×40% region is .center (swap).
     static func calculate(at point: CGPoint, in size: CGSize) -> TerminalSplitDropZone {
         let relX = point.x / size.width
         let relY = point.y / size.height

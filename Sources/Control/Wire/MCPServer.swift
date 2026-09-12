@@ -1,30 +1,36 @@
 import Foundation
 
-/// `quickterm mcp`：标准输入输出上的 MCP 服务（JSON-RPC 2.0，一行一个对象）。
+/// `quickterm mcp`: an MCP server over stdio (JSON-RPC 2.0, one object per line).
 ///
-/// 它**不是**第二套控制面：每次 `tools/call` 都会开一条到 QuickTerm 的 socket 连接、
-/// 发一条与 CLI 一模一样的请求，然后把响应信封原样交回去。工具表来自 `MCPToolMap`，
-/// 而那张表又来自 `ControlCommandTable` —— 三处同源，漂移不了。
+/// It is **not** a second control plane: every `tools/call` opens a socket connection to QuickTerm,
+/// sends exactly the request the CLI would send, and hands the response envelope straight back. The
+/// tool table comes from `MCPToolMap`, which in turn comes from `ControlCommandTable` — three
+/// places, one source, no room for drift.
 ///
-/// 为什么值得有：MCP 的**注解**让宿主（Claude Code / Codex）在它那一层就能自动放行读、
-/// 对破坏性调用弹确认。那是在 QuickTerm 自己的确认闸门之外、**独立的第二道闸**；
-/// 论 token 成本，CLI 一直更省（不调用就不占上下文）。
+/// Why it is worth having: MCP's **annotations** let the host (Claude Code / Codex) auto-approve
+/// reads and prompt on destructive calls at its own layer. That is an **independent second gate**,
+/// outside QuickTerm's own confirmation gate; on token cost the CLI still wins (a tool you do not
+/// call costs no context).
 ///
-/// **纯 Foundation**：本目录同时编进 app 与 `quickterm` 工具 target，
-/// 因此这一层可以在用例里直接驱动（同进程或走一对管道），不必真的挂到一个宿主上。
+/// **Pure Foundation**: this directory is compiled into both the app and the `quickterm` tool
+/// target, so this layer can be driven directly from the tests (in-process, or through a pair of
+/// pipes) without attaching it to a real host.
 final class MCPServer {
-    /// 把一条控制请求送到 QuickTerm 并拿回响应。CLI 侧每次调用开一条新连接
-    /// （与 CLI 每条命令一次连接同一条规矩）；用例侧直接接 `ControlCommandRunner`
+    /// Sends one control request to QuickTerm and brings back the response. On the CLI side each
+    /// call opens a fresh connection (the same rule as one connection per CLI command); in tests it
+    /// is wired straight to `ControlCommandRunner`.
     typealias Dispatch = (ControlRequest) throws -> ControlReply
 
-    /// 支持的 MCP 协议版本，新的在前。客户端报的版本在表里就照它回，不在就回我们最新的那个
+    /// The MCP protocol versions we support, newest first. If the client names one that is in the
+    /// list we echo it back; otherwise we answer with our newest.
     static let supportedProtocolVersions = ["2025-06-18", "2025-03-26", "2024-11-05"]
 
     let cliVersion: String
     private let dispatch: Dispatch
     private let environment: [String: String]
     private var nextRequestID = 0
-    /// 收到 `initialize` 之前只回 `ping` 与 `initialize`（MCP 允许服务端这样拒绝）
+    /// Before `initialize` arrives we answer only `ping` and `initialize` (MCP allows a server to
+    /// refuse this way).
     private(set) var initialized = false
 
     init(cliVersion: String, environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -34,26 +40,28 @@ final class MCPServer {
         self.dispatch = dispatch
     }
 
-    // MARK: 一行进，一行出
+    // MARK: One line in, one line out
 
-    /// 处理一行 JSON-RPC。返回要写回去的那一行；通知（没有 `id`）返回 nil
+    /// Handles one line of JSON-RPC. Returns the line to write back; a notification (no `id`)
+    /// returns nil.
     func handle(line: Data) -> Data? {
         guard let value = try? ControlJSON.decoder.decode(JSONValue.self, from: line) else {
             return encode(Self.errorObject(id: .null, code: -32700, message: "Parse error: not JSON"))
         }
-        // 2025-06-18 起 MCP 明确去掉了 JSON-RPC 批量请求
+        // As of 2025-06-18 MCP explicitly dropped JSON-RPC batch requests
         guard let object = value.objectValue else {
             return encode(Self.errorObject(id: .null, code: -32600,
                                            message: "Invalid Request: expected a single JSON-RPC object"))
         }
         let id = object["id"]
         guard let method = object["method"]?.stringValue else {
-            // 没有 method 的对象是一条响应（我们不发请求，所以不该收到）——静默丢掉
+            // An object with no method is a response (we never send requests, so we should never
+            // receive one) — drop it silently
             return nil
         }
         let params = object["params"]?.objectValue ?? [:]
 
-        // 通知：**绝不回**（回了就是协议错误）
+        // Notifications: **never answer** (answering one is a protocol error)
         guard let id else {
             return nil
         }
@@ -152,8 +160,10 @@ final class MCPServer {
         }
     }
 
-    /// 把工具参数翻成一条控制请求。**校验在这里做完**：认不得的键、缺的必填、
-    /// 不在枚举里的值，一律当场报错，绝不悄悄丢掉——静默丢参数是最难查的一类 agent 故障
+    /// Turns tool arguments into a control request. **All validation happens here**: an
+    /// unrecognized key, a missing required argument, a value outside the enum — each one is an
+    /// error on the spot and never silently dropped, because a silently dropped argument is the
+    /// hardest class of agent failure to track down.
     func buildRequest(tool: MCPTool, arguments: [String: JSONValue]) throws -> ControlRequest {
         let specs = tool.commands
         let spec: ControlCommandSpec
@@ -273,10 +283,11 @@ final class MCPServer {
         }
     }
 
-    // MARK: 结果信封
+    // MARK: Result envelope
 
-    /// 工具结果：`structuredContent` 是控制面的响应信封本身（与 `outputSchema` 同形），
-    /// `content` 里再放一份格式化的 JSON 文本给不认 structuredContent 的宿主
+    /// The tool result: `structuredContent` is the control plane's response envelope itself (the
+    /// same shape as `outputSchema`), and `content` carries a second, pretty-printed copy as JSON
+    /// text for hosts that do not understand structuredContent.
     static func toolResult(_ reply: ControlReply) -> JSONValue {
         var envelope: [String: JSONValue] = ["ok": .bool(reply.ok)]
         if let seq = reply.seq { envelope["seq"] = .int(seq) }
@@ -310,7 +321,7 @@ final class MCPServer {
         try ControlJSON.decoder.decode(JSONValue.self, from: ControlJSON.encoder.encode(value))
     }
 
-    // MARK: JSON-RPC 信封
+    // MARK: JSON-RPC envelope
 
     static func resultObject(id: JSONValue, result: JSONValue) -> JSONValue {
         .object(["jsonrpc": .string("2.0"), "id": id, "result": result])
@@ -321,16 +332,19 @@ final class MCPServer {
                  "error": .object(["code": .int(code), "message": .string(message)])])
     }
 
-    // MARK: stdio 循环
+    // MARK: stdio loop
 
-    /// 读一行、处理、写一行，直到对端关掉标准输入。
-    /// **绝不往标准输出写别的东西**：那条管道整条都是 JSON-RPC 的（日志只能走 stderr）
-    /// 配置闸门：`~/.config/quickterm/config.toml` 的 `[control] mcp = false` 时一个字节都不服务。
+    /// Read a line, handle it, write a line, until the peer closes stdin.
+    /// **Never write anything else to stdout**: that pipe is JSON-RPC end to end (logs go to
+    /// stderr). The config gate: with `[control] mcp = false` in `~/.config/quickterm/config.toml`
+    /// we serve not one byte.
     ///
-    /// 闸门钉在 `serve()` 上，而不是只钉在 `quickterm mcp` 的命令处理里——
-    /// `serve()` 是"真的开始说 MCP"的唯一出口，将来再多一个入口也绕不过它。
-    /// 错误里**点名那个配置键**：宿主只会把失败显示成"服务器起不来"，
-    /// 用户得能从这句话直接找到自己关掉的那个开关
+    /// The gate is pinned to `serve()` rather than only to the `quickterm mcp` command handler —
+    /// `serve()` is the single exit through which we actually start speaking MCP, and any future
+    /// entry point still has to pass through it.
+    /// The error **names the config key**: the host will only show the failure as "the server would
+    /// not start", so the user has to be able to get from that sentence straight to the switch they
+    /// turned off.
     static func configRefusal(gate: ControlConfigGate = .load(),
                               path: String = ConfigPaths.configURL().path) -> ControlErrorBody? {
         guard !gate.mcp else { return nil }
@@ -338,7 +352,8 @@ final class MCPServer {
                                 hint: ControlConfigGate.mcpDisabledHint)
     }
 
-    /// 正常读到流末尾返回 nil；被配置拒绝则原样返回那条错误（调用方负责退出码）
+    /// Returns nil on a normal read to end of stream; when the config refuses, returns that error
+    /// as-is (the caller turns it into an exit code).
     @discardableResult
     func serve(input: FileHandle = .standardInput, output: FileHandle = .standardOutput,
                gate: ControlConfigGate = .load()) -> ControlErrorBody? {

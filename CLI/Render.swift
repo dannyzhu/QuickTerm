@@ -1,7 +1,8 @@
 import Foundation
 
-/// 人类可读输出（stdout 是 TTY，或显式 `--plain`）。
-/// agent 拿到的永远是 JSON——这里只服务于人，所以可以随意排版。
+/// Human-readable output (stdout is a TTY, or `--plain` was passed explicitly).
+/// An agent always gets JSON, so this side only ever has to serve people and is free to lay things
+/// out however reads best.
 enum Render {
     static func human(_ reply: ControlReply) -> String {
         guard let data = reply.data, let object = data.objectValue else {
@@ -9,15 +10,17 @@ enum Render {
         }
         if object["schema"]?.stringValue == "quickterm.state/1" { return state(object, reply: reply) }
         if object["schema"]?.stringValue == "quickterm.describe/1" { return describe(object) }
-        // 抓屏要**先**认：它带着 pane 字段，落到下面的 paneDetail 分支里
-        // 正文（也就是调用方唯一要的东西）会被整段丢掉
+        // Capture has to be matched **first**: it carries a `pane` field, so if it falls through
+        // to the paneDetail branch below, the body — the one thing the caller wanted — is dropped
+        // wholesale.
         if let text = object["text"]?.stringValue, object["lines"] != nil {
             return capture(object, text: text)
         }
-        // 变更信封要**先**认：它自己也带 pane / panes / workspace / screen 字段，
-        // 落到下面那些分支里就只剩一张表，"改了没有"反而看不见了
+        // The mutation envelope has to be matched **first** as well: it carries pane / panes /
+        // workspace / screen fields of its own, and falling through to those branches below leaves
+        // nothing but a table, with "did anything change" nowhere to be seen.
         if object["command"] != nil, object["changed"] != nil { return mutation(object, reply: reply) }
-        // `spec dump` / `spec validate`（变更信封在上面已经先认过了）
+        // `spec dump` / `spec validate` (the mutation envelope was already matched above)
         if let spec = object["spec"], object["scope"] != nil { return specDump(object, spec) }
         if object["valid"] != nil, object["scope"] != nil { return specValidate(object) }
         if let panes = object["panes"]?.arrayValue, object["screens"] == nil {
@@ -34,7 +37,8 @@ enum Render {
         return summaryLine(reply)
     }
 
-    /// `pane capture-text`：一行元信息 + 原样的正文（人要读的就是正文，别加缩进）
+    /// `pane capture-text`: one line of metadata plus the body verbatim. The body is what the human
+    /// came here to read, so do not indent it.
     static func capture(_ object: [String: JSONValue], text: String) -> String {
         let pane = object["pane"]?["handle"]?.stringValue ?? "?"
         var head = "\(pane)"
@@ -49,7 +53,7 @@ enum Render {
         return head + "\n" + String(repeating: "─", count: 12) + "\n" + text
     }
 
-    /// `events poll` 的人类输出
+    /// Human-readable output for `events poll`.
     static func events(_ object: [String: JSONValue], reply: ControlReply) -> String {
         var out = eventLines(reply)
         if out.isEmpty {
@@ -68,7 +72,8 @@ enum Render {
         return out.joined(separator: "\n")
     }
 
-    /// 一批事件 → 每条一行（`events follow` 的流式输出也用它）
+    /// A batch of events -> one line each. The streaming output of `events follow` runs through
+    /// this too.
     static func eventLines(_ reply: ControlReply) -> [String] {
         guard let events = reply.data?["events"]?.arrayValue else { return [] }
         return events.compactMap { entry in
@@ -139,11 +144,12 @@ enum Render {
         let rows = panes.compactMap(\.objectValue)
         guard !rows.isEmpty else { return "(no panes)" }
         var keys = ["handle", "kind", "screen", "workspace", "title", "cwd"]
-        // 投影过的输出只有用户点名的字段
+        // A projected response only carries the fields the user named.
         let present = Set(rows.flatMap { $0.keys })
         keys = keys.filter { present.contains($0) }
-        // `id` 与 `tabList` 不进表格：一个是 36 位 uuid，一个是结构化的数组——
-        // 塞进一列要么把表撑爆，要么渲染成一片空白。标签明细走 `get` 的逐项输出
+        // `id` and `tabList` stay out of the table: one is a 36-character uuid, the other a
+        // structured array — forcing either into a column either blows the table apart or renders
+        // as a blank space. Tab detail goes through `get`'s per-item output instead.
         for extra in present.sorted() where !keys.contains(extra) && !["id", "tabList"].contains(extra) {
             keys.append(extra)
         }
@@ -182,8 +188,8 @@ enum Render {
     static func paneDetail(_ pane: [String: JSONValue]) -> String {
         var out = pane.keys.sorted().filter { $0 != "tabList" }
             .map { "\(pad($0, 12))\(display(pane[$0]))" }
-        // 标签是**可寻址的东西**（`--tab 2` / `--tab #<id>`），所以逐条列出来，
-        // 而不是显示成一个没法用的 `{…}`
+        // Tabs are **addressable** (`--tab 2` / `--tab #<id>`), so list them one per line rather
+        // than rendering an unusable `{…}`.
         for tab in pane["tabList"]?.arrayValue ?? [] {
             guard let t = tab.objectValue else { continue }
             out.append(pad("tab \(t["index"]?.intValue ?? 0)", 12)
@@ -194,8 +200,9 @@ enum Render {
         return out.joined(separator: "\n")
     }
 
-    /// `action --list` 的人读版。取 `helpEN`：`ActionDoc` 里中英两份并列，
-    /// 而命令行这一侧全是英文（`--json` 照旧把两份都给出去）
+    /// The human-readable form of `action --list`. It takes `helpEN`: `ActionDoc` carries the
+    /// Chinese and English halves side by side, while this side of the command line is English only
+    /// (`--json` still hands out both).
     static func actionTable(_ actions: [JSONValue]) -> String {
         actions.compactMap(\.objectValue).map { a in
             let help = a["helpEN"]?.stringValue ?? a["helpZH"]?.stringValue ?? ""
@@ -214,7 +221,8 @@ enum Render {
         return out.joined(separator: "\n")
     }
 
-    /// Phase 2 变更信封：一眼看出"改了没有 / 改了什么 / 能不能撤销"
+    /// The Phase 2 mutation envelope: whether anything changed, what changed, and whether it can be
+    /// undone, all visible at a glance.
     static func mutation(_ object: [String: JSONValue], reply: ControlReply) -> String {
         let dry = object["dryRun"]?.boolValue == true
         let changed = object["changed"]?.boolValue == true
@@ -241,7 +249,8 @@ enum Render {
         }
         for warning in object["warnings"]?.arrayValue ?? [] {
             guard let w = warning.objectValue else { continue }
-            // 告警要**显眼**：这条命令成功了，而用户以为的和实际发生的不是一回事
+            // Warnings have to **stand out**: the command succeeded, but what the user thinks
+            // happened and what actually happened are two different things.
             out.append("  ⚠️ \(w["message"]?.stringValue ?? "") (\(w["code"]?.stringValue ?? ""))")
             if let hint = w["hint"]?.stringValue { out.append("     → \(hint)") }
         }
@@ -262,7 +271,8 @@ enum Render {
         return out.joined(separator: "\n")
     }
 
-    /// `spec dump`：人看的时候在正文前加一行说明；JSON 模式下 main.swift 只打印 spec 本体
+    /// `spec dump`: in human mode, put one explanatory line ahead of the body; in JSON mode
+    /// main.swift prints the bare spec and nothing else.
     static func specDump(_ object: [String: JSONValue], _ spec: JSONValue) -> String {
         var out = ["\(object["schema"]?.stringValue ?? "")"
                    + "  scope \(object["scope"]?.stringValue ?? "")"

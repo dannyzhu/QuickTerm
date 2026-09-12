@@ -1,11 +1,14 @@
 import Foundation
 
-/// `--help`——**从命令表生成**，目标：一个模型一次读完（≈100 行）。
-/// 三条从同类工具里学来的规矩：
-/// - 每条子命令的帮助**以 EXAMPLES 结尾**（模型抄例子远比读散文可靠）；
-/// - 每条查询命令的帮助内嵌一段真实的（节选）输出样例——wezterm 的 `--help` 缺这个，
-///   于是 agent 每个会话都要浪费一次调用去认输出形状；
-/// - 退出码成表列出，错误一律带稳定 `code`，模型永远不必去 grep 文案。
+/// `--help` — **generated from the command table**, aimed at a model reading it all in one go
+/// (≈100 lines).
+/// Three rules taken from comparable tools:
+/// - every subcommand's help **ends with EXAMPLES** (a model copies an example far more reliably
+///   than it reads prose);
+/// - every query command's help embeds a real (excerpted) output sample — wezterm's `--help` has no
+///   such thing, so an agent burns one call per session just to learn the shape of the output;
+/// - exit codes are laid out as a table and every error carries a stable `code`, so a model never
+///   has to grep the prose.
 enum Help {
     static func root(cliVersion: String) -> String {
         var out: [String] = []
@@ -74,7 +77,7 @@ enum Help {
         return out.joined(separator: "\n")
     }
 
-    /// 一组名词的清单（`quickterm pane --help`）
+    /// The listing for one noun group (`quickterm pane --help`).
     static func group(_ group: String) -> String {
         var out: [String] = ["quickterm \(group) <verb> [args] — the \(group) commands", ""]
         for spec in ControlCommandTable.commands(inGroup: group) {
@@ -94,7 +97,8 @@ enum Help {
         text.padding(toLength: max(width, text.count + 1), withPad: " ", startingAt: 0)
     }
 
-    /// 用法行（`pane new` + 位置参数）——命令表之外不再手写第二份
+    /// The usage line (`pane new` plus its positionals) — no second copy is hand-written anywhere
+    /// outside the command table.
     static func usage(_ spec: ControlCommandSpec) -> String {
         let positional = spec.args.filter(\.positional)
             .map { $0.required ? "<\($0.name)>" : "[\($0.name)]" }

@@ -1,43 +1,53 @@
 import Foundation
 
-/// MCP 工具表（Phase 5）——**整张表从 `ControlCommandTable` 生成**，没有一行手写的工具描述。
+/// The MCP tool table (Phase 5) — **the whole table is generated from `ControlCommandTable`**; not
+/// one line of tool description is hand-written.
 ///
-/// 为什么是生成的：手写的第二份描述两个版本之内必然漂移，而漂移的代价全部由 agent 承担
-/// （它拿着过期的 schema 发请求，收到自己解释不了的错误）。`MCPToolMapTests` 把这一条钉死：
-/// 每个工具的每条 `command` 都必须在命令表里查得到，注解必须与那条命令的安全分级一致。
+/// Why generated: a second, hand-written description drifts within two releases, and the whole cost
+/// of that drift lands on the agent (it sends requests against a stale schema and gets back errors
+/// it cannot explain). `MCPToolMapTests` pins this down: every `command` of every tool must resolve
+/// in the command table, and the annotations must agree with that command's safety class.
 ///
-/// 为什么是 11 个粗粒度工具而不是 40 多个：工具表是**上下文税**——它在每次会话开始时
-/// 整份进模型的上下文。一个动作一个工具的表既贵又难选。真正值钱的不是工具个数，
-/// 而是 MCP 的**注解**：`readOnlyHint` / `destructiveHint` / `idempotentHint` 让宿主
-/// （Claude Code / Codex）在它那一层就能自动放行读、对破坏性调用弹确认——
-/// 这是在 QuickTerm 自己的确认闸门之外，**独立的第二道闸**。
+/// Why 11 coarse tools instead of 40-odd: the tool table is a **context tax** — all of it enters
+/// the model's context at the start of every session. A one-tool-per-action table is both expensive
+/// and hard to choose from. What actually pays is not the number of tools but MCP's
+/// **annotations**: `readOnlyHint` / `destructiveHint` / `idempotentHint` let the host (Claude Code
+/// / Codex) auto-approve reads and prompt on destructive calls at its own layer — an **independent
+/// second gate**, outside QuickTerm's own confirmation gate.
 ///
-/// **纯 Foundation**：本目录同时编进 app 与 `quickterm` 工具 target。
+/// **Pure Foundation**: this directory is compiled into both the app and the `quickterm` tool
+/// target.
 struct MCPTool {
-    /// 工具名（宿主看到的那个）。`quickterm_` 前缀是为了在挂了十几个 server 的宿主里仍然认得出
+    /// The tool name (the one the host shows). The `quickterm_` prefix is there so it stays
+    /// recognizable in a host with a dozen servers attached.
     let name: String
-    /// 给人看的短名
+    /// The short, human-facing name.
     let title: String
-    /// 一句话说清这个工具是干什么的（英文：MCP 宿主与它们的提示词都是英文场）
+    /// One sentence saying what this tool does (in English: MCP hosts and their prompts are an
+    /// English-language environment).
     let summary: String
-    /// 背后的命令表条目（线名，如 `pane.new`）。**顺序即 `command` 枚举的顺序**
+    /// The command-table entries behind it (wire names, e.g. `pane.new`). **This order is the order
+    /// of the `command` enum.**
     let commandNames: [String]
 
     var commands: [ControlCommandSpec] { commandNames.compactMap(ControlCommandTable.command) }
 
-    // MARK: 注解（**机械地**从安全分级映射，不是手写的）
+    // MARK: Annotations (**mechanically** mapped from the safety class, never hand-written)
 
-    /// 全部背后命令都是 `read` → 宿主可以自动放行
+    /// Every command behind it is `read` -> the host may auto-approve.
     var readOnlyHint: Bool { commands.allSatisfy { $0.cls == .read } }
-    /// 任何一条是 `destructive` / `sensitive` → 宿主应当每次确认
+    /// Any one of them is `destructive` / `sensitive` -> the host should confirm every time.
     var destructiveHint: Bool { commands.contains { $0.cls == .destructive || $0.cls == .sensitive } }
-    /// 全部背后命令都是绝对设值（跑两次结果一致）
+    /// Every command behind it is an absolute setter (running it twice leaves the same state).
     var idempotentHint: Bool { commands.allSatisfy(\.idempotent) }
-    /// 封闭世界：它只驱动本机上这一个 QuickTerm，不去互联网上取任何东西
+    /// A closed world: it drives the one QuickTerm on this machine and fetches nothing from the
+    /// internet.
     var openWorldHint: Bool { false }
 
-    /// 工具描述：一句英文 + **由命令表生成**的命令清单与例子。
-    /// 中文摘要原样取自命令表——两份描述各写各的就是漂移的开始
+    /// The tool description: one English sentence plus the command list and examples,
+    /// **generated from the command table**.
+    /// Each command's summary is taken from that table verbatim — two descriptions written
+    /// separately is where drift begins.
     var description: String {
         var out = [summary]
         let list = commands
@@ -74,22 +84,25 @@ struct MCPTool {
                 + "Browser pane URLs and titles are redacted unless the caller inherited QUICKTERM_TOKEN."
         }
         if destructiveHint {
-            // "先 dry-run 一下"只对**真的收这个参数**的工具成立。`quickterm_read_terminal`
-            // 背后的 pane.capture-text 是 readOnlyEffect（它什么都不改），
-            // 于是 `honorsMutationFlags` 为假：schema 里根本没有 dry_run 这一项，
-            // 服务端也会把它当未知参数拒掉（bad_request）。描述里劝模型去做一件
-            // 保证失败的事，正是这份"注解全部机械生成"想防的那类漂移
+            // "Dry-run it first" only holds for tools that **actually take the argument**. The
+            // pane.capture-text behind `quickterm_read_terminal` is readOnlyEffect (it changes
+            // nothing), so `honorsMutationFlags` is false: there is no dry_run property in its
+            // schema at all, and the server rejects it as an unknown argument (bad_request).
+            // Telling the model in prose to do something guaranteed to fail is exactly the drift
+            // that "generate every annotation mechanically" exists to prevent.
             let advice = commands.contains(where: \.honorsMutationFlags)
                 ? " Run with dry-run first."
                 : " Changes nothing itself, and takes no dry-run / fail-if-noop."
             return "class \(classes) — QuickTerm asks the user to confirm in its own UI "
                 + "(exit code 4 / error confirmation_required if nobody answers)." + advice
         }
-        // **这一句必须跟着 `idempotentHint` 走。** 宿主与模型读这一行是为了回答一个具体问题：
-        // "调用超时了，能不能直接重发？" 对 `pane new` / `screen new` / `action` 来说答案是不能
-        // （重发多出一个 pane，或者把一个 toggle 又翻回去），而工具自己的注解也确实写着
-        // idempotentHint=false。注解说 false、正文说"跑两次结果一致"，两句话在同一个工具对象里打架，
-        // 模型信的是正文
+        // **This sentence has to track `idempotentHint`.** The host and the model read this line to
+        // answer one concrete question: "the call timed out, can I just resend it?" For `pane new`
+        // / `screen new` / `action` the answer is no (a resend produces an extra pane, or flips a
+        // toggle back again), and the tool's own annotation does say idempotentHint=false. With the
+        // annotation saying false and the prose saying "running it twice leaves the same state",
+        // the two contradict each other inside the same tool object — and the model believes the
+        // prose.
         if idempotentHint {
             return "class \(classes) — applied silently but visibly (status-bar flash, in-app activity log, "
                 + "undo entry). Absolute setters: running the same call twice leaves the same state."
@@ -99,7 +112,7 @@ struct MCPTool {
             + "state). Never retry blindly after a timeout — read state or quickterm_poll_events first."
     }
 
-    // MARK: 输入 schema（由命令表的参数生成）
+    // MARK: Input schema (generated from the command table's arguments)
 
     var inputSchema: JSONValue {
         var properties: [String: JSONValue] = [:]
@@ -125,11 +138,13 @@ struct MCPTool {
             properties[arg.name] = arg.schema
             if arg.requiredEverywhere { required.append(.string(arg.name)) }
         }
-        // spec 正文只能内联给：**MCP 服务端不去读调用方的文件系统**（`-f` 是 CLI 的事）。
-        // 只有这个工具背的**每一条**命令都要读正文时才标成必填：`quickterm_dump_spec`
-        // 背着 spec.dump（不读文件）与 spec.validate（读），标成工具级必填的话，
-        // 守 schema 的宿主会逼模型每次都带上 spec，而 `MCPServer.buildRequest` 按解析出的那条命令
-        // 校验参数，于是 `spec dump` 一律被自己的服务端拒掉
+        // A spec body can only be passed inline: **the MCP server never reads the caller's file
+        // system** (`-f` is the CLI's business).
+        // It is marked required only when **every** command behind this tool needs a body:
+        // `quickterm_dump_spec` carries spec.dump (no file) and spec.validate (file), and marking
+        // it required at the tool level would make a schema-enforcing host force `spec` onto every
+        // call, while `MCPServer.buildRequest` validates arguments against the command it actually
+        // resolved — so `spec dump` would be rejected by its own server every time.
         if !list.isEmpty, list.allSatisfy(\.readsFile) {
             required.append(.string("spec"))
         }
@@ -152,7 +167,7 @@ struct MCPTool {
         return .object(schema)
     }
 
-    // MARK: 输出 schema（响应信封 + 这个工具真的会回的 data 形状）
+    // MARK: Output schema (the response envelope plus the `data` shape this tool actually returns)
 
     var outputSchema: JSONValue {
         let data = commands
@@ -176,7 +191,8 @@ struct MCPTool {
         ])
     }
 
-    /// `describe --json` 里的那一份（宿主看不到，是给读 describe 的 agent 看的）
+    /// The copy that goes into `describe --json` (hosts never see this one; it is for an agent
+    /// reading describe).
     struct Doc: Codable, Equatable {
         var name: String
         var title: String
@@ -192,7 +208,7 @@ struct MCPTool {
             idempotentHint: idempotentHint)
     }
 
-    /// `tools/list` 上的那一份
+    /// The copy that goes on `tools/list`.
     var listEntry: JSONValue {
         .object([
             "name": .string(name),
@@ -214,9 +230,11 @@ struct MCPTool {
 enum MCPToolMap {
     static let serverName = "quickterm"
 
-    /// 粗粒度工具表。**一个动作一个工具是设计上明确否掉的**（见文件头）。
-    /// 分组的规则只有一条：**同一个工具里的命令必须能共用同一套注解**——
-    /// 把一条破坏性命令混进只读工具里，宿主那一层的闸门就当场失效了。
+    /// The coarse-grained tool table. **One tool per action was explicitly rejected in the design**
+    /// (see the file header).
+    /// There is exactly one grouping rule: **the commands inside one tool must be able to share one
+    /// set of annotations** — slip a destructive command into a read-only tool and the host-layer
+    /// gate is dead on the spot.
     static let tools: [MCPTool] = [
         MCPTool(name: "quickterm_describe", title: "Describe QuickTerm's control plane",
                 summary: "Read the whole control surface as machine schema — every command, its arguments, "
@@ -295,8 +313,9 @@ enum MCPToolMap {
                 commandNames: ["input.send-text"]),
     ]
 
-    /// 刻意**不**上 MCP 的命令，以及为什么。`MCPToolMapTests` 要求命令表里的每一条
-    /// 要么被某个工具覆盖，要么在这张表里写明理由——"忘了加"不可能悄悄溜过去
+    /// The commands deliberately kept **off** MCP, and why. `MCPToolMapTests` requires every entry
+    /// in the command table to be either covered by some tool or listed here with a reason — "we
+    /// forgot to add it" cannot slip through.
     static let excluded: [String: String] = [
         "install-cli": "Symlinking into PATH is an installation step, not something an agent should do "
             + "on the user's behalf (a human runs `quickterm install-cli` once)",
@@ -307,12 +326,12 @@ enum MCPToolMap {
 
     static func tool(named name: String) -> MCPTool? { tools.first { $0.name == name } }
 
-    /// 某条命令属于哪个工具（`describe` 与用例都靠它）
+    /// Which tool a given command belongs to (both `describe` and the tests rely on this).
     static func tool(forCommand name: String) -> MCPTool? {
         tools.first { $0.commandNames.contains(name) }
     }
 
-    // MARK: 参数合并（一个工具背几条命令时）
+    // MARK: Argument merging (for a tool that carries several commands)
 
     struct MergedArg {
         var name: String
@@ -333,7 +352,8 @@ enum MCPToolMap {
         }
     }
 
-    /// `--file` 不上 MCP：读文件的永远是调用方那一侧，服务端替谁 open 一个路径都是可被滥用的原语
+    /// `--file` stays off MCP: reading a file is always the caller's side of the line, and a server
+    /// that will open a path on someone's behalf is an abusable primitive.
     static let argsNotExposed: Set<String> = ["file"]
 
     static func mergedArgs(of commands: [ControlCommandSpec]) -> [MergedArg] {
@@ -349,8 +369,8 @@ enum MCPToolMap {
             let entries = byName[name] ?? []
             var types: [String] = []
             for (_, arg) in entries where !types.contains(jsonType(of: arg)) { types.append(jsonType(of: arg)) }
-            // 取值集合各不相同时**不写 enum**：写一个只对其中一条命令成立的 enum，
-            // 比不写更糟——宿主会照着它挡掉合法调用
+            // When the value sets differ, **write no enum at all**: an enum that only holds for one
+            // of the commands is worse than none — the host will use it to block legitimate calls
             let valueSets = entries.map { $0.1.values }
             let values: [String]? = valueSets.allSatisfy { $0 == valueSets.first } ? valueSets.first ?? nil : nil
 
@@ -381,14 +401,18 @@ enum MCPToolMap {
         }
     }
 
-    // MARK: 输出 schema（从**真实负载类型的样例**推出来，不是手抄的字段清单）
+    // MARK: Output schema (derived from **samples of the real payload types**, not a hand-copied
+    // field list)
 
-    /// 每条命令的 `data` 形状。样例编码一遍就是 schema：给负载类型加一个字段，
-    /// schema 自动跟上；样例漏填一个可选字段，`MCPToolMapTests` 拿真实响应一比就当场报出来
+    /// The `data` shape of each command. Encoding the sample once produces the schema: add a field
+    /// to a payload type and the schema follows automatically; leave an optional field out of a
+    /// sample and `MCPToolMapTests` catches it the moment it diffs a real response against the
+    /// schema.
     static func dataSchema(for spec: ControlCommandSpec) -> JSONValue {
         switch spec.name {
         case "describe":
-            // 整份 describe 文档做成 schema 会比文档本身还大，而它本来就是"读一次的大对象"
+            // A full schema for the describe document would be bigger than the document itself, and
+            // it is a read-once blob by design
             return .object([
                 "type": .string("object"),
                 "description": .string("A quickterm.describe/1 document: commands, target grammar, exit codes, "
@@ -418,19 +442,22 @@ enum MCPToolMap {
                           description: "`text` is what the pane shows right now (plus `scrollback` lines of "
                               + "history when asked). It is returned here once and written nowhere else.")
         default:
-            // 名词-动词层的变更命令共用一个信封（`ControlMutationPayload`）
+            // The mutating commands in the noun-verb layer all share one envelope
+            // (`ControlMutationPayload`)
             return schema(fromSample: MCPSamples.mutation,
                           description: "The mutation envelope: `changed` = there was something to do, "
                               + "`applied` = it was really done (always false for a dry run), `changes` = the diff.")
         }
     }
 
-    /// 嵌套多深还展开字段。**工具表是每次会话都要付的上下文税**：
-    /// 一个六屏会话的完整嵌套 schema 比它描述的响应还长，而 agent 真正需要的是
-    /// "data 里有哪些键、记录数组里的记录长什么样"，再深的形状 `quickterm describe --json` 里有
+    /// How deep the nesting still gets expanded into fields. **The tool table is a context tax paid
+    /// once per session**: the fully nested schema for a six-screen session is longer than the
+    /// response it describes, while what an agent actually needs is "which keys `data` has, and
+    /// what a record in a record array looks like". Anything deeper is in `quickterm describe
+    /// --json`.
     static let schemaDepth = 2
 
-    /// 一个编码好的样例 → 一份 JSON Schema
+    /// One encoded sample -> one JSON Schema.
     static func schema(fromSample value: JSONValue, description: String?,
                        depth: Int = schemaDepth) -> JSONValue {
         var out: [String: JSONValue]
@@ -443,7 +470,8 @@ enum MCPToolMap {
             }
             out = ["type": .string("object"), "properties": .object(properties)]
         case .array(let array):
-            // 数组不算一层：一串记录在语义上就是"记录"这一层
+            // An array does not count as a level: a list of records is semantically just the
+            // "record" level
             out = ["type": .string("array"),
                    "items": array.first.map { schema(fromSample: $0, description: nil, depth: depth) }
                        ?? .object([:])]
@@ -465,7 +493,7 @@ enum MCPToolMap {
         return schema(fromSample: json, description: description)
     }
 
-    /// 两份对象 schema 合并成一份（一个工具背的几条命令回不同的 data 时）
+    /// Merges two object schemas into one (for a tool whose commands return different `data`).
     static func merge(_ a: JSONValue, _ b: JSONValue) -> JSONValue {
         guard var left = a.objectValue else { return b }
         guard let right = b.objectValue else { return a }
@@ -483,8 +511,9 @@ enum MCPToolMap {
     }
 }
 
-/// 负载样例。**只为生成 `outputSchema` 存在**：每个可选字段都填上，
-/// 否则那个字段就不会出现在 schema 里（用例拿真实响应对着 schema 比，漏了当场报）
+/// Payload samples. **They exist purely to generate `outputSchema`**: every optional field is
+/// filled in, because a field left out of a sample never appears in the schema (the tests diff a
+/// real response against the schema and report the omission on the spot).
 enum MCPSamples {
     static let resolved = ResolvedTarget(screen: 1, screenID: "3F2A9C", workspace: 2,
                                          pane: "t7", paneID: "C40D")

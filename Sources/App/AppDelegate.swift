@@ -4,8 +4,9 @@ import OSLog
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    /// 作为 TEST_HOST 运行时隔离生命周期副作用：
-    /// 不恢复/保存用户状态、空树不关窗、关窗不退出（宿主必须活到测试结束）
+    /// Isolates lifecycle side effects while running as the TEST_HOST: do not restore or save the
+    /// user's state, do not close the window on an empty tree, and do not quit when a window
+    /// closes (the host has to stay alive until the tests finish).
     static let isRunningTests =
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     static let logger = Logger(
@@ -13,32 +14,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         category: String(describing: AppDelegate.self)
     )
 
-    /// 多「屏幕」注册表：控制器的唯一强引用
+    /// The registry of "screens": the only strong reference to the controllers.
     let screens = ScreenRegistry()
     var controllers: [MainWindowController] { screens.controllers }
 
-    /// 进程级会话（配置 / 键位 / 系统状态 / 全屏 presentationOptions 账本）。
-    /// `applicationDidFinishLaunching` 里建；建第一个屏幕之前必须已经加载完配置
+    /// The process-level session (config / keybindings / system stats / the ledger of fullscreen
+    /// presentationOptions).
+    /// Created in `applicationDidFinishLaunching`; the config has to be fully loaded before the
+    /// first screen is created.
     private(set) var session: AppSession!
 
-    /// 动作落点：key 窗口的控制器，回退第一个屏幕。
-    /// （历史上是唯一的主控制器；6 个测试文件按这个名字取夹具）
+    /// Where actions land: the key window's controller, falling back to the first screen.
+    /// (Historically this was the one main controller; 6 test files reach for the fixture by this
+    /// name.)
     var controller: MainWindowController! { screens.current }
 
-    /// 引擎实例（GhosttyEmbed 层通过 NSApp.delegate 访问）
+    /// The engine instance (the GhosttyEmbed layer reaches it through NSApp.delegate).
     var ghostty: Ghostty.App!
     private(set) var themeManager: ThemeManager!
     let undoManager = UndoManager()
 
-    /// 扩展宿主聚合器（BrowserExtensionManager.host 是 weak，必须由这里强持有）
+    /// The aggregating extension host (BrowserExtensionManager.host is weak, so it has to be held
+    /// strongly from here).
     private var extensionHost: AppBrowserExtensionHost?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // CLI / 冒烟：`open -a QuickTerm --args --open-browser [url]` 启动后开一个浏览器 pane
+        // CLI / smoke test: `open -a QuickTerm --args --open-browser [url]` opens a browser pane
+        // once the app has launched.
         if let i = CommandLine.arguments.firstIndex(of: "--open-browser") {
             let raw = CommandLine.arguments.dropFirst(i + 1).first
-            // 延后解析：此时控制器已建、config.toml 的 browser-home/search 已写进 settings；
-            // 裸域名 / 搜索词按地址栏规则解析
+            // Resolve late: by then the controller exists and config.toml's browser-home/search
+            // have made it into settings, so a bare domain or a search term resolves by the same
+            // rules the address bar uses.
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 guard let controller = self?.screens.primary else { return }
                 let url = raw.flatMap { BrowserPaneView.settings.url(forInput: $0) } ?? BrowserPaneView.settings.homeURL
@@ -47,14 +54,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.setActivationPolicy(.regular)
 
-        // 配置链第 3 层：ThemeManager 在 init 中写入 overlay（主题配色 + 透明度），
-        // 必须先于引擎创建，引擎首次加载即带主题
+        // Layer 3 of the config chain: ThemeManager writes the overlay (theme colors + opacity)
+        // during init, and has to run before the engine is created so that the engine already
+        // carries the theme on its very first load.
         Ghostty.Config.quickTermOverlayPath = EngineOverlay.url.path
         let themeManager = ThemeManager()
         self.themeManager = themeManager
 
-        // 引擎：内部完成配置加载（含 ~/.config/ghostty/config）/ app_new；
-        // ghostty_init 已在 main.swift 中先于 NSApplicationMain 调用
+        // The engine loads its own config internally (including ~/.config/ghostty/config) and calls
+        // app_new; ghostty_init already ran in main.swift, ahead of NSApplicationMain.
         ghostty = Ghostty.App()
         guard ghostty.readiness == .ready else {
             let alert = NSAlert()
@@ -65,26 +73,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // 主题热切换的 app 级那一半：引擎 reloadConfig 每次只做一次
-        // （每个屏幕的 per-surface reload / 窗口外观由各自的控制器登记，见 MainWindowController.init）
+        // The app-level half of live theme switching: the engine's reloadConfig runs exactly once
+        // per change. (Each screen's per-surface reload and window appearance are registered by its
+        // own controller; see MainWindowController.init.)
         themeManager.addOverlayListener(token: self) { [weak self] in
             self?.ghostty.reloadConfig(soft: false)
         }
 
-        // 浏览器扩展：pane 就是扩展眼里的"窗口"；宿主聚合所有屏幕
+        // Browser extensions: as far as an extension is concerned a pane is a "window", and the
+        // host aggregates every screen.
         let host = AppBrowserExtensionHost(registry: screens)
         extensionHost = host
         BrowserExtensionManager.shared.host = host
 
-        // 进程级会话：配置在建窗口之前就位（控制器不再各自读盘 / 各自装 watcher）。
-        // 顺序要紧：ThemeManager 与引擎必须已就绪（applyGlobalConfig 会写引擎 overlay 并触发一次热重载）
-        // 第二实例（开发 / 冒烟）：用环境变量把存档与控制 socket 指到别处，
-        // 这样跑一个 Debug 版不会去抢用户那个 QuickTerm 的 socket，也不会覆盖他的会话存档。
-        // 两个都不设时就是正常的单实例行为（Application Support 里那一份）
+        // The process-level session: the config is in place before any window is built, so
+        // controllers no longer each read from disk and each install their own watcher.
+        // Order matters here: ThemeManager and the engine both have to be ready already
+        // (applyGlobalConfig writes the engine overlay and triggers one live reload).
+        // A second instance (development / smoke tests) points the saved state and the control
+        // socket elsewhere through environment variables, so running a Debug build does not steal
+        // the socket from the user's QuickTerm or overwrite their session.
+        // With neither variable set this is the normal single-instance behavior (the copy under
+        // Application Support).
         let environment = ProcessInfo.processInfo.environment
-        // 配置文件也能指到别处：`[control] send-text` 这类开关只能从配置读，
-        // 冒烟一个 Debug 版时绝不该去动用户真正的 ~/.config/quickterm/config.toml。
-        // 必须在 loadInitialConfig 之前设好
+        // The config file can be pointed elsewhere too: switches like `[control] send-text` can
+        // only be read from the config, and smoke-testing a Debug build must never touch the user's
+        // real ~/.config/quickterm/config.toml.
+        // This has to be set before loadInitialConfig.
         if let path = environment["QUICKTERM_CONFIG_FILE"], !path.isEmpty {
             ConfigStore.configURLOverride = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
         }
@@ -97,18 +112,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 $0.isEmpty ? nil : ($0 as NSString).expandingTildeInPath
             })
         self.session = session
-        // 顺序是硬要求：先 `loadInitialConfig()`（顺带把控制 socket 绑起来），再复原。
-        // 复原里建出来的每一个 pane 都要在 spawn 那一刻拿到 QUICKTERM_SOCKET / TOKEN /
-        // PANE_TOKEN——晚绑一步就永远补不上了。见 `AppSession.applyGlobalConfig`
+        // The order is a hard requirement: `loadInitialConfig()` first (which also binds the
+        // control socket), then restore. Every pane the restore creates has to receive
+        // QUICKTERM_SOCKET / TOKEN / PANE_TOKEN at the moment it spawns - bind one step later and
+        // there is no way to hand them over afterwards. See `AppSession.applyGlobalConfig`.
         session.loadInitialConfig()
 
-        // 一键复原：存档里的每个屏幕（含显示器 / frame / 全屏）；没有存档就一个新屏幕
+        // One-shot restore: every screen in the saved state (display, frame and fullscreen
+        // included); with nothing saved, one new screen.
         restoreSession()
         session.installConfigWatcher()
         session.installScreenParametersObserver()
-        // 配置已由控制器加载（browser-extensions 决定开关）：装好的扩展在这里异步加载。
-        // 测试宿主里不加载（与 restoreState 同一策略）：用户装的扩展会跑进测试的 WebView，
-        // 扩展工具条的用例也会跟着变红
+        // The config has been loaded by the controller (browser-extensions decides the switch), so
+        // installed extensions are loaded asynchronously here.
+        // Not in the test host (same policy as restoreState): the user's installed extensions would
+        // run inside the tests' WebView and turn the extension-toolbar cases red along the way.
         if !Self.isRunningTests {
             Task { @MainActor in await BrowserExtensionManager.shared.loadInstalled() }
         }
@@ -116,9 +134,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    // MARK: config.toml 热重载（监听与全局部分归 AppSession，这里只留落点）
+    // MARK: config.toml live reload (watching and the global half belong to AppSession; only the
+    // landing point is left here)
 
-    /// 一次重载：`applyGlobalConfig` 只跑一次 + 每个屏幕各跑一次 `applyWindowConfig`
+    /// One reload: `applyGlobalConfig` runs once, plus `applyWindowConfig` once per screen.
     @MainActor
     func applyConfigToAllScreens(_ settings: ConfigStore.Settings) {
         session?.apply(settings)
@@ -128,13 +147,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         !Self.isRunningTests
     }
 
-    /// 退出语义（用户 2026-09-04）：有打开的 pane → 确认；一个都没有 → 直接退出。
-    /// 菜单 Cmd+Q 与引擎 quit 动作都经此处。
+    /// Quit semantics (from the user, 2026-09-04): with panes open, confirm; with none, quit
+    /// straight away.
+    /// Both the Cmd+Q menu item and the engine's quit action go through here.
     static func shouldConfirmQuit(openPaneCount: Int) -> Bool { openPaneCount > 0 }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !Self.isRunningTests, !controllers.isEmpty else { return .terminateNow }
-        for controller in controllers { controller.flushPendingCloses() }   // 淡出中的 pane 已经关了，不算"还开着"
+        // A pane that is still fading out has already been closed; it does not count as open.
+        for controller in controllers { controller.flushPendingCloses() }
         let open = screens.allPanes.count
         guard Self.shouldConfirmQuit(openPaneCount: open) else { return .terminateNow }
         let alert = NSAlert()
@@ -146,14 +167,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        session?.controlServer.stop()   // 退出时把 socket 摘掉，下次启动不必去清陈旧残留
-        // spec §4.8 / v9 §3.4：退出时同步写一次（防抖那份可能还没到点）——
-        // 布局、每个终端 pane 的目录、每个浏览器 pane 的标签页、窗口所在显示器与 frame
+        // Unbind the socket on the way out; the next launch then has no stale leftover to clear.
+        session?.controlServer.stop()
+        // spec §4.8 / v9 §3.4: write once synchronously on quit, since the debounced save may not
+        // have fired yet - the layout, each terminal pane's directory, each browser pane's tabs,
+        // and the display and frame of every window.
         session?.sessionStore.saveNow()
     }
 }
 
-// 拖放按 UUID 反查 surface（SurfaceView+Transferable 的 find(uuid:) 依赖此协议）
+// Drag and drop looks a surface up by UUID (SurfaceView+Transferable's find(uuid:) depends on this
+// protocol).
 extension AppDelegate: Ghostty.Delegate {
     func ghosttySurface(id: UUID) -> PaneView? {
         for controller in controllers {

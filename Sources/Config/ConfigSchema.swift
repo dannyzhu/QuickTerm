@@ -1,19 +1,21 @@
 import Foundation
 
-/// **配置项注册表：每个配置项只在这里声明一次。**
+/// **The settings registry: every setting is declared here exactly once.**
 ///
-/// 模板、解析与校验、README 的配置表格、以及将来的设置界面（一个分组 = 一个 tab）
-/// 全部从这张表生成。与 `Sources/Control/Wire/ControlCommandTable.swift` 同一条规矩——
-/// 手写第二份描述，两个版本之内必然漂移，而漂移的那一份会以"配置写了却不生效"的形式
-/// 砸在用户脸上。
+/// The template, parsing and validation, the config tables in the READMEs and the future
+/// settings window (one group = one tab) are all generated from this table. Same rule as
+/// `Sources/Control/Wire/ControlCommandTable.swift`: write a second description by hand and it
+/// will have drifted within two releases, and the drifted half lands on the user in the shape of
+/// "I set it in the config and nothing happened".
 ///
-/// **纯 Foundation**：本文件同时编进 app 与 `quickterm` 工具 target
-/// （`quickterm mcp` 要在不启动 app 的情况下读到 `[control] mcp`）。
-/// 一旦 import AppKit，CLI 就背上了整个 UI 栈。
+/// **Pure Foundation**: this file is compiled into both the app and the `quickterm` tool target
+/// (`quickterm mcp` has to read `[control] mcp` without launching the app). One `import AppKit`
+/// here and the CLI carries the entire UI stack.
 ///
-/// 分组与旧写法：v1.5.9 起配置按功能分组（`[appearance]` / `[workspace]` / `[terminal]` /
-/// `[browser]` / `[control]`）。**旧的扁平写法一律永远接受**（见每个键的 `legacy`）：
-/// 用户的 ~/.config/quickterm/config.toml 不必改一个字。
+/// Groups and legacy spellings: since v1.5.9 the settings are grouped by function
+/// (`[appearance]` / `[workspace]` / `[terminal]` / `[browser]` / `[control]`). **The old flat
+/// spellings are accepted forever** (see each key's `legacy`): nobody's
+/// ~/.config/quickterm/config.toml needs a single edit.
 enum ConfigSection: String, CaseIterable, Codable {
     case general
     case appearance
@@ -56,7 +58,7 @@ enum ConfigSection: String, CaseIterable, Codable {
     var title: String { ConfigSchema.templateLanguage == .zh ? titleZH : titleEN }
     var note: String? { ConfigSchema.templateLanguage == .zh ? noteZH : noteEN }
 
-    /// 这一段在模板里写在段头下面的说明（可多行）
+    /// The note the template writes under this section's header; may span several lines.
     var noteZH: String? {
         switch self {
         case .control:
@@ -94,7 +96,8 @@ enum ConfigSection: String, CaseIterable, Codable {
         }
     }
 
-    /// 段尾附的固定示例行（`[keybinds]` / `[ghostty]` 是自由段，没有注册表项）
+    /// Fixed example lines appended at the end of a section (`[keybinds]` and `[ghostty]` are
+    /// free-form: they have no registry entries).
     var extraTemplateLines: [String] {
         switch self {
         case .keybinds:
@@ -109,7 +112,8 @@ enum ConfigSection: String, CaseIterable, Codable {
         }
     }
 
-    /// 有注册表项的分组 = 设置界面的 tab（`[keybinds]` 自有界面，`[ghostty]` 是文本框）
+    /// A group with registry entries is a tab in the settings window (`[keybinds]` gets its own
+    /// UI, `[ghostty]` is a text box).
     var hasRegisteredKeys: Bool { !(self == .keybinds || self == .ghostty) }
 }
 
@@ -149,7 +153,7 @@ enum AppLanguage: String, CaseIterable, Codable {
         return .en
     }
 
-    /// `[general] language` → the language to draw in. `auto` (and anything unrecognised,
+    /// `[general] language` → the language to draw in. `auto` (and anything unrecognized,
     /// which the schema rejects long before it gets here) follows the system.
     static func resolve(configValue: String,
                         preferred: [String] = Locale.preferredLanguages) -> AppLanguage {
@@ -159,7 +163,8 @@ enum AppLanguage: String, CaseIterable, Codable {
     }
 }
 
-/// 配置文件里的一个写法（段名 + 键名）。段名 `""` = 第一个 `[section]` 之前的顶层键
+/// One spelling of a key in a config file (section name + key name). A section of `""` means a
+/// top-level key, written before the first `[section]`.
 struct ConfigKeyRef: Hashable {
     var section: String
     var name: String
@@ -170,19 +175,23 @@ struct ConfigKeyRef: Hashable {
     }
 }
 
-/// 值的类型 + 合法范围。**范围写在这里，校验只有一份实现**
+/// A value's type and its legal range. **The range is declared here, and validation has exactly
+/// one implementation.**
 enum ConfigKind: Equatable {
     case bool
-    /// 越界 clamp（与历史行为一致）
+    /// Out-of-range values are clamped, which is what the code has always done.
     case int(min: Int, max: Int)
     case double(min: Double, max: Double)
-    /// `strict` = 不在表里的值一律拒绝（保留默认）；否则非空即收（历史行为）
+    /// `strict` rejects any value not in the list, keeping the default; otherwise anything
+    /// non-empty is accepted, which is the historical behavior.
     case enumeration(values: [String], strict: Bool)
     case string
-    /// 文件系统路径（支持 `~`）。校验上等同 string，设置界面里应给一个"选目录"按钮
+    /// A filesystem path (`~` is expanded). Validated exactly like a string; the settings window
+    /// should give it a "choose directory" button.
     case path
 
-    /// 这个键收什么值（写进被拒绝时那条提示里，将来也是设置界面的输入提示）
+    /// What this key accepts. Goes into the message a rejected line produces, and will be the
+    /// input hint in the settings window.
     var expectationZH: String {
         switch self {
         case .bool: "true / false（也认 1 / 0、yes / no、on / off）"
@@ -213,7 +222,8 @@ enum ConfigKind: Equatable {
     /// comments and `ConfigKeySpec.help` follow.
     var expectation: String { ConfigSchema.templateLanguage == .zh ? expectationZH : expectationEN }
 
-    /// 越界怎么办：数值 clamp，其余（布尔 / 枚举 / 空字符串）拒绝并保留默认
+    /// What to do with an out-of-range value: numbers are clamped, everything else (bools,
+    /// enumerations, the empty string) is rejected and the default kept.
     var outOfRange: ConfigOutOfRange {
         switch self {
         case .int, .double: .clamp
@@ -222,21 +232,23 @@ enum ConfigKind: Equatable {
     }
 }
 
-/// 越界行为。**照抄历史行为**，绝不在这次重构里悄悄改掉任何一个键的脾气
+/// Out-of-range behavior. **Copied from the historical behavior**: this refactor does not
+/// quietly change the temperament of a single key.
 enum ConfigOutOfRange: String, Codable {
-    /// 夹到区间端点
+    /// Clamp to the nearest end of the range.
     case clamp
-    /// 整条丢掉，保留默认值
+    /// Drop the whole line and keep the default value.
     case reject
 }
 
-/// 一条**没生效**的配置行：值不合法，已按该键的脾气保留默认。
-/// 启动 / 热重载时打日志；将来的设置界面把它显示在对应 tab 上——
-/// "写了却不生效"必须有个地方看得见，否则用户只会以为程序坏了
+/// One config line that **had no effect**: the value was not valid, so the key's own
+/// out-of-range rule kept the default. Logged at startup and on a hot reload; the future settings
+/// window will show it on the tab it belongs to. "I wrote it and it does nothing" has to be
+/// visible somewhere, or the user simply concludes the program is broken.
 struct ConfigDiagnostic: Equatable {
-    /// 注册表 id（`control.socket`）
+    /// The registry id (`control.socket`).
     var id: String
-    /// 用户实际写的那个写法（可能是旧名）
+    /// The spelling the user actually wrote, which may be a legacy name.
     var ref: ConfigKeyRef
     var raw: String
     var messageZH: String
@@ -262,7 +274,7 @@ enum ConfigValue: Equatable {
     var doubleValue: Double? { if case .double(let v) = self { v } else { nil } }
     var stringValue: String? { if case .string(let v) = self { v } else { nil } }
 
-    /// 写进配置文件的字面量（字符串带引号）
+    /// The literal written into the config file; strings keep their quotes.
     var literal: String {
         switch self {
         case .bool(let v): String(v)
@@ -278,36 +290,41 @@ enum ConfigValue: Equatable {
     }
 }
 
-/// 新旧写法同时出现时怎么办
+/// What to do when the current and a legacy spelling both appear.
 enum ConfigLegacyPolicy {
-    /// 新名赢（与出现顺序无关）。`pane-gap` 压 `dwindle-gap` 就是这一档
+    /// The current name wins, no matter which came first in the file. `pane-gap` beating
+    /// `dwindle-gap` is this case.
     case canonicalWins
-    /// **最严的那个赢**（布尔与逻辑）。`[control] socket` 与旧的 `enabled` 是这一档：
-    /// 两个开关都在说"要不要监听"，写了任何一个 false 就必须不监听——
-    /// 让新名把旧名的 false 顶掉，等于用户升级一次版本就被悄悄打开了一个他关掉过的口子
+    /// **The most restrictive one wins** (boolean AND). `[control] socket` and the old `enabled`
+    /// are this case: both switches answer the same question, "should we listen", so a `false` in
+    /// either one has to mean we do not listen. Letting the current name override the legacy
+    /// name's `false` would mean a user who upgrades once gets a port they had closed quietly
+    /// reopened.
     case mostRestrictive
 }
 
-/// 一个配置项。
+/// One setting.
 struct ConfigKeySpec {
     var section: ConfigSection
-    /// 分组内的键名（`[browser] home`）。**不带分组前缀**——段名已经说了
+    /// The key name within its group (`[browser] home`). **No group prefix**: the section header
+    /// has already said it.
     var key: String
     var kind: ConfigKind
-    /// 默认值（= 模板里注释掉的那个值）
+    /// The default value, which is also the value the template writes commented out.
     var defaultValue: ConfigValue
-    /// 保存即生效
+    /// Takes effect the moment the file is saved.
     var hotReload: Bool
     var labelZH: String
     var labelEN: String
     var helpZH: String
     var helpEN: String
-    /// 永远接受的旧写法（升级后不必改配置文件）
+    /// Legacy spellings, accepted forever, so an upgrade never forces a config file edit.
     var legacy: [ConfigKeyRef]
     var legacyPolicy: ConfigLegacyPolicy
-    /// 空字符串也算一个值（只有 `theme` 是这样：写空 = 显式不选主题）
+    /// The empty string counts as a value. Only `theme` works this way: writing it empty is an
+    /// explicit "no theme".
     var acceptsEmpty: Bool
-    /// 枚举值的别名（`mode = "on"` → `ask`）
+    /// Aliases for enumeration values (`mode = "on"` -> `ask`).
     var valueAliases: [String: String]
 
     init(_ section: ConfigSection, _ key: String, _ kind: ConfigKind,
@@ -331,11 +348,12 @@ struct ConfigKeySpec {
         self.valueAliases = valueAliases
     }
 
-    /// 注册表里的唯一标识（`browser.home`）；绑定表、resolve 的结果都按它索引
+    /// The unique id in the registry (`browser.home`); the binding table and `resolve`'s result
+    /// are both indexed by it.
     var id: String { "\(section.rawValue).\(key)" }
     var canonical: ConfigKeyRef { ConfigKeyRef(section.rawValue, key) }
     var outOfRange: ConfigOutOfRange { kind.outOfRange }
-    /// 这个配置项认得的所有写法（新名在前）
+    /// Every spelling this setting answers to, the current name first.
     var allRefs: [ConfigKeyRef] { [canonical] + legacy }
 
     /// Label and help in the **active** language (`ConfigSchema.templateLanguage`). Both
@@ -344,27 +362,30 @@ struct ConfigKeySpec {
     var label: String { ConfigSchema.templateLanguage == .zh ? labelZH : labelEN }
     var help: String { ConfigSchema.templateLanguage == .zh ? helpZH : helpEN }
 
-    /// 模板 / README 里那一行左半边（`# home = "https://www.google.com"`）
+    /// The left half of the line in the template and the READMEs
+    /// (`# home = "https://www.google.com"`).
     var templateAssignment: String { "# \(key) = \(defaultValue.literal)" }
 
-    /// 这个配置项在模板里的**完整**块：赋值行 + 对齐的续行（多行说明）。
-    /// 渲染模板与"补全缺失键"共用它——补全时只抄第一行，等于把
-    /// `send-text` 那段"**等于在那个 shell 里打字**"的警告丢在新装用户那边，
-    /// 升级上来的用户永远看不到
+    /// This setting's **complete** block in the template: the assignment line plus the aligned
+    /// continuation lines of a multi-line help text. Rendering the template and filling in missing
+    /// keys share it. Copying only the first line when filling in would leave the `send-text`
+    /// warning — **this is the same as typing into that shell** — to fresh installs only, and a
+    /// user who upgraded would never see it.
     func templateBlock(width: Int? = nil) -> [String] {
         let assignment = templateAssignment
         let column = max(width ?? assignment.count, assignment.count)
         let pad = String(repeating: " ", count: max(1, column - assignment.count + 2))
         let help = self.help.split(separator: "\n", omittingEmptySubsequences: false)
         var out = ["\(assignment)\(pad)# \(help[0])"]
-        // 续行与第一行的 `#` 对齐：模板本身也要好读
+        // Line the continuation up with the first line's `#`: the template has to read well too.
         let indent = String(repeating: " ", count: column + 1)
         for extra in help.dropFirst() { out.append("#\(indent)# \(extra)") }
         return out
     }
 
-    /// 布尔字面量表（大小写不敏感）。TOML 只认 true/false，
-    /// 但人手写配置时 1/0、yes/no、on/off 都会写，认下来比装作没看见安全
+    /// Boolean literals, case-insensitive. TOML only knows true/false, but people hand-writing a
+    /// config write 1/0, yes/no and on/off as well, and accepting those is safer than pretending
+    /// not to have seen them.
     static let trueLiterals: Set<String> = ["true", "1", "yes", "on"]
     static let falseLiterals: Set<String> = ["false", "0", "no", "off"]
 
@@ -375,14 +396,17 @@ struct ConfigKeySpec {
         return nil
     }
 
-    /// 把一行原始值收成一个合法值。`nil` = 拒绝（保留默认），并由 `resolve` 记一条 diagnostic
+    /// Coerce one raw line value into a valid value. `nil` = rejected (the default is kept), and
+    /// `resolve` records a diagnostic for it.
     func coerce(_ raw: String) -> ConfigValue? {
         switch kind {
         case .bool:
-            // 布尔只认这张表。**不认得的值一律拒绝**（= 保留默认，并留下一条 diagnostic），
-            // 绝不"猜一个"——重构前每个布尔键各写一行 `!= "false"` / `== "true"`，
-            // 结果是默认开的键写 off / 0 / no 全都悄悄留在"开"上：
-            // 而 `[control] socket` / `mcp` 是两个安全开关，`mode` 的说明就在下一行教人写 off
+            // A bool is only what this table says it is. **Anything unrecognized is rejected**
+            // (the default is kept and a diagnostic is left behind); we never guess one. Before
+            // this refactor every boolean key carried its own `!= "false"` / `== "true"` line,
+            // and the result was that keys defaulting to on stayed quietly on when written as
+            // off / 0 / no — while `[control] socket` and `mcp` are two security switches, and
+            // `mode`'s own help text, one line further down, tells people to write off.
             guard let value = ConfigKeySpec.boolLiteral(raw) else { return nil }
             return .bool(value)
         case .int(let lo, let hi):
@@ -398,8 +422,9 @@ struct ConfigKeySpec {
                 guard values.contains(mapped) else { return nil }
                 return .string(mapped)
             }
-            // 宽松枚举（tab-bar / link-opener）：历史行为是"非空就照收"，
-            // 不认得的值由使用方各自兜底。这次重构不改它的脾气
+            // A loose enumeration (tab-bar, link-opener): historically anything non-empty was
+            // taken as-is, and each consumer fell back on its own for a value it did not know.
+            // This refactor does not change that temperament.
             guard !raw.isEmpty else { return nil }
             return .string(valueAliases[raw] ?? raw)
         case .string, .path:
@@ -410,7 +435,7 @@ struct ConfigKeySpec {
 }
 
 enum ConfigSchema {
-    // MARK: 注册表
+    // MARK: The registry
 
     /// The language the template comments are written in. On the app side `Localization`
     /// keeps it in sync (a config hot reload moves it); the `quickterm` CLI never renders the
@@ -611,15 +636,16 @@ enum ConfigSchema {
                       helpEN: "reading a terminal pane's visible text on behalf of a caller; off by default"),
     ]
 
-    /// `id` → 配置项
+    /// `id` -> the setting.
     static let byID: [String: ConfigKeySpec] = Dictionary(uniqueKeysWithValues: keys.map { ($0.id, $0) })
 
-    /// 文件里的写法 → 配置项（新名与每一个旧名都在里面）
+    /// A spelling in the file -> the setting. Holds the current name and every legacy name.
     static let byRef: [ConfigKeyRef: ConfigKeySpec] = {
         var out: [ConfigKeyRef: ConfigKeySpec] = [:]
         for spec in keys {
             for ref in spec.allRefs {
-                precondition(out[ref] == nil, "配置写法冲突：[\(ref.section)] \(ref.name)")
+                precondition(out[ref] == nil,
+                             "Conflicting config spelling: [\(ref.section)] \(ref.name)")
                 out[ref] = spec
             }
         }
@@ -630,24 +656,31 @@ enum ConfigSchema {
         keys.filter { $0.section == section }
     }
 
-    /// 按新名查（跨分组唯一：注册表里不允许两个分组用同一个新名之外的重名，见 `byRef` 的 precondition）
+    /// Look a setting up by its current name, which is unique across groups: the registry does
+    /// not allow two groups to share a name, see the precondition in `byRef`.
     static func spec(named key: String) -> ConfigKeySpec? {
         keys.first { $0.key == key }
     }
 
-    // MARK: 解析
+    // MARK: Parsing
 
-    /// 一份配置文本 → 每个配置项一个**已校验**的值（缺席的项不出现，由调用方保留默认）。
+    /// A config text -> one **validated** value per setting. A setting that is absent does not
+    /// appear at all, and the caller keeps its default.
     ///
-    /// 归并规则（与出现顺序无关，因此"把同一个键写两遍"不会因为行序不同而结果不同）：
-    /// - 同一个写法出现多次：最后一次赢（历史行为：逐行赋值）
-    /// - 新名与旧名同时出现：`canonicalWins` 新名赢；`mostRestrictive` 取最严的那个
-    /// - 多个旧名同时出现：`legacy` 数组里靠前的那个赢（声明顺序 = 优先级）
+    /// The merge rules do not depend on the order lines appear in, so writing the same key twice
+    /// cannot produce different results just because the lines were swapped:
+    /// - the same spelling more than once: the last one wins (the historical line-by-line
+    ///   assignment);
+    /// - the current name and a legacy name together: `canonicalWins` gives it to the current
+    ///   name, `mostRestrictive` takes whichever is stricter;
+    /// - several legacy names together: the one earlier in the `legacy` array wins, so
+    ///   declaration order is priority order.
     static func resolve(_ scan: ConfigTOML.Scan) -> [String: ConfigValue] {
         resolveDetailed(scan).values
     }
 
-    /// 解析结果 + 被拒绝的行（后者给日志与将来的设置界面）
+    /// The parse result plus the rejected lines; the latter feed the log and the future settings
+    /// window.
     struct Resolution: Equatable {
         var values: [String: ConfigValue] = [:]
         var diagnostics: [ConfigDiagnostic] = []
@@ -662,7 +695,8 @@ enum ConfigSchema {
         }
         var out: [String: ConfigValue] = [:]
         var notes: [ConfigDiagnostic] = []
-        /// 生效的那一次取值；拒绝时记一条（数值是 clamp，不会走到这里）
+        /// The reading that takes effect; a rejection records a diagnostic. Numbers are clamped
+        /// and never reach that path.
         func take(_ spec: ConfigKeySpec, _ ref: ConfigKeyRef) -> ConfigValue? {
             guard let raw = raws[ref]?.last else { return nil }
             if let value = spec.coerce(raw) { return value }
@@ -682,13 +716,14 @@ enum ConfigSchema {
             let legacy = spec.legacy.compactMap { take(spec, $0) }
             switch spec.legacyPolicy {
             case .canonicalWins:
-                // 旧名之间按**声明顺序**定优先级（`pane-gap` 压 `dwindle-gap`），
-                // 与它们在文件里出现的先后无关
+                // Among legacy names, priority is **declaration order** (`pane-gap` beats
+                // `dwindle-gap`), regardless of which comes first in the file.
                 if let value = canonical ?? legacy.first { out[spec.id] = value }
             case .mostRestrictive:
                 let all = ([canonical].compactMap { $0 }) + legacy
                 guard !all.isEmpty else { continue }
-                // 目前只有布尔开关用这一档（最严 = 与逻辑）
+                // Only boolean switches use this policy so far, where "most restrictive" is a
+                // logical AND.
                 if all.allSatisfy({ $0.boolValue != nil }) {
                     out[spec.id] = .bool(all.allSatisfy { $0.boolValue == true })
                 } else {
@@ -702,9 +737,10 @@ enum ConfigSchema {
     static func resolve(_ text: String) -> [String: ConfigValue] { resolve(ConfigTOML.scan(text)) }
     static func resolveDetailed(_ text: String) -> Resolution { resolveDetailed(ConfigTOML.scan(text)) }
 
-    // MARK: 模板
+    // MARK: The template
 
-    /// 模板 = 注册表渲染出来的那份带注释的配置文件。**没有第二份手写模板**
+    /// The template is the commented config file rendered from the registry. **There is no
+    /// second, hand-written template.**
     static var template: String {
         var out = templateHeaderLines + [""]
         for section in ConfigSection.allCases {
@@ -719,8 +755,9 @@ enum ConfigSchema {
         return out.joined(separator: "\n") + "\n"
     }
 
-    /// 模板里每个配置项的那一块（赋值行 + 续行）。补全缺失键时照抄，
-    /// 补出来的段落因此与全新安装写下的**逐字一致**（`testAutofilledSectionMatchesFreshInstall` 钉死）
+    /// Each setting's block in the template (assignment line plus continuation lines). Filling in
+    /// a missing key copies it verbatim, which makes what gets filled in **word for word** what a
+    /// fresh install writes (`testAutofilledSectionMatchesFreshInstall` pins this down).
     static var templateKeyBlocks: [(spec: ConfigKeySpec, lines: [String])] {
         var out: [(ConfigKeySpec, [String])] = []
         for section in ConfigSection.allCases {
@@ -745,7 +782,8 @@ enum ConfigSchema {
                "# accepted forever: an existing config file needs no edit."]
     }
 
-    /// 新建一个分组时要写的段头（含段说明），与模板里那几行一模一样
+    /// The header lines to write when creating a group, section note included — identical to the
+    /// lines the template produces.
     static func sectionHeaderLines(_ section: ConfigSection) -> [String] {
         var out = ["[\(section.rawValue)]  # \(section.title)"]
         if let note = section.note {
@@ -755,11 +793,12 @@ enum ConfigSchema {
     }
 }
 
-/// 极简 TOML 子集的扫描器（spec §4.7：顶层 key = value + `[section]`）。
-/// **只有这一处实现**：app 的解析、CLI 的 `[control]` 闸门、模板补全全用它
+/// The scanner for our minimal TOML subset (spec §4.7: top-level `key = value` plus
+/// `[section]`). **The only implementation**: the app's parsing, the CLI's `[control]` gate and
+/// the template fill-in all go through it.
 enum ConfigTOML {
     struct Entry: Equatable {
-        /// 第一个 `[section]` 之前的顶层键 = `""`
+        /// A top-level key, written before the first `[section]`, has section `""`.
         var section: String
         var key: String
         var value: String
@@ -767,9 +806,10 @@ enum ConfigTOML {
 
     struct Scan {
         var entries: [Entry] = []
-        /// `[ghostty]` 段原样透传的行
+        /// Lines in the `[ghostty]` section, passed through verbatim.
         var ghostty: [String] = []
-        /// 生效行（非注释、非空）里段名不认识的那些——留给调用方（`[keybinds]` 自己处理）
+        /// Section names seen on live lines (not comments, not blank) that we do not recognize;
+        /// left to the caller, which is how `[keybinds]` handles itself.
         var sections: Set<String> = []
     }
 
@@ -785,7 +825,7 @@ enum ConfigTOML {
             }
             guard !line.isEmpty, !line.hasPrefix("#") else { continue }
             if section == "ghostty" {
-                out.ghostty.append(line)   // 原样透传（含 ghostty 自己的 key = value 语法）
+                out.ghostty.append(line)   // verbatim, ghostty's own key = value syntax included
                 continue
             }
             guard let eq = line.firstIndex(of: "=") else { continue }
@@ -803,8 +843,9 @@ enum ConfigTOML {
     }
 }
 
-/// 配置文件落点。app 侧还有 `ConfigStore.configURLOverride`（用例注入），
-/// 而 CLI 进程只认环境变量 `QUICKTERM_CONFIG_FILE`——两边是同一个 seam
+/// Where the config file lives. The app side also has `ConfigStore.configURLOverride` for test
+/// injection, while a CLI process only honors the `QUICKTERM_CONFIG_FILE` environment variable;
+/// the two are the same seam.
 enum ConfigPaths {
     static let environmentKey = "QUICKTERM_CONFIG_FILE"
 
@@ -820,24 +861,26 @@ enum ConfigPaths {
         return defaultConfigURL
     }
 
-    /// 明确指定了配置文件（环境变量）吗
+    /// Was a config file named explicitly, through the environment variable?
     static func isOverridden(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         !(environment[environmentKey] ?? "").isEmpty
     }
 
-    /// 跑在 XCTest 宿主里吗。**用例宿主绝不去读开发者真正的 ~/.config/quickterm/config.toml**：
-    /// 那份文件里一句 `[control] mcp = false` 不该把测试弄红。
-    /// 与 `AppSession` 里对 `ensureTemplateKeys` 的那道防线是同一条规矩
+    /// Are we running inside an XCTest host? **A test host never reads the developer's real
+    /// ~/.config/quickterm/config.toml**: one `[control] mcp = false` line in that file must not
+    /// turn the tests red. Same rule as the guard around `ensureTemplateKeys` in `AppSession`.
     static func isTestHost(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
         environment["XCTestConfigurationFilePath"] != nil || environment["XCTestBundlePath"] != nil
     }
 }
 
-/// `[control]` 的三个开关，**不带 AppKit**：`quickterm mcp` 在 app 之外也要读得到。
+/// The three `[control]` switches, **without AppKit**: `quickterm mcp` has to read them outside
+/// the app as well.
 ///
-/// 监听与否是三个开关取最严：`socket = false`、旧的 `enabled = false`、`mode = "off"`
-/// 任何一个都等于"不监听"。app 侧 `ControlCommandRunner.Config` 用的是同一张注册表，
-/// 用例 `testGateMatchesAppParse` 钉死两边不会漂
+/// Whether we listen is the strictest of the three: `socket = false`, the legacy
+/// `enabled = false` and `mode = "off"` each mean "do not listen" on their own. The app side's
+/// `ControlCommandRunner.Config` reads the same registry, and `testGateMatchesAppParse` pins the
+/// two against drifting apart.
 struct ControlConfigGate: Equatable {
     var socket: Bool
     var mcp: Bool
@@ -856,11 +899,12 @@ struct ControlConfigGate: Equatable {
         mode = values["control.mode"]?.stringValue ?? "ask"
     }
 
-    /// 读配置文件（不存在 = 全默认 = 全开）
+    /// Read the config file; a missing file means all defaults, which means everything on.
     static func load(environment: [String: String] = ProcessInfo.processInfo.environment) -> ControlConfigGate {
-        // 用例宿主里不碰用户那一份（没设 QUICKTERM_CONFIG_FILE 就一律默认全开）：
-        // `serve(gate: .load())` 这种默认参数是在**调用点**求值的，
-        // 一条忘了传 gate 的用例会因为开发者自己的配置而红
+        // Inside a test host, never touch the user's own file: with no QUICKTERM_CONFIG_FILE
+        // set, fall back to all-default, all-on. A default argument like `serve(gate: .load())`
+        // is evaluated at the **call site**, so one test that forgot to pass a gate would go red
+        // because of the developer's personal config.
         guard !ConfigPaths.isTestHost(environment) || ConfigPaths.isOverridden(environment) else {
             return ControlConfigGate()
         }
@@ -871,8 +915,8 @@ struct ControlConfigGate: Equatable {
 
     var isListening: Bool { socket && mode != "off" }
 
-    /// `quickterm mcp` 被配置拒绝时给用户看的那句话（**必须点名是哪个键、哪个文件**，
-    /// 否则用户只会看到一个 MCP 宿主说"服务器起不来"）
+    /// What the user is shown when the config refuses `quickterm mcp`. **It must name the key
+    /// and the file**, or all the user gets is an MCP host saying the server would not start.
     static func mcpDisabledMessage(path: String = ConfigPaths.configURL().path) -> String {
         "The MCP server is turned off in the config: [control] mcp = false in \(path)"
     }

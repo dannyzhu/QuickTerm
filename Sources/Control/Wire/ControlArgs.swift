@@ -1,7 +1,8 @@
 import Foundation
 
-/// 命令行解析——**完全由 `ControlCommandTable` 驱动**。
-/// 这里没有第二份命令清单：加一条命令只要往表里加一行，解析、`--help`、`describe` 一起就有了。
+/// Command-line parsing — **driven entirely by `ControlCommandTable`**.
+/// There is no second list of commands here: adding a command means adding one row to the table,
+/// and parsing, `--help` and `describe` all follow from it.
 struct ParsedCommand {
     var spec: ControlCommandSpec
     var args: [String: JSONValue] = [:]
@@ -46,13 +47,14 @@ enum ArgsError: Error, CustomStringConvertible {
 }
 
 enum Args {
-    /// 需要跟一个值的全局开关（写在命令名之前时要连值一起收走）
+    /// Global flags that take a value (when written before the command name, the value has to be
+    /// consumed along with the flag).
     static let globalFlagsTakingAValue: Set<String> = ["-t", "--target", "--socket", "-f", "--file"]
 
-    /// 全局帮助 / 版本这类不落到具体命令的请求
+    /// Requests that do not land on a specific command, such as global help or version.
     enum Outcome {
         case help(command: ControlCommandSpec?)
-        /// `quickterm pane --help`：列出这一组的动词
+        /// `quickterm pane --help`: list the verbs in that group.
         case groupHelp(String)
         case command(ParsedCommand)
     }
@@ -63,7 +65,7 @@ enum Args {
         var groupHelp: String?
         var pending: [String] = []
 
-        // 命令名之前允许出现全局开关
+        // Global flags are allowed before the command name.
         var spec: ControlCommandSpec?
         while !rest.isEmpty {
             let token = rest.removeFirst()
@@ -77,17 +79,18 @@ enum Args {
             }
             if token.hasPrefix("-") {
                 pending.append(token)
-                // 带值的全局开关写在命令名**之前**时（`quickterm --socket /p state`），
-                // 它的值本身不以 `-` 开头——不一起收走的话，下一轮就会把那个值
-                // 当成命令名，报一句莫名其妙的"未知命令 /p"
+                // When a value-taking global flag is written **before** the command name
+                // (`quickterm --socket /p state`), its value does not itself start with `-`. If we
+                // do not consume it here, the next iteration treats that value as the command name
+                // and reports a baffling "unknown command /p".
                 if Self.globalFlagsTakingAValue.contains(token), !token.contains("="),
                    let value = rest.first, !value.hasPrefix("-") {
                     pending.append(rest.removeFirst())
                 }
                 continue
             }
-            // 名词-动词：`quickterm pane new …`。命令表里 `pane.new` 是一条，
-            // 分组只是它的前缀——这里不存第二份清单
+            // Noun-verb: `quickterm pane new ...`. In the command table `pane.new` is a single row
+            // and the group is just its prefix — we keep no second list here.
             let verbs = ControlCommandTable.commands(inGroup: token)
             if !verbs.isEmpty {
                 guard let verbToken = rest.first(where: { !$0.hasPrefix("-") }) else {
@@ -159,8 +162,10 @@ enum Args {
             case "--fail-if-noop":
                 parsed.args[ControlCommandTable.Flag.failIfNoop] = .bool(true)
             case "-f":
-                // `-f` 是 `--file` 的短写。只有声明了 file 参数的命令认它（spec dump/apply/validate），
-                // 别的命令写 -f 仍然是"未知选项"——短写不该悄悄变成一个到处都在的全局开关
+                // `-f` is shorthand for `--file`. Only commands that declare a `file` argument
+                // accept it (spec dump/apply/validate); on any other command `-f` is still an
+                // "unknown option" — a shorthand should not quietly turn into a global flag that
+                // exists everywhere.
                 guard spec.args.contains(where: { $0.name == "file" }) else {
                     throw ArgsError.unknownFlag(token, command: spec.name)
                 }
@@ -199,7 +204,7 @@ enum Args {
         }
 
         if !parsed.wantsHelp {
-            // `action --list` 不需要位置参数
+            // `action --list` does not need its positional argument.
             let skipsPositionals = spec.name == "action" && parsed.args["list"]?.boolValue == true
             if !skipsPositionals, let missing = positionals.first(where: { $0.required }) {
                 throw ArgsError.missingPositional(missing.name, command: spec.cli)

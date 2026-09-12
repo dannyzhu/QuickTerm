@@ -1,28 +1,32 @@
 import Foundation
 
-/// 引擎兜底配置（spec §4.10 配置链第 ①½ 层）：用户没有任何 ghostty 配置文件时，
-/// 加载 app 内置的 `Resources/ghostty-default.conf`；用户文件一旦存在，本层整体让位。
-/// 候选路径与加载顺序同 libghostty 1.3 `loadDefaultFiles`：XDG 旧名 `config` → 新名
-/// `config.ghostty` → Application Support 旧名 → 新名；只算**存在且非空的常规文件**
-/// （libghostty 对 0 字节文件按 FileIsEmpty 不加载）。
-/// QuickTerm 自己加载这些文件而不调 `ghostty_config_load_default_files`：1.3.1 在无配置时
-/// 会往 ~/Library/Application Support/com.mitchellh.ghostty 写出（未 flush 的 0 字节）模板，
-/// 既污染用户目录，又会让"用户有配置"的判定永久为真。
+/// The engine's fallback config (spec §4.10, layer ①½ of the config chain): when the user has
+/// no ghostty config file at all, load the app's bundled `Resources/ghostty-default.conf`; the
+/// moment a user file exists, this whole layer steps aside.
+/// The candidate paths and their order match libghostty 1.3's `loadDefaultFiles`: XDG old name
+/// `config` -> new name `config.ghostty` -> Application Support old name -> new name. Only
+/// **regular files that exist and are non-empty** count (libghostty treats a 0-byte file as
+/// FileIsEmpty and does not load it).
+/// QuickTerm loads these files itself rather than calling `ghostty_config_load_default_files`:
+/// with no config present, 1.3.1 writes a template (0 bytes, never flushed) into
+/// ~/Library/Application Support/com.mitchellh.ghostty, which both litters the user's directory
+/// and makes the "the user has a config" test true forever after.
 enum GhosttyDefaultConfig {
     static let resourceName = "ghostty-default"
 
-    /// bundle 内置兜底文件（缺资源返回 nil = 不加载）
+    /// The fallback file bundled with the app (nil if the resource is missing = load nothing).
     static var bundledPath: String? {
         Bundle.main.path(forResource: resourceName, ofType: "conf")
     }
 
-    /// 主目录：与 libghostty（src/os/homedir.zig）一致，优先 `$HOME`，再退回 passwd
+    /// Home directory, resolved as libghostty does it (src/os/homedir.zig): `$HOME` first,
+    /// falling back to the passwd entry.
     static func defaultHome(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
         if let h = environment["HOME"], !h.isEmpty { return URL(fileURLWithPath: h, isDirectory: true) }
         return FileManager.default.homeDirectoryForCurrentUser
     }
 
-    /// libghostty 会读取的用户配置文件候选路径
+    /// The user config paths libghostty would read.
     static func userConfigCandidates(
         home: URL? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -32,7 +36,7 @@ enum GhosttyDefaultConfig {
             ?? home.appendingPathComponent(".config", isDirectory: true)
         let appSupport = home.appendingPathComponent(
             "Library/Application Support/com.mitchellh.ghostty", isDirectory: true)
-        return [  // 旧名先于新名（与 libghostty 一致：后者覆盖前者）
+        return [  // old name before new name (as in libghostty: the later one overrides)
             xdg.appendingPathComponent("ghostty/config"),
             xdg.appendingPathComponent("ghostty/config.ghostty"),
             appSupport.appendingPathComponent("config"),
@@ -40,7 +44,8 @@ enum GhosttyDefaultConfig {
         ]
     }
 
-    /// 实际会被加载的用户配置文件（存在、常规文件、非空），按加载顺序
+    /// The user config files that would actually be loaded (existing, regular, non-empty), in
+    /// load order.
     static func userConfigFiles(
         home: URL? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -62,8 +67,9 @@ enum GhosttyDefaultConfig {
         !userConfigFiles(home: home, environment: environment, fileManager: fileManager).isEmpty
     }
 
-    /// 本次加载应使用的兜底文件路径（nil = 用户有自己的配置，或 bundle 缺资源）。
-    /// 每次引擎（重）加载配置时重新判定，用户后来创建配置文件即自动让位。
+    /// The fallback path to use for this load (nil = the user has their own config, or the
+    /// resource is missing from the bundle). Re-decided every time the engine (re)loads its
+    /// config, so a config file the user creates later takes over on its own.
     static func activeFallbackPath() -> String? {
         guard !userConfigExists() else { return nil }
         return bundledPath

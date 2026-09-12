@@ -1,17 +1,21 @@
 import SwiftUI
 
-/// Omarchy 视觉（spec §1.1/§4.2）：2px 边框（焦点 = accent #7aa2f7 / 非焦点 = 灰 0x59@67%）、
-/// gaps_in 语义（每 pane 每边 pane-gap，默认 5：相邻合成 10；边缘与外圈同值合成 10——左中右等宽，
-/// scrolling / dwindle / 浮动一致）、直角、popin 87% 弹入动画。焦点态随悬停即时切换。
+/// Omarchy look (spec §1.1/§4.2): a 2px border (focused = accent #7aa2f7 / unfocused = grey
+/// 0x59 @ 67%), gaps_in semantics (pane-gap on every side of every pane, default 5: adjacent panes
+/// compose to 10, and the outer ring uses the same value so it composes to 10 too - left, middle
+/// and right gaps come out equal, and scrolling / dwindle / floating all agree), square corners,
+/// and an 87% popin animation. The focus state follows hover with no delay.
 struct PaneChrome: ViewModifier {
     @ObservedObject var surfaceView: PaneView
-    /// 浮动层 pane：非激活不垫磨砂 backdrop——它身后是下层平铺 pane 内容
-    /// 而非壁纸，HUD 材质糊上去近乎实心；跳过后与平铺 pane 同为 0.92 透明
+    /// Floating-layer pane: no frosted backdrop when inactive. What sits behind it is the content
+    /// of the tiled panes below, not the wallpaper, and smearing the HUD material over that comes
+    /// out nearly opaque. Skipping it leaves the floating pane at 0.92 alpha, same as a tiled one.
     var floating: Bool = false
     @EnvironmentObject var theme: ThemeManager
     @State private var appeared: Bool
 
-    /// 已播过弹入的 surface：视图因布局变化重挂载时不再重播（否则整屏一起"闪"）
+    /// Surfaces that have already played the popin: a view remounted by a layout change must not
+    /// replay it, or the whole screen "flashes" at once.
     private static var popped = Set<UUID>()
 
     init(surfaceView: PaneView, floating: Bool = false) {
@@ -21,35 +25,42 @@ struct PaneChrome: ViewModifier {
     }
 
     private var borderColor: Color { surfaceView.focused ? theme.accent : Palette.inactiveBorder }
-    /// 标题与边框**不是同一个颜色**：焦点态两者都用 accent（够亮），非焦点态线照旧淡，
-    /// 字则单独提亮——字有一半落在边框外的壁纸上，跟着线一起淡就读不出来了
+    /// The title and the border are **not the same color**: focused, both use the accent (bright
+    /// enough); unfocused, the line stays dim as before but the text gets its own brighter shade -
+    /// half of each glyph sits on wallpaper outside the border, and dimming the text along with
+    /// the line makes it unreadable.
     private var titleColor: Color { surfaceView.focused ? theme.accent : Palette.inactiveTitle }
 
-    /// 上边框那块标题：**只认被显式设过的**（右键「Change Terminal Title」/ 控制面
-    /// `pane set --title`）。shell 用 OSC 报上来的不算——那玩意每敲一条命令就换一次，
-    /// 边框会跟着抖。总开关是 config `pane-title`
+    /// The title drawn on the top border: **only an explicitly set one counts** (right-click
+    /// "Change Terminal Title", or `pane set --title` from the control plane). What the shell
+    /// reports over OSC does not - that changes on every command you type, and the border would
+    /// judder along with it. The master switch is the `pane-title` config key.
     private var titleOnFrame: String? {
         theme.paneTitleEnabled ? surfaceView.customTitle : nil
     }
 
     func body(content: Content) -> some View {
         content
-            // 非激活 pane：背面垫窗口内 backdrop 模糊——磨砂的是透出的壁纸，文字锐利。
-            // 激活 pane 无 backdrop = 清玻璃（透出清晰壁纸）。
+            // Inactive pane: back it with an in-window backdrop blur - what gets frosted is the
+            // wallpaper showing through, and the text stays sharp.
+            // Active pane: no backdrop = clear glass, with the wallpaper crisp behind it.
             .background {
                 if surfaceView.focused {
-                    // 激活 = 清玻璃但更实（合成到 active-opacity，默认 0.98）
+                    // Active = clear glass, only more solid (composited to active-opacity,
+                    // default 0.98)
                     theme.background.opacity(theme.activeUnderlayAlpha)
                 } else if theme.frostedInactive, !floating {
-                    // 非激活 = 磨砂玻璃（backdrop 模糊壁纸，文字锐利）
+                    // Inactive = frosted glass (the backdrop blurs the wallpaper, text stays sharp)
                     VisualEffectBlur()
                 }
             }
-            // 不再用 `.border`：标题要像 fieldset 的 legend 一样把上边框咬开一个口，
-            // 四条边只能自己画（长相与原来那圈 2px 直角边框逐像素一致）
+            // No more `.border`: the title has to bite a gap out of the top border the way a
+            // fieldset legend does, so all four edges are drawn by hand (pixel for pixel identical
+            // to the old 2px square-cornered border).
             .overlay { PaneFrame(color: borderColor, titleColor: titleColor,
                                  title: titleOnFrame, overhang: overhang) }
-            .padding(theme.gapsEnabled ? theme.paneGap : 0)   // 每边留白 pane-gap（两种布局一致）
+            // pane-gap of breathing room on every side (the same in both layouts)
+            .padding(theme.gapsEnabled ? theme.paneGap : 0)
             .scaleEffect(appeared ? 1 : 0.87)
             .opacity(appeared ? 1 : 0)
             .onAppear {
@@ -59,27 +70,33 @@ struct PaneChrome: ViewModifier {
             }
     }
 
-    /// 标题往上能越出边框多少：外层槽位是 `.clipped()` 的，边框以外只剩这一圈 pane-gap
+    /// How far the title may stick out above the border: the enclosing slot is `.clipped()`, so
+    /// the only space outside the border is that one ring of pane-gap.
     private var overhang: CGFloat { theme.gapsEnabled ? theme.paneGap : 0 }
 }
 
-/// pane 的四条边 + 压在上边框上的标题。标题所在的那一段边框是断开的（fieldset legend）。
-/// 焦点一变，线与字一起换色，看上去仍是一个框；但非焦点态字比线亮一档
-/// （见 `PaneChrome.titleColor`：字有一半落在边框外的壁纸上）。
+/// The pane's four edges plus the title riding on the top one. The stretch of border behind the
+/// title is broken open, like a fieldset legend. When focus changes, line and text change color
+/// together so it still reads as one frame; unfocused, the text is one notch brighter than the
+/// line (see `PaneChrome.titleColor`: half of it sits on wallpaper outside the border).
 private struct PaneFrame: View {
     let color: Color
-    /// 标题的颜色（见 `PaneChrome.titleColor`：非焦点态比边框亮一档）
+    /// Title color (see `PaneChrome.titleColor`: one notch brighter than the border when
+    /// unfocused)
     let titleColor: Color
-    /// 要显示的标题原文（截多长、画在哪、边框断哪一段都在 `PaneTitleBadge` 里算）；
-    /// nil 或算下来放不下 = 画整圈不断的边框
+    /// The raw title to show. How far it is truncated, where it is drawn and which stretch of
+    /// border is broken are all computed in `PaneTitleBadge`; nil, or a title that turns out not
+    /// to fit, means draw the full unbroken border.
     let title: String?
-    /// 上边框之上还能借用多少空间（= pane-gap）：借不到就连标题带断口一起不画
+    /// How much space can be borrowed above the top border (= pane-gap). With nothing to borrow,
+    /// neither the title nor the gap is drawn.
     let overhang: CGFloat
 
     var body: some View {
         GeometryReader { geo in
             let metrics = PaneTitleBadge.Metrics.standard
-            // 断口与文字同出一处：分开算就会出现"边框咬开了、字却掉到线下面"
+            // Gap and text come out of one call: computed separately you get "the border is
+            // bitten open but the text dropped below the line"
             let badge = PaneTitleBadge.place(title: title, topEdgeWidth: geo.size.width,
                                              overhang: overhang, metrics: metrics)
             ZStack(alignment: .topLeading) {
@@ -97,16 +114,18 @@ private struct PaneFrame: View {
                 }
             }
         }
-        // 边框与标题都不能吃鼠标：终端的选中、⌘+点击链接都要穿过去
+        // Neither border nor title may eat the mouse: terminal selection and Cmd+click on a link
+        // both have to pass straight through.
         .allowsHitTesting(false)
     }
 
-    /// 四条边各画成一个实心矩形（而不是 stroke）：直角、线宽精确、断口好开
+    /// Each edge is a filled rectangle rather than a stroke: square corners, an exact line width,
+    /// and a gap that is easy to cut.
     private func frame(_ path: inout Path, size: CGSize, gap: (start: CGFloat, end: CGFloat)?) {
         let line = PaneTitleBadge.lineWidth
         let (w, h) = (size.width, size.height)
         guard w > 0, h > 0 else { return }
-        // 左右两条画满高，四个直角就由它们补齐
+        // The left and right edges run the full height, which fills in all four corners.
         path.addRect(CGRect(x: 0, y: 0, width: line, height: h))
         path.addRect(CGRect(x: w - line, y: 0, width: line, height: h))
         path.addRect(CGRect(x: 0, y: h - line, width: w, height: line))

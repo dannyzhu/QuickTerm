@@ -1,21 +1,23 @@
 import XCTest
 @testable import QuickTerm
 
-/// Phase 2 用例的公共夹具：**直接驱动 `ControlCommandRunner`**，不经 socket。
+/// Shared fixture for the Phase 2 cases: **drives `ControlCommandRunner` directly**, no socket.
 ///
-/// 为什么不走 socket：Phase 1 已经把"socket → 主线程 hop → runner"这一段钉死了
-/// （`ControlServerTests`），再走一遍只是把每个用例都变成异步的。命令语义本身
-/// （幂等、dry-run、限流、模态保护、撤销）全在 runner 这一层，同步跑一遍又快又稳。
+/// Why not go through the socket: Phase 1 already nailed down the "socket -> main-thread hop ->
+/// runner" leg (`ControlServerTests`), and walking it a second time would only turn every case
+/// async. The command semantics themselves (idempotence, dry-run, rate limiting, modal guard,
+/// undo) all live in the runner layer, and running them synchronously is both faster and steadier.
 ///
-/// 每条响应都会**经 JSONEncoder 编码再解码回来**：顺带把"所有 JSON 走 JSONEncoder"
-/// 这条不变量钉在每一个用例上（yabai 的尾逗号事故就发生在手拼 JSON 上）。
+/// Every reply is **encoded through JSONEncoder and decoded back again**: that pins the "all JSON
+/// goes through JSONEncoder" invariant onto every single case (yabai's trailing-comma incident
+/// happened in hand-assembled JSON).
 @MainActor
 final class ControlHarness {
     let app: AppDelegate
     let runner: ControlCommandRunner
     let consent: ControlConsent
     private var nextID = 0
-    /// 用例里创建出来的 pane：tearDown 时一律关掉，绝不污染后面的用例
+    /// Panes a case created: tearDown closes every one of them, so they never pollute later cases
     private(set) var created: [PaneView] = []
 
     init(allowDestructive: Bool = true) throws {
@@ -28,15 +30,16 @@ final class ControlHarness {
         if allowDestructive { consent.decisionStub = { _, reply in reply(.allow) } }
         runner = ControlCommandRunner(screens: app.screens, consent: consent)
         runner.config = ControlCommandRunner.Config()
-        // 事件总线是进程内单例：把"此刻"记成基线，否则上一条用例留下的 pane
-        // 会在这一条里变成一串莫名其妙的 pane.closed
+        // The event bus is a process-wide singleton: record "now" as the baseline, otherwise the
+        // panes left behind by the previous case turn into a stream of inexplicable pane.closed
+        // events inside this one
         ControlEventBus.shared.resetForTesting()
     }
 
-    /// 当下的 seq（`events poll --since` 的起点）
+    /// The seq as of right now (the starting point for `events poll --since`)
     var seq: Int { ControlEventBus.shared.seq }
 
-    /// `since` 之后的事件（不打码；打码由 `ControlEventTests` 单独钉）
+    /// Events after `since` (unredacted; redaction is pinned separately by `ControlEventTests`)
     func events(since: Int) -> [ControlEvent] {
         ControlEventBus.shared.flush()
         return ControlEventBus.shared.batch(since: since, limit: ControlEventLimits.maxBatch,
@@ -51,7 +54,7 @@ final class ControlHarness {
         RunLoop.current.run(until: Date().addingTimeInterval(seconds))
     }
 
-    /// 发一条命令，同步拿到解码回来的响应
+    /// Send one command and get the decoded reply back synchronously
     @discardableResult
     func run(_ cmd: String, target: String? = nil, args: [String: JSONValue] = [:],
              token: String? = nil, origin: ControlRequestOrigin? = nil,
@@ -62,19 +65,20 @@ final class ControlHarness {
         let peer = ControlSocket.Peer(fd: -1, uid: getuid(), pid: getpid(), processName: "xctest")
         var response: ControlResponse?
         runner.handle(request, peer: peer) { response = $0 }
-        let got = try XCTUnwrap(response, "命令没有同步返回（确认闸门挂住了？）", file: file, line: line)
+        let got = try XCTUnwrap(response, "command did not return synchronously (is the consent gate stuck?)",
+                                file: file, line: line)
         let data = try ControlJSON.line(got)
         return try ControlJSON.decoder.decode(ControlReply.self, from: data)
     }
 
-    /// 变更信封（失败时把 error 打出来，省得对着 nil 猜）
+    /// The mutation envelope (prints the error on failure, so you are not staring at a nil guessing)
     func mutation(_ reply: ControlReply, file: StaticString = #filePath, line: UInt = #line) throws
         -> [String: JSONValue] {
-        XCTAssertTrue(reply.ok, "命令失败：\(String(describing: reply.error))", file: file, line: line)
-        return try XCTUnwrap(reply.data?.objectValue, "响应没有 data", file: file, line: line)
+        XCTAssertTrue(reply.ok, "command failed: \(String(describing: reply.error))", file: file, line: line)
+        return try XCTUnwrap(reply.data?.objectValue, "reply carries no data", file: file, line: line)
     }
 
-    /// 新建一个终端 pane 并记账（用例结束时统一关掉）
+    /// Create a terminal pane and book it (they all get closed when the case ends)
     @discardableResult
     func newTerminal(in workspace: Int? = nil) throws -> PaneView {
         let controller = try self.controller
@@ -83,17 +87,19 @@ final class ControlHarness {
         controller.perform(.newTerminal)
         spin(0.3)
         let pane = try XCTUnwrap(controller.model.allPanes.first { !before.contains($0.id) },
-                                 "没能建出新 pane")
+                                 "failed to create the new pane")
         created.append(pane)
         return pane
     }
 
     func track(_ pane: PaneView) { created.append(pane) }
 
-    /// 一块屏幕的**字节级**结构状态：`--dry-run` 用例靠它证明"一个字节都没改"。
-    /// `windowState()` 本身就是纯读（存档路径），Codable，正好当基准——
-    /// 但要先把**会自己变**的叶子字段抹掉：里面跑着真的 shell，
-    /// OSC 7 的 pwd 与终端标题随时会更新，那不是控制命令改的
+    /// **Byte-level** structural state of one screen: this is how the `--dry-run` cases prove
+    /// that "not a single byte changed". `windowState()` is a pure read in itself (it is the
+    /// persistence path) and Codable, which makes it exactly the right baseline — but the leaf
+    /// fields that **change on their own** have to be scrubbed first: a real shell is running in
+    /// there, and the OSC 7 pwd and the terminal title can update at any moment, which is not the
+    /// control command's doing
     func fingerprint(_ controller: MainWindowController) throws -> String {
         let data = try ControlJSON.encoder.encode(controller.windowState())
         let value = try ControlJSON.decoder.decode(JSONValue.self, from: data)
@@ -101,7 +107,8 @@ final class ControlHarness {
         return String(decoding: try ControlJSON.encoder.encode(scrubbed), as: UTF8.self)
     }
 
-    /// 抹掉随 shell 自行变化的字段（标题 / cwd）——结构、id、列宽、zoom、焦点一律保留
+    /// Scrub the fields the shell changes on its own (title / cwd) — structure, ids, column
+    /// widths, zoom and focus are all kept
     static let volatileKeys: Set<String> = ["title", "pwd", "isUserSetTitle"]
 
     static func scrub(_ value: JSONValue) -> JSONValue {

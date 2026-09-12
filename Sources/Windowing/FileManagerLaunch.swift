@@ -1,34 +1,45 @@
 import Foundation
 
-/// 文件管理器 pane（TUI，跑在终端 pane 里；默认 yazi）的启动计划——纯逻辑，可测。
-/// 对应 Omarchy 的 Super+Shift+F 文件管理器：新 pane 里以焦点 pane 的目录启动；
-/// 退出时若目录已变，原位开一个终端（yazi 官方 `y` 包装函数的 cd 语义）。
+/// Launch plan for a file manager pane (a TUI running inside a terminal pane; yazi by default) -
+/// pure logic, so it is testable.
+/// This is the counterpart of Omarchy's Super+Shift+F file manager: it starts in a new pane at the
+/// focused pane's directory, and on exit, if the directory has changed, a terminal opens in its
+/// place (the cd semantics of yazi's official `y` wrapper function).
 struct FileManagerLaunch {
-    /// 运行期会话：退出时读 cwd 文件决定是否原位开终端
+    /// The live session: on exit we read the cwd file to decide whether to open a terminal in its
+    /// place
     struct Session: Equatable {
         let startDirectory: String
-        /// 程序支持"退出写最后目录"时的临时文件路径；不支持则 nil
+        /// Path of the temp file, when the program supports "write the last directory on exit";
+        /// nil when it does not
         let cwdFile: String?
     }
 
-    /// 传给 libghostty `command` 的字符串。macOS 上引擎以 `login -flp <user> /bin/bash --noprofile --norc
-    /// -c "exec -l <command>"` 启动，所以整条命令必须是**单个 exec 目标**：这里统一为
-    /// `"${SHELL:-/bin/zsh}" -l -c '<脚本>'`——经用户登录 shell（读 zprofile/bash_profile：Homebrew PATH、
-    /// EDITOR 等，yazi 的预览/打开器才能找到 ffmpeg、pdftoppm、nvim…）再 `exec` 成单进程。
+    /// The string handed to libghostty's `command`. On macOS the engine starts it as
+    /// `login -flp <user> /bin/bash --noprofile --norc -c "exec -l <command>"`, so the whole
+    /// command has to be a **single exec target**. We always shape it as
+    /// `"${SHELL:-/bin/zsh}" -l -c '<script>'`: go through the user's login shell (which reads
+    /// zprofile/bash_profile - the Homebrew PATH, EDITOR and so on, without which yazi's previewers
+    /// and openers cannot find ffmpeg, pdftoppm, nvim, ...) and then `exec` down to a single
+    /// process.
     let command: String
-    /// 会话：程序未找到时 cwdFile 为 nil（command 是提示信息 + 交互登录 shell）
+    /// The session: when the program was not found, cwdFile is nil (the command is then the hint
+    /// message plus an interactive login shell)
     let session: Session
-    /// 程序是否找到
+    /// Whether the program was found
     let found: Bool
-    /// 额外环境（PATH 先补上常见安装目录；登录 shell 的 path_helper 会保留它们）
+    /// Extra environment (PATH is pre-seeded with the usual install directories; the login shell's
+    /// path_helper keeps them)
     let environment: [String: String]
 
     static let defaultProgram = "yazi"
-    /// GUI 进程的 PATH 只有系统目录，Homebrew/cargo 装的程序要按常见安装目录补找
+    /// A GUI process's PATH contains only the system directories, so programs installed by
+    /// Homebrew or cargo have to be looked up in the usual install directories as well.
     static let extraSearchDirs = ["/opt/homebrew/bin", "/usr/local/bin", "~/.cargo/bin", "~/.local/bin",
                                   "/opt/local/bin", "/usr/bin", "/bin"]
 
-    /// 找程序：含 "/" 视为路径（展开 ~）；否则按 PATH + 常见安装目录查可执行文件
+    /// Resolve the program: anything containing "/" is treated as a path (with ~ expanded);
+    /// otherwise search PATH plus the usual install directories for an executable.
     static func resolve(program: String, pathEnv: String?, home: String,
                         isExecutable: (String) -> Bool) -> String? {
         let expand: (String) -> String = { $0.hasPrefix("~/") ? home + $0.dropFirst(1) : $0 }
@@ -48,7 +59,8 @@ struct FileManagerLaunch {
         return nil
     }
 
-    /// 各 TUI 文件管理器"退出时写最后目录"的参数；不支持的程序不传（退出只关 pane）
+    /// The per-TUI flag for "write the last directory on exit"; a program that does not support it
+    /// gets nothing (quitting then just closes the pane).
     static func cwdFileArguments(executable: String, cwdFile: String) -> [String] {
         switch (executable as NSString).lastPathComponent {
         case "yazi": return ["--cwd-file=" + cwdFile]
@@ -65,14 +77,16 @@ struct FileManagerLaunch {
         let environment = ["PATH": pathDirs.joined(separator: ":")]
         guard let exe = resolve(program: program, pathEnv: pathEnv, home: home, isExecutable: isExecutable) else {
             let hint = L("window.file-manager.not-found", program)
-            // 内层由用户登录 shell 解析：只用裸 "$SHELL"（fish 不认 ${…:-…}；login(1) 总会设置 SHELL）
+            // The inner level is parsed by the user's login shell, so use a bare "$SHELL" here:
+            // fish does not understand ${...:-...}, and login(1) always sets SHELL anyway.
             let script = "printf '%s\\n' \(Ghostty.Shell.quote(hint)); exec \"$SHELL\" -l"
             return FileManagerLaunch(command: viaLoginShell(script),
                                      session: Session(startDirectory: startDirectory, cwdFile: nil),
                                      found: false, environment: environment)
         }
         let args = cwdFileArguments(executable: exe, cwdFile: cwdFile)
-        // shlex.quote 风格单引号包裹（带空格/特殊字符的路径安全）；exec 成单进程，退出即子进程退出
+        // shlex.quote-style single quoting, which keeps paths with spaces or special characters
+        // safe; `exec` collapses to a single process, so quitting it is the child exiting.
         let script = "exec " + ([exe] + args + [startDirectory]).map(Ghostty.Shell.quote).joined(separator: " ")
         return FileManagerLaunch(command: viaLoginShell(script),
                                  session: Session(startDirectory: startDirectory,
@@ -80,15 +94,18 @@ struct FileManagerLaunch {
                                  found: true, environment: environment)
     }
 
-    /// 用户登录 shell（login(1) 会按 passwd 设置 SHELL；缺省 zsh）
+    /// The user's login shell (login(1) sets SHELL from passwd; zsh is the fallback)
     static let loginShell = "\"${SHELL:-/bin/zsh}\""
 
-    /// `"${SHELL:-/bin/zsh}" -l -c '<script>'`：对引擎的 `exec -l` 包装而言是单个目标
+    /// `"${SHELL:-/bin/zsh}" -l -c '<script>'`: a single target as far as the engine's `exec -l`
+    /// wrapper is concerned
     static func viaLoginShell(_ script: String) -> String {
         "\(loginShell) -l -c \(Ghostty.Shell.quote(script))"
     }
 
-    /// 退出后应在原位开终端的目录：cwd 文件存在、内容是目录、且与起始目录不同；否则 nil（只关 pane）
+    /// The directory a terminal should open in after the file manager exits: the cwd file exists,
+    /// its content is a directory, and it differs from the starting directory. Otherwise nil, and
+    /// the pane simply closes.
     static func nextDirectory(session: Session, read: (String) -> String?,
                               isDirectory: (String) -> Bool) -> String? {
         guard let file = session.cwdFile, let raw = read(file) else { return nil }
@@ -99,7 +116,7 @@ struct FileManagerLaunch {
         return a == b ? nil : dir
     }
 
-    // MARK: 真实环境便捷入口
+    // MARK: Convenience entry points for the real environment
 
     static func plan(program: String, startDirectory: String, cwdFile: String) -> FileManagerLaunch {
         plan(program: program, startDirectory: startDirectory, cwdFile: cwdFile,

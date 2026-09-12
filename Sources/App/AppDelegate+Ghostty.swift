@@ -1,13 +1,14 @@
 import AppKit
 
-// GhosttyEmbed 移植层要求应用委托提供的接口。
-// M0 提供最小实现；M1 起逐项接管（详见 docs/porting-notes.md）。
+// The interface the GhosttyEmbed porting layer requires the app delegate to provide.
+// M0 supplies minimal implementations; they are taken over one at a time from M1 on
+// (see docs/porting-notes.md for the details).
 extension AppDelegate {
-    func checkForUpdates(_ sender: Any?) {}                     // QuickTerm 无 Sparkle 更新器
-    func closeAllWindows(_ sender: Any?) {}                     // M1 接管
-    func toggleVisibility(_ sender: Any) {}                     // M1 接管
-    func syncFloatOnTopMenu(_ window: NSWindow) {}              // QuickTerm 无该菜单项
-    func setSecureInput(_ mode: Ghostty.SetSecureInput) {}      // 后续里程碑接管
-    func toggleQuickTerminal(_ sender: Any) {}                  // v2 全局下拉终端
+    func checkForUpdates(_ sender: Any?) {}                     // QuickTerm has no Sparkle updater
+    func closeAllWindows(_ sender: Any?) {}                     // taken over in M1
+    func toggleVisibility(_ sender: Any) {}                     // taken over in M1
+    func syncFloatOnTopMenu(_ window: NSWindow) {}              // QuickTerm has no such menu item
+    func setSecureInput(_ mode: Ghostty.SetSecureInput) {}      // taken over in a later milestone
+    func toggleQuickTerminal(_ sender: Any) {}                  // v2 global drop-down terminal
     func performGhosttyBindingMenuKeyEquivalent(with event: NSEvent) -> Bool { false }
 }

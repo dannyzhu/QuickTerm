@@ -1,42 +1,53 @@
 import Foundation
 
-/// Phase 2 名词-动词层的**统一响应信封**。
+/// The **single response envelope** for the Phase 2 noun-verb layer.
 ///
-/// 三件事一次说清，省掉 agent 的第二次往返：
-/// 1. `changed` —— 有没有东西要改（绝对设值的本质：第二次调用什么都不做）；
-/// 2. `applied` —— 真的改了没有（`--dry-run` 恒为 false，`changes` 就是那份 diff）；
-/// 3. 改完之后的实体（pane / workspace / screen）——读后写的窗口就此关上。
+/// It settles three things at once and saves the agent a second round trip:
+/// 1. `changed` — was there anything to change at all (the essence of absolute set-value semantics:
+///    the second call does nothing);
+/// 2. `applied` — did it actually change (always false under `--dry-run`, where `changes` is the
+///    diff);
+/// 3. the entity after the change (pane / workspace / screen) — which closes the read-after-write
+///    window.
 ///
-/// **纯 Foundation**：本目录同时编进 app 与 `quickterm` 工具 target。
+/// **Pure Foundation**: this directory is compiled into both the app and the `quickterm` tool
+/// target.
 struct ControlMutationPayload: Codable, Equatable {
-    /// 线上的命令名（`pane.new`）
+    /// The command name as it appears on the wire (`pane.new`).
     var command: String
-    /// 真的落到 UI 上了（dry-run 恒 false）
+    /// It really landed in the UI (always false under dry-run).
     var applied: Bool
-    /// 有需要改的东西（false = 已经是目标状态；`--fail-if-noop` 下这条会变成退出码 7）
+    /// There was something to change (false = already in the target state; under `--fail-if-noop`
+    /// that turns into exit code 7).
     var changed: Bool
     var dryRun: Bool
-    /// 逐条 diff：`--dry-run` 时这就是"会改什么"的全部内容
+    /// The diff, entry by entry: under `--dry-run` this is the whole of "what would change".
     var changes: [ControlChange]
     var pane: ControlStatePayload.PaneInfo?
-    /// 一次动了多个 pane 时（workspace clear）
+    /// When one command touched several panes (workspace clear).
     var panes: [ControlStatePayload.PaneInfo]?
     var workspace: ControlStatePayload.WorkspaceInfo?
     var screen: ControlStatePayload.ScreenInfo?
-    /// 焦点交接是异步重试的（最长 0.75s）：返回时可能还没真正落到 `resolved.pane` 上
+    /// Focus handover is retried asynchronously (0.75s at most), so on return it may not have
+    /// landed on `resolved.pane` yet.
     var focusPending: Bool?
-    /// QuickTerm 自己弹了一个"仍有进程在运行"的确认框，等用户回答（pane 还没关）
+    /// QuickTerm put up its own "a process is still running" confirmation and is waiting for the
+    /// user to answer (the pane is not closed yet).
     var confirmPending: Bool?
-    /// 登记到 `AppDelegate.undoManager` 的撤销项名字（有值 = 这一步可以撤销）
+    /// The name of the undo entry registered with `AppDelegate.undoManager` (present = this step
+    /// can be undone).
     var undo: String?
-    /// 需要告诉调用方的额外事实（如"由 config.toml 监听落地，稍后生效"）
+    /// An extra fact the caller needs to know (for example, "this lands via the config.toml
+    /// watcher, so it takes effect shortly").
     var note: String?
-    /// `spec apply` 的落地报告（新建 / 留用 / 关掉了哪些 pane）
+    /// The apply report for `spec apply` (which panes were created, kept, or closed).
     var spec: ControlSpecApplyReport?
-    /// **命令成功了，但有一件调用方必须知道的事**（见 `ControlWarning`）。
-    /// 最要紧的一条：显式给的 `--cwd` 被 macOS 隐私授权挡下来了，shell 起在了别处——
-    /// 报一句平平无奇的 success 而把这件事咽掉，正是"pane 开了、目录没变"这类
-    /// 谁也查不出来的故障的来源
+    /// **The command succeeded, but there is something the caller has to know** (see
+    /// `ControlWarning`).
+    /// The one that matters most: an explicit `--cwd` was blocked by macOS privacy authorization
+    /// and the shell started somewhere else — reporting a bland success and swallowing that is
+    /// exactly where undiagnosable "the pane opened but the directory never changed" failures come
+    /// from.
     var warnings: [ControlWarning]?
 
     init(command: String, applied: Bool, changed: Bool, dryRun: Bool,
@@ -65,24 +76,26 @@ struct ControlMutationPayload: Codable, Equatable {
     }
 }
 
-/// 一条"做是做成了，但你得知道这件事"的告警。
+/// One "it worked, but you need to know this" warning.
 ///
-/// 为什么不是错误：命令**确实**落地了（pane 开出来了、spec 也铺好了），
-/// 把它变成失败会让每一个不在乎这件事的脚本都跟着挂掉。
-/// 为什么不能只写进 `note`：`note` 是一句给人读的散文，
-/// 而调用方要在 `code` 上分支（`cwd_denied` 是稳定的字符串，文案不是）。
+/// Why it is not an error: the command **did** land (the pane opened, the spec was laid out), and
+/// turning it into a failure would break every script that does not care about this.
+/// Why it cannot just go into `note`: `note` is prose for a human, while callers need to branch on
+/// `code` (`cwd_denied` is a stable string; the prose is not).
 ///
-/// 目前只有一个 code：`cwd_denied`——显式给的工作目录落在 macOS 的受保护目录里
-/// （~/Desktop ~/Documents ~/Downloads）而本二进制没有授权，`WorkingDirectoryGate`
-/// 把它挡下来了，shell 起在引擎的默认目录。要它变成硬错误的脚本加 `--require-cwd`
+/// There is one code so far: `cwd_denied` — the explicitly given working directory falls inside a
+/// macOS protected directory (~/Desktop ~/Documents ~/Downloads) that this binary has no
+/// authorization for, `WorkingDirectoryGate` blocked it, and the shell started in the engine's
+/// default directory. A script that wants this to be a hard error passes `--require-cwd`.
 struct ControlWarning: Codable, Equatable {
-    /// 稳定的机器码：**在它上面分支，绝不要去匹配 message**
+    /// The stable machine code: **branch on this, never match on the message**.
     var code: String
     var message: String
     var hint: String?
-    /// 调用方要求的那个路径
+    /// The path the caller asked for.
     var path: String?
-    /// 实际用的那个（不知道就省略——引擎的默认目录由引擎决定）
+    /// The one actually used (omitted when we do not know it — the engine decides its own default
+    /// directory).
     var used: String?
 
     init(code: String, message: String, hint: String? = nil,
@@ -96,8 +109,8 @@ struct ControlWarning: Codable, Equatable {
 
     static let cwdDenied = "cwd_denied"
 
-    /// `--cwd` 被隐私守卫挡下来的那一条（`pane new` 与 `spec apply` 用的是同一份措辞——
-    /// 两处各写一遍必然只改一处）
+    /// The warning for a `--cwd` blocked by the privacy gate (`pane new` and `spec apply` share
+    /// this one piece of wording — written out twice, only one copy would ever get updated).
     static func cwdDenied(_ path: String, used: String?) -> ControlWarning {
         ControlWarning(
             code: cwdDenied,
@@ -110,34 +123,41 @@ struct ControlWarning: Codable, Equatable {
     }
 }
 
-/// `pane capture-text` 的两个上限。
+/// The two limits on `pane capture-text`.
 ///
-/// 行数上限存在的理由不是省 CPU：整份历史（引擎默认能存上万行）塞进一次 JSON 响应，
-/// 会把 agent 的上下文一次吃光，而它真正要的通常是最后几十行。
-/// 字节上限则是最后一道闸——一行可以长到几 KB（`cat` 一个二进制文件）
+/// The line limit is not there to save CPU: stuffing the entire history (the engine keeps tens of
+/// thousands of lines by default) into one JSON response eats an agent's whole context in a single
+/// call, when what it actually wants is usually the last few dozen lines.
+/// The byte limit is the last gate — a single line can run to several KB (`cat` a binary file).
 enum ControlCaptureLimits {
-    /// `--scrollback` 的上限
+    /// The ceiling on `--scrollback`.
     static let maxScrollback = 5000
-    /// 一次最多回多少字节的文本（超了从**头部**截：最近的输出永远留着）
+    /// How many bytes of text one call returns at most (over the limit we cut from the **front**:
+    /// the most recent output is always kept).
     static let maxBytes = 256 * 1024
 }
 
-/// `pane capture-text` 的负载。**text 只在这条响应里出现一次**：
-/// 不进活动日志、不进事件流、不进任何长期留存的记录（见 `ControlCaptureCommands`）
+/// The payload for `pane capture-text`. **`text` appears exactly once, in this response**: never in
+/// the activity log, never in the event stream, never in any record that is kept (see
+/// `ControlCaptureCommands`).
 struct ControlCaptureTextPayload: Codable, Equatable {
     var command: String
-    /// 读的是哪个 pane（与别处同一份 pane 记录）
+    /// Which pane was read (the same pane record used everywhere else).
     var pane: ControlStatePayload.PaneInfo
-    /// 引擎量到的网格（`cols` × `rows`）——调用方由此知道这份文本被折行折在哪儿
+    /// The grid the engine measured (`cols` × `rows`) — this is how the caller knows where the text
+    /// was wrapped.
     var cols: Int?
     var rows: Int?
-    /// 真正回了多少行
+    /// How many lines actually came back.
     var lines: Int
-    /// 其中有多少行来自可视区**之上**的历史（`--scrollback N` 要的那一段）
+    /// How many of those lines come from history **above** the visible area (the stretch
+    /// `--scrollback N` asked for).
     var scrollback: Int
-    /// 撞到长度上限被截断了（从**头部**截：最近的输出永远留着）
+    /// Hit a length limit and was truncated (cut from the **front**: the most recent output is
+    /// always kept).
     var truncated: Bool?
-    /// 可视区（加上可选的那段历史）的纯文本，行以 \n 分隔，行尾空白已去掉
+    /// The plain text of the visible area (plus the optional stretch of history), lines separated
+    /// by \n, trailing whitespace stripped.
     var text: String
 
     init(command: String, pane: ControlStatePayload.PaneInfo, cols: Int? = nil, rows: Int? = nil,
@@ -153,21 +173,24 @@ struct ControlCaptureTextPayload: Codable, Equatable {
     }
 }
 
-/// 一条 diff。`path` 用与寻址语法同形的写法（`1:2.t7.zoom`），
-/// 这样 agent 读到的 diff 与它下一条命令要写的目标是同一套词汇
+/// One diff entry. `path` is written in the same shape as the addressing syntax (`1:2.t7.zoom`), so
+/// the diff an agent reads and the target it writes in its next command are the same vocabulary.
 struct ControlChange: Codable, Equatable {
     var path: String
     var from: String?
     var to: String?
-    /// 这一条的**值本身**是隐私：网页标题 / 网址、终端标题（里面常年躺着 cwd 或正在跑的命令行）。
+    /// For this entry the **value itself** is private: page titles and URLs, terminal titles (which
+    /// permanently carry the cwd or the command line currently running).
     ///
-    /// 响应里照给——那一侧早就按 token 打过码了（`browserVisible`），而且只发给这一个调用方。
-    /// 但 `ControlActivityLog` 会把每条变更镜像一份进 OSLog，那份日志落在 /var/db/diagnostics：
-    /// 任何管理员读得到、sysdiagnose 会打包带走、应用退出之后还留着。
-    /// 一个默认要打码的字段被原样写进一份长期留存的公共日志，等于打码没做过。
-    /// 于是：带这个标记的变更，进日志时只留 `path`。
+    /// The response still carries it — that side already redacts by token (`browserVisible`), and
+    /// it goes to this one caller only. But `ControlActivityLog` mirrors every change into OSLog,
+    /// and that log lands in /var/db/diagnostics: any administrator can read it, sysdiagnose
+    /// packages it up and carries it off, and it outlives the app. A field that is redacted by
+    /// default, written verbatim into a long-lived public log, means the redaction never happened.
+    /// Hence: a change carrying this flag is logged with its `path` only.
     ///
-    /// **不上线**（不在 CodingKeys 里）：它是本地的一条处置规则，不是回给调用方的数据。
+    /// **Not on the wire** (not in CodingKeys): it is a local handling rule, not data we send back
+    /// to the caller.
     var sensitive: Bool = false
 
     init(_ path: String, from: String?, to: String?, sensitive: Bool = false) {
@@ -177,14 +200,16 @@ struct ControlChange: Codable, Equatable {
         self.sensitive = sensitive
     }
 
-    /// diff 里"数量 + 单位"的统一写法：`1 pane` / `3 panes`。
-    /// 中文原文没有单复数，直译过去每个计数都会写出 "1 panes"
+    /// The one way a diff writes "count + unit": `1 pane` / `3 panes`.
+    /// The Chinese these strings were first written in has no plural form, so translating them
+    /// across straight would have written "1 panes" for every count.
     static func count(_ n: Int, _ noun: String) -> String { "\(n) \(noun)\(n == 1 ? "" : "s")" }
 
     private enum CodingKeys: String, CodingKey { case path, from, to }
 }
 
-/// `app get` 的负载：每一项都带上可选值，agent 不必再猜合法输入
+/// The payload for `app get`: every entry carries its allowed values, so an agent never has to
+/// guess what a valid input looks like.
 struct ControlAppPayload: Codable, Equatable {
     var settings: [Setting]
 

@@ -1,12 +1,16 @@
 import AppKit
 
-/// 多「屏幕」的创建 / 放置 / 关闭 / 迁移，以及 Window 菜单的动作落点（spec v9 §1.1–§1.3）。
-/// 「屏幕」= 一个窗口 + 一组自己的工作区；只能从菜单栏驱动（没有快捷键——⌘N 已被占用）。
-/// （整段 `@MainActor`：窗口与 `SessionStore` 都是主线程独占的）
+/// Creating, placing, closing and moving "screens", plus the landing points for the Window menu's
+/// actions (spec v9 §1.1-§1.3).
+/// A "screen" is one window plus its own set of workspaces, and it is driven only from the menu bar
+/// - there are no shortcuts, since Cmd+N is already taken.
+/// (The whole extension is `@MainActor`: windows and `SessionStore` are both main-thread only.)
 @MainActor
 extension AppDelegate {
-    /// 新建一个屏幕。新屏幕的首个终端继承源窗口焦点 pane 的 cwd（与新建终端同规则）。
-    /// `restoring = true` 时不开起步终端——调用方（`restoreSession`）随后灌入存档
+    /// Create a new screen. Its first terminal inherits the cwd of the source window's focused pane
+    /// (the same rule a new terminal follows).
+    /// With `restoring = true` no starter terminal is opened - the caller (`restoreSession`) pours
+    /// the saved state in right afterwards.
     @discardableResult
     func newScreen(on screen: NSScreen? = nil, inheritingFrom pane: PaneView? = nil,
                    restoring: Bool = false, id: UUID = UUID(),
@@ -22,9 +26,11 @@ extension AppDelegate {
         return controller
     }
 
-    /// 一键复原（用户 2026-09-08）：还原每个「屏幕」、它的 pane 与布局、每个终端 pane 的目录、
-    /// 每个浏览器 pane 已打开的网页；显示器 / frame / 全屏 / 「在所有桌面显示」一并还原。
-    /// 没有存档 / 损坏 / 全空 → 保持 1.5.x 行为：一个新屏幕 + 一个终端
+    /// One-shot restore (from the user, 2026-09-08): brings back every "screen", its panes and
+    /// layout, each terminal pane's directory and the pages each browser pane had open, along with
+    /// the display, the frame, fullscreen state and "show on all desktops".
+    /// No saved state, a corrupt one, or an entirely empty one keeps the 1.5.x behavior: one new
+    /// screen with one terminal.
     func restoreSession() {
         guard !Self.isRunningTests, let state = session.sessionStore.load() else {
             newScreen()
@@ -33,16 +39,20 @@ extension AppDelegate {
         restoreSession(from: state)
     }
 
-    /// 纯编排（读盘 / 测试宿主的判断留在上面那层，用例可以直接喂一份 `PersistedState`）：
-    /// 逐窗口解析显示器 → 建屏 → 灌档 → 按存档的叠放次序与 key 屏幕置前。返回建出来的控制器
+    /// Pure orchestration - reading from disk and the test-host check stay in the layer above, so a
+    /// test can feed in a `PersistedState` directly: per window resolve the display, create the
+    /// screen, pour the state in, then order the windows front by the saved stacking order with the
+    /// key screen last. Returns the controllers it created.
     @discardableResult
     func restoreSession(from state: PersistedState) -> [MainWindowController] {
-        // 灌档期间模型只有一半：一次半途的防抖存档会把用户的会话截断掉
+        // The model is only half-built while the state is being poured in: one debounced save
+        // landing mid-way would truncate the user's session.
         session?.sessionStore.beginRestore()
         defer { session?.sessionStore.endRestore() }
         var restored: [MainWindowController] = []
         for windowState in state.windows {
-            // 显示器没了不丢窗口：回退主屏，frame 再收进它的可见区
+            // A missing display must not lose the window: fall back to the main screen and pull the
+            // frame back into its visible area.
             let screen = SessionStore.resolveScreen(for: windowState.display)
             let controller = newScreen(on: screen, restoring: true, id: windowState.id,
                                        restoredFrame: windowState.frame)
@@ -50,8 +60,10 @@ extension AppDelegate {
             restored.append(controller)
         }
         guard let first = restored.first else { return [newScreen()] }
-        // 叠放次序：存档里靠后的先 orderFront，最后是 key 屏幕——三个以上屏幕挤在同一台显示器上时
-        // 谁压着谁才能复原（存档没有这份次序 = 老档 → 按存档顺序，与之前的行为一致）
+        // Stacking order: the ones further back in the saved order get orderFront first and the key
+        // screen goes last - that is what restores who covers whom when three or more screens are
+        // crowded onto the same display. A saved state without this order is an old one, and falls
+        // back to the saved sequence, which matches the previous behavior.
         let key = restored.first { $0.windowID == state.keyWindowID } ?? first
         let rank = (state.stackingOrder ?? []).enumerated()
             .reduce(into: [UUID: Int]()) { $0[$1.element] = $1.offset }
@@ -62,37 +74,45 @@ extension AppDelegate {
         return restored
     }
 
-    /// 关闭一个屏幕（有活跃 pane 时先确认）。返回是否真的关了。
-    /// 关掉最后一个屏幕 → applicationShouldTerminateAfterLastWindowClosed 让程序退出
-    /// - Parameter confirmed: 调用方已经问过用户了（控制面的确认闸门就是这么一次）。
-    ///   **必须有这个口子**：`confirmCloseScreen()` 里的 `NSAlert.runModal()` 会在调用者的栈上
-    ///   跑一个嵌套 run loop——控制命令在主线程上，等于把自己连同整个控制服务一起卡住，
-    ///   而用户看到的是两个内容相同的确认框
+    /// Close a screen (confirming first when it still has live panes). Returns whether it actually
+    /// closed.
+    /// Closing the last screen quits the app, through
+    /// applicationShouldTerminateAfterLastWindowClosed.
+    /// - Parameter confirmed: the caller has already asked the user (the control plane's
+    ///   confirmation gate is exactly one such ask).
+    ///   **This escape hatch is required**: the `NSAlert.runModal()` inside `confirmCloseScreen()`
+    ///   runs a nested run loop on the caller's stack, and a control command runs on the main
+    ///   thread - so it would wedge itself, and the whole control service with it, while the user
+    ///   stares at two identical confirmation dialogs.
     @discardableResult
     func closeScreen(_ controller: MainWindowController, confirmed: Bool = false) -> Bool {
         guard let window = controller.window else { return false }
         guard confirmed || controller.confirmCloseScreen() else { return false }
-        // 关掉最后一个屏幕 = 程序退出：先存档，因为 windowWillClose 的 teardown 会清空模型，
-        // 之后 applicationWillTerminate 就没有布局可存了
+        // Closing the last screen means quitting: save first, because windowWillClose's teardown
+        // empties the model, and by the time applicationWillTerminate runs there is no layout left
+        // to save.
         if screens.controllers.count == 1 { session.sessionStore.saveNow() }
-        window.close()   // → windowWillClose：拆监视器/观察者，下一轮 runloop 摘注册表
+        // → windowWillClose: tears down monitors and observers, then drops the registry entry on
+        // the next runloop turn.
+        window.close()
         session.sessionStore.scheduleSave()
         return true
     }
 
-    /// 把一个屏幕搬到指定显示器
+    /// Move a screen to the given display.
     func moveScreen(_ controller: MainWindowController, to screen: NSScreen) {
         controller.move(to: screen)
         controller.window?.makeKeyAndOrderFront(nil)
-        session.sessionStore.scheduleSave()   // 换了显示器：下次启动要开回这一台
+        session.sessionStore.scheduleSave()   // new display: the next launch reopens here
     }
 
-    /// 窗口已经关闭：摘掉注册表里的强引用（由 windowWillClose 在下一轮 runloop 调用）
+    /// The window has closed: drop the registry's strong reference (called by windowWillClose on
+    /// the next runloop turn).
     func forgetScreen(_ controller: MainWindowController) {
         screens.remove(controller)
     }
 
-    // MARK: Window 菜单动作（无快捷键）
+    // MARK: Window menu actions (no shortcuts)
 
     @objc func newScreenAction(_ sender: Any?) {
         newScreen(inheritingFrom: screens.current?.focusedPane)
@@ -109,7 +129,8 @@ extension AppDelegate {
         moveScreen(controller, to: screen)
     }
 
-    /// Spaces（虚拟桌面）无法用公开 API 指定，能诚实提供的只有「在所有桌面显示」
+    /// A Space (virtual desktop) cannot be chosen through any public API, so the only thing that
+    /// can honestly be offered is "show on all desktops".
     @objc func toggleJoinAllSpaces(_ sender: NSMenuItem) {
         guard let controller = screens.key ?? screens.primary else { return }
         controller.joinsAllSpaces.toggle()
@@ -121,7 +142,8 @@ extension AppDelegate {
         closeScreen(controller)
     }
 
-    /// 菜单项里带的显示器标识（displayUUID 字符串——显示器配置一变 NSScreen 实例就换了，不能直接存实例）
+    /// The display identifier carried on a menu item (a displayUUID string - NSScreen instances are
+    /// replaced whenever the display configuration changes, so an instance cannot be stored).
     static func screen(forRepresentedObject object: Any?) -> NSScreen? {
         guard let uuid = object as? String else { return nil }
         return NSScreen.screens.first { $0.displayUUID?.uuidString == uuid }
@@ -143,8 +165,9 @@ extension AppDelegate: NSMenuItemValidation {
     }
 }
 
-/// Window ▸「在显示器上新建屏幕 / 将此屏幕移到显示器」两个子菜单：显示器列表随插拔变化，
-/// 每次打开都重建（representedObject 存 displayUUID 字符串，不存 NSScreen 实例）
+/// The two Window submenus, "New Screen on Display" and "Move This Screen to Display": the list of
+/// displays changes as monitors are plugged and unplugged, so it is rebuilt every time the menu
+/// opens (representedObject holds a displayUUID string, never an NSScreen instance).
 final class DisplayMenuDelegate: NSObject, NSMenuDelegate {
     enum Mode {
         case newScreen
@@ -182,11 +205,12 @@ final class DisplayMenuDelegate: NSObject, NSMenuDelegate {
             item.target = target
             item.representedObject = screen.displayUUID?.uuidString
             if mode == .moveScreen, isCurrent {
-                // 已经在这台显示器上：打勾且不可点
+                // Already on this display: check it, and make it unclickable.
                 item.state = .on
                 item.action = nil
             }
-            // displayUUID 取不到（极少数虚拟显示器）时条目无从落点，直接禁用
+            // With no displayUUID (a handful of virtual displays) the item has nowhere to land, so
+            // disable it outright.
             if item.representedObject == nil, item.action != nil { item.action = nil }
         }
     }

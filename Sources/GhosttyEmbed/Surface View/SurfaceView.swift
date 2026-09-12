@@ -234,8 +234,8 @@ extension Ghostty {
                     }
                 }
 
-                // QuickTerm 裁剪：SurfaceGrabHandle（Ghostty 窗口拖拽把手，依赖
-                // BaseTerminalController）已移除；M1 用 SplitTree 拖拽替代。
+                // QuickTerm trim: SurfaceGrabHandle (Ghostty's window drag handle, which depends
+                // on BaseTerminalController) has been removed; M1 uses SplitTree dragging instead.
             }
 
         }
@@ -682,12 +682,15 @@ extension Ghostty {
         }
 
 #if os(macOS)
-        // QuickTerm：多屏幕（spec v9 §2）——surface 一律在 `SurfaceView.init` 里建，那时视图还不在
-        // 任何窗口上（没有 window 就没有 screen），所以初始 scale_factor 只能按主显示器种。
-        // 混合 DPI 下第二台显示器上的窗口因此会先按错的缩放建 surface：这一步由
-        // `SurfaceView.viewDidMoveToWindow` 挂进窗口后补一次 backing 变更纠正（见那里的注释），
-        // 别在这里读 view.window —— 唯一的调用点（init）拿到的永远是 nil。
-        // 顺带去掉 NSScreen.main! 的强解包：没有显示器时（无头 CI）不该崩
+        // QuickTerm: multi-screen (spec v9 §2) — a surface is always created inside
+        // `SurfaceView.init`, and at that point the view is not on any window yet (no window means
+        // no screen), so the initial scale_factor can only be seeded from the main display. On a
+        // mixed-DPI setup a window on the second display therefore gets its surface built at the
+        // wrong scale first; that is corrected afterwards by a backing-change pass in
+        // `SurfaceView.viewDidMoveToWindow` once the view is attached to a window (see the comment
+        // there). Do not try to read view.window here — the one and only call site (init) will
+        // always get nil. While we were here, the force-unwrap of NSScreen.main! is gone too: no
+        // display at all (headless CI) should not be a crash.
         static func seedScaleFactor() -> Double {
             NSScreen.main.map { Double($0.backingScaleFactor) } ?? 2
         }
@@ -728,11 +731,14 @@ extension Ghostty {
             config.context = context
 
             // Use withCString to ensure strings remain valid for the duration of the closure
-            // QuickTerm：引擎会在 `ghostty_surface_new` 里同步 `openat` 这个目录。若它落在 TCC
-            // 保护的目录（~/Desktop ~/Documents ~/Downloads）而本二进制没有授权，且进程是被
-            // LaunchServices 拉起来的，那次 open 会**永远**不返回（启动挂死）。所以先过一道守卫：
-            // 探不通就当没设过 cwd。这里是 cwd 进入 libghostty 的**唯一**入口（`withCValue` 只有
-            // `SurfaceView.init` 一个调用点），复原 / 新建 / 控制面三条路一并覆盖。见 WorkingDirectoryGate
+            // QuickTerm: the engine does a synchronous `openat` on this directory inside
+            // `ghostty_surface_new`. If it lands in a TCC-protected directory (~/Desktop
+            // ~/Documents ~/Downloads) that this binary has no grant for, and the process was
+            // launched by LaunchServices, that open **never** returns — the app hangs on startup.
+            // So it goes through a gate first: if the probe does not get through, act as if no cwd
+            // had ever been set. This is the **only** way a cwd enters libghostty (`withCValue` has
+            // exactly one call site, `SurfaceView.init`), so restore, new-pane and control-plane
+            // are all covered in one place. See WorkingDirectoryGate.
             return try WorkingDirectoryGate.usable(workingDirectory).withCString { cWorkingDir in
                 config.working_directory = cWorkingDir
 

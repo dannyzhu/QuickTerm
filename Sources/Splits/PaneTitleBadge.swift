@@ -1,103 +1,123 @@
 import AppKit
 
-/// pane 顶边框上那块标题的**排版计算**（画在哪由 `PaneChrome` 负责）。
+/// **Layout math** for the title that rides on a pane's top border (`PaneChrome` does the drawing).
 ///
-/// 单独拎出来做成纯函数，是因为几条规则是缠在一起的：20 字上限、不许越过右上角、
-/// 右边还得给边框留下至少两个字符的线、还得真压在那条 2px 线上。视图里量不出"放不下"——
-/// `Text` 自己会截断、会换行、会把 `…` 贴到最后一格，于是"边框断口"与"真正画出来的字"就对不上了；
-/// 只有先把要画的那一串连同它的落位一起算死，断口才画得准，也才测得动。
+/// It lives here as pure functions because several rules are tangled together: a 20-character cap,
+/// never running past the top-right corner, leaving at least two characters' worth of line for the
+/// border on the right, and actually sitting on that 2px line. A view cannot measure "does not
+/// fit" - `Text` truncates on its own, wraps on its own, and will park the `…` in the last cell,
+/// at which point the "gap in the border" and "the glyphs actually drawn" no longer agree. Only by
+/// pinning down the exact string together with its placement up front can the gap be drawn
+/// accurately - and tested.
 enum PaneTitleBadge {
-    /// 最多 20 个字。按**字素簇**算：一个汉字、一个 emoji（哪怕是 ZWJ 拼出来的）都是 1。
-    /// 截断时那个省略号**算在这 20 个里**——所以 30 字的标题画出来是 19 字 + `…`
+    /// At most 20 characters, counted in **grapheme clusters**: one CJK ideograph, or one emoji
+    /// (even a ZWJ sequence), each count as 1. The ellipsis added when truncating **counts against
+    /// those 20**, so a 30-character title is drawn as 19 characters + `…`.
     static let maxCharacters = 20
     static let ellipsis = "…"
 
-    /// 边框线宽（四条边同宽，标题纵向就压在这条线的中心上）
+    /// Border line width (the same on all four edges; vertically the title rides on the center of
+    /// this line).
     static let lineWidth: CGFloat = 2
 
     struct Metrics: Equatable {
         let font: NSFont
-        /// 文字左端距 pane 左边框外沿
+        /// Distance from the outer edge of the pane's left border to the start of the text.
         let leadingInset: CGFloat
-        /// 断口比文字每侧宽出来的一点，免得字头字尾贴着线茬
+        /// How much wider the gap is than the text on each side, so the first and last glyph do
+        /// not touch the cut ends of the line.
         let sidePadding: CGFloat
-        /// 右侧必须保住的边框长度，单位是"字符"
+        /// Length of border that has to survive on the right, measured in "characters".
         let reservedCharacters: Int
 
-        /// 「一个字符宽」的口径：比例字体里根本没有统一字宽，这里取数字 `0` 的步进宽度。
-        /// 选它是因为 UI 字体的数字是等宽的（表格要对齐），而且比多数小写字母宽——
-        /// 拿它当"一个字符"既确定，又偏保守（留出来的线只会比两个真字符长）
+        /// What "one character wide" means here: a proportional font has no single glyph width, so
+        /// this takes the advance width of the digit `0`. Digits in the UI font are tabular (tables
+        /// have to line up) and wider than most lowercase letters, which makes `0` both a definite
+        /// and a conservative stand-in for "a character" - the reserved line only ever comes out
+        /// longer than two real characters.
         var characterWidth: CGFloat { width(of: "0") }
 
-        /// 徽标一行的高度（纵向居中要它）
+        /// Height of the badge's single line (needed to center it vertically).
         var lineHeight: CGFloat {
             ("0" as NSString).size(withAttributes: [.font: font]).height
         }
 
-        /// 单行 `Text` 盒顶到基线的距离：盒高就是 `lineHeight`，基线落在
-        /// 半行距 + 上伸部处（半行距 = (行高 − 字面高)/2）
+        /// Distance from the top of a single-line `Text` box to the baseline: the box is
+        /// `lineHeight` tall and the baseline sits at half-leading + ascender
+        /// (half-leading = (line height − font height) / 2).
         var baselineInset: CGFloat {
             (lineHeight - (font.ascender - font.descender)) / 2 + font.ascender
         }
 
-        /// 盒顶到大写字母顶的距离。判断"这条线到底有没有从字身上穿过去"必须用它，
-        /// 不能拿盒顶当墨迹顶：盒子上面那 3pt 多是空的（半行距 + 上伸部里没字的那截），
-        /// 按盒顶算会把默认 `pane-gap = 5` 也判成"放不下"，整个功能就没了
+        /// Distance from the top of the box to the top of a capital letter. Deciding whether the
+        /// line really passes through the glyphs requires this - the top of the box is not the top
+        /// of the ink: the 3-odd points above it are empty (half-leading, plus the part of the
+        /// ascender no glyph reaches). Measuring from the box top judges even the default
+        /// `pane-gap = 5` as "does not fit", which kills the whole feature.
         var capTopInset: CGFloat { baselineInset - font.capHeight }
 
         func width(of text: String) -> CGFloat {
             (text as NSString).size(withAttributes: [.font: font]).width
         }
 
-        /// 与状态条同门的小号 UI 字重；10pt 压在 2px 线上正好不喧宾夺主
+        /// The same small UI weight the status bar uses; 10pt on a 2px line is present without
+        /// shouting.
         static let standard = Metrics(font: .systemFont(ofSize: 10, weight: .medium),
                                       leadingInset: 8, sidePadding: 4, reservedCharacters: 2)
     }
 
-    /// 这一帧顶边框上的标题：画什么字、画在哪、边框从哪咬到哪。
-    /// nil（`place` 不返回它）的意思是**整条边框照常连着画**
+    /// The title on the top border for this frame: which glyphs, where they go, and where the
+    /// border is bitten open.
+    /// nil (`place` returning nothing) means **draw the whole border unbroken, as usual**.
     struct Placement: Equatable {
-        /// 截断之后真正要画的那一串
+        /// The string actually drawn, after truncation.
         let text: String
-        /// `Text` 盒左上角相对 pane 左上角（边框外沿）的纵向偏移，向下为正
+        /// Vertical offset of the `Text` box's top-left corner from the pane's top-left corner (the
+        /// outer edge of the border), positive downward.
         let offsetY: CGFloat
-        /// 上边框断口（相对 pane 左边框外沿）
+        /// The gap in the top border, relative to the outer edge of the pane's left border.
         let gapStart: CGFloat
         let gapEnd: CGFloat
     }
 
-    /// 顶边框上留给文字的最大宽度。
-    /// 断口右沿 = 左内缩 + 文字宽 + 一点留白，它到右上角之间就是那段"保命的线"，
-    /// 必须 ≥ 两个字符宽——于是文字能占的就只剩这么多
+    /// Maximum width the text may take on the top border.
+    /// The right edge of the gap = leading inset + text width + a little padding; what lies between
+    /// it and the top-right corner is the stretch of line that has to survive, and that must be
+    /// >= two characters wide - which leaves exactly this much for the text.
     static func availableTextWidth(topEdgeWidth: CGFloat, metrics: Metrics = .standard) -> CGFloat {
         topEdgeWidth - metrics.leadingInset - metrics.sidePadding
             - CGFloat(metrics.reservedCharacters) * metrics.characterWidth
     }
 
-    /// **数字数**这一条规则本身（状态条的工作区胶囊也照这条数，只是上限是 12）：
-    /// 按字素簇截到 `limit` 个字，省略号**算在 limit 里面**（20 → 19 字 + `…`）；
-    /// 空串 / 全是空白 → nil = 没有标题这回事。
-    /// 像素宽度那一层不在这里：胶囊自己会撑开，只有边框上的标题才需要再按宽度缩一次
+    /// The **character-counting** rule itself (the status bar's workspace pills count the same way,
+    /// only with a limit of 12): truncate to `limit` grapheme clusters with the ellipsis **counted
+    /// inside the limit** (20 → 19 characters + `…`); an empty or all-whitespace string gives
+    /// nil, meaning there is no title at all.
+    /// The pixel-width layer is not here: a pill grows to fit itself, and only the title on the
+    /// border has to shrink a second time by width.
     static func clamp(_ title: String, to limit: Int = maxCharacters) -> String? {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        let chars = Array(trimmed)   // Character = 字素簇，CJK / emoji 各算一个
+        let chars = Array(trimmed)   // Character = grapheme cluster; CJK and emoji count as one
         guard chars.count > limit, limit >= 2 else { return chars.count <= limit ? trimmed : nil }
         return String(chars.prefix(limit - 1)) + ellipsis
     }
 
-    /// 纯函数：这一帧顶边框上该画的字符串；一个字都放不下（或本来就没标题）时 nil。
-    /// nil 的意思是**整条边框照常连着画**，而不是画个空口子或者孤零零一个省略号
+    /// Pure function: the string to draw on the top border this frame; nil when not a single
+    /// character fits (or there was no title to begin with).
+    /// nil means **draw the whole border unbroken**, not an empty notch or a lone ellipsis.
     static func fit(title: String, topEdgeWidth: CGFloat, metrics: Metrics = .standard) -> String? {
         guard let capped = clamp(title, to: maxCharacters) else { return nil }
         let available = availableTextWidth(topEdgeWidth: topEdgeWidth, metrics: metrics)
         guard available > 0 else { return nil }
         if metrics.width(of: capped) <= available { return capped }
 
-        // 字数够了、像素不够：逐格往回缩。`content` 是省略号**之外**的字数，
-        // 画出来一共 content + 1 个字，所以起点正压在 20 的上限上。缩到只剩省略号就收手——
-        // 一个 `…` 占着边框却什么也没说，还不如把线画全
-        let chars = Array(capped)   // 已经 ≤ 20 个字素簇（含截断的省略号）
+        // The character count is fine but the pixels are not: back off one cell at a time.
+        // `content` is the number of characters **excluding** the ellipsis, so content + 1
+        // characters get drawn and the loop starts exactly at the cap of 20. Stop before nothing
+        // but the ellipsis is left - a lone `…` occupying the border says nothing, and a complete
+        // line is better than that.
+        let chars = Array(capped)   // already <= 20 clusters (truncation ellipsis included)
         for content in stride(from: chars.count - 1, through: 1, by: -1) {
             let candidate = String(chars.prefix(content)) + ellipsis
             if metrics.width(of: candidate) <= available { return candidate }
@@ -105,29 +125,35 @@ enum PaneTitleBadge {
         return nil
     }
 
-    /// 纵向落位：`Text` 盒相对上边框外沿的偏移；**上方腾不出地方时 nil = 这一帧不画标题**。
+    /// Vertical placement: the `Text` box's offset from the outer edge of the top border; **nil
+    /// when there is no room above it, meaning no title this frame**.
     ///
-    /// 陷阱：pane 槽位是按槽位裁的，边框以外能借的只有自己那一圈 pane-gap（`overhang`）。
-    /// gaps 关掉（Cmd+Shift+Backspace / `app set --gaps off`）或 `pane-gap = 0` 时一点也借不到，
-    /// 字就会整个掉到线下面压在终端第一行上，边框却还被咬开一个空口子——
-    /// 那正是"文字不得越出顶部线框"要禁的样子。所以借不到就干脆不画，
-    /// 判据是**线心得落在字身（大写高）里**：线从字上穿过去才叫"压在线上"
+    /// The trap: a pane slot is clipped to the slot, so the only space to borrow outside the border
+    /// is its own ring of pane-gap (`overhang`). With gaps turned off (Cmd+Shift+Backspace, or
+    /// `app set --gaps off`) or `pane-gap = 0` there is nothing to borrow at all, and the text
+    /// drops entirely below the line onto the terminal's first row while the border still has an
+    /// empty notch bitten out of it - exactly what "the text must not escape the top frame line"
+    /// exists to forbid. So when there is nothing to borrow, draw nothing; the test is that **the
+    /// center of the line has to land inside the glyph body (cap height)**: the line has to pass
+    /// through the text for it to count as riding on it.
     static func verticalOffset(overhang: CGFloat, metrics: Metrics = .standard) -> CGFloat? {
-        let centred = lineWidth / 2 - metrics.lineHeight / 2   // 盒心压线心 = 正经居中
-        let offset = max(-overhang, centred)                   // 借不到那么多就往下让一让
+        let centred = lineWidth / 2 - metrics.lineHeight / 2   // box center on line center
+        let offset = max(-overhang, centred)                   // can't borrow that much: shift down
         guard offset + metrics.capTopInset <= lineWidth / 2 else { return nil }
         return offset
     }
 
-    /// 顶边框被咬开的那一段（相对 pane 左边框外沿）。传进来的必须是 `fit` 吐出来的串
+    /// The stretch bitten out of the top border, relative to the outer edge of the pane's left
+    /// border. What you pass in has to be the string `fit` produced.
     static func gapRange(for text: String,
                          metrics: Metrics = .standard) -> (start: CGFloat, end: CGFloat) {
         (max(0, metrics.leadingInset - metrics.sidePadding),
          metrics.leadingInset + metrics.width(of: text) + metrics.sidePadding)
     }
 
-    /// 唯一的对外入口：字、落位、断口一次算完。
-    /// 断口与文字必须出自同一个判断——分两处各判各的，就会出现"边框咬开了、字却没画/掉下去了"
+    /// The one entry point: text, placement and gap all computed in a single pass.
+    /// Gap and text have to come out of the same decision - decided in two places you get "the
+    /// border is bitten open, but the text was never drawn / dropped below the line".
     static func place(title: String?, topEdgeWidth: CGFloat, overhang: CGFloat,
                       metrics: Metrics = .standard) -> Placement? {
         guard let title,

@@ -31,9 +31,12 @@ extension Ghostty {
             // We can't wait for the task to succeed so this will happen sometime
             // but that's okay.
             let surface = self.surface
-            // QuickTerm：在主线程时改为**同步**释放。异步跳转会留下一个窗口：SurfaceView 已释放而 surface
-            // 仍在引擎表中，此时 ghostty_app_tick 处理邮箱消息会用悬垂的 userdata 回调（实测
-            // objc_retain 崩溃于 scrollbar 动作）。非主线程才保留 Task.detached 跳转。
+            // QuickTerm: free **synchronously** when we are already on the main thread. Hopping
+            // asynchronously leaves a window open in which the SurfaceView is already freed but the
+            // surface is still in the engine's table, and ghostty_app_tick draining the mailbox
+            // during that window calls back through dangling userdata (measured: an objc_retain
+            // crash on a scrollbar action). Only the non-main-thread path keeps the Task.detached
+            // hop.
             if Thread.isMainThread {
                 ghostty_surface_free(surface)
             } else {

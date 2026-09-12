@@ -1,59 +1,69 @@
 import AppKit
 
-/// 事件总线（Phase 4）：单调 `seq` 的唯一所有者 + 类型化事件的产地 + 长轮询 / 流的等待队列。
+/// The event bus (Phase 4): sole owner of the monotonic `seq`, the place typed events are
+/// produced, and the wait queue behind long polling and streaming.
 ///
-/// **事件是"快照相减"出来的，不是在每个调用点手写的。**
-/// `MainWindowController` 里已经有一组 Combine sink（layouts / floatings / activeIndex），
-/// 关闭动效、焦点交接、OSC 7 的 cwd、浏览器标题也各有自己的触发点；
-/// 如果每处都手写一句 `emit(.paneOpened(...))`，那么：
-/// - 漏一处 = agent 永远收不到那类变化，而且没有任何用例会发现；
-/// - 一次布局重排里同一件事会被报好几遍（`perform()` 是可重入的）。
-/// 所以这里只接受一个信号——"有东西可能变了"（`scheduleScan()`）——然后把整棵注册表
-/// 与上一份快照相减。**合并是免费的**：一次 run loop 里发生的 N 次变更只会扫一遍。
+/// **Events are derived by subtracting snapshots, not hand-written at each call site.**
+/// `MainWindowController` already carries a set of Combine sinks (layouts / floatings /
+/// activeIndex), and the close animation, the focus handover, OSC 7's cwd and browser titles all
+/// have trigger points of their own; if every one of those hand-wrote an
+/// `emit(.paneOpened(...))`, then:
+/// - miss one and an agent never hears about that class of change, with no test to catch it;
+/// - the same thing gets reported several times within one relayout (`perform()` is reentrant).
+/// So this accepts exactly one signal — "something may have changed" (`scheduleScan()`) — and
+/// then diffs the whole registry against the previous snapshot. **Coalescing is free**: N
+/// changes within a single run loop turn produce exactly one scan.
 ///
-/// ⚠️ 任何事件都**不得携带 pane 的输出内容**（见 `ControlEventType` 的注释）。
-/// 这里能读到的只有结构、标题与 cwd，而标题 / cwd 对浏览器 pane 还要按 `state` 的同一条规则打码。
+/// ⚠️ No event may **ever carry the contents of a pane's output** (see the comments on
+/// `ControlEventType`). All this code can read is structure, titles and cwd — and for browser
+/// panes even title / cwd go through the same redaction rule `state` applies.
 @MainActor
 final class ControlEventBus {
     static let shared = ControlEventBus()
 
-    /// 环里的一条：线上的事件 + "这条的 title / cwd 要不要按浏览器规则打码"。
-    /// 打码**在投递时**做而不是在产生时做：同一条事件要同时发给带 token 与不带 token 的两个调用方
+    /// One slot in the ring: the event as it goes on the wire, plus "does this one's title /
+    /// cwd need the browser redaction rule".
+    /// Redaction happens **at delivery**, not at production: the very same event has to go out
+    /// both to a caller carrying the token and to one that is not
     private struct Record {
         var event: ControlEvent
         var redactable: Bool
     }
 
     private weak var screens: ScreenRegistry?
-    /// 单调状态序号。每条事件 +1；没有任何类型化事件覆盖到的变更由 `settleMutation()` 补一次
+    /// The monotonic state counter. Every event bumps it by one; a change that no typed event
+    /// covers gets its one bump from `settleMutation()`
     private(set) var seq = 0
     private var ring: [Record] = []
     private var snapshot = Snapshot()
     private var scanScheduled = false
     private var waiters: [Waiter] = []
     private var followers: [Follower] = []
-    /// 每条 follow / poll 的内部编号（取消用）
+    /// Internal ticket number for each follow / poll (this is what cancels them)
     private var nextTicket = 0
 
     private init() {}
 
-    // MARK: 生命周期
+    // MARK: Lifecycle
 
-    /// 挂上注册表并**不发事件地**把当下的状态记成基线。
-    /// 不这么做的话，应用启动后第一次扫描会把每一块屏幕、每一个 pane 都当成"刚刚新建"
+    /// Attach the registry and record the current state as the baseline, **emitting no events**.
+    /// Without this, the first scan after launch treats every screen and every pane as having
+    /// just been created
     func attach(screens: ScreenRegistry) {
         self.screens = screens
         resync()
     }
 
-    /// 把当下的状态记成基线（不产生任何事件）。用例的夹具也用它，免得上一条用例留下的
-    /// pane 在这一条里变成一串莫名其妙的 pane.closed
+    /// Record the current state as the baseline, producing no events. The test fixtures use it
+    /// too, so that panes left behind by the previous test do not turn into a burst of
+    /// nonsensical pane.closed events in this one
     func resync() {
         scanScheduled = false
         snapshot = screens.map { Snapshot.capture($0) } ?? Snapshot()
     }
 
-    /// 只给用例：清空环与等待队列（`seq` **不复位**——它是单调的，复位会让"更旧的 seq"合法化）
+    /// Tests only: clear the ring and the wait queue (`seq` is **not** reset — it is monotonic,
+    /// and resetting it would make an older seq legitimate again)
     func resetForTesting() {
         ring.removeAll()
         for waiter in waiters { waiter.timeout.cancel() }
@@ -62,9 +72,10 @@ final class ControlEventBus {
         resync()
     }
 
-    // MARK: 扫描
+    // MARK: Scanning
 
-    /// "有东西可能变了"。同一轮 run loop 里叫多少次都只扫一遍——**这就是合并**
+    /// "Something may have changed." Call it as many times as you like within one run loop turn
+    /// and it still scans once — **that is what the coalescing is**
     func scheduleScan() {
         guard !scanScheduled else { return }
         scanScheduled = true
@@ -75,23 +86,26 @@ final class ControlEventBus {
         }
     }
 
-    /// 从没有 actor 标注的地方（`PaneView.focusDidChange`、`ScreenRegistry`）报一声
-    /// "有东西可能变了"。它们都只在主线程上跑，但工程是 Swift 5.10 且
-    /// `MainWindowController` / `PaneView` 都没有 `@MainActor` 标注，
-    /// 所以走 `assumeIsolated`——与 `ControlUndo.invalidate()` 同一个写法
+    /// Report "something may have changed" from the places that carry no actor annotation
+    /// (`PaneView.focusDidChange`, `ScreenRegistry`). They all run on the main thread anyway,
+    /// but the project is Swift 5.10 and neither `MainWindowController` nor `PaneView` is
+    /// annotated `@MainActor`, so this goes through `assumeIsolated` — the same shape as
+    /// `ControlUndo.invalidate()`
     nonisolated static func noteChange() {
         MainActor.assumeIsolated { shared.scheduleScan() }
     }
 
-    /// 立刻扫一遍（控制命令落地后用：响应里的 `seq` 要已经涵盖这条命令产生的事件）
+    /// Scan right now (used once a control command has landed: the `seq` in the response has to
+    /// already cover the events that command produced)
     func flush() {
         scanScheduled = false
         rescan()
     }
 
-    /// 一条控制命令真的落地了。先扫出类型化事件；一个都没有（`app set theme`、
-    /// `screen set --fullscreen` 这类不动布局的）就补一次 `seq`——
-    /// agent 拿 `seq` 判断手里的快照是否过期，"改了但 seq 没动"是最坏的一种谎
+    /// A control command really landed. Scan the typed events out first; if there were none at
+    /// all (`app set theme`, `screen set --fullscreen` and the like, which do not touch the
+    /// layout) bump `seq` once anyway — an agent reads `seq` to tell whether the snapshot in its
+    /// hands is stale, and "it changed but seq did not move" is the worst lie on offer
     func settleMutation() {
         let mark = seq
         flush()
@@ -117,50 +131,60 @@ final class ControlEventBus {
         notify()
     }
 
-    // MARK: 读
+    // MARK: Reading
 
     var oldestSeq: Int? { ring.first?.event.seq }
 
-    /// 一次取批的结果。`cursor` 是**下一次 `--since` 该给的那个数**，而不是当下的全局 `seq`：
-    /// 两者只有在这一批没被 `--limit` 截断时才相等。
+    /// The result of taking one batch. `cursor` is **the number to pass as `--since` next
+    /// time**, not the current global `seq`: the two are equal only when this batch was not
+    /// truncated by `--limit`.
     ///
-    /// 这个区别是整条事件流唯一会**静默丢事件**的地方，所以它单独有个类型。
-    /// 曾经的写法是"回的永远是全局 seq"，于是 `events poll --limit 10` 手里压着 50 条时
-    /// 回 10 条、却告诉调用方"你已经看到第 50 条了"——另外 40 条既没送出去，
-    /// 也不会被 `missed` 标出来（`missed` 只管环被挤掉，这里环一条都没丢）。
-    /// 截断时把游标钉在**最后一条真的送出去的事件**上，那 40 条下一轮就会补上。
+    /// That distinction is the one place in the whole event stream where events can be
+    /// **dropped silently**, which is why it gets a type of its own.
+    /// It used to return the global seq unconditionally, so with 50 events pending
+    /// `events poll --limit 10` would hand back 10 of them and tell the caller "you have now
+    /// seen event 50" — the other 40 were never delivered and were not flagged by `missed`
+    /// either (`missed` only covers events pushed out of the ring, and here the ring had lost
+    /// nothing). When truncating, pin the cursor to **the last event that actually went out**,
+    /// and those 40 arrive on the next round.
     struct Batch {
         var events: [ControlEvent]
         var missed: Bool
-        /// 下一次 `--since`
+        /// The next `--since`
         var cursor: Int
-        /// 这一批被 `--limit` 截断了，环里还压着更多——调用方不必等 timeout，立刻再轮一次
+        /// This batch was cut short by `--limit` and the ring still holds more — the caller need
+        /// not wait out a timeout, it can poll again straight away
         var truncated: Bool
     }
 
-    /// 取 `since` 之后的一批。**只回真正错过的那些**：`seq <= since` 的一条都不回
+    /// Take a batch of what follows `since`. **Only what was genuinely missed comes back**: not
+    /// one event with `seq <= since`
     func batch(since: Int, limit: Int, types: Set<String>?, exposesBrowser: Bool) -> Batch {
         var matched = ring.filter { $0.event.seq > since }
         if let types { matched = matched.filter { types.contains($0.event.type) } }
-        // 环被挤掉过：调用方要的那一段有一部分已经没了
+        // Entries have been pushed out of the ring: part of the range the caller asked for is
+        // already gone
         let missed = since >= 0 && (ring.first.map { $0.event.seq > since + 1 } ?? false)
         let truncated = matched.count > limit
         let capped = truncated ? Array(matched.prefix(limit)) : matched
-        // 没截断才能说"你已经追到 seq 了"：被 `--types` 滤掉的那些确实不必再送，
-        // 但被 `--limit` 砍掉的那些还在环里等着
+        // Only an untruncated batch may say "you have caught up to seq": what `--types` filtered
+        // out genuinely need not be sent again, but what `--limit` cut off is still sitting in
+        // the ring
         let cursor = truncated ? (capped.last?.event.seq ?? seq) : seq
         return Batch(events: capped.map { project($0, exposesBrowser: exposesBrowser) },
                      missed: missed, cursor: cursor, truncated: truncated)
     }
 
-    /// 打码：浏览器 pane 的标题 / cwd 对没有 token 的调用方一律 `<redacted>`。
-    /// `state` 已经这么做了；事件流要是漏掉这一条，它就成了绕过打码的旁路
+    /// Redaction: a browser pane's title / cwd are always `<redacted>` for a caller without the
+    /// token. `state` already does this, and if the event stream skipped it, the stream would be
+    /// a way around the redaction
     private func project(_ record: Record, exposesBrowser: Bool) -> ControlEvent {
         guard record.redactable, !exposesBrowser else { return record.event }
         return Self.redact(record.event)
     }
 
-    /// 打码本体（静态，好让用例直接钉住它——环里那份是私有的）
+    /// The redaction itself, kept static so tests can pin it down directly — the copy in the
+    /// ring is private
     static func redact(_ event: ControlEvent) -> ControlEvent {
         var out = event
         if out.title != nil { out.title = ControlEvent.redactedPlaceholder }
@@ -169,7 +193,7 @@ final class ControlEventBus {
         return out
     }
 
-    // MARK: 长轮询（`events poll`）
+    // MARK: Long polling (`events poll`)
 
     private struct Waiter {
         var ticket: Int
@@ -181,8 +205,9 @@ final class ControlEventBus {
         var timeout: DispatchWorkItem
     }
 
-    /// 长轮询。**手里已经有新事件就立刻回**（不必等 timeout）；
-    /// 没有就挂起，直到有新事件或到点，到点回一批空的并标 `timedOut`
+    /// Long poll. **If there are new events in hand already, return immediately** rather than
+    /// waiting out the timeout; otherwise suspend until either new events arrive or the deadline
+    /// passes, at which point return an empty batch flagged `timedOut`
     func poll(since: Int, limit: Int, types: Set<String>?, exposesBrowser: Bool,
               timeout: TimeInterval, deliver: @escaping (ControlEventsPayload) -> Void) {
         let ready = batch(since: since, limit: limit, types: types, exposesBrowser: exposesBrowser)
@@ -203,11 +228,12 @@ final class ControlEventBus {
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout, execute: work)
     }
 
-    // MARK: 流（`events follow`）
+    // MARK: Streaming (`events follow`)
 
     private struct Follower {
         var ticket: Int
-        /// 连接编号：对端一走，这条流就要被摘掉（否则写到一个已经关掉的 fd 上，永远不停）
+        /// The connection number: the moment the peer leaves, this stream has to be torn down,
+        /// or it writes to an already-closed fd forever
         var connection: UInt64
         var lastSeq: Int
         var limit: Int
@@ -218,31 +244,35 @@ final class ControlEventBus {
 
     var followerCount: Int { followers.count }
 
-    /// 注册一条流。返回 false = 已经太多条了（每条占住一条连接）
+    /// Register a stream. false = there are already too many of them (each one ties up a
+    /// connection)
     @discardableResult
     func follow(connection: UInt64, since: Int, limit: Int, types: Set<String>?,
                 exposesBrowser: Bool, deliver: @escaping (ControlEventsPayload) -> Void) -> Bool {
         guard followers.count < ControlEventLimits.maxFollowers else { return false }
         nextTicket += 1
         let ticket = nextTicket
-        // 游标从 `since` 起，由 `pump` 一批批往前推——**绝不能直接写成全局 seq**：
-        // 注册那一刻的补发同样会被 `--limit` 截断，写成 seq 的话被砍掉的那些永远不会再推过来
+        // The cursor starts at `since` and `pump` walks it forward batch by batch — **it must
+        // never be written as the global seq**: the catch-up at registration time is subject to
+        // `--limit` as well, and writing seq would mean whatever got cut is never pushed at all
         followers.append(Follower(ticket: ticket, connection: connection, lastSeq: since,
                                   limit: limit, types: types, exposesBrowser: exposesBrowser,
                                   deliver: deliver))
-        // 先补上 `--since` 之后已经发生的那一段（哪怕是空的：调用方要知道从哪个 seq 开始），
-        // 再接着推新的
+        // First catch up on what has already happened since `--since` (even when that is empty:
+        // the caller needs to know which seq it is starting from), then keep pushing new ones
         pump(ticket: ticket, deliverEmptyFirstBatch: true)
         return true
     }
 
-    /// 把一条流积压的事件推干净。**截断了就接着推**：`--limit` 只该限制单批大小，
-    /// 不该让一条流卡在那里等下一次事件才继续（`events follow --limit 1` 曾经就是这样，
-    /// 一次扫描出五条事件只推走第一条，剩下四条要等到下一次有别的变化才轮得上）
+    /// Push a stream's backlog out until it is empty. **Truncated means keep going**: `--limit`
+    /// should cap the size of a single batch, not park a stream until the next event comes along
+    /// (`events follow --limit 1` used to do exactly that: one scan that produced five events
+    /// pushed only the first, and the other four waited for some unrelated change to happen)
     private func pump(ticket: Int, deliverEmptyFirstBatch: Bool = false) {
         var rounds = 0
         var first = true
-        // 每一轮都重新按 ticket 找：`deliver` 会往 socket 上写，写失败会把这条流摘掉
+        // Look the follower up by ticket on every round: `deliver` writes to the socket, and a
+        // failed write tears this stream down
         while let index = followers.firstIndex(where: { $0.ticket == ticket }) {
             let follower = followers[index]
             let ready = batch(since: follower.lastSeq, limit: follower.limit, types: follower.types,
@@ -253,25 +283,26 @@ final class ControlEventBus {
             follower.deliver(payload(ready, timedOut: nil, follow: true))
             first = false
             rounds += 1
-            // 上限只是防呆：环最多 ringCapacity 条，limit 最小是 1
+            // The cap is only a backstop: the ring holds ringCapacity events at most, and limit
+            // is at least 1
             guard ready.truncated, rounds <= ControlEventLimits.ringCapacity else { break }
         }
     }
 
-    /// 对端走了：把它的流全部摘掉。**这是 follow 唯一的终止条件**
+    /// The peer left: drop every stream it held. **This is follow's only termination condition**
     func connectionDidClose(_ connection: UInt64) {
         followers.removeAll { $0.connection == connection }
     }
 
-    /// 服务停了（配置改成 off / 应用退出）：每一条流都断了
+    /// The server stopped (config switched to off, or the app is quitting): every stream is cut
     func dropAllFollowers() {
         followers.removeAll()
     }
 
-    // MARK: 投递
+    // MARK: Delivery
 
-    /// `seq` 填的是 `batch` 算出来的**游标**（下一次 `--since`），不是全局 seq——
-    /// 只有这一批没被截断时两者才相等
+    /// `seq` here carries the **cursor** `batch` computed (what to pass as `--since` next time),
+    /// not the global seq — the two are equal only when this batch was not truncated
     private func payload(_ batch: Batch, timedOut: Bool?,
                          follow: Bool? = nil) -> ControlEventsPayload {
         ControlEventsPayload(events: batch.events, seq: batch.cursor, oldest: oldestSeq,
@@ -288,11 +319,12 @@ final class ControlEventBus {
             waiters.removeAll { $0.ticket == waiter.ticket }
             waiter.deliver(payload(ready, timedOut: nil))
         }
-        // 先把 ticket 抄下来：`deliver` 可能把某条流摘掉，直接按下标遍历会越界
+        // Copy the tickets out first: `deliver` may tear a stream down, and iterating by index
+        // would then run off the end
         for ticket in followers.map(\.ticket) { pump(ticket: ticket) }
     }
 
-    // MARK: 快照
+    // MARK: Snapshots
 
     private struct PaneState {
         var handle: String
@@ -302,16 +334,18 @@ final class ControlEventBus {
         var workspace: Int
         var title: String
         var cwd: String?
-        /// 浏览器 pane：标题 / cwd 要按 `expose-browser` 打码
+        /// A browser pane: title / cwd have to be redacted according to `expose-browser`
         var redactable: Bool
     }
 
     private struct WorkspaceState {
         var layout: String
-        /// 结构指纹（列宽 / split 比例 / zoom / 浮动层都在内）：变了就是一次 layout.changed
+        /// Structural fingerprint — column widths, split ratios, zoom and the floating layer are
+        /// all in it: if it changed, that is one layout.changed
         var signature: String
-        /// 槽位的名字：改了报一条 workspace.changed（**不新造事件类型**——
-        /// "这个工作区有点变化"本来就是那条事件的意思，多一个类型只会让订阅方多写一个分支）
+        /// The slot's name: a change here reports one workspace.changed (**no new event type** —
+        /// "something about this workspace changed" is exactly what that event already means, and
+        /// another type would only make subscribers write another branch)
         var title: String?
     }
 
@@ -332,8 +366,9 @@ final class ControlEventBus {
         var panes: [UUID: PaneState] = [:]
         var paneOrder: [UUID] = []
 
-        /// 当下的一份完整快照。**与 `state` 同一口径**：正在淡出（`closingPanes`）的 pane
-        /// 不算活着——所以 `pane close` 一发出去就是一条 pane.closed，而不是等 0.28s 动效跑完
+        /// A complete snapshot of right now. **The same reading as `state`**: a pane that is
+        /// fading out (`closingPanes`) does not count as alive — so `pane close` produces a
+        /// pane.closed the moment it is issued, not 0.28 s later when the animation finishes
         static func capture(_ screens: ScreenRegistry) -> Snapshot {
             var out = Snapshot()
             for controller in screens.controllers {
@@ -381,7 +416,8 @@ final class ControlEventBus {
             paneOrder.append(pane.id)
         }
 
-        /// 结构指纹。列宽 / split 比例四舍五入到千分位——浮点噪声不该变成一条事件
+        /// The structural fingerprint. Column widths and split ratios are rounded to three
+        /// decimals: floating-point noise must not turn into an event
         static func signature(_ layout: WorkspaceLayout, floating: [FloatingPane],
                               closing: Set<UUID>) -> String {
             func handle(_ pane: PaneView) -> String { ControlHandleRegistry.shared.handle(for: pane) }
@@ -417,19 +453,20 @@ final class ControlEventBus {
             return out
         }
 
-        /// 相减。顺序是刻意的（开 → 结构 → 元数据 → 焦点 → 关），
-        /// 这样一条流读下来是"先有东西，再摆好，最后焦点落定"
+        /// The subtraction. The order is deliberate (opened → structure → metadata → focus →
+        /// closed), so that reading a stream top to bottom goes "things appear, then they are
+        /// arranged, then the focus settles"
         static func diff(old: Snapshot, new: Snapshot) -> [Record] {
             var out: [Record] = []
 
-            // 1) 屏幕开
+            // 1) Screens opened
             for id in new.screenOrder where old.screens[id] == nil {
                 guard let state = new.screens[id] else { continue }
                 out.append(Record(event: ControlEvent(type: .screenOpened, screen: state.index,
                                                       screenID: id.uuidString, title: state.title),
                                   redactable: false))
             }
-            // 2) pane 开
+            // 2) Panes opened
             for id in new.paneOrder where old.panes[id] == nil {
                 guard let pane = new.panes[id] else { continue }
                 out.append(Record(event: ControlEvent(
@@ -438,7 +475,7 @@ final class ControlEventBus {
                     kind: pane.kind, title: pane.title, cwd: pane.cwd),
                     redactable: pane.redactable))
             }
-            // 3) 工作区切换 / 结构变化
+            // 3) Workspace switches / structural changes
             for id in new.screenOrder {
                 guard let now = new.screens[id], let before = old.screens[id] else { continue }
                 if before.activeWorkspace != now.activeWorkspace {
@@ -450,7 +487,8 @@ final class ControlEventBus {
                     guard index < before.workspaces.count else { continue }
                     let a = before.workspaces[index]
                     let b = now.workspaces[index]
-                    // 改名：用户自己写的字，与 pane 标题同一条——不打码
+                    // Renaming: words the user wrote themselves, the same class as a pane
+                    // title — not redacted
                     if a.title != b.title {
                         out.append(Record(event: ControlEvent(
                             type: .workspaceChanged, screen: now.index, screenID: id.uuidString,
@@ -462,7 +500,7 @@ final class ControlEventBus {
                         workspace: index + 1, layout: b.layout), redactable: false))
                 }
             }
-            // 4) 标题 / cwd
+            // 4) Titles / cwd
             for id in new.paneOrder {
                 guard let now = new.panes[id], let before = old.panes[id] else { continue }
                 if before.title != now.title {
@@ -480,7 +518,7 @@ final class ControlEventBus {
                         redactable: now.redactable))
                 }
             }
-            // 5) 焦点
+            // 5) Focus
             for id in new.screenOrder {
                 guard let now = new.screens[id], let before = old.screens[id],
                       before.focused != now.focused else { continue }
@@ -489,7 +527,7 @@ final class ControlEventBus {
                     workspace: now.focusedWorkspace, pane: now.focusedHandle,
                     paneID: now.focused?.uuidString), redactable: false))
             }
-            // 6) pane 关
+            // 6) Panes closed
             for id in old.paneOrder where new.panes[id] == nil {
                 guard let pane = old.panes[id] else { continue }
                 out.append(Record(event: ControlEvent(
@@ -497,7 +535,7 @@ final class ControlEventBus {
                     workspace: pane.workspace, pane: pane.handle, paneID: id.uuidString,
                     kind: pane.kind), redactable: false))
             }
-            // 7) 屏幕关
+            // 7) Screens closed
             for id in old.screenOrder where new.screens[id] == nil {
                 guard let state = old.screens[id] else { continue }
                 out.append(Record(event: ControlEvent(type: .screenClosed, screen: state.index,

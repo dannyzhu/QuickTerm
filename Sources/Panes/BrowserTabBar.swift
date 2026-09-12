@@ -1,15 +1,21 @@
 import AppKit
 
-/// 浏览器 pane 的标签条：梯形标签、手工布局。
+/// Tab bar for a browser pane: trapezoid tabs, laid out by hand.
 ///
-/// 不用 Auto Layout：pane 由 SwiftUI 托管、没有外部宽度约束，pane 内部任何**必需**的宽度约束都会反过来把
-/// pane 自身解成标签之和（见 porting-notes）。这里只在 layout() 里按可用宽度算帧，对外零约束。
+/// No Auto Layout. The pane is hosted by SwiftUI and has no external width constraint, so any
+/// **required** width constraint inside the pane feeds back and solves the pane's own width as the
+/// sum of its tabs (see porting-notes). This view computes frames from the available width inside
+/// layout() and exposes zero constraints.
 ///
-/// 层次：当前标签与下方工具条同色、底边开口（"贴"在工具条上，最上层）；非激活标签退后一层（更暗、更细的字），
-/// 悬停浮起并在右侧露出关闭钮；当前标签的关闭钮常显。相邻梯形斜边互相叠进 `overlap`。
-/// 宽度：在 [minWidth, maxWidth] 内等分可用宽度；到最小宽度仍放不下时横向滚动（滚轮；选中的标签自动滚入视野）。
-/// 右侧常驻"+"新建标签按钮：跟在最后一个标签后面，标签占满时钉在右端（标签的可用宽度已把它的位置扣掉，
-/// 滚动时标签不会跑到它下面）。
+/// Layering: the current tab shares the color of the toolbar below it and leaves its bottom edge open
+/// (it "sits on" the toolbar, topmost); inactive tabs sit one layer back (dimmer, lighter type), rise
+/// on hover and reveal a close button on the right; the current tab's close button is always shown.
+/// Neighbouring trapezoids overlap each other's slanted edges by `overlap`.
+/// Width: the available width is split evenly, clamped to [minWidth, maxWidth]; once even the minimum
+/// no longer fits, the bar scrolls horizontally (scroll wheel; the selected tab scrolls itself into
+/// view). A permanent "+" new-tab button lives on the right: it follows the last tab, and pins to the
+/// right end once the tabs fill the bar (its slot is already subtracted from the tabs' available
+/// width, so scrolling never slides a tab underneath it).
 final class BrowserTabBarView: NSView {
     struct Item: Equatable {
         var title: String
@@ -17,9 +23,10 @@ final class BrowserTabBarView: NSView {
     }
 
     struct Metrics: Equatable {
-        /// 标签最大宽度（config browser-tab-width）
+        /// Maximum tab width (config browser-tab-width).
         var maxWidth: CGFloat = 200
-        /// 标签最小宽度（config browser-tab-min-width）；空间不够时不再缩窄，改为滚动
+        /// Minimum tab width (config browser-tab-min-width); once space runs out the tabs stop
+        /// shrinking and the bar scrolls instead.
         var minWidth: CGFloat = 80
         static let barHeight: CGFloat = 30
         static let tabHeight: CGFloat = 26
@@ -27,10 +34,10 @@ final class BrowserTabBarView: NSView {
         static let overlap: CGFloat = 8
         static let insetX: CGFloat = 8
         static let cornerRadius: CGFloat = 4
-        /// 右侧"+"按钮的边长与它跟标签之间的间隙
+        /// Side length of the "+" button on the right, and the gap between it and the tabs.
         static let newTabSize: CGFloat = 22
         static let newTabGap: CGFloat = 4
-        /// 标签区右边要给"+"让出的宽度
+        /// Width the tab area has to leave free on the right for the "+" button.
         static let newTabReserve: CGFloat = newTabSize + newTabGap
 
         var clampedMin: CGFloat { min(minWidth, maxWidth) }
@@ -48,7 +55,7 @@ final class BrowserTabBarView: NSView {
     var onNewTab: (() -> Void)?
 
     private(set) var itemViews: [BrowserTabItemView] = []
-    /// 内容超宽时的横向滚动偏移（≥ 0）
+    /// Horizontal scroll offset used when the content is wider than the bar (>= 0).
     private(set) var scrollOffset: CGFloat = 0
     private var pendingRevealActive = false
     private var lastLayoutWidth: CGFloat = -1
@@ -76,15 +83,16 @@ final class BrowserTabBarView: NSView {
 
     @objc private func newTabTapped() { onNewTab?() }
 
-    /// 测试用："+"按钮
+    /// The "+" button, exposed for tests.
     var newTabButtonForTesting: NSButton { newTabButton }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    // MARK: - 数据
+    // MARK: - Data
 
-    /// 同步标签列表：复用已有的项视图（悬停状态、tracking area 不重建），只改标题 / 激活态；
-    /// 激活项变化时把它滚进视野
+    /// Sync the tab list: existing item views are reused (hover state and tracking areas are not
+    /// rebuilt), only the title and the active flag change; when the active item moves, scroll it
+    /// into view.
     func update(items: [Item]) {
         let previousActive = itemViews.firstIndex { $0.active }
         while itemViews.count > items.count {
@@ -118,9 +126,9 @@ final class BrowserTabBarView: NSView {
         needsDisplay = true
     }
 
-    // MARK: - 布局
+    // MARK: - Layout
 
-    /// 当前布局下每个标签的宽度（等宽）
+    /// Width of each tab in the current layout (all tabs are equally wide).
     var tabWidth: CGFloat {
         let n = CGFloat(itemViews.count)
         guard n > 0 else { return 0 }
@@ -128,14 +136,14 @@ final class BrowserTabBarView: NSView {
         return min(metrics.maxWidth, max(metrics.clampedMin, fill))
     }
 
-    /// 全部标签摆开需要的宽度（不含两侧留白）
+    /// Width needed to lay out every tab (not counting the insets on either side).
     var contentWidth: CGFloat {
         let n = CGFloat(itemViews.count)
         guard n > 0 else { return 0 }
         return n * tabWidth - (n - 1) * Metrics.overlap
     }
 
-    /// 标签可用的横向空间（两侧留白与右侧"+"之外）
+    /// Horizontal space available to the tabs (everything but the insets and the "+" on the right).
     var visibleWidth: CGFloat { max(0, bounds.width - 2 * Metrics.insetX - Metrics.newTabReserve) }
 
     var maxScrollOffset: CGFloat { max(0, contentWidth - visibleWidth) }
@@ -146,7 +154,8 @@ final class BrowserTabBarView: NSView {
     override func layout() {
         super.layout()
         let w = tabWidth
-        // 变窄（split / 缩放 pane）会让溢出变大，旧偏移仍合法但当前标签可能被裁掉：宽度一变就重新露出它
+        // Getting narrower (splitting or resizing the pane) grows the overflow: the old offset is
+        // still legal, but the current tab may now be clipped, so re-reveal it on every width change.
         if bounds.width != lastLayoutWidth {
             lastLayoutWidth = bounds.width
             pendingRevealActive = true
@@ -156,14 +165,16 @@ final class BrowserTabBarView: NSView {
             revealActive(width: w)
         }
         scrollOffset = min(max(0, scrollOffset), maxScrollOffset)
-        // 帧对齐到物理像素：等分宽度多是小数，图层化的标签会把 1pt 描边和 11pt 文字重采样成糊的
+        // Snap frames to physical pixels: an evenly split width is usually fractional, and a layer-
+        // backed tab resamples the 1pt stroke and the 11pt text into a blur at fractional positions.
         let scale = window?.backingScaleFactor ?? 2
         func snap(_ v: CGFloat) -> CGFloat { (v * scale).rounded() / scale }
         for (i, v) in itemViews.enumerated() {
             let left = Metrics.insetX - scrollOffset + CGFloat(i) * (w - Metrics.overlap)
             v.frame = CGRect(x: snap(left), y: 0, width: snap(left + w) - snap(left), height: Metrics.tabHeight)
         }
-        // "+"跟在最后一个标签的斜边后面；标签占满可用宽度时钉在右端
+        // The "+" follows the slanted edge of the last tab; once the tabs fill the available width it
+        // pins to the right end.
         let size = Metrics.newTabSize
         let pinned = bounds.maxX - Metrics.insetX - size
         let afterLast = itemViews.isEmpty
@@ -175,7 +186,8 @@ final class BrowserTabBarView: NSView {
         needsDisplay = true
     }
 
-    /// 叠放次序：非激活标签从左到右、右边的压左边的斜边；当前标签永远最上层
+    /// Stacking order: inactive tabs left to right, each one lapping over its left neighbour's
+    /// slanted edge; the current tab is always topmost.
     private func restack() {
         let ordered = itemViews.filter { !$0.active } + itemViews.filter { $0.active }
         let current = subviews.compactMap { $0 as? BrowserTabItemView }
@@ -195,11 +207,13 @@ final class BrowserTabBarView: NSView {
         }
     }
 
-    /// 内容超宽时横向滚轮（只有纵向滚轮的鼠标用纵向增量代替）；否则交给上层
+    /// Scroll horizontally when the content overflows (a mouse with only a vertical wheel has its
+    /// vertical delta used instead); otherwise pass the event up.
     override func scrollWheel(with event: NSEvent) {
         guard isOverflowing else { super.scrollWheel(with: event); return }
         let dx = event.scrollingDeltaX != 0 ? event.scrollingDeltaX : event.scrollingDeltaY
-        // 触控板的增量是 pt，普通滚轮的是"行"（一格 ≈ 1）：不换算的话一格只滚 1pt
+        // A trackpad's delta is in points, a plain wheel's is in lines (one notch is about 1): without
+        // the conversion, one notch would scroll a single point.
         let unit: CGFloat = event.hasPreciseScrollingDeltas ? 1 : max(20, metrics.clampedMin / 2)
         scroll(by: -dx * unit)
     }
@@ -211,10 +225,12 @@ final class BrowserTabBarView: NSView {
         needsLayout = true
     }
 
-    // MARK: - 悬停（标签条统一判定）
+    // MARK: - Hover (decided centrally by the bar)
 
-    /// NSTrackingArea 是纯矩形、不感知兄弟遮挡：相邻梯形叠 8pt，每个标签自带 tracking area 会让
-    /// 重叠带里两个标签同时"悬停"、冒出两个关闭钮。改由标签条一个 tracking area + 梯形命中裁决。
+    /// NSTrackingArea is a plain rectangle and knows nothing about sibling occlusion: neighbouring
+    /// trapezoids overlap by 8pt, so a per-tab tracking area leaves both tabs "hovered" inside the
+    /// overlap band and pops up two close buttons. Instead the bar owns one tracking area and settles
+    /// hover with a trapezoid hit test.
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let hoverArea { removeTrackingArea(hoverArea) }
@@ -231,10 +247,11 @@ final class BrowserTabBarView: NSView {
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         super.viewWillMove(toWindow: newWindow)
-        if newWindow == nil { updateHover(atBarPoint: nil) }   // 脱离窗口收不到 mouseExited
+        if newWindow == nil { updateHover(atBarPoint: nil) }   // no mouseExited arrives once detached
     }
 
-    /// 命中最上层的梯形标签（z 序自顶向下；斜边外不算）
+    /// Hit the topmost trapezoid tab (walking z-order from the top; outside the slanted edge does not
+    /// count).
     func item(atBarPoint point: NSPoint) -> BrowserTabItemView? {
         for case let v as BrowserTabItemView in subviews.reversed() {
             let path = BrowserTabItemView.shape(in: v.bounds)
@@ -244,13 +261,13 @@ final class BrowserTabBarView: NSView {
         return nil
     }
 
-    /// 悬停态：只有命中的那个标签是 hovering（nil = 鼠标不在任何标签上）
+    /// Hover state: only the tab that was hit is hovering (nil = the mouse is on no tab at all).
     func updateHover(atBarPoint point: NSPoint?) {
         let hit = point.flatMap { item(atBarPoint: $0) }
         for v in itemViews { v.hovering = v === hit }
     }
 
-    // MARK: - 绘制：条底 + 基线（当前标签下方留口）
+    // MARK: - Drawing: bar fill plus the baseline, which opens up under the current tab
 
     override func draw(_ dirtyRect: NSRect) {
         Self.barColor(background: background, foreground: foreground).setFill()
@@ -260,7 +277,8 @@ final class BrowserTabBarView: NSView {
         let y: CGFloat = 0.5
         var x0 = bounds.minX
         if let active = itemViews.first(where: { $0.active }), active.frame.width > 0 {
-            // 基线在当前标签两侧脚下断开（斜边落点各让 0.5pt 与描边接合）
+            // The baseline breaks at the feet of the current tab (each slant foot gives up 0.5pt so
+            // the line meets the tab's stroke cleanly).
             let f = active.frame
             line.move(to: NSPoint(x: x0, y: y))
             line.line(to: NSPoint(x: max(x0, f.minX + 0.5), y: y))
@@ -272,13 +290,15 @@ final class BrowserTabBarView: NSView {
         line.stroke()
     }
 
-    /// 条底色：背景向前景靠 12%（深色主题 = 深灰，浅色主题 = 浅灰），当前标签用纯背景色贴到工具条上
+    /// Bar fill: the background blended 12% toward the foreground (dark theme = dark grey, light theme
+    /// = light grey); the current tab uses the pure background color so it joins the toolbar.
     static func barColor(background: NSColor, foreground: NSColor) -> NSColor {
         background.blended(withFraction: 0.12, of: foreground) ?? background
     }
 }
 
-/// 一个梯形标签：标题 + 关闭钮。斜边外的点击穿透给底下的邻居（按路径命中）。
+/// One trapezoid tab: a title plus a close button. A click outside the slanted edge falls through to
+/// the neighbour underneath (hit testing follows the path, not the frame).
 final class BrowserTabItemView: NSView {
     var onSelect: (() -> Void)?
     var onClose: (() -> Void)?
@@ -298,7 +318,7 @@ final class BrowserTabItemView: NSView {
             needsDisplay = true
         }
     }
-    /// 由 BrowserTabBarView.updateHover 设置
+    /// Set by BrowserTabBarView.updateHover.
     var hovering = false {
         didSet {
             guard hovering != oldValue else { return }
@@ -306,13 +326,15 @@ final class BrowserTabItemView: NSView {
             needsDisplay = true
         }
     }
-    /// 太窄就不显示关闭钮（否则标题只剩几个像素）；够宽时无论显不显示都给它留位，
-    /// 这样悬停出现关闭钮不会把标题重新截断（文字跳动）
+    /// Too narrow means no close button at all, or the title would be down to a few pixels. Once the
+    /// tab is wide enough its slot is reserved whether or not the button is shown, so revealing the
+    /// button on hover does not re-truncate the title and make the text jump.
     var fitsClose: Bool { bounds.width >= 2 * BrowserTabBarView.Metrics.slant + Self.textInset + Self.closeSize + 20 }
-    /// 关闭钮：当前标签常显，非激活标签悬停时出现在右侧
+    /// Close button: always visible on the current tab, appearing on the right of an inactive tab
+    /// while it is hovered.
     var showsClose: Bool { fitsClose && (active || hovering) }
     var closeButtonVisible: Bool { !closeButton.isHidden }
-    /// 测试用：标题可用宽度
+    /// Width available to the title, exposed for tests.
     var titleWidthForTesting: CGFloat { label.frame.width }
 
     private let label = NSTextField(labelWithString: "")
@@ -356,12 +378,13 @@ final class BrowserTabItemView: NSView {
         closeButton.contentTintColor = foreground.withAlphaComponent(active ? 0.8 : 0.65)
     }
 
-    // MARK: - 几何
+    // MARK: - Geometry
 
     static let closeSize: CGFloat = 16
     static let textInset: CGFloat = 6
 
-    /// 梯形：底边全宽，两条斜边各收进 slant，顶角圆角
+    /// The trapezoid: the bottom edge spans the full width, both slanted edges come in by `slant`,
+    /// and the top corners are rounded.
     static func shape(in bounds: NSRect) -> NSBezierPath {
         let s = BrowserTabBarView.Metrics.slant
         let r = BrowserTabBarView.Metrics.cornerRadius
@@ -375,7 +398,8 @@ final class BrowserTabItemView: NSView {
         return path
     }
 
-    /// 命中只认梯形内部：斜边外的角落穿透给压在下面的邻居
+    /// Only the inside of the trapezoid counts as a hit: the corners outside the slanted edges fall
+    /// through to the neighbour stacked below.
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let superview else { return nil }
         let local = convert(point, from: superview)
@@ -394,18 +418,19 @@ final class BrowserTabItemView: NSView {
         let closeX = right - closeW
         closeButton.frame = NSRect(x: closeX, y: (bounds.height - closeW) / 2, width: closeW, height: closeW)
         let textLeft = bounds.minX + s + Self.textInset
-        let textRight = fitsClose ? closeX - 4 : right - 2   // 留位不随悬停变化
+        let textRight = fitsClose ? closeX - 4 : right - 2   // the reserved slot does not follow hover
         let h = label.intrinsicContentSize.height
         label.frame = NSRect(x: textLeft, y: (bounds.height - h) / 2, width: max(0, textRight - textLeft), height: h)
     }
 
-    // MARK: - 绘制
+    // MARK: - Drawing
 
     static func outlineColor(foreground: NSColor) -> NSColor { foreground.withAlphaComponent(0.22) }
 
     override func draw(_ dirtyRect: NSRect) {
         let inset = bounds.insetBy(dx: 0.5, dy: 0.5)
-        // 非激活标签的填充从 y=1 起，让标签条的基线从脚下穿过（退后一层）；当前标签盖住基线（贴上工具条）
+        // An inactive tab's fill starts at y=1 so the bar's baseline runs under its feet, putting it a
+        // layer back; the current tab covers the baseline instead and joins the toolbar.
         let fill = Self.shape(in: NSRect(x: 0, y: active ? 0 : 1, width: bounds.width, height: bounds.height - 0.5))
         fill.close()
         if active {
@@ -415,18 +440,19 @@ final class BrowserTabItemView: NSView {
             (bar.blended(withFraction: hovering ? 0.10 : 0.04, of: foreground) ?? bar).setFill()
         }
         fill.fill()
-        // 描边：只描斜边 + 顶边；底边由标签条的基线负责（当前标签处基线断开 = 与工具条连成一体）
+        // Stroke only the slanted edges and the top; the bottom edge is the bar's baseline, which
+        // breaks under the current tab so that tab reads as one piece with the toolbar.
         let outline = Self.shape(in: NSRect(x: inset.minX, y: 0, width: inset.width, height: inset.maxY))
         outline.lineWidth = 1
         Self.outlineColor(foreground: foreground).setStroke()
         outline.stroke()
     }
 
-    // MARK: - 鼠标
+    // MARK: - Mouse
 
     override func mouseDown(with event: NSEvent) { onSelect?() }
 
-    /// 中键点击关闭（浏览器习惯）
+    /// Middle-click closes the tab, as browsers do.
     override func otherMouseDown(with event: NSEvent) {
         if event.buttonNumber == 2 { onClose?() } else { super.otherMouseDown(with: event) }
     }

@@ -2,9 +2,10 @@ import WebKit
 import XCTest
 @testable import QuickTerm
 
-/// WebKit 兼容垫片（BrowserExtensionCompat）：manifest 改写规则 + 真跑在 WKWebExtension 里的效果
+/// The WebKit compatibility shim (BrowserExtensionCompat): the manifest rewrite rules, plus what they
+/// actually do inside a live WKWebExtension.
 final class BrowserExtensionCompatTests: XCTestCase {
-    // MARK: - manifest 改写
+    // MARK: - Manifest rewriting
 
     func testClassicServiceWorkerGetsWrapperNextToOriginal() throws {
         let dir = try Self.makeExtension(background: ["service_worker": "./bg/worker.js"],
@@ -16,17 +17,17 @@ final class BrowserExtensionCompatTests: XCTestCase {
         let manifest = try Self.manifest(dir)
         let background = try XCTUnwrap(manifest["background"] as? [String: Any])
         XCTAssertEqual(background["service_worker"] as? String, "bg/__quickterm-background.js",
-                       "包装脚本放在原 worker 同目录，相对路径的 importScripts 才按原目录解析")
+                       "the wrapper sits in the original worker's directory, so relative importScripts still resolve there")
         XCTAssertNil(background["type"])
         let marker = try XCTUnwrap(manifest["__quickterm"] as? [String: Any])
         XCTAssertEqual(marker["shim"] as? Int, BrowserExtensionCompat.version)
         XCTAssertEqual((marker["background"] as? [String: Any])?["service_worker"] as? String, "./bg/worker.js",
-                       "原始 background 原样记下来")
+                       "the original background is recorded verbatim")
 
         let wrapper = try String(contentsOf: dir.appendingPathComponent("bg/__quickterm-background.js"), encoding: .utf8)
         XCTAssertEqual(wrapper, "importScripts(\"/__quickterm-compat.js\", \"/bg/worker.js\");\n")
         let compat = try String(contentsOf: dir.appendingPathComponent("__quickterm-compat.js"), encoding: .utf8)
-        XCTAssertTrue(compat.contains("[\"/bg/blank.js\",\"/empty.js\"]"), "空脚本列表（根相对、排序）：\(compat)")
+        XCTAssertTrue(compat.contains("[\"/bg/blank.js\",\"/empty.js\"]"), "the list of empty scripts, root-relative and sorted: \(compat)")
         XCTAssertFalse(compat.contains("real.js"))
         XCTAssertFalse(compat.contains("worker.js"))
     }
@@ -38,17 +39,19 @@ final class BrowserExtensionCompatTests: XCTestCase {
                                          at: parent.appendingPathComponent("ext", isDirectory: true))
         XCTAssertTrue(try BrowserExtensionCompat.apply(to: dir))
         XCTAssertEqual((try Self.manifest(dir)["background"] as? [String: Any])?["service_worker"] as? String,
-                       "../../evil/x.js", "越界路径：不包装、不动 background")
+                       "../../evil/x.js", "a path that escapes the directory: no wrapper, and background is left alone")
         XCTAssertFalse(FileManager.default.fileExists(atPath: parent.deletingLastPathComponent().appendingPathComponent("evil").path),
-                       "不能往扩展目录外写文件")
-        // 空路径同样不碰
+                       "nothing may be written outside the extension directory")
+        // An empty path is left alone as well.
         let empty = try Self.makeExtension(background: ["service_worker": ""], files: [:])
         defer { try? FileManager.default.removeItem(at: empty) }
         XCTAssertTrue(try BrowserExtensionCompat.apply(to: empty))
         XCTAssertEqual((try Self.manifest(empty)["background"] as? [String: Any])?["service_worker"] as? String, "")
     }
 
-    /// store 目录是符号链接（放 Dropbox / 外置盘）时，空脚本扫描不能因为路径前缀对不上而空掉
+    /// When the store directory is a symlink (someone keeps it in Dropbox or on an external drive), the
+    /// empty-script scan must not come back empty just because the path prefixes do not line up.
+    /// The fixture keeps a space and a CJK character in one filename: those paths have to survive the scan too.
     func testEmptyScriptScanWorksThroughSymlinkedStore() throws {
         let real = try Self.makeExtension(background: ["service_worker": "bg.js"],
                                           files: ["bg.js": "1;\n", "sub dir/空.js": "\n", "a.mjs": "  "])
@@ -59,7 +62,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
         XCTAssertEqual(BrowserExtensionCompat.emptyScripts(in: link), ["/a.mjs", "/sub dir/空.js"])
         XCTAssertTrue(try BrowserExtensionCompat.apply(to: link))
         XCTAssertTrue(FileManager.default.fileExists(atPath: real.appendingPathComponent("__quickterm-background.js").path),
-                      "经由链接写进真实目录")
+                      "written through the link into the real directory")
     }
 
     func testModuleServiceWorkerUsesImports() throws {
@@ -69,7 +72,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
         XCTAssertTrue(try BrowserExtensionCompat.apply(to: dir))
         let background = try XCTUnwrap(try Self.manifest(dir)["background"] as? [String: Any])
         XCTAssertEqual(background["service_worker"] as? String, "__quickterm-background.js")
-        XCTAssertEqual(background["type"] as? String, "module", "module 类型保留")
+        XCTAssertEqual(background["type"] as? String, "module", "the module type is kept")
         let wrapper = try String(contentsOf: dir.appendingPathComponent("__quickterm-background.js"), encoding: .utf8)
         XCTAssertEqual(wrapper, "import \"/__quickterm-compat.js\";\nimport \"/sw.js\";\n")
     }
@@ -82,7 +85,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
         let background = try XCTUnwrap(try Self.manifest(dir)["background"] as? [String: Any])
         XCTAssertEqual(background["scripts"] as? [String], ["/__quickterm-compat.js", "a.js", "b.js"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("__quickterm-background.js").path),
-                       "scripts 数组不需要包装文件")
+                       "a scripts array needs no wrapper file")
     }
 
     func testApplyIsIdempotentAndNoBackgroundOnlyMarks() throws {
@@ -90,20 +93,22 @@ final class BrowserExtensionCompatTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         XCTAssertTrue(try BrowserExtensionCompat.apply(to: dir))
         let first = try Self.manifest(dir)
-        XCTAssertFalse(try BrowserExtensionCompat.apply(to: dir), "已是当前版本：不动")
+        XCTAssertFalse(try BrowserExtensionCompat.apply(to: dir), "already at the current version: nothing changes")
         XCTAssertEqual(try Self.manifest(dir) as NSDictionary, first as NSDictionary)
         let background = try XCTUnwrap(first["background"] as? [String: Any])
-        XCTAssertEqual(background["service_worker"] as? String, "__quickterm-background.js", "不会套两层")
+        XCTAssertEqual(background["service_worker"] as? String, "__quickterm-background.js", "it never wraps twice")
 
-        // 垫片 / 包装文件被删了（或版本升了）→ 重新生成，仍从记录的原始 background 出发
+        // The shim or the wrapper file was deleted (or the version went up): regenerate, still starting from
+        // the recorded original background.
         for file in ["__quickterm-compat.js", "__quickterm-background.js"] {
             try FileManager.default.removeItem(at: dir.appendingPathComponent(file))
-            XCTAssertTrue(try BrowserExtensionCompat.apply(to: dir), "\(file) 缺了要补")
+            XCTAssertTrue(try BrowserExtensionCompat.apply(to: dir), "\(file) is missing and has to be regenerated")
             XCTAssertEqual(try Self.manifest(dir) as NSDictionary, first as NSDictionary)
             XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent(file).path))
         }
 
-        // 没有后台脚本：只记版本（scheme 字面量替换仍会做），不生成包装 / 垫片文件；第二次同样不动
+        // No background script: only the version is recorded (the scheme-literal replacement still happens),
+        // no wrapper or shim file is generated, and a second pass changes nothing.
         let noBackground = try Self.makeExtension(background: nil, files: [:])
         defer { try? FileManager.default.removeItem(at: noBackground) }
         XCTAssertTrue(try BrowserExtensionCompat.apply(to: noBackground))
@@ -121,23 +126,24 @@ final class BrowserExtensionCompatTests: XCTestCase {
             "m.mjs": "export const p = \"chrome-extension:\";\n",
         ])
         defer { try? FileManager.default.removeItem(at: dir) }
-        XCTAssertTrue(try BrowserExtensionCompat.apply(to: dir), "没有 background 也要改 scheme 字面量")
+        XCTAssertTrue(try BrowserExtensionCompat.apply(to: dir), "the scheme literals are rewritten even with no background")
         XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent("popup.js"), encoding: .utf8),
                        "const own = location.href.startsWith(\"webkit-extension://\" + chrome.runtime.id);\n")
         XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent("sub/x.js"), encoding: .utf8),
                        "// webkit-extension: twice webkit-extension://a/b\n")
         XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent("data.json"), encoding: .utf8),
-                       "{\"url\": \"chrome-extension://keep\"}\n", "只碰 .js / .mjs")
+                       "{\"url\": \"chrome-extension://keep\"}\n", "only .js / .mjs are touched")
         XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent("m.mjs"), encoding: .utf8),
                        "export const p = \"webkit-extension:\";\n")
         XCTAssertEqual((try Self.manifest(dir)["__quickterm"] as? [String: Any])?["shim"] as? Int, BrowserExtensionCompat.version)
         XCTAssertNil(try Self.manifest(dir)["background"])
-        XCTAssertFalse(try BrowserExtensionCompat.apply(to: dir), "幂等")
+        XCTAssertFalse(try BrowserExtensionCompat.apply(to: dir), "idempotent")
     }
 
-    // MARK: - 真跑：WebKit 缺的 API / importScripts 清空 microtask / scheme 字面量
+    // MARK: - Live runs: APIs WebKit lacks, importScripts draining microtasks, scheme literals
 
-    /// WebKit 没有 webNavigation.onHistoryStateUpdated；顶层直接 addListener 的后台（Stylish）没垫片时加载失败
+    /// WebKit has no webNavigation.onHistoryStateUpdated, so a background that calls addListener at the top
+    /// level (Stylish does) fails to load without the shim.
     @MainActor
     func testMissingWebNavigationEventsBecomeNoops() async throws {
         let variants: [(String, [String: Any])] = [
@@ -157,12 +163,13 @@ final class BrowserExtensionCompatTests: XCTestCase {
             let bg = await Self.loadBackground(item.context)
             XCTAssertEqual(bg, "OK", "module=\(module)")
             let loaded = try await Self.storageValue(item, key: "loaded")
-            XCTAssertEqual(loaded as? Bool, true, "module=\(module)：后台跑到了最后一行")
-            XCTAssertTrue(item.context.errors.isEmpty, "module=\(module)：\(item.context.errors)")
+            XCTAssertEqual(loaded as? Bool, true, "module=\(module): the background reached its last line")
+            XCTAssertTrue(item.context.errors.isEmpty, "module=\(module): \(item.context.errors)")
         }
     }
 
-    /// WebKit 的 importScripts 会清空 microtask 队列：空脚本跳过，Tampermonkey 式的启动标记才保得住
+    /// WebKit's importScripts drains the microtask queue, so empty scripts are skipped; that is what keeps a
+    /// Tampermonkey-style startup flag alive.
     @MainActor
     func testEmptyImportScriptsKeepsStartupMicrotaskFlag() async throws {
         let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
@@ -181,13 +188,15 @@ final class BrowserExtensionCompatTests: XCTestCase {
         XCTAssertEqual(bg, "OK")
         let stored = try await Self.storageValue(item, key: "result")
         let result = try XCTUnwrap(stored as? [String: Any])
-        XCTAssertEqual(result["afterEmpty"] as? Bool, true, "空脚本被跳过，microtask 没被清")
-        XCTAssertEqual(result["realRan"] as? Bool, true, "非空脚本照常走原生 importScripts")
-        // 仅记录，不断言：afterReal == false 是 WebKit 当前的行为（原生 importScripts 清 microtask），Apple 修了也不该红
+        XCTAssertEqual(result["afterEmpty"] as? Bool, true, "the empty script was skipped and the microtasks survived")
+        XCTAssertEqual(result["realRan"] as? Bool, true, "a non-empty script still goes through the native importScripts")
+        // Recorded, not asserted: afterReal == false is WebKit's behavior today (the native importScripts
+        // drains microtasks), and this must not go red if Apple ever fixes it.
         print("BrowserExtensionCompatTests: WebKit importScripts drains microtasks = \(result["afterReal"] as? Bool == false)")
     }
 
-    /// Tampermonkey 式：后台按 sender.url 是否以 `chrome-extension://` 开头判断"自己人"，WebKit 下是 webkit-extension://
+    /// The Tampermonkey pattern: the background decides "one of ours" by whether sender.url starts with
+    /// `chrome-extension://`, which under WebKit is webkit-extension://.
     @MainActor
     func testBackgroundRecognisesOwnPagesByRewrittenScheme() async throws {
         let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
@@ -202,10 +211,11 @@ final class BrowserExtensionCompatTests: XCTestCase {
         let bg = await Self.loadBackground(item.context)
         XCTAssertEqual(bg, "OK")
         let reply = try await Self.evaluate(item, "const r = await chrome.runtime.sendMessage({}); return r && r.own === true;")
-        XCTAssertEqual(reply as? Bool, true, "后台把 popup / 选项页认成自己的页面")
+        XCTAssertEqual(reply as? Bool, true, "the background recognizes its popup and options page as its own")
     }
 
-    /// 同一个 id 重装（商店更新）：后台要跑新脚本，不能沿用旧 worker
+    /// Reinstalling under the same id (a store update): the background has to run the new script, not reuse
+    /// the old worker.
     @MainActor
     func testReinstallWithSameIDRunsNewBackground() async throws {
         let id = Self.freshID()
@@ -223,15 +233,16 @@ final class BrowserExtensionCompatTests: XCTestCase {
         let bg2 = await Self.loadBackground(second.context)
         XCTAssertEqual(bg2, "OK")
         let v2 = try await Self.storageValue(second, key: "v")
-        XCTAssertEqual(v2 as? Int, 2, "重装后跑的是新后台")
+        XCTAssertEqual(v2 as? Int, 2, "after the reinstall it is the new background that runs")
     }
 
-    /// 网页里嵌的扩展 iframe（Stylish 侧栏）：直接调 tabs.query 会被 WebKit 杀掉页面进程；改走后台转发后拿到真结果，
-    /// 页面进程活着；来自网页（内容脚本）的转发请求被后台拒绝
+    /// An extension iframe embedded in a web page (Stylish's sidebar): calling tabs.query directly gets the
+    /// page process killed by WebKit. Relayed through the background it returns the real answer and the page
+    /// process survives, while a relay request originating in the web page (a content script) is refused.
     @MainActor
     func testEmbeddedExtensionFrameRelaysPrivilegedAPIs() async throws {
         let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
-            "bg.js": "// 后台只靠垫片里的转发\n",
+            "bg.js": "// The background does nothing but the relaying inside the shim\n",
             "cs.js": """
             const f = document.createElement("iframe"); f.src = chrome.runtime.getURL("frame.html"); document.body.appendChild(f);
             chrome.runtime.sendMessage({ __quickterm_relay: { ns: "tabs", fn: "query", args: [{}] } })
@@ -270,26 +281,29 @@ final class BrowserExtensionCompatTests: XCTestCase {
         host.panes = [pane]
         let tab = try XCTUnwrap(pane.activeTab)
         XCTAssertTrue(tab.webView.configuration.userContentController.userScripts.contains { $0.source == BrowserExtensionCompat.frameScript },
-                      "普通标签的配置里带 frame 脚本")
+                      "an ordinary tab's configuration carries the frame script")
         _ = await Self.loadBackground(item.context)
         tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
 
         let storedFrame = try await Self.storageValue(item, key: "fromFrame")
-        let fromFrame = try XCTUnwrap(storedFrame as? [String: Any], "iframe 里的脚本跑完")
-        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
-        XCTAssertEqual(fromFrame["relayed"] as? Bool, true, "chrome.tabs 已换成代理")
-        XCTAssertEqual(fromFrame["tabs"] as? [String], ["http://example.test/"], "tabs.query 经后台转发拿到 pane 的标签")
-        XCTAssertEqual(fromFrame["window"] as? String, "number", "windows.getCurrent 同样转发")
-        XCTAssertEqual(fromFrame["callback"] as? Int, 1, "回调形式也能用")
-        XCTAssertEqual(fromFrame["eventsKept"] as? String, "function", "事件对象保留原样")
-        XCTAssertEqual(fromFrame["storageDirect"] as? String, "object", "storage 不经转发")
+        let fromFrame = try XCTUnwrap(storedFrame as? [String: Any], "the script inside the iframe ran to completion")
+        XCTAssertNil(tab.lastProcessTerminationAt, "the page process was not killed")
+        XCTAssertEqual(fromFrame["relayed"] as? Bool, true, "chrome.tabs has been replaced by the proxy")
+        XCTAssertEqual(fromFrame["tabs"] as? [String], ["http://example.test/"],
+                       "tabs.query relayed through the background returns the pane's tabs")
+        XCTAssertEqual(fromFrame["window"] as? String, "number", "windows.getCurrent is relayed too")
+        XCTAssertEqual(fromFrame["callback"] as? Int, 1, "the callback form works as well")
+        XCTAssertEqual(fromFrame["eventsKept"] as? String, "function", "event objects are left as they are")
+        XCTAssertEqual(fromFrame["storageDirect"] as? String, "object", "storage is not relayed")
         let storedCS = try await Self.storageValue(item, key: "fromContentScript")
         let fromContentScript = try XCTUnwrap(storedCS as? [String: Any])
-        XCTAssertNotNil(fromContentScript["error"], "网页来源的转发请求被拒：\(fromContentScript)")
+        XCTAssertNotNil(fromContentScript["error"], "a relay request originating in the web page is refused: \(fromContentScript)")
     }
 
-    /// 网页里嵌的扩展 iframe：IndexedDB 被 WebKit 按顶层站点分区（读到的是另一份空库），桥接后与后台 / 扩展进程
-    /// 页面共用同一份数据——后台写的读得到、自己写的后台立刻看得到，索引 / 游标 / 建库升级也照常
+    /// An extension iframe embedded in a web page: WebKit partitions IndexedDB by the top-level site, so it
+    /// would otherwise read an empty database of its own. Bridged, it shares one store with the background
+    /// and the extension's own pages: it reads what the background wrote, the background sees its writes
+    /// immediately, and indexes, cursors and upgrade transactions all keep working.
     @MainActor
     func testEmbeddedExtensionFrameSharesIndexedDBWithBackground() async throws {
         let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
@@ -364,7 +378,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
                 out.version = db.version;
                 out.stores = Array.from(db.objectStoreNames);
                 out.read = await wait(db.transaction("items", "readonly").objectStore("items").getAll());
-                // 自己写一条：后台那边要立刻看得到
+                // Write one ourselves: the background has to see it immediately.
                 const write = db.transaction("items", "readwrite");
                 out.txIsNative = write instanceof IDBTransaction;
                 write.objectStore("items").put({ id: 2, tag: "b", text: "from-frame" });
@@ -373,7 +387,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
                 out.byIndex = (await wait(db.transaction("items", "readonly").objectStore("items").index("by-tag").getAll("a"))).map((r) => r.id);
                 out.byKey = (await wait(db.transaction("items", "readonly").objectStore("items").get(2))).text;
                 out.range = (await wait(db.transaction("items", "readonly").objectStore("items").getAll(IDBKeyRange.lowerBound(2)))).map((r) => r.id);
-                // 游标
+                // Cursors.
                 out.cursor = await new Promise((resolve, reject) => {
                   const ids = [];
                   const request = db.transaction("items", "readonly").objectStore("items").openCursor();
@@ -386,12 +400,14 @@ final class BrowserExtensionCompatTests: XCTestCase {
                   };
                   request.onerror = () => reject(request.error);
                 });
-                // 从 iframe 里新建一个库（升级事务：建表 + 写入都要重放到后台那份）
+                // Create a new database from inside the iframe (the upgrade transaction, the store creation
+                // and the write alike, has to be replayed into the background's copy).
                 const made = await openDB("made-by-frame", 1, (fresh) => {
                   fresh.createObjectStore("s", { keyPath: "id" }).put({ id: 7, text: "made-in-frame" });
                 });
                 out.made = await wait(made.transaction("s", "readonly").objectStore("s").getAll());
-                // 不带版本号 open 一个还不存在的库：原生会 upgradeneeded(0→1)，桥不能悄悄建个空库了事
+                // Open a database that does not exist yet, with no version: natively that fires
+                // upgradeneeded(0->1), and the bridge must not quietly create an empty database instead.
                 out.freshUpgrades = [];
                 const freshDB = await new Promise((resolve, reject) => {
                   const request = indexedDB.open("fresh-no-version");
@@ -405,7 +421,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
                 out.freshVersion = freshDB.version;
                 out.freshStores = Array.from(freshDB.objectStoreNames);
                 out.freshRead = await wait(freshDB.transaction("s", "readonly").objectStore("s").getAll());
-                // 再 open 一次（库已经在了）：不该再触发升级
+                // Open it a second time, now that it exists: no upgrade may fire.
                 out.freshAgain = [];
                 await new Promise((resolve, reject) => {
                   const request = indexedDB.open("fresh-no-version");
@@ -440,54 +456,57 @@ final class BrowserExtensionCompatTests: XCTestCase {
         tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
 
         let stored = try await Self.storageValue(item, key: "fromFrame", timeout: 30)
-        let out = try XCTUnwrap(stored as? [String: Any], "iframe 里的脚本跑完")
-        XCTAssertNil(out["error"], "iframe 里没抛错：\(out)")
-        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
-        XCTAssertEqual(out["bridged"] as? Bool, true, "iframe 里的 indexedDB 已换成桥")
-        // 门面要能通过 instanceof：idb 这类包装库全靠它认路
+        let out = try XCTUnwrap(stored as? [String: Any], "the script inside the iframe ran to completion")
+        XCTAssertNil(out["error"], "nothing threw inside the iframe: \(out)")
+        XCTAssertNil(tab.lastProcessTerminationAt, "the page process was not killed")
+        XCTAssertEqual(out["bridged"] as? Bool, true, "indexedDB inside the iframe has been replaced by the bridge")
+        // The facades have to pass instanceof: wrapper libraries like idb navigate entirely by it.
         for key in ["requestIsNative", "dbIsNative", "txIsNative", "cursorIsNative"] {
-            XCTAssertEqual(out[key] as? Bool, true, "\(key)：\(out)")
+            XCTAssertEqual(out[key] as? Bool, true, "\(key): \(out)")
         }
         XCTAssertEqual(out["version"] as? Int, 1)
         XCTAssertEqual(out["stores"] as? [String], ["items"])
-        XCTAssertTrue((out["databases"] as? [String] ?? []).contains("shared@1"), "databases() 是后台那份：\(out)")
+        XCTAssertTrue((out["databases"] as? [String] ?? []).contains("shared@1"), "databases() is the background's list: \(out)")
         let read = try XCTUnwrap(out["read"] as? [[String: Any]])
-        XCTAssertEqual(read.count, 1, "读到后台写的记录：\(out)")
+        XCTAssertEqual(read.count, 1, "it reads the record the background wrote: \(out)")
         XCTAssertEqual(read.first?["text"] as? String, "from-bg")
         XCTAssertEqual(out["count"] as? Int, 2)
-        XCTAssertEqual(out["byIndex"] as? [Int], [1], "索引查询")
-        XCTAssertEqual(out["byKey"] as? String, "from-frame", "按主键取自己刚写的")
-        XCTAssertEqual(out["range"] as? [Int], [2], "IDBKeyRange 过得去")
-        XCTAssertEqual(out["cursor"] as? [Int], [1, 2], "游标")
+        XCTAssertEqual(out["byIndex"] as? [Int], [1], "an index lookup")
+        XCTAssertEqual(out["byKey"] as? String, "from-frame", "fetching by primary key what it just wrote")
+        XCTAssertEqual(out["range"] as? [Int], [2], "IDBKeyRange gets through")
+        XCTAssertEqual(out["cursor"] as? [Int], [1, 2], "the cursor")
         XCTAssertEqual((out["made"] as? [[String: Any]])?.first?["text"] as? String, "made-in-frame",
-                       "iframe 里新建的库（升级事务重放到后台）")
+                       "a database created inside the iframe, its upgrade transaction replayed into the background")
         XCTAssertEqual(out["freshUpgrades"] as? [String], ["0->1"],
-                       "不带版本号 open 一个不存在的库：照原生的 upgradeneeded(0→1) 来：\(out)")
+                       "opening a non-existent database without a version behaves natively, upgradeneeded(0->1): \(out)")
         XCTAssertEqual(out["freshVersion"] as? Int, 1)
-        XCTAssertEqual(out["freshStores"] as? [String], ["s"], "建表回调真的跑了")
+        XCTAssertEqual(out["freshStores"] as? [String], ["s"], "the store-creation callback really ran")
         XCTAssertEqual((out["freshRead"] as? [[String: Any]])?.first?["text"] as? String, "no-version")
-        XCTAssertEqual(out["freshAgain"] as? [String], [], "库已经在了就不再触发升级")
+        XCTAssertEqual(out["freshAgain"] as? [String], [], "once the database exists, no upgrade fires again")
         let fromBackground = try XCTUnwrap(out["fromBackground"] as? [String: Any])
         let items = try XCTUnwrap(fromBackground["items"] as? [[String: Any]])
-        XCTAssertEqual(items.compactMap { $0["id"] as? Int }.sorted(), [1, 2], "后台看得到 iframe 写的那条：\(fromBackground)")
+        XCTAssertEqual(items.compactMap { $0["id"] as? Int }.sorted(), [1, 2],
+                       "the background sees the row the iframe wrote: \(fromBackground)")
         XCTAssertEqual((fromBackground["inMade"] as? [[String: Any]])?.first?["id"] as? Int, 7,
-                       "iframe 建的库在后台那份分区里：\(fromBackground)")
+                       "the database the iframe created lives in the background's partition: \(fromBackground)")
         XCTAssertEqual((fromBackground["inFresh"] as? [[String: Any]])?.first?["id"] as? Int, 9,
-                       "不带版本号建的那个库也在后台那份分区里：\(fromBackground)")
+                       "and so does the one created without a version: \(fromBackground)")
 
-        // 普通网页（不是扩展框架）一点都不碰
+        // An ordinary web page, not an extension frame, is not touched at all.
         let plain = try await Self.evaluate(inPage: tab.webView, at: "http://example.test/", load: nil, """
         return { chrome: typeof globalThis.chrome, native: indexedDB.open === IDBFactory.prototype.open,
                  factory: indexedDB instanceof IDBFactory };
         """)
         let plainOut = try XCTUnwrap(plain as? [String: Any])
-        XCTAssertEqual(plainOut["native"] as? Bool, true, "普通框架的 indexedDB 还是原生的：\(plainOut)")
-        XCTAssertEqual(plainOut["chrome"] as? String, "undefined", "普通框架里也没多出 chrome")
+        XCTAssertEqual(plainOut["native"] as? Bool, true, "an ordinary frame's indexedDB is still the native one: \(plainOut)")
+        XCTAssertEqual(plainOut["chrome"] as? String, "undefined", "and no chrome appears in an ordinary frame either")
     }
 
-    /// 真实面板（Stylish）读库用的是 `idb` 那类包装库：它靠 `instanceof IDBRequest / IDBDatabase / IDBTransaction`
-    /// 认路、靠事务的 `complete` 事件给 `tx.done`、靠 `tx.objectStoreNames` 给 `tx.store`。
-    /// 这里把 idb 的核心（wrap / Proxy 陷阱 / openDB / db.getAll 快捷方法）照搬进 iframe 跑一遍
+    /// A real panel (Stylish) reads its database through a wrapper like `idb`, which navigates by
+    /// `instanceof IDBRequest / IDBDatabase / IDBTransaction`, takes `tx.done` from the transaction's
+    /// `complete` event, and takes `tx.store` from `tx.objectStoreNames`.
+    /// This copies idb's core (wrap, the Proxy traps, openDB, the db.getAll shortcuts) into the iframe and
+    /// runs it for real.
     @MainActor
     func testEmbeddedExtensionFrameWorksWithIdbStyleWrapper() async throws {
         let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
@@ -507,7 +526,8 @@ final class BrowserExtensionCompatTests: XCTestCase {
             """,
             "frame.html": "<html><head><script src=\"frame.js\"></script></head><body>F</body></html>\n",
             "frame.js": """
-            // ---- idb v7 的核心（照抄结构，删掉游标 / 撤销缓存等与本用例无关的部分）
+            // ---- The core of idb v7 (structure copied as-is, minus the cursor advance and reverse cache,
+            // which this case does not exercise)
             const transformCache = new WeakMap(), reverseCache = new WeakMap(), doneMap = new WeakMap();
             const unwrap = (value) => reverseCache.get(value);
             const shortcuts = { get: false, getAll: false, count: false, put: true, delete: true };
@@ -573,7 +593,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
               if (upgrade) request.addEventListener("upgradeneeded", (event) => upgrade(wrap(request.result), event.oldVersion, event.newVersion, wrap(request.transaction)));
               return promise;
             };
-            // ---- 用它读写
+            // ---- Use it to read and write
             (async () => {
               const out = {};
               try {
@@ -588,7 +608,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
                 tx.store.put({ id: 3, text: "in-transaction" });
                 await tx.done;
                 out.after = (await db.getAll("items")).map((row) => row.id);
-                // 包装库自己新建的库（走升级回调）
+                // A database the wrapper creates itself, through its upgrade callback.
                 const fresh = await openDB("wrapped-fresh", 1, (upgrading) => { upgrading.createObjectStore("s", { keyPath: "id" }); });
                 await fresh.put("s", { id: 9, text: "fresh" });
                 out.fresh = (await fresh.getAll("s")).map((row) => row.text);
@@ -618,16 +638,18 @@ final class BrowserExtensionCompatTests: XCTestCase {
         tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
 
         let stored = try await Self.storageValue(item, key: "wrapped", timeout: 30)
-        let out = try XCTUnwrap(stored as? [String: Any], "iframe 里的脚本跑完")
-        XCTAssertNil(out["error"], "包装库跑通：\(out)")
-        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
-        XCTAssertEqual(out["read"] as? [String], ["from-bg"], "包装库读到后台写的记录")
-        XCTAssertEqual(out["after"] as? [Int], [1, 2, 3], "db.put 与 tx.done 都成立")
-        XCTAssertEqual(out["fresh"] as? [String], ["fresh"], "包装库的 upgrade 回调建库")
+        let out = try XCTUnwrap(stored as? [String: Any], "the script inside the iframe ran to completion")
+        XCTAssertNil(out["error"], "the wrapper library ran through: \(out)")
+        XCTAssertNil(tab.lastProcessTerminationAt, "the page process was not killed")
+        XCTAssertEqual(out["read"] as? [String], ["from-bg"], "the wrapper reads the record the background wrote")
+        XCTAssertEqual(out["after"] as? [Int], [1, 2, 3], "both db.put and tx.done hold")
+        XCTAssertEqual(out["fresh"] as? [String], ["fresh"], "the wrapper's upgrade callback creates the database")
     }
 
-    /// 游标是后台一次跑完的快照：反向游标的 `continue(key)` 要按降序找（不能拿正向那套比较），
-    /// 超过上限（5000）时走到快照末尾必须明确报错——报"迭代结束"等于把剩下的记录悄悄抹掉
+    /// A cursor is a snapshot the background walks in one go: a reverse cursor's `continue(key)` has to search
+    /// in descending order rather than reuse the forward comparison, and past the 5000-row limit, reaching the
+    /// end of the snapshot has to raise an explicit error. Reporting "iteration finished" would silently erase
+    /// the rows that are left.
     @MainActor
     func testEmbeddedExtensionFrameCursorDirectionAndSnapshotLimit() async throws {
         let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
@@ -681,7 +703,8 @@ final class BrowserExtensionCompatTests: XCTestCase {
                   request.onsuccess = () => resolve(request.result);
                   request.onerror = () => reject(request.error);
                 });
-                // 反向游标：continue(key) 落在 <= key 的最大那条（50 → 30，不是 40）；没有更小的就结束
+                // Reverse cursor: continue(key) lands on the largest row <= key (50 -> 30, not 40), and ends
+                // once there is nothing smaller.
                 out.prev = await new Promise((resolve, reject) => {
                   const seen = [];
                   const request = db.transaction("small", "readonly").objectStore("small").openCursor(null, "prev");
@@ -695,9 +718,9 @@ final class BrowserExtensionCompatTests: XCTestCase {
                   };
                   request.onerror = () => reject(request.error);
                 });
-                // 5002 条 > 上限：走到第 5000 条之后要拿到错误
+                // 5002 rows is past the limit: after row 5000 there has to be an error.
                 out.overflow = await walk(db.transaction("big", "readonly").objectStore("big").openCursor());
-                // 正好 5000 条（上限本身）：照常走完
+                // Exactly 5000 rows, the limit itself: it walks to the end as usual.
                 out.exact = await walk(db.transaction("big", "readonly").objectStore("big")
                                          .openKeyCursor(IDBKeyRange.upperBound(5000)));
               } catch (e) { out.error = String((e && e.message) || e); }
@@ -726,22 +749,24 @@ final class BrowserExtensionCompatTests: XCTestCase {
         tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
 
         let stored = try await Self.storageValue(item, key: "cursors", timeout: 90)
-        let out = try XCTUnwrap(stored as? [String: Any], "iframe 里的脚本跑完")
-        XCTAssertNil(out["error"], "iframe 里没抛错：\(out)")
-        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
-        XCTAssertEqual(out["prev"] as? [Int], [50, 30, 20], "反向游标的 continue(key) 按降序找：\(out)")
+        let out = try XCTUnwrap(stored as? [String: Any], "the script inside the iframe ran to completion")
+        XCTAssertNil(out["error"], "nothing threw inside the iframe: \(out)")
+        XCTAssertNil(tab.lastProcessTerminationAt, "the page process was not killed")
+        XCTAssertEqual(out["prev"] as? [Int], [50, 30, 20], "a reverse cursor's continue(key) searches in descending order: \(out)")
         let overflow = try XCTUnwrap(out["overflow"] as? [String: Any])
-        XCTAssertEqual(overflow["count"] as? Int, 5000, "快照上限：\(overflow)")
-        XCTAssertEqual(overflow["ended"] as? String, "error", "被截断时不能报「迭代结束」：\(overflow)")
-        XCTAssertTrue((overflow["message"] as? String ?? "").contains("truncated"), "错误说清原因：\(overflow)")
+        XCTAssertEqual(overflow["count"] as? Int, 5000, "the snapshot limit: \(overflow)")
+        XCTAssertEqual(overflow["ended"] as? String, "error", "a truncated walk must not report \"iteration finished\": \(overflow)")
+        XCTAssertTrue((overflow["message"] as? String ?? "").contains("truncated"), "the error says why: \(overflow)")
         let exact = try XCTUnwrap(out["exact"] as? [String: Any])
         XCTAssertEqual(exact["count"] as? Int, 5000)
-        XCTAssertEqual(exact["ended"] as? String, "null", "正好等于上限的那次是真的走完了：\(exact)")
+        XCTAssertEqual(exact["ended"] as? String, "null", "the walk that stops exactly at the limit really did finish: \(exact)")
     }
 
-    /// 后台没挂上垫片的扩展（这里是压根没有 background）：桥的执行端不存在，装了桥每次 IDB 调用都会失败，
-    /// 所以那种框架里要留着原生的 indexedDB（按顶层站点分区，但自己读写自己是自洽的）。
-    /// tabs.* 那套转发不受影响——从这种框架直接调它们会被 WebKit 杀掉页面进程，转发不通也好过被杀
+    /// An extension whose background carries no shim (here there is no background at all): the bridge has no
+    /// executor, so installing it would make every IDB call fail. A frame like that keeps the native
+    /// indexedDB instead, partitioned by the top-level site but self-consistent for its own reads and writes.
+    /// The tabs.* relaying is unaffected: calling those directly from such a frame gets the page process
+    /// killed by WebKit, and a relay that cannot get through still beats being killed.
     @MainActor
     func testFrameKeepsNativeIndexedDBWhenBackgroundHasNoShim() async throws {
         let (manager, item) = try await Self.installed(background: nil, files: [
@@ -781,9 +806,9 @@ final class BrowserExtensionCompatTests: XCTestCase {
         ])
         defer { try? FileManager.default.removeItem(at: manager.storeDirectory) }
         let directory = manager.directory(for: item.id)
-        XCTAssertNil(try Self.manifest(directory)["background"], "没有 background 的扩展不会凭空多出一个")
+        XCTAssertNil(try Self.manifest(directory)["background"], "an extension with no background does not grow one out of nowhere")
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent(BrowserExtensionCompat.compatFile).path),
-                       "没有后台就没有垫片文件——桥没有执行端")
+                       "no background means no shim file: the bridge would have no executor")
         let host = Host()
         manager.host = host
         BrowserExtensionManager.overrideForTesting = manager
@@ -798,16 +823,17 @@ final class BrowserExtensionCompatTests: XCTestCase {
         tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
 
         let stored = try await Self.storageValue(item, key: "fromFrame", timeout: 30)
-        let out = try XCTUnwrap(stored as? [String: Any], "iframe 里的脚本跑完")
-        XCTAssertNil(out["error"], "原生 indexedDB 照常能用：\(out)")
-        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
-        XCTAssertEqual(out["wrapped"] as? Bool, true, "根对象还是换过的（tabs.* 那套转发照旧）")
-        XCTAssertEqual(out["bridged"] as? Bool, false, "没有执行端就不装桥：\(out)")
-        XCTAssertEqual((out["read"] as? [[String: Any]])?.first?["text"] as? String, "local", "原生那份读写自洽")
+        let out = try XCTUnwrap(stored as? [String: Any], "the script inside the iframe ran to completion")
+        XCTAssertNil(out["error"], "the native indexedDB still works: \(out)")
+        XCTAssertNil(tab.lastProcessTerminationAt, "the page process was not killed")
+        XCTAssertEqual(out["wrapped"] as? Bool, true, "the root object is still the replaced one (tabs.* relaying is unchanged)")
+        XCTAssertEqual(out["bridged"] as? Bool, false, "with no executor there is no bridge: \(out)")
+        XCTAssertEqual((out["read"] as? [[String: Any]])?.first?["text"] as? String, "local", "the native store is self-consistent")
     }
 
-    /// 网页里嵌的扩展 iframe 里，Chrome 那几种 API 形状都要能用：runtime.sendMessage / storage.local.get 的
-    /// 回调形式与 Promise 形式、同步与异步（`return true` + 延迟 sendResponse）的后台监听
+    /// Inside an extension iframe embedded in a web page, every Chrome API shape has to work:
+    /// runtime.sendMessage / storage.local.get in both callback and Promise form, and background listeners
+    /// that answer synchronously as well as asynchronously (`return true` plus a delayed sendResponse).
     @MainActor
     func testEmbeddedExtensionFrameKeepsCallbackAndPromiseShapes() async throws {
         let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
@@ -868,23 +894,25 @@ final class BrowserExtensionCompatTests: XCTestCase {
         tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
 
         let stored = try await Self.storageValue(item, key: "shapes", timeout: 30)
-        let out = try XCTUnwrap(stored as? [String: Any], "iframe 里的脚本跑完")
-        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
-        XCTAssertEqual(out["callbackSync"] as? String, "sync", "回调形式 + 同步 sendResponse：\(out)")
-        XCTAssertEqual(out["callbackAsync"] as? String, "async", "回调形式 + 异步 sendResponse：\(out)")
+        let out = try XCTUnwrap(stored as? [String: Any], "the script inside the iframe ran to completion")
+        XCTAssertNil(tab.lastProcessTerminationAt, "the page process was not killed")
+        XCTAssertEqual(out["callbackSync"] as? String, "sync", "callback form with a synchronous sendResponse: \(out)")
+        XCTAssertEqual(out["callbackAsync"] as? String, "async", "callback form with an asynchronous sendResponse: \(out)")
         XCTAssertEqual(out["promiseSync"] as? String, "sync")
         XCTAssertEqual(out["promiseAsync"] as? String, "async")
-        XCTAssertEqual(out["storageCallback"] as? String, "SEEDED", "storage 的回调形式")
+        XCTAssertEqual(out["storageCallback"] as? String, "SEEDED", "the callback form of storage")
         XCTAssertEqual(out["storagePromise"] as? String, "SEEDED")
         XCTAssertEqual(out["lastError"] as? String, "true",
-                       "没出错时 runtime.lastError 是假值（WebKit 在这种框架里给的是 null，不是 undefined）")
-        XCTAssertEqual(out["relayCallback"] as? Int, 1, "转发的 tabs.query（回调形式）")
-        XCTAssertEqual(out["relayPromise"] as? Int, 1, "转发的 tabs.query（Promise 形式）")
+                       "with no error, runtime.lastError is falsy (in a frame like this WebKit gives null, not undefined)")
+        XCTAssertEqual(out["relayCallback"] as? Int, 1, "a relayed tabs.query in callback form")
+        XCTAssertEqual(out["relayPromise"] as? Int, 1, "a relayed tabs.query in Promise form")
     }
 
-    /// Firebase Auth 的 `persistence/indexed_db` 就是这个形状：`fbase_key` 当 keyPath、每个操作一个新事务、
-    /// 事件一律走 `addEventListener`、可用性探测（open → put → delete）、以及定时轮询看别的上下文写了什么。
-    /// 后台（service worker）先把登录记录写进扩展真正的分区，网页里嵌的面板 iframe 要能原样读回来。
+    /// Firebase Auth's `persistence/indexed_db` has exactly this shape: `fbase_key` as the keyPath, a fresh
+    /// transaction per operation, events only through `addEventListener`, an availability probe (open -> put
+    /// -> delete), and a timer that polls for what other contexts wrote.
+    /// The background (a service worker) writes the sign-in record into the extension's real partition first,
+    /// and the panel iframe embedded in a web page has to read it back unchanged.
     @MainActor
     func testEmbeddedExtensionFrameRunsFirebaseStyleAuthPersistence() async throws {
         let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
@@ -930,7 +958,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
             "frame.js": """
             const DB = "authdb", STORE = "authstore", KEYPATH = "fbase_key";
             const KEY = "firebase:authUser:TESTKEY:[DEFAULT]", SAK = "firebase:__sak";
-            // firebase-auth 的 DBPromise：只用 addEventListener，不碰 on<type>
+            // firebase-auth's DBPromise: addEventListener only, never on<type>.
             const promisify = (request) => new Promise((resolve, reject) => {
               request.addEventListener("success", () => resolve(request.result));
               request.addEventListener("error", () => reject(request.error));
@@ -957,7 +985,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
                   const tick = () => chrome.storage.local.get(["ready"], (v) => (v && v.ready ? resolve() : setTimeout(tick, 50)));
                   tick();
                 });
-                // _isAvailable()：open → put → delete，一路不许抛
+                // _isAvailable(): open -> put -> delete, and nothing may throw along the way.
                 out.available = await (async () => {
                   try {
                     if (!indexedDB) return false;
@@ -974,19 +1002,19 @@ final class BrowserExtensionCompatTests: XCTestCase {
                 out.user = (await getObject(db, KEY) || {}).uid;
                 out.keys = await promisify(store(db, false).getAllKeys());
                 out.sakGone = await getObject(db, SAK);
-                // 事务的 complete（idb / firebase 都靠它知道写落盘了）
+                // The transaction's complete (both idb and firebase rely on it to know a write landed).
                 out.txComplete = await new Promise((resolve) => {
                   const tx = db.transaction([STORE], "readonly");
                   tx.objectStore(STORE).get(KEY);
                   tx.addEventListener("complete", () => resolve("complete"));
                   tx.addEventListener("abort", () => resolve("abort"));
                 });
-                // close() 之后再开事务：InvalidStateError
+                // Opening a transaction after close(): InvalidStateError.
                 const closable = await openDatabase();
                 closable.close();
                 try { closable.transaction([STORE], "readonly"); out.afterClose = "no throw"; }
                 catch (e) { out.afterClose = e.name; }
-                // 别的上下文（后台）写进来的记录，轮询要看得到
+                // A record written by another context (the background): polling has to see it.
                 await chrome.runtime.sendMessage({ probe: "seed2" });
                 out.polled = await (async () => {
                   for (let i = 0; i < 20; i += 1) {
@@ -996,7 +1024,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
                   }
                   return "timeout";
                 })();
-                // 面板自己写一条，后台要立刻看得到
+                // The panel writes one itself: the background has to see it immediately.
                 await putObject(db, "from-frame", { uid: "u-3" });
                 const back = await chrome.runtime.sendMessage({ probe: "read" });
                 out.fromBackground = (back.rows || []).map((row) => row[KEYPATH]).sort();
@@ -1026,26 +1054,28 @@ final class BrowserExtensionCompatTests: XCTestCase {
         tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
 
         let stored = try await Self.storageValue(item, key: "firebase", timeout: 45)
-        let out = try XCTUnwrap(stored as? [String: Any], "iframe 里的脚本跑完")
-        XCTAssertNil(out["error"], "iframe 里没抛错：\(out)")
-        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
-        XCTAssertEqual(out["available"] as? Bool, true, "可用性探测（open → put → delete）：\(out)")
+        let out = try XCTUnwrap(stored as? [String: Any], "the script inside the iframe ran to completion")
+        XCTAssertNil(out["error"], "nothing threw inside the iframe: \(out)")
+        XCTAssertNil(tab.lastProcessTerminationAt, "the page process was not killed")
+        XCTAssertEqual(out["available"] as? Bool, true, "the availability probe (open -> put -> delete): \(out)")
         XCTAssertEqual(out["version"] as? Int, 1)
-        XCTAssertEqual(out["user"] as? String, "u-1", "后台写的登录记录，面板 iframe 读得到：\(out)")
-        XCTAssertEqual(out["keys"] as? [String], ["firebase:authUser:TESTKEY:[DEFAULT]"], "getAllKeys：\(out)")
-        XCTAssertNil(out["sakGone"] as? String, "探测用的那条删干净了：\(out)")
-        XCTAssertEqual(out["txComplete"] as? String, "complete", "事务的 complete 事件")
-        XCTAssertEqual(out["afterClose"] as? String, "InvalidStateError", "close() 之后 transaction() 抛 InvalidStateError")
+        XCTAssertEqual(out["user"] as? String, "u-1", "the panel iframe reads back the sign-in record the background wrote: \(out)")
+        XCTAssertEqual(out["keys"] as? [String], ["firebase:authUser:TESTKEY:[DEFAULT]"], "getAllKeys: \(out)")
+        XCTAssertNil(out["sakGone"] as? String, "the probe's own record was deleted cleanly: \(out)")
+        XCTAssertEqual(out["txComplete"] as? String, "complete", "the transaction's complete event")
+        XCTAssertEqual(out["afterClose"] as? String, "InvalidStateError", "after close(), transaction() throws InvalidStateError")
         XCTAssertEqual(out["polled"] as? [String], ["firebase:authUser:TESTKEY:[DEFAULT]", "second"],
-                       "轮询能看到后台后来写的那条：\(out)")
+                       "polling sees the record the background wrote afterwards: \(out)")
         XCTAssertEqual(out["fromBackground"] as? [String],
                        ["firebase:authUser:TESTKEY:[DEFAULT]", "from-frame", "second"],
-                       "面板写的那条后台立刻看得到：\(out)")
+                       "the background sees the panel's write immediately: \(out)")
     }
 
-    /// 事务语义：同一轮里发出的请求在后台是**一个真事务**——`abort()` 回滚、任一请求出错整批回滚，
-    /// 事件顺序（成功的先 success → 出错那个 error → 事务 error → 其余 AbortError → abort）跟原生一致；
-    /// 另外别处升级库时还开着的连接要收到 `versionchange`
+    /// Transaction semantics: everything issued in one turn is **one real transaction** on the background
+    /// side. `abort()` rolls it back, one failing request rolls the whole batch back, and the event order
+    /// (successes first, then the failing request's error, the transaction error, AbortError for the rest,
+    /// then abort) matches native. On top of that, a connection still open when the database is upgraded
+    /// elsewhere has to receive `versionchange`.
     @MainActor
     func testEmbeddedExtensionFrameTransactionsAreAtomic() async throws {
         let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
@@ -1110,7 +1140,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
                   t();
                 });
                 const db = await open("atomic");
-                // 1) abort() 回滚同一轮里发出的写
+                // 1) abort() rolls back the writes issued in the same turn.
                 {
                   const events = [];
                   const tx = db.transaction("items", "readwrite");
@@ -1127,13 +1157,13 @@ final class BrowserExtensionCompatTests: XCTestCase {
                   out.abortEvents = events;
                   out.afterAbort = await wait(db.transaction("items", "readonly").objectStore("items").getAllKeys());
                 }
-                // 2) 一个请求出错 → 整批回滚，事件顺序照原生
+                // 2) One failing request rolls the whole batch back, in the native event order.
                 {
                   const order = [];
                   const tx = db.transaction("items", "readwrite");
                   const s = tx.objectStore("items");
                   const a = s.put({ id: 1 });
-                  const b = s.add({ id: 9 });        // 主键已存在 → ConstraintError
+                  const b = s.add({ id: 9 });        // The key already exists -> ConstraintError
                   const c = s.put({ id: 3 });
                   a.addEventListener("success", () => order.push("a:ok"));
                   a.addEventListener("error", () => order.push("a:" + a.error.name));
@@ -1150,7 +1180,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
                   out.afterFail = await wait(db.transaction("items", "readonly").objectStore("items").getAllKeys());
                   out.fromBackground = (await chrome.runtime.sendMessage({ probe: "read" })).keys;
                 }
-                // 3) 正常一批：全部按序 success，事务 complete
+                // 3) A normal batch: every request succeeds in order and the transaction completes.
                 {
                   const seen = [];
                   const tx = db.transaction("items", "readwrite");
@@ -1165,7 +1195,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
                   });
                   out.batchKeys = seen;
                 }
-                // 4) 本框架里另一个连接升级：还开着的那个收到 versionchange
+                // 4) Another connection in this frame upgrades: the one still open receives versionchange.
                 {
                   const first = await open("framevc", 1, (d) => d.createObjectStore("a"));
                   let seen = "none";
@@ -1178,7 +1208,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
                   await tick(200);
                   out.localVersionChange = seen;
                 }
-                // 5) 后台升级的库：面板下一次请求时补发 versionchange
+                // 5) A database the background upgraded: the panel gets versionchange on its next request.
                 {
                   const stale = await open("bgvc");
                   out.staleVersion = stale.version;
@@ -1189,7 +1219,8 @@ final class BrowserExtensionCompatTests: XCTestCase {
                   await tick(200);
                   out.remoteVersionChange = seen;
                 }
-                // 6) 同步抛出的请求（get(undefined) → DataError）：整批回滚，排在它前面的写不能报 success
+                // 6) A request that throws synchronously (get(undefined) -> DataError): the whole batch rolls
+                //    back, and writes queued before it must not report success.
                 {
                   const order = [];
                   const tx = db.transaction("items", "readwrite");
@@ -1211,13 +1242,14 @@ final class BrowserExtensionCompatTests: XCTestCase {
                   out.syncThrowOrder = order;
                   out.afterSyncThrow = await wait(db.transaction("items", "readonly").objectStore("items").getAllKeys());
                 }
-                // 7) 游标跟一个必然失败的写同批：游标请求照原生收 AbortError，而不是"迭代完了、0 条"
+                // 7) A cursor batched with a write that is bound to fail: the cursor request gets AbortError
+                //    just as it would natively, not "iteration finished, 0 rows".
                 {
                   const order = [];
                   const tx = db.transaction("items", "readwrite");
                   const s = tx.objectStore("items");
                   const c = s.openCursor();
-                  const bad = s.add({ id: 9 });     // 主键已存在 → ConstraintError
+                  const bad = s.add({ id: 9 });     // The key already exists -> ConstraintError
                   c.addEventListener("success", () => order.push("c:ok:" + String(c.result && c.result.key)));
                   c.addEventListener("error", () => order.push("c:" + c.error.name));
                   bad.addEventListener("error", () => order.push("bad:" + bad.error.name));
@@ -1226,7 +1258,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
                   await tick(400);
                   out.cursorInFailedBatch = order;
                 }
-                // 8) 删库：还开着的连接照原生收到 versionchange（newVersion 为 null）
+                // 8) Deleting the database: a connection still open receives versionchange (newVersion null).
                 {
                   const doomed = await open("dropme", 1, (d) => d.createObjectStore("a"));
                   let seen = "none";
@@ -1242,7 +1274,8 @@ final class BrowserExtensionCompatTests: XCTestCase {
                   await tick(200);
                   out.deleteVersionChange = seen;
                 }
-                // 9) 升级事务里 abort()：录下来的操作一个都不重放，open 请求以 AbortError 失败
+                // 9) abort() inside an upgrade transaction: not one recorded operation is replayed, and the
+                //    open request fails with AbortError.
                 {
                   out.abortedUpgrade = await new Promise((resolve) => {
                     const r = indexedDB.open("abortup", 1);
@@ -1279,46 +1312,47 @@ final class BrowserExtensionCompatTests: XCTestCase {
         tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
 
         let stored = try await Self.storageValue(item, key: "atomic", timeout: 45)
-        let out = try XCTUnwrap(stored as? [String: Any], "iframe 里的脚本跑完")
-        XCTAssertNil(out["error"], "iframe 里没抛错：\(out)")
-        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
-        XCTAssertEqual(out["afterAbort"] as? [Int], [9], "abort() 把同一轮里发出的写回滚掉了：\(out)")
+        let out = try XCTUnwrap(stored as? [String: Any], "the script inside the iframe ran to completion")
+        XCTAssertNil(out["error"], "nothing threw inside the iframe: \(out)")
+        XCTAssertNil(tab.lastProcessTerminationAt, "the page process was not killed")
+        XCTAssertEqual(out["afterAbort"] as? [Int], [9], "abort() rolled back the writes issued in the same turn: \(out)")
         XCTAssertEqual(out["abortEvents"] as? [String], ["a:AbortError", "b:AbortError", "tx:abort"],
-                       "abort()：待处理的请求各收一个 AbortError，然后事务 abort：\(out)")
+                       "abort(): every pending request gets its own AbortError, then the transaction aborts: \(out)")
         XCTAssertEqual(out["failOrder"] as? [String],
                        ["a:ok", "b:ConstraintError", "tx:error", "c:AbortError", "tx:abort"],
-                       "出错时的事件顺序跟原生一致：\(out)")
+                       "the event order on failure matches native: \(out)")
         XCTAssertEqual(out["txError"] as? String, "ConstraintError")
-        XCTAssertEqual(out["afterFail"] as? [Int], [9], "出错的那批整个回滚（id 1 / 3 都没落盘）：\(out)")
-        XCTAssertEqual(out["fromBackground"] as? [Int], [9], "后台看到的也是回滚之后的：\(out)")
-        XCTAssertEqual(out["batchComplete"] as? String, "complete", "正常一批照常提交")
-        XCTAssertEqual(out["batchKeys"] as? [Int], [11, 12, 13], "一批请求按发出顺序结束，各自拿到自己的结果")
+        XCTAssertEqual(out["afterFail"] as? [Int], [9], "the failing batch rolls back entirely (neither id 1 nor 3 landed): \(out)")
+        XCTAssertEqual(out["fromBackground"] as? [Int], [9], "the background also sees the post-rollback state: \(out)")
+        XCTAssertEqual(out["batchComplete"] as? String, "complete", "a normal batch commits as usual")
+        XCTAssertEqual(out["batchKeys"] as? [Int], [11, 12, 13], "a batch finishes in issue order, each request with its own result")
         XCTAssertEqual(out["localVersionChange"] as? String, "1->2",
-                       "本框架里另一个连接升级时，还开着的连接收到 versionchange：\(out)")
+                       "when another connection in this frame upgrades, the still-open one receives versionchange: \(out)")
         XCTAssertEqual(out["staleVersion"] as? Int, 1)
         XCTAssertEqual(out["remoteVersionChange"] as? String, "1->2",
-                       "后台升级过的库：面板下一次请求时补发 versionchange：\(out)")
+                       "a database the background upgraded: the panel gets versionchange on its next request: \(out)")
         XCTAssertEqual(out["syncThrowOrder"] as? [String],
                        ["b:DataError", "tx:error", "a:AbortError", "tx:abort"],
-                       "同步抛出的请求让整批回滚：排在它前面的写收 AbortError，不能报 success：\(out)")
+                       "a synchronously thrown request rolls the whole batch back: writes queued before it get AbortError, never success: \(out)")
         XCTAssertEqual(out["afterSyncThrow"] as? [Int], [9, 11, 12, 13],
-                       "同步抛出的那批整个回滚（id 77 没落盘）：\(out)")
+                       "that batch rolls back entirely (id 77 never landed): \(out)")
         XCTAssertEqual(out["cursorInFailedBatch"] as? [String],
                        ["bad:ConstraintError", "tx:error", "c:AbortError", "tx:abort"],
-                       "跟失败的写同批的游标收 AbortError，而不是 success(null)：\(out)")
+                       "a cursor batched with a failing write gets AbortError, not success(null): \(out)")
         XCTAssertEqual(out["deleteVersionChange"] as? String, "1->null",
-                       "删库前给还开着的连接发 versionchange(newVersion=null)：\(out)")
+                       "before the database is deleted, a still-open connection gets versionchange(newVersion=null): \(out)")
         XCTAssertEqual(out["abortedUpgrade"] as? String, "error:AbortError",
-                       "升级事务里 abort()：open 请求以 AbortError 失败：\(out)")
+                       "abort() inside an upgrade transaction: the open request fails with AbortError: \(out)")
         XCTAssertEqual(out["abortedUpgradeExists"] as? Bool, false,
-                       "升级事务里 abort()：后台那边一个操作都没重放，库也没建出来：\(out)")
+                       "abort() inside an upgrade transaction: the background replayed nothing and the database was never created: \(out)")
     }
 
-    // MARK: - 扩展框架里的 UA
+    // MARK: - The UA inside an extension frame
 
-    /// 网页里嵌的扩展 iframe 报的 UA 必须与扩展的另一半（后台 / 扩展自己的页面）一致——
-    /// 网页那份 Safari 伪装不能漏进扩展自己的框架（漏进去时 firebase-auth 这类库会只在 iframe 里
-    /// 走 Safari 专属分支，且那条分支在 MV3 构建里永远不 settle）。网页自己照旧看到伪装
+    /// An extension iframe embedded in a web page has to report the same UA as the rest of the extension (the
+    /// background and the extension's own pages). The Safari spoof meant for web pages must not leak into the
+    /// extension's own frames: when it does, a library like firebase-auth takes its Safari-only branch inside
+    /// the iframe alone, and that branch never settles in an MV3 build. The page itself still sees the spoof.
     @MainActor
     func testEmbeddedExtensionFrameKeepsTheBrowserUserAgent() async throws {
         let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
@@ -1356,30 +1390,32 @@ final class BrowserExtensionCompatTests: XCTestCase {
         host.panes = [pane]
         let tab = try XCTUnwrap(pane.activeTab)
         XCTAssertTrue(tab.webView.configuration.userContentController.userScripts
-            .contains { $0.source.hasPrefix(BrowserExtensionCompat.userAgentMarker) }, "普通标签的配置里带 UA 垫片")
+            .contains { $0.source.hasPrefix(BrowserExtensionCompat.userAgentMarker) }, "an ordinary tab's configuration carries the UA shim")
         _ = await Self.loadBackground(item.context)
         tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
 
         let storedFrameUA = try await Self.storageValue(item, key: "frameUA")
-        let frameUA = try XCTUnwrap(storedFrameUA as? String, "iframe 里的脚本跑完")
+        let frameUA = try XCTUnwrap(storedFrameUA as? String, "the script inside the iframe ran to completion")
         let storedPageUA = try await Self.storageValue(item, key: "pageUA")
         let pageUA = try XCTUnwrap(storedPageUA as? String)
         let evaluated = try await Self.evaluate(item, "return navigator.userAgent;")
         let extensionPageUA = try XCTUnwrap(evaluated as? String)
-        XCTAssertEqual(pageUA, BrowserPaneView.Settings.safariUserAgent, "网页自己照旧拿到伪装的 UA")
-        XCTAssertEqual(frameUA, extensionPageUA, "扩展 iframe 与扩展自己的页面报同一个 UA：\(frameUA)")
-        XCTAssertNotEqual(frameUA, pageUA, "扩展 iframe 不该跟着网页拿到伪装")
+        XCTAssertEqual(pageUA, BrowserPaneView.Settings.safariUserAgent, "the page itself still gets the spoofed UA")
+        XCTAssertEqual(frameUA, extensionPageUA, "the extension iframe and the extension's own pages report one UA: \(frameUA)")
+        XCTAssertNotEqual(frameUA, pageUA, "an extension iframe must not inherit the page's spoof")
         if let backgroundUA = try await Self.storageValue(item, key: "backgroundUA") as? String, !backgroundUA.isEmpty {
-            XCTAssertEqual(frameUA, backgroundUA, "扩展 iframe 与后台报同一个 UA")
+            XCTAssertEqual(frameUA, backgroundUA, "the extension iframe and the background report the same UA")
         }
         let storedAppVersion = try await Self.storageValue(item, key: "frameAppVersion")
         let appVersion = try XCTUnwrap(storedAppVersion as? String)
-        XCTAssertEqual(appVersion, String(frameUA.dropFirst("Mozilla/".count)), "appVersion 跟着一起换")
-        // 兜底值与实测值都对得上时这条才有意义：脚本里写死的 UA 就是扩展另一半看到的那份
-        XCTAssertEqual(BrowserPaneView.webKitUserAgent, extensionPageUA, "实测到的 WebKit UA 与扩展页面一致")
+        XCTAssertEqual(appVersion, String(frameUA.dropFirst("Mozilla/".count)), "appVersion is swapped along with it")
+        // This only means something when the fallback and the measured value agree: the UA hard-coded in the
+        // script is exactly what the other half of the extension sees.
+        XCTAssertEqual(BrowserPaneView.webKitUserAgent, extensionPageUA, "the measured WebKit UA matches the extension page's")
     }
 
-    /// 扩展自己的页面开成标签（选项页 / tabs.create(runtime.getURL(…))）：同样不套网页那份 UA 伪装
+    /// An extension page opened as a tab (the options page, or tabs.create(runtime.getURL(...))) is likewise
+    /// not given the page-side UA spoof.
     @MainActor
     func testExtensionPageTabKeepsTheBrowserUserAgent() async throws {
         let (manager, item) = try await Self.installed(background: nil, files: [:])
@@ -1400,15 +1436,16 @@ final class BrowserExtensionCompatTests: XCTestCase {
         defer { pane.paneWillClose() }
         host.panes = [pane]
         let webTab = try XCTUnwrap(pane.activeTab)
-        XCTAssertEqual(webTab.webView.customUserAgent, BrowserPaneView.Settings.safariUserAgent, "普通标签照旧伪装")
+        XCTAssertEqual(webTab.webView.customUserAgent, BrowserPaneView.Settings.safariUserAgent, "an ordinary tab still spoofs")
         let extensionTab = pane.addTab(url: item.context.baseURL.appendingPathComponent("page.html"), activate: true)
-        XCTAssertNotNil(extensionTab.extensionContext, "扩展页面标签用的是扩展的配置")
-        // 设成 nil 之后 WebKit 的 getter 读回空串：只要不是那份伪装就行
-        XCTAssertTrue(extensionTab.webView.customUserAgent?.isEmpty ?? true, "扩展自己的页面不套网页那份伪装")
+        XCTAssertNotNil(extensionTab.extensionContext, "an extension-page tab uses the extension's configuration")
+        // Once it is set to nil, WebKit's getter reads back an empty string: all that matters is that it is
+        // not the spoof.
+        XCTAssertTrue(extensionTab.webView.customUserAgent?.isEmpty ?? true, "an extension's own page does not wear the page-side spoof")
         pane.applySettings()
-        XCTAssertTrue(extensionTab.webView.customUserAgent?.isEmpty ?? true, "配置热重载之后也不套")
+        XCTAssertTrue(extensionTab.webView.customUserAgent?.isEmpty ?? true, "and still does not after a config hot reload")
         XCTAssertEqual(webTab.webView.customUserAgent, BrowserPaneView.Settings.safariUserAgent)
-        // 真跑一遍：页面里读到的 UA 与扩展自己的页面一致，不是伪装那份
+        // Run it for real: the UA read inside the page matches the extension's own pages, not the spoof.
         let evaluated = try await Self.evaluate(item, "return navigator.userAgent;")
         let extensionPageUA = try XCTUnwrap(evaluated as? String)
         var tabUA: String?
@@ -1419,12 +1456,13 @@ final class BrowserExtensionCompatTests: XCTestCase {
             tabUA = try? await extensionTab.webView.callAsyncJavaScript("return navigator.userAgent;", arguments: [:],
                                                                        in: nil as WKFrameInfo?, contentWorld: .page) as? String
         }
-        XCTAssertEqual(tabUA, extensionPageUA, "扩展页面标签里读到的 UA 与扩展自己的页面一致")
+        XCTAssertEqual(tabUA, extensionPageUA, "the UA read in an extension-page tab matches the extension's own pages")
     }
 
-    /// 扩展页面用 window.open / target=_blank 再开一个扩展页面：WebKit 把开窗方的 configuration 递回来，
-    /// 新标签的扩展绑定必须在 install 之前就位——否则这半边会被当成网页套上 UA 伪装，和扩展另一半又分裂了。
-    /// 网页开的弹窗照旧伪装
+    /// An extension page that opens another extension page with window.open / target=_blank: WebKit hands the
+    /// opener's configuration back, so the new tab's extension binding has to be in place before install runs.
+    /// Otherwise this half is treated as a web page, gets the UA spoof, and splits from the rest of the
+    /// extension all over again. A popup opened by a web page still spoofs.
     @MainActor
     func testExtensionPagePopupKeepsTheBrowserUserAgent() async throws {
         let (manager, item) = try await Self.installed(background: nil, files: [:])
@@ -1449,21 +1487,22 @@ final class BrowserExtensionCompatTests: XCTestCase {
         let opener = pane.addTab(url: pageURL, activate: true)
         XCTAssertNotNil(opener.extensionContext)
 
-        // WebKit 在 createWebViewWith 里递回来的就是开窗方的 configuration（弹窗与开窗方同进程同扩展）
+        // What WebKit hands back in createWebViewWith is the opener's own configuration: the popup shares its
+        // process and its extension.
         let popup = try XCTUnwrap(pane.webView(opener.webView, createWebViewWith: opener.webView.configuration,
                                                for: WKNavigationAction(), windowFeatures: WKWindowFeatures()))
         let popupTab = try XCTUnwrap(pane.tabs.last)
-        XCTAssertTrue(popupTab.webView === popup, "返回的就是新标签的 WebView")
-        XCTAssertTrue(popupTab.extensionContext === item.context, "弹窗跟着开窗方记在同一个扩展名下")
-        XCTAssertTrue(popup.customUserAgent?.isEmpty ?? true, "扩展页开的扩展弹窗不套网页那份伪装")
+        XCTAssertTrue(popupTab.webView === popup, "what comes back is the new tab's WebView")
+        XCTAssertTrue(popupTab.extensionContext === item.context, "the popup is recorded under the same extension as its opener")
+        XCTAssertTrue(popup.customUserAgent?.isEmpty ?? true, "an extension popup opened from an extension page does not wear the spoof")
 
-        // 网页开的弹窗照旧伪装（同一条路径，只是开窗方不是扩展页）
+        // A popup opened by a web page still spoofs: the same code path, just a different opener.
         let webPopup = try XCTUnwrap(pane.webView(webTab.webView, createWebViewWith: webTab.webView.configuration,
                                                   for: WKNavigationAction(), windowFeatures: WKWindowFeatures()))
-        XCTAssertNil(try XCTUnwrap(pane.tabs.last).extensionContext, "网页开的弹窗不属于任何扩展")
-        XCTAssertEqual(webPopup.customUserAgent, BrowserPaneView.Settings.safariUserAgent, "网页开的弹窗照旧伪装")
+        XCTAssertNil(try XCTUnwrap(pane.tabs.last).extensionContext, "a popup opened by a web page belongs to no extension")
+        XCTAssertEqual(webPopup.customUserAgent, BrowserPaneView.Settings.safariUserAgent, "a popup opened by a web page still spoofs")
 
-        // 真跑一遍：弹窗里读到的 UA 与扩展自己的页面一致
+        // Run it for real: the UA read inside the popup matches the extension's own pages.
         let evaluated = try await Self.evaluate(item, "return navigator.userAgent;")
         let extensionPageUA = try XCTUnwrap(evaluated as? String)
         popup.load(URLRequest(url: pageURL))
@@ -1475,7 +1514,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
             popupUA = try? await popup.callAsyncJavaScript("return navigator.userAgent;", arguments: [:],
                                                            in: nil as WKFrameInfo?, contentWorld: .page) as? String
         }
-        XCTAssertEqual(popupUA, extensionPageUA, "扩展弹窗里读到的 UA 与扩展自己的页面一致")
+        XCTAssertEqual(popupUA, extensionPageUA, "the UA read in the extension popup matches the extension's own pages")
     }
 
     final class Host: BrowserExtensionHost {
@@ -1485,17 +1524,18 @@ final class BrowserExtensionCompatTests: XCTestCase {
         func openBrowserWindow(url: URL?) -> BrowserPaneView? { nil }
     }
 
-    // MARK: - externally_connectable（网页 → 扩展）
+    // MARK: - externally_connectable (web page -> extension)
 
-    /// 地址清单来自扩展自己的 manifest；没声明 externally_connectable 的扩展一个模式都不贡献
+    /// The match list comes from the extension's own manifest; an extension that declares no
+    /// externally_connectable contributes no pattern at all.
     func testExternallyConnectableMatchesComeFromManifest() throws {
         let declared = try Self.makeExtension(background: nil, files: [:], manifest: [
             "externally_connectable": ["matches": ["https://*.example.test/*", "*://localhost/*", "", 7]],
         ])
         defer { try? FileManager.default.removeItem(at: declared) }
         XCTAssertEqual(BrowserExtensionCompat.externallyConnectableMatches(in: declared),
-                       ["https://*.example.test/*", "*://localhost/*"], "只取非空字符串")
-        // 垫片改写之后仍然读得到（apply 只动 background）
+                       ["https://*.example.test/*", "*://localhost/*"], "only non-empty strings are taken")
+        // Still readable after the shim rewrite, since apply only touches background.
         XCTAssertTrue(try BrowserExtensionCompat.apply(to: declared))
         XCTAssertEqual(BrowserExtensionCompat.externallyConnectableMatches(in: declared),
                        ["https://*.example.test/*", "*://localhost/*"])
@@ -1509,15 +1549,16 @@ final class BrowserExtensionCompatTests: XCTestCase {
         XCTAssertEqual(BrowserExtensionCompat.externallyConnectableMatches(in: malformed), [])
         XCTAssertEqual(BrowserExtensionCompat.externallyConnectableMatches(in: plain.appendingPathComponent("nope")), [])
 
-        XCTAssertNil(BrowserExtensionCompat.externalMessagingUserScript(matches: []), "没人声明就不注入")
+        XCTAssertNil(BrowserExtensionCompat.externalMessagingUserScript(matches: []), "nobody declared it, so nothing is injected")
         let script = try XCTUnwrap(BrowserExtensionCompat.externalMessagingUserScript(matches: ["b://x/*", "a://y/*", "b://x/*"]))
         XCTAssertTrue(script.source.hasPrefix(BrowserExtensionCompat.externalMessagingMarker))
-        XCTAssertTrue(script.source.contains("[\"a://y/*\",\"b://x/*\"]"), "去重 + 排序：\(script.source.prefix(400))")
+        XCTAssertTrue(script.source.contains("[\"a://y/*\",\"b://x/*\"]"), "deduplicated and sorted: \(script.source.prefix(400))")
         XCTAssertEqual(script.injectionTime, .atDocumentStart)
-        XCTAssertFalse(script.isForMainFrameOnly, "子框架也要（匹配的 iframe 同样能给扩展发消息）")
+        XCTAssertFalse(script.isForMainFrameOnly, "subframes need it too: a matching iframe can message the extension as well")
     }
 
-    /// 网页侧垫片的匹配规则：只在 externally_connectable 命中的地址上定义 chrome，且绝不覆盖页面已有的 chrome
+    /// The matching rule for the page-side shim: define chrome only on addresses externally_connectable
+    /// matches, and never overwrite a chrome the page already has.
     @MainActor
     func testExternalMessagingScriptOnlyDefinesChromeOnMatchingPages() async throws {
         let script = BrowserExtensionCompat.externalMessagingScript(matches: ["https://*.userstyles.test/*",
@@ -1527,7 +1568,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
             ("https://userstyles.test/styles/1", true),
             ("https://www.userstyles.test/", true),
             ("https://evil-userstyles.test/", false),
-            ("http://userstyles.test/", false),          // 模式写死 https
+            ("http://userstyles.test/", false),          // The pattern pins https
             ("http://localhost/x?y=1", true),
             ("https://example.test/", false),
         ]
@@ -1545,10 +1586,10 @@ final class BrowserExtensionCompatTests: XCTestCase {
             XCTAssertEqual(result["send"] as? String, expected ? "function" : "undefined", url)
             if expected {
                 XCTAssertEqual(result["connect"] as? String, "function", url)
-                XCTAssertEqual(result["lastError"] as? String, "undefined", "没出错时 lastError 是 undefined")
+                XCTAssertEqual(result["lastError"] as? String, "undefined", "with no error, lastError is undefined")
             }
         }
-        // 页面自己已经有 chrome：一个字节都不动
+        // The page already has a chrome of its own: do not touch a single byte.
         let kept = try await Self.evaluate(inPage: webView, at: "https://userstyles.test/x", load: "<html><body>p</body></html>", """
         globalThis.browser = { runtime: { sendMessage: () => Promise.resolve("stub") } };
         globalThis.chrome = { marker: true };
@@ -1556,12 +1597,13 @@ final class BrowserExtensionCompatTests: XCTestCase {
         return { marker: chrome.marker === true, runtime: typeof chrome.runtime };
         """)
         let result = try XCTUnwrap(kept as? [String: Any])
-        XCTAssertEqual(result["marker"] as? Bool, true, "不覆盖页面已有的 chrome")
+        XCTAssertEqual(result["marker"] as? Bool, true, "a chrome the page already has is not overwritten")
         XCTAssertEqual(result["runtime"] as? String, "undefined")
     }
 
-    /// 真跑：匹配 externally_connectable 的网页用 `chrome.runtime.sendMessage(<id>, …)` 发消息，
-    /// 后台的 onMessageExternal 收到（sender 正确）并回复；不匹配的网页上根本没有 chrome
+    /// For real: a page matching externally_connectable sends with `chrome.runtime.sendMessage(<id>, ...)`,
+    /// the background's onMessageExternal receives it with the right sender and replies; a page that does not
+    /// match has no chrome at all.
     @MainActor
     func testExternallyConnectablePageMessagesBackground() async throws {
         let (manager, item) = try await Self.installed(background: ["service_worker": "bg.js"], files: [
@@ -1594,7 +1636,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
         let tab = try XCTUnwrap(pane.activeTab)
         XCTAssertTrue(tab.webView.configuration.userContentController.userScripts
             .contains { $0.source.hasPrefix(BrowserExtensionCompat.externalMessagingMarker) },
-            "已装扩展声明了 externally_connectable：普通标签带上网页侧垫片")
+            "an installed extension declares externally_connectable, so an ordinary tab carries the page-side shim")
         _ = await Self.loadBackground(item.context)
 
         tab.webView.loadHTMLString("<html><body>page</body></html>", baseURL: URL(string: "http://example.test/")!)
@@ -1607,27 +1649,28 @@ final class BrowserExtensionCompatTests: XCTestCase {
         return out;
         """, arguments: ["id": item.context.uniqueIdentifier])
         let result = try XCTUnwrap(out as? [String: Any])
-        XCTAssertEqual(result["chrome"] as? String, "object", "网页上补出了 chrome")
+        XCTAssertEqual(result["chrome"] as? String, "object", "chrome was filled in on the page")
         XCTAssertEqual((result["promise"] as? [String: Any])?["pong"] as? String, "sync",
-                       "Promise 形式拿到后台的回复：\(result)")
+                       "the Promise form gets the background's reply: \(result)")
         XCTAssertEqual((result["callback"] as? [String: Any])?["pong"] as? String, "async",
-                       "回调形式 + 异步 sendResponse（return true）：\(result)")
-        XCTAssertNil(tab.lastProcessTerminationAt, "页面进程没被杀")
+                       "the callback form with an async sendResponse (return true): \(result)")
+        XCTAssertNil(tab.lastProcessTerminationAt, "the page process was not killed")
 
         let stored = try await Self.storageValue(item, key: "external")
-        let external = try XCTUnwrap(stored as? [String: Any], "后台的 onMessageExternal 收到了消息")
-        XCTAssertEqual(external["url"] as? String, "http://example.test/", "sender.url 是发消息的网页")
+        let external = try XCTUnwrap(stored as? [String: Any], "the background's onMessageExternal received the message")
+        XCTAssertEqual(external["url"] as? String, "http://example.test/", "sender.url is the page that sent it")
         XCTAssertEqual(external["origin"] as? String, "http://example.test")
 
-        // 同一个标签换到不匹配的地址：垫片什么都不定义
+        // Navigate the same tab to a non-matching address: the shim defines nothing.
         tab.webView.loadHTMLString("<html><body>other</body></html>", baseURL: URL(string: "http://other.test/")!)
         let outside = try await Self.evaluate(inPage: tab.webView, at: "http://other.test/", load: nil,
                                               "return { chrome: typeof chrome };")
         XCTAssertEqual((outside as? [String: Any])?["chrome"] as? String, "undefined",
-                       "externally_connectable 之外的网页拿不到 chrome")
+                       "a page outside externally_connectable gets no chrome")
     }
 
-    /// 扩展是启动后异步装上的：已经开着的标签在 browserExtensionsDidChange 之后要补上网页侧垫片
+    /// Extensions are installed asynchronously after launch, so a tab that is already open has to gain the
+    /// page-side shim once browserExtensionsDidChange fires.
     @MainActor
     func testOpenTabsPickUpBridgeAfterInstall() async throws {
         let store = try Self.makeStore()
@@ -1642,24 +1685,24 @@ final class BrowserExtensionCompatTests: XCTestCase {
         defer { pane.paneWillClose() }
         let marker = BrowserExtensionCompat.externalMessagingMarker
         let scripts = { pane.activeTab?.webView.configuration.userContentController.userScripts ?? [] }
-        XCTAssertFalse(scripts().contains { $0.source.hasPrefix(marker) }, "还没装扩展：不注入")
+        XCTAssertFalse(scripts().contains { $0.source.hasPrefix(marker) }, "no extension installed yet: nothing injected")
 
         let fixture = try Self.makeExtension(background: nil, files: [:],
                                              manifest: ["externally_connectable": ["matches": ["https://x.test/*"]]])
         defer { try? FileManager.default.removeItem(at: fixture) }
         let item = try await manager.install(directory: fixture, id: Self.freshID(), source: .local)
         XCTAssertTrue(scripts().contains { $0.source.hasPrefix(marker) && $0.source.contains("https://x.test/*") },
-                      "装上之后已开着的标签也带上了垫片")
-        XCTAssertEqual(scripts().filter { $0.source.hasPrefix(marker) }.count, 1, "重挂不会叠加")
-        XCTAssertTrue(scripts().contains { $0 === BrowserExtensionCompat.frameUserScript }, "其它注入脚本照旧")
+                      "once installed, a tab that was already open carries the shim too")
+        XCTAssertEqual(scripts().filter { $0.source.hasPrefix(marker) }.count, 1, "re-adding does not stack them up")
+        XCTAssertTrue(scripts().contains { $0 === BrowserExtensionCompat.frameUserScript }, "the other injected scripts are untouched")
 
         manager.setEnabled(false, for: item)
-        XCTAssertFalse(scripts().contains { $0.source.hasPrefix(marker) }, "停用之后撤掉")
+        XCTAssertFalse(scripts().contains { $0.source.hasPrefix(marker) }, "disabling takes it away again")
         manager.remove(item)
         XCTAssertFalse(scripts().contains { $0.source.hasPrefix(marker) })
     }
 
-    /// 旧版本装的扩展（目录里没垫片）：启动加载时补上
+    /// An extension installed by an older version, whose directory has no shim, gets one when it is loaded at launch.
     @MainActor
     func testLoadInstalledAppliesShimToExistingDirectories() async throws {
         let store = try Self.makeStore()
@@ -1671,7 +1714,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
         XCTAssertNil(try Self.manifest(dir)["__quickterm"])
         let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
         await manager.loadInstalled()
-        XCTAssertNotNil(try Self.manifest(dir)["__quickterm"], "loadInstalled 补垫片")
+        XCTAssertNotNil(try Self.manifest(dir)["__quickterm"], "loadInstalled fills in the shim")
         let item = try XCTUnwrap(manager.installed.first)
         let bg = await Self.loadBackground(item.context)
         XCTAssertEqual(bg, "OK")
@@ -1692,7 +1735,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
         return store
     }
 
-    /// 最小 MV3 扩展 + 一个空页面（用来从扩展 origin 读 storage）
+    /// A minimal MV3 extension plus one blank page, used to read storage from the extension's origin.
     private static func makeExtension(background: [String: Any]?, files: [String: String], at location: URL? = nil,
                                       manifest extra: [String: Any] = [:]) throws -> URL {
         let fm = FileManager.default
@@ -1715,8 +1758,9 @@ final class BrowserExtensionCompatTests: XCTestCase {
         return dir
     }
 
-    /// 每个用例一个新 id：后台 worker 的 URL 随 id 变。同一进程里先后在同一个 `webkit-extension://<id>/…-background.js`
-    /// 注册内容不同的 worker，WebKit 会沿用先前那份脚本（缺 /test.js 之类就整个加载失败）
+    /// A fresh id per case: the background worker's URL follows the id. Register two workers with different
+    /// contents one after another at the same `webkit-extension://<id>/...-background.js` inside one process
+    /// and WebKit keeps the earlier script (so a missing /test.js, say, fails the whole load).
     private static func freshID() -> String {
         String(UUID().uuidString.lowercased().filter(\.isLetter).prefix(8)).padding(toLength: 32, withPad: "q", startingAt: 0)
     }
@@ -1747,15 +1791,17 @@ final class BrowserExtensionCompatTests: XCTestCase {
         }
     }
 
-    /// 从扩展自己的页面读 storage.local[key]（后台写入是异步的：轮询到有值为止）
+    /// Read storage.local[key] from the extension's own page (the background writes asynchronously, so poll
+    /// until a value shows up).
     @MainActor
     private static func storageValue(_ item: BrowserExtensionManager.Installed, key: String, timeout: Double = 10) async throws -> Any? {
         try await evaluate(item, "const v = await new Promise(r => chrome.storage.local.get([key], r)); return v[key] === undefined ? null : v[key];",
                            arguments: ["key": key], timeout: timeout)
     }
 
-    /// 在一个**网页**（page world）里跑一段 async 脚本：`load` 非空时先把它当作 `at` 地址的内容加载，
-    /// 然后等到那个地址加载完再求值（换页之后不能求值在旧页面上）
+    /// Run an async script inside a **web page** (the page world): when `load` is non-nil it is first loaded as
+    /// the content of the `at` address, and evaluation waits for that address to finish loading, so nothing is
+    /// ever evaluated against the previous page.
     @MainActor
     private static func evaluate(inPage webView: WKWebView, at url: String, load html: String?, _ script: String,
                                  arguments: [String: Any] = [:], timeout: Double = 15) async throws -> Any? {
@@ -1771,7 +1817,7 @@ final class BrowserExtensionCompatTests: XCTestCase {
         return nil
     }
 
-    /// 在扩展自己的页面（page.html）里跑一段 async 脚本，轮询到返回非空为止
+    /// Run an async script inside the extension's own page (page.html), polling until it returns non-null.
     @MainActor
     private static func evaluate(_ item: BrowserExtensionManager.Installed, _ script: String,
                                  arguments: [String: Any] = [:], timeout: Double = 10) async throws -> Any? {

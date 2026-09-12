@@ -1,18 +1,21 @@
 import AppKit
 
-/// 「安装 quickterm 命令行工具…」菜单项。
-/// 安装逻辑只有一份——就在随包的 `quickterm` 二进制里（`install-cli` 子命令），
-/// 这里只是把它跑一遍并把结果显示出来。在 app 里再写一份必然与 CLI 那份漂移。
+/// The "Install quickterm Command Line Tool..." menu item.
+/// There is exactly one copy of the install logic: it lives in the bundled `quickterm` binary (the
+/// `install-cli` subcommand), and this only runs it and shows the result. A second copy inside the
+/// app would inevitably drift away from the CLI's.
 @MainActor
 extension AppDelegate {
-    /// 随包 CLI 的位置：`QuickTerm.app/Contents/SharedSupport/quickterm`。
-    /// **不能**放 Contents/MacOS —— APFS 默认大小写不敏感，`quickterm` 会覆盖掉主可执行文件 `QuickTerm`
+    /// Where the bundled CLI lives: `QuickTerm.app/Contents/SharedSupport/quickterm`.
+    /// It **cannot** go in Contents/MacOS: APFS is case-insensitive by default, so `quickterm`
+    /// would overwrite the main executable `QuickTerm`.
     static var bundledCLIURL: URL? {
         Bundle.main.sharedSupportURL?.appendingPathComponent("quickterm")
     }
 
-    /// 「控制面活动…」：把最近的控制命令摊开给用户看。
-    /// `mutate` 类命令不弹框、不问人——用户能查到它们，是这条设计成立的前提
+    /// "Control Plane Activity...": lays the recent control commands out for the user.
+    /// `mutate` commands put up no dialog and ask no one - the user being able to look them up
+    /// afterwards is the precondition that makes that design defensible.
     @objc func controlActivityAction(_ sender: Any?) {
         let entries = ControlActivityLog.shared.recent(40)
         let alert = NSAlert()

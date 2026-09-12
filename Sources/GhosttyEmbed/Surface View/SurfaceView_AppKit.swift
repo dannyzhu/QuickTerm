@@ -7,7 +7,8 @@ import GhosttyKit
 
 extension Ghostty {
     /// The NSView implementation for a terminal surface.
-    // QuickTerm：继承 PaneView（id / focused / 焦点补丁 / 存档分发都在基类）
+    // QuickTerm: inherits PaneView; id / focused / the focus fixups / archive dispatch all live in
+    // the base class.
     class SurfaceView: PaneView, Codable {
 
         // The current title of the surface as defined by the pty. This can be
@@ -30,33 +31,42 @@ extension Ghostty {
 
         // QuickTerm: the working directory this surface was created with (archive restore,
         // inherited cwd, file-manager panes). `pwd` stays nil until the shell emits OSC 7 at
-        // its first prompt, so this is the archive fallback -- a debounced save must never
+        // its first prompt, so this is the archive fallback — a debounced save must never
         // downgrade a directory we already know to null.
         private let initialWorkingDirectory: String?
 
-        /// QuickTerm：被 TCC 守卫挡下来的那个存档目录（见 `WorkingDirectoryGate`）。
-        /// 挡下来之后 shell 实际起在引擎的默认目录（家目录），几毫秒后就会用 OSC 7 报回来，
-        /// 把它写进存档等于**悄悄把用户存的目录改成家目录**（下次启动就再也回不去了）。
-        /// 所以：只要这个 pane 还待在引擎给的那个回退目录里，存档里就继续留原来的路径
+        /// QuickTerm: the archived directory that the TCC gate refused (see `WorkingDirectoryGate`).
+        /// After a refusal the shell actually starts in the engine's default directory (the home
+        /// directory) and reports that back over OSC 7 a few milliseconds later. Writing that into
+        /// the archive would **quietly rewrite the directory the user saved into the home
+        /// directory**, and the next launch would never find its way back. So: for as long as this
+        /// pane is still sitting in the fallback directory the engine handed it, the archive keeps
+        /// the original path.
         private var deniedWorkingDirectory: String?
-        /// 引擎回退到哪儿了（被挡下来之后的第一次 OSC 7）。之后再报到别的目录 = 用户真的 `cd` 走了，
-        /// 那一刻就该照常存实际位置
+        /// Where the engine fell back to (the first OSC 7 after the refusal). A later report of a
+        /// different directory means the user really did `cd` away, and from that moment on we save
+        /// the real location as usual.
         private var deniedFallbackPwd: String?
 
-        /// spawn 那一刻真正交给引擎的环境变量（含控制面那几个）。只读，留给用例与排障：
-        /// 「复原出来的 pane 到底有没有拿到 QUICKTERM_SOCKET」是没法从子进程里回看的
+        /// The environment variables actually handed to the engine at spawn time, the control-plane
+        /// ones included. Read-only, kept for tests and for debugging: "did the restored pane
+        /// actually get QUICKTERM_SOCKET" is not a question you can answer from inside the child
+        /// process.
         private(set) var initialEnvironment: [String: String] = [:]
 
-        /// OSC 7（或显式种入）报回来一个 pwd：判断这个 pane 是不是还停在被挡下来的回退目录里
+        /// A pwd came back from OSC 7 (or was seeded explicitly): work out whether this pane is
+        /// still parked in the fallback directory the refusal pushed it into.
         private func noteWorkingDirectoryReport() {
             guard let denied = deniedWorkingDirectory, let pwd else { return }
             guard let fallback = deniedFallbackPwd else {
                 deniedFallbackPwd = pwd
-                // 有人显式把想要的目录种回来了（文件管理器 pane / 控制面）：不存在降级
+                // Someone seeded the wanted directory back explicitly (a file-manager pane, or the
+                // control plane): there is no downgrade to guard against.
                 if pwd == denied { clearDeniedWorkingDirectory() }
                 return
             }
-            // 从回退目录挪走了 = 用户真的 `cd` 了：从这里起照常存实际位置
+            // Moved off the fallback directory means the user really did `cd`: from here on, save
+            // the real location as usual.
             if pwd != fallback { clearDeniedWorkingDirectory() }
         }
 
@@ -205,15 +215,18 @@ extension Ghostty {
             }
         }
 
-        /// QuickTerm：子进程退出即由控制器关闭（文件管理器 pane）。引擎对带 command 的 surface
-        /// 强制 wait-after-command，退出后只发 SHOW_CHILD_EXITED 动作，见 Ghostty.App.showChildExited。
+        /// QuickTerm: the controller closes the pane as soon as the child process exits
+        /// (file-manager panes). The engine forces wait-after-command on any surface carrying a
+        /// command, so on exit it only fires the SHOW_CHILD_EXITED action; see
+        /// Ghostty.App.showChildExited.
         var closesOnChildExit = false
 
-        // MARK: - PaneView（QuickTerm）
+        // MARK: - PaneView (QuickTerm)
 
         override class var kind: PaneKind { .terminal }
         override var paneTitle: String { title }
-        // QuickTerm：边框上的标题只认"被接管"这一状态——shell 用 OSC 报的标题不算数
+        // QuickTerm: the title on the border honors only the "taken over" state; a title the shell
+        // reports over OSC does not count.
         override var customTitle: String? { hasControlTitle ? title : nil }
         // QuickTerm: before the shell reports OSC 7, inherit the directory we started it with
         // rather than nil (which would silently open a new terminal in $HOME).
@@ -270,7 +283,7 @@ extension Ghostty {
         var notificationIdentifiers: Set<String> = []
 
         private var markedText: NSMutableAttributedString
-        // QuickTerm：`focused` 在基类 PaneView（只由 focusDidChange 驱动）
+        // QuickTerm: `focused` lives on the base class PaneView, driven only by focusDidChange
         private var prevPressureStage: Int = 0
         private var appearanceObserver: NSKeyValueObservation?
 
@@ -294,11 +307,13 @@ extension Ghostty {
         // the terminal title as the main title property. If the title is set manually
         // by the user, this is set to the prior value (which may be empty, but non-nil).
         //
-        // QuickTerm：「标题被接管了吗」这一位本身就得发变更。它能在可见标题一个字没改的
-        // 情况下翻转——把标题钉成 shell 此刻正在报的那个值（拿目录名当 pane 名很常见）时，
-        // `title` 纹丝不动，@Published 于是一声不吭，边框上的标题就永远不出现；
-        // 反过来交还给 shell 时也一样。只在 nil 与非 nil 之间翻转时发，
-        // 免得钉住期间 shell 每报一次标题（只更新这份备份）都白刷一次视图
+        // QuickTerm: the "is the title taken over" bit has to publish a change of its own. It can
+        // flip without a single character of the visible title changing: pin the title to exactly
+        // what the shell is reporting right now (using the directory name as the pane name is
+        // common) and `title` does not move, so @Published stays silent and the title on the border
+        // never appears. Handing it back to the shell has the same problem in reverse. Only send on
+        // a flip between nil and non-nil, so that while the title is pinned, every title the shell
+        // reports (which only updates this backup copy) does not redraw the view for nothing.
         private var titleFromTerminal: String? {
             willSet {
                 guard (titleFromTerminal == nil) != (newValue == nil) else { return }
@@ -319,9 +334,11 @@ extension Ghostty {
         init(_ app: ghostty_app_t, baseConfig: SurfaceConfiguration? = nil, uuid: UUID? = nil) {
             self.markedText = NSMutableAttributedString()
             self.initialWorkingDirectory = baseConfig?.workingDirectory
-            // 守卫会挡下来吗？（结果按根目录记忆，这里不会多付一次探测代价）
-            // 挡下来的话记住原路径：`encode` 存它而不是引擎的回退目录，否则用户存档里的
-            // ~/Documents / ~/Desktop / ~/Downloads 会在第一次存档时被改写成家目录
+            // Will the gate refuse it? The result is memoized per root directory, so this does not
+            // pay for an extra probe.
+            // If it does refuse, remember the original path: `encode` saves that instead of the
+            // engine's fallback directory, otherwise a ~/Documents / ~/Desktop / ~/Downloads in the
+            // user's archive gets rewritten to the home directory on the very first save.
             self.deniedWorkingDirectory = (baseConfig?.workingDirectory)
                 .flatMap { WorkingDirectoryGate.usable($0) == nil ? $0 : nil }
             self.initialEnvironment = baseConfig?.environmentVariables ?? [:]
@@ -460,8 +477,10 @@ extension Ghostty {
 
             // Setup our surface. This will also initialize all the terminal IO.
             let surface_cfg = baseConfig ?? SurfaceConfiguration()
-            // QuickTerm：先登记存活再建 surface——ghostty_surface_new 内部就会同步回调
-            // （set_cell_size 等），守卫查表时视图必须已在册，否则首个回调被当悬垂丢掉。
+            // QuickTerm: register as live before creating the surface — ghostty_surface_new calls
+            // back synchronously from inside itself (set_cell_size and friends), so the view has to
+            // already be in the registry when the guard checks it, or that first callback gets
+            // thrown away as dangling.
             Ghostty.App.registerLive(self)
             let surface = surface_cfg.withCValue(view: self) { surface_cfg_c in
                 ghostty_surface_new(app, &surface_cfg_c)
@@ -472,10 +491,12 @@ extension Ghostty {
             }
             self.surfaceModel = Ghostty.Surface(cSurface: surface)
 
-            // QuickTerm：libghostty 新建 surface 的焦点默认为 true，而本视图的 `focused` 初值为 false
-            // （仅由 become/resignFirstResponder 驱动）。从未获焦的 surface 永远收不到
-            // set_focus(false)，引擎会一直按"有焦点"画实心闪烁光标（状态恢复后 4 个 pane 全闪）。
-            // 这里先对齐为未聚焦；首次 becomeFirstResponder 再置 true。
+            // QuickTerm: libghostty creates a surface with focus defaulting to true, while this
+            // view's `focused` starts out false (driven only by become/resignFirstResponder). A
+            // surface that never gains focus therefore never receives set_focus(false), and the
+            // engine keeps drawing the solid blinking cursor as if it were focused (after a state
+            // restore, all 4 panes blink at once). Line them up as unfocused here; the first
+            // becomeFirstResponder sets it back to true.
             ghostty_surface_set_focus(surface, false)
 
             // Setup our tracking area so we get mouse moved events
@@ -490,7 +511,8 @@ extension Ghostty {
         }
 
         deinit {
-            Ghostty.App.unregisterLive(self)   // 先注销：之后任何引擎回调都不得再取回本视图
+            // unregister first: no engine callback may recover this view from here on
+            Ghostty.App.unregisterLive(self)
             // Remove all of our notificationcenter subscriptions
             let center = NotificationCenter.default
             center.removeObserver(self)
@@ -520,7 +542,7 @@ extension Ghostty {
         override func focusDidChange(_ focused: Bool) {
             guard let surface = self.surface else { return }
             guard self.focused != focused else { return }
-            super.focusDidChange(focused)   // QuickTerm：标志 + objectWillChange 在基类
+            super.focusDidChange(focused)   // QuickTerm: flag + objectWillChange live in the base class
 
             // If we lost our focus then remove the mouse event suppression so
             // our mouse release event leaving the surface can properly be
@@ -696,18 +718,22 @@ extension Ghostty {
             }
         }
 
-        /// QuickTerm 控制面：**绝对设值**的标题（`quickterm pane set --title`）。
+        /// QuickTerm control plane: set the title **absolutely** (`quickterm pane set --title`).
         ///
-        /// 与右键那个「Change Terminal Title」落到同一处状态（`titleFromTerminal` 非 nil
-        /// = 用户接管了标题，引擎之后报的标题只更新那份备份、不再改可见标题），
-        /// 但有两处刻意的不同：
-        /// - **同步**。`setTitle` 为了消抖排了一个 75ms 的定时器；一条命令行命令返回时
-        ///   标题必须已经是新的，否则紧接着的 `state` 读回来的还是旧值。
-        /// - **可重放**。连设两次自定义标题时不覆盖那份备份，所以 `--title ""`
-        ///   还原的永远是 shell 最初报的那个，而不是上一次的自定义值
-        ///   （右键那条路会把备份覆盖成自定义值——那是上游的行为，这里不照抄）。
+        /// It lands on the same state as the "Change Terminal Title" context-menu item
+        /// (`titleFromTerminal` non-nil = the user has taken the title over, and titles the engine
+        /// reports afterwards only update that backup copy instead of the visible title), with two
+        /// deliberate differences:
+        /// - **Synchronous**. `setTitle` schedules a 75ms timer to debounce; by the time a
+        ///   command-line command returns, the title has to already be the new one, or a `state`
+        ///   read right after it still comes back with the old value.
+        /// - **Replayable**. Setting a custom title twice in a row does not overwrite the backup, so
+        ///   `--title ""` always restores what the shell reported originally rather than the
+        ///   previous custom value (the context-menu path does overwrite the backup with the custom
+        ///   value — that is upstream's behavior and we deliberately do not copy it).
         ///
-        /// `nil` / 空串 = 交还给 shell。返回值：标题真的变了吗
+        /// `nil` or an empty string hands the title back to the shell. The return value says whether
+        /// the title actually changed.
         @discardableResult
         func setControlTitle(_ wanted: String?) -> Bool {
             titleChangeTimer?.invalidate()
@@ -716,14 +742,16 @@ extension Ghostty {
                 if titleFromTerminal == nil { titleFromTerminal = title }
                 title = wanted
             } else {
-                guard let shellTitle = titleFromTerminal else { return false }   // 本来就没被接管
+                // it was never taken over in the first place
+                guard let shellTitle = titleFromTerminal else { return false }
                 titleFromTerminal = nil
                 title = shellTitle.isEmpty ? "👻" : shellTitle
             }
             return title != before
         }
 
-        /// 标题此刻被用户 / 控制面接管了吗（`pane set --title ""` 的幂等判定要它）
+        /// Has the title been taken over right now, by the user or by the control plane? The
+        /// idempotency check in `pane set --title ""` needs it.
         var hasControlTitle: Bool { titleFromTerminal != nil }
 
         func setTitle(_ title: String) {
@@ -770,8 +798,9 @@ extension Ghostty {
             let location = convert(event.locationInWindow, from: nil)
             guard hitTest(location) == self else { return event }
 
-            // QuickTerm：hitTest 只测自己的子树，不感知浮动兄弟遮挡——
-            // 被浮动 pane 盖住时不得转移焦点（否则下层 pane 抢走浮动 pane 的点击）
+            // QuickTerm: hitTest only tests our own subtree and knows nothing about a floating
+            // sibling covering us — while a floating pane is on top, focus must not transfer, or
+            // the pane underneath steals the floating pane's click.
             if let controller = window.windowController as? BaseTerminalController,
                controller.surfaceIsOccluded(self, at: event.locationInWindow) {
                 return event
@@ -792,9 +821,11 @@ extension Ghostty {
             // get forwarded to the terminal as a mouse click.
             if NSApp.isActive && window.isKeyWindow {
                 window.makeFirstResponder(self)
-                // QuickTerm：按着 ⌘ 的这一下不只是"转移焦点"——它要触发 open_url（⌘+点击链接）。
-                // 吞掉的话，点一个还没聚焦的 pane 里的链接就石沉大海（⌘ 拖拽源浮层靠这次按下
-                // 记 pendingClick，抬起时才补送 PRESS/RELEASE，收不到就整个丢掉）
+                // QuickTerm: a click with Cmd held is not just "transfer focus" — it has to trigger
+                // open_url (Cmd+clicking a link). Swallow it and clicking a link in a pane that does
+                // not have focus yet goes nowhere: the Cmd drag-source overlay records pendingClick
+                // on this press and only replays PRESS/RELEASE on mouse-up, so if it never sees the
+                // press the whole thing is lost.
                 if event.modifierFlags.contains(.command) { return event }
                 suppressNextLeftMouseUp = true
                 return nil
@@ -921,28 +952,32 @@ extension Ghostty {
 
         // MARK: - NSView
 
-        // QuickTerm：becomeFirstResponder / resignFirstResponder / 脱离窗口后夺回焦点
-        // 都在基类 PaneView（对所有 pane 类型通用）。
+        // QuickTerm: becomeFirstResponder / resignFirstResponder / reclaiming focus after leaving
+        // the window all live in the base class PaneView, shared by every pane type.
 
-        /// QuickTerm：最近一次 backing 变更时采用的窗口 scale（多屏幕混合 DPI 的可观测点）。
-        /// 0 = 还没挂进任何窗口
+        /// QuickTerm: the window scale adopted at the most recent backing change; the observable
+        /// hook for mixed-DPI multi-screen setups. 0 = never attached to a window yet.
         private(set) var appliedBackingScale: CGFloat = 0
 
-        /// QuickTerm：`viewDidMoveToWindow` 主动补发 backing 变更的次数（测试用）。
-        /// AppKit 自己也会在插入窗口时发一次 `viewDidChangeBackingProperties`，光看
-        /// `appliedBackingScale` 分不出下面那段纠正到底跑没跑
+        /// QuickTerm: how many times `viewDidMoveToWindow` has pushed a backing change itself (for
+        /// tests). AppKit also fires `viewDidChangeBackingProperties` once on insertion into a
+        /// window, so `appliedBackingScale` alone cannot tell you whether the correction below
+        /// actually ran.
         private(set) var mountBackingRefreshCount = 0
 
-        /// QuickTerm：多屏幕——surface 是在 init 里建的，那时视图还不在任何窗口上，
-        /// scale_factor 只能按主显示器种（见 SurfaceConfiguration.seedScaleFactor）。挂进窗口后
-        /// 主动补一次 display id + backing 变更，让第二台显示器（不同 DPI）上的新 pane 拿到正确缩放。
-        /// AppKit 只在 backing 属性**变化**时才发 viewDidChangeBackingProperties，nil → 窗口这一步
-        /// 不保证会发（引擎 issue 2731 是同一类问题）
+        /// QuickTerm: multi-screen. The surface is created in init, when the view is not on any
+        /// window yet, so scale_factor can only be seeded from the main display (see
+        /// SurfaceConfiguration.seedScaleFactor). Once we are attached to a window, push a display
+        /// id and a backing change ourselves so that a new pane on a second display (different DPI)
+        /// gets the right scale. AppKit only fires viewDidChangeBackingProperties when a backing
+        /// property actually **changes**, and the nil -> window transition is not guaranteed to
+        /// produce one (engine issue 2731 is the same class of problem).
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard let window else { return }
             if let surface { ghostty_surface_set_display_id(surface, window.screen?.displayID ?? 0) }
-            // 异步：此刻视图刚进层级，SwiftUI 还没走完布局；等这一轮 runloop 结束再取 frame
+            // Async: the view has only just entered the hierarchy and SwiftUI has not finished
+            // laying out yet; wait for this runloop turn to end before reading the frame.
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.window === window else { return }
                 self.mountBackingRefreshCount += 1
@@ -994,12 +1029,13 @@ extension Ghostty {
                 CATransaction.setDisableActions(true)
                 layer?.contentsScale = window.backingScaleFactor
                 CATransaction.commit()
-                appliedBackingScale = window.backingScaleFactor   // QuickTerm：多屏幕缩放的可观测点
+                appliedBackingScale = window.backingScaleFactor   // QuickTerm: multi-screen scale hook
             }
 
             guard let surface = self.surface else { return }
 
-            // QuickTerm：零尺寸时不算缩放（0/0 = NaN 会被送进引擎）。挂进窗口那一刻可能还没布局
+            // QuickTerm: do not compute a scale at zero size (0/0 = NaN, and it would be handed to
+            // the engine). At the moment we are attached to a window, layout may not have run yet.
             guard self.frame.width > 0, self.frame.height > 0 else { return }
 
             // Detect our X/Y scale factor so we can update our surface
@@ -1013,10 +1049,12 @@ extension Ghostty {
             setSurfaceSize(width: UInt32(scaledSize.width), height: UInt32(scaledSize.height))
         }
 
-        /// QuickTerm：测试用——真正送进引擎的左键按下 / 抬起次数（拖拽源浮层、浮动会话的点击穿透）
+        /// QuickTerm: for tests — how many left-button presses / releases actually reached the
+        /// engine (the drag-source overlay, and click-through on a floating session).
         private(set) var leftPressCountForTesting = 0
         private(set) var leftReleaseCountForTesting = 0
-        /// QuickTerm：测试用——真正送进引擎的滚轮次数（⌘ 拖拽源浮层不得吞掉滚轮）
+        /// QuickTerm: for tests — how many scroll events actually reached the engine (the Cmd
+        /// drag-source overlay must not swallow the wheel).
         private(set) var scrollCountForTesting = 0
 
         override func mouseDown(with event: NSEvent) {
@@ -1098,8 +1136,9 @@ extension Ghostty {
         }
 
         override func mouseEntered(with event: NSEvent) {
-            // QuickTerm：被浮动层/遮罩盖住时不响应 hover（模型几何判定，
-            // 见 HoverOcclusion；进入状态由 mouseMoved 在脱离遮挡时补齐）
+            // QuickTerm: do not react to hover while covered by a floating layer or overlay (a
+            // geometry test against the model; see HoverOcclusion). The entered state is filled in
+            // by mouseMoved once we come out from under the occlusion.
             if let controller = window?.windowController as? BaseTerminalController,
                controller.surfaceIsOccluded(self, at: event.locationInWindow) { return }
             mouseOverSurface = true
@@ -1144,16 +1183,19 @@ extension Ghostty {
         }
 
         override func mouseMoved(with event: NSEvent) {
-            // QuickTerm：hover（纯移动）不投递给被浮动层盖住的 surface；
-            // 拖拽序列（mouseDragged 转发进来，type != .mouseMoved）照常，
-            // 否则选中文本拖出 pane 边界会被截断。
+            // QuickTerm: a hover (pure movement) is not delivered to a surface covered by a
+            // floating layer. A drag sequence (forwarded in from mouseDragged, so
+            // type != .mouseMoved) is delivered as usual, otherwise dragging a text selection past
+            // the pane's edge gets cut off.
             if event.type == .mouseMoved,
                let controller = window?.windowController as? BaseTerminalController,
                controller.surfaceIsOccluded(self, at: event.locationInWindow) {
-                // tracking area 不因兄弟遮挡发 mouseExited——合成一次离开，
-                // 否则 core 的悬停坐标冻结在遮挡边界（TUI hover 高亮滞留）。
-                // mouseLocationInSurface 兜底：拖拽出框松开后 over 已 false
-                // 但 core 坐标仍停在拖拽末点，同样需要清理。
+                // A tracking area does not fire mouseExited just because a sibling covers us, so
+                // synthesize one exit; otherwise core's hover coordinate freezes at the occlusion
+                // boundary and a TUI's hover highlight stays stuck there.
+                // mouseLocationInSurface is the backstop: after a drag out of the frame and a
+                // release, `over` is already false but core's coordinate is still parked at the
+                // last drag point, which needs the same cleanup.
                 if mouseOverSurface || mouseLocationInSurface != nil {
                     mouseOverSurface = false
                     mouseLocationInSurface = nil
@@ -1165,7 +1207,8 @@ extension Ghostty {
                 return
             }
             if event.type == .mouseMoved, !mouseOverSurface {
-                mouseOverSurface = true  // 曾在遮挡下滑入，mouseEntered 被吞——补进入状态
+                // we slid in while occluded, so mouseEntered was swallowed: fill the state in now
+                mouseOverSurface = true
             }
             let pos = self.convert(event.locationInWindow, from: nil)
             mouseLocationInSurface = pos
@@ -1180,7 +1223,7 @@ extension Ghostty {
             )
             surfaceModel.sendMousePos(mouseEvent)
 
-            // Handle focus-follows-mouse（QuickTerm：通用逻辑在 PaneView）
+            // Handle focus-follows-mouse (QuickTerm: the shared logic lives in PaneView)
             hoverFocusIfNeeded()
         }
 
@@ -1372,7 +1415,7 @@ extension Ghostty {
         /// For command+key inputs, the AppKit input stack calls performKeyEquivalent to give us a chance
         /// to handle them first. If we return "false" then it goes through the standard AppKit responder chain.
         /// For an NSTextInputClient, that may redirect some commands _before_ our keyDown gets called.
-        /// Concretely: Command+Period will do: performKeyEquivalent, doCommand ("cancel:"). In doCommand,
+        /// Concretely: Cmd+Period will do: performKeyEquivalent, doCommand ("cancel:"). In doCommand,
         /// we need to know that we actually want to handle that in keyDown, so we send it back through the
         /// event dispatch system and use this timestamp as an identity to know to actually send it to keyDown.
         ///
@@ -1661,13 +1704,15 @@ extension Ghostty {
             // in a row without storing it all.
             var item: NSMenuItem
 
-            // QuickTerm：只保留用户要的几项——分屏与检查器在快捷键 / 菜单里都有，
-            // 右键菜单留短一点。AutoFill 与 Services 是 AppKit 自动追加的，不在这里加
+            // QuickTerm: keep only the handful of items the user asked for — splits and the
+            // inspector are already on shortcuts and in the menu bar, so the context menu stays
+            // short. AutoFill and Services are appended by AppKit itself and are not added here.
             let selection = self.accessibilitySelectedText()
             if let text = selection, !text.isEmpty {
                 menu.addItem(withTitle: L("terminal.menu.copy"), action: #selector(copy(_:)), keyEquivalent: "")
-                // QuickTerm：拿选中的文字去搜索，落在**最近用过的浏览器 pane** 的新标签里
-                // （没有浏览器 pane 就开一个），而不是跳去系统默认浏览器
+                // QuickTerm: search for the selected text in a new tab of the **most recently used
+                // browser pane** (opening one if there is no browser pane yet), rather than jumping
+                // out to the system default browser.
                 item = menu.addItem(withTitle: Self.searchMenuTitle(for: text),
                                     action: #selector(searchSelectionInBrowserPane(_:)), keyEquivalent: "")
                 item.setImageIfDesired(systemSymbolName: "magnifyingglass")
@@ -1689,8 +1734,9 @@ extension Ghostty {
 
         // MARK: Menu Handlers
 
-        /// QuickTerm：搜索菜单项的标题。引擎名从 `browser-search` 模板的域名里取
-        /// （用户把模板换成别家时标题不会继续谎称 Google），选中的文字截断后附在后面
+        /// QuickTerm: the title of the search menu item. The engine name comes from the host in the
+        /// `browser-search` template, so when the user points the template at someone else the title
+        /// stops claiming it is Google. The selected text is truncated and appended after it.
         static func searchMenuTitle(for text: String) -> String {
             let host = URL(string: BrowserPaneView.settings.search
                 .replacingOccurrences(of: "%s", with: "q"))?.host?.lowercased() ?? ""
@@ -1706,14 +1752,16 @@ extension Ghostty {
             return L("terminal.menu.search-selection", engine, String(shown))
         }
 
-        /// QuickTerm：把选中的文字丢进最近用过的浏览器 pane 搜索（新标签）。
-        /// 这里**一律当成搜索词**，不走地址栏那套「像域名就直接打开」的判断——
-        /// 菜单项写着 Search，选中 `github.com/x` 时用户要的是搜索结果而不是跳转
+        /// QuickTerm: search for the selected text in the most recently used browser pane, in a new
+        /// tab. It is **always treated as a search term** here; we deliberately do not run the
+        /// address bar's "looks like a domain, so just open it" heuristic — the menu item says
+        /// Search, so with `github.com/x` selected the user wants search results, not navigation.
         @IBAction func searchSelectionInBrowserPane(_ sender: Any?) {
             guard let text = self.accessibilitySelectedText(),
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   let url = BrowserPaneView.settings.searchURL(for: text) else { return }
-            // 控制器不接管（link-opener = system）时退回系统浏览器，与 ⌘+点链接同一条语义
+            // If the controller declines (link-opener = system), fall back to the system browser:
+            // the same semantics as Cmd+clicking a link.
             if controller?.openLink(url, from: self) != true {
                 NSWorkspace.shared.open(url)
             }
@@ -1970,9 +2018,10 @@ extension Ghostty {
             let uuid = UUID(uuidString: try container.decode(String.self, forKey: .uuid))
             var config = Ghostty.SurfaceConfiguration()
             config.workingDirectory = try container.decode(String?.self, forKey: .pwd)
-            // QuickTerm: 复原出来的 pane 也要拿到控制面环境变量，否则重启之后
-            // pane 里的 agent 就没有 QUICKTERM_PANE / SOCKET 可用了。
-            // 这里还不知道它会落到哪块屏幕的哪个工作区（灌档在之后），所以只注入跟着 pane 走的那几个
+            // QuickTerm: a restored pane needs the control-plane environment variables too, or
+            // after a restart an agent running inside the pane has no QUICKTERM_PANE / SOCKET to
+            // use. We do not know yet which workspace on which screen it will land in (the archive
+            // is applied later), so only inject the ones that travel with the pane itself.
             if let uuid {
                 config.environmentVariables = ControlEnvironment.inject(
                     into: config.environmentVariables, paneID: uuid, screen: nil, workspace: nil)
@@ -1996,8 +2045,9 @@ extension Ghostty {
             var container = encoder.container(keyedBy: CodingKeys.self)
             // QuickTerm: fall back to the configured start directory while the shell has not
             // reported OSC 7 yet, so a save that lands during shell startup keeps the cwd.
-            // `deniedWorkingDirectory` 优先于 `pwd`：TCC 挡下来的那一次，`pwd` 是引擎的回退
-            // 目录（家目录），存它等于把用户存的目录抹掉。见 `noteWorkingDirectoryReport`
+            // `deniedWorkingDirectory` wins over `pwd`: on the run where TCC refused, `pwd` is the
+            // engine's fallback directory (the home directory), and saving that erases the directory
+            // the user had. See `noteWorkingDirectoryReport`.
             try container.encode(deniedWorkingDirectory ?? pwd ?? initialWorkingDirectory, forKey: .pwd)
             try container.encode(id.uuidString, forKey: .uuid)
             try container.encode(title, forKey: .title)
@@ -2240,7 +2290,8 @@ extension Ghostty.SurfaceView: NSTextInputClient {
 
 // https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/SysServices/Articles/using.html
 extension Ghostty.SurfaceView: NSServicesMenuRequestor {
-    /// QuickTerm：是否把终端交给系统服务（Services 菜单）。关掉 = Services 整个消失
+    /// QuickTerm: whether to expose the terminal to system services (the Services menu). Off means
+    /// Services disappears entirely.
     fileprivate static let servicesEnabled = false
 
     override func validRequestor(
@@ -2256,10 +2307,13 @@ extension Ghostty.SurfaceView: NSServicesMenuRequestor {
         // but get requested an image (we can't handle that at the time of writing this),
         // so we must bubble up.
 
-        // QuickTerm：不做服务请求者 → 右键菜单与菜单栏里都不再出现 Services。
-        // Services 的内容由系统填充、无法按条过滤，而其中的 "Search With Google" 会跳去系统默认
-        // 浏览器，与本应用「落到浏览器 pane」的语义冲突。AutoFill 走 NSTextInputClient，不受影响。
-        // 想恢复系统服务把这个开关改回 true 即可（下面是 Ghostty 的原实现，一行未动）
+        // QuickTerm: not being a services requestor means Services no longer shows up in the
+        // context menu or the menu bar. The contents of Services are filled in by the system and
+        // cannot be filtered item by item, and the "Search With Google" entry in there jumps to the
+        // system default browser, which contradicts this app's "land it in a browser pane"
+        // semantics. AutoFill goes through NSTextInputClient and is unaffected.
+        // To bring system services back, flip this switch to true (what follows is Ghostty's
+        // original implementation, unchanged).
         if !Self.servicesEnabled {
             return super.validRequestor(forSendType: sendType, returnType: returnType)
         }

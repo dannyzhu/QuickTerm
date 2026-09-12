@@ -1,14 +1,16 @@
 import XCTest
 @testable import QuickTerm
 
-/// Phase 5：MCP 工具表与 stdio 服务。
+/// Phase 5: the MCP tool table and the stdio server.
 ///
-/// 这一组用例守的是一件事：**工具表是从命令表生成的，不是手写的**。
-/// 手写的那一份两个版本之内必然漂移，而漂移的代价全部由 agent 承担——
-/// 它拿着过期的 schema 发调用，收到自己解释不了的错误，然后开始瞎试。
-/// 所以这里逐条钉死：每个工具背后的命令都查得到、注解与安全分级一致、
-/// 命令表里的每一条要么被覆盖要么写明了不上 MCP 的理由、
-/// 而查询类工具的 `outputSchema` 与命令**真的**回的东西对得上（拿真实响应比对，不是比对另一份手写清单）。
+/// This group guards one thing: **the tool table is generated from the command table, not written
+/// by hand**. A hand-written copy drifts within two releases, and an agent pays the whole cost of
+/// that drift — it calls with a stale schema, gets back an error it cannot explain, and starts
+/// guessing. So every piece is pinned here: every command behind a tool resolves, the annotations
+/// match the safety classification, every entry in the command table is either covered or carries a
+/// written reason for staying off MCP, and the `outputSchema` of the query tools matches what the
+/// commands **really** return (compared against real replies, not against a second hand-written
+/// list).
 @MainActor
 final class MCPToolMapTests: XCTestCase {
     private var harness: ControlHarness!
@@ -24,84 +26,94 @@ final class MCPToolMapTests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: 反漂移：工具 ↔ 命令表
+    // MARK: Anti-drift: tools against the command table
 
-    /// 每个工具的每条 `command` 都必须在命令表里查得到（这是整组用例的地基）
+    /// Every `command` behind every tool has to resolve in the command table (the foundation the
+    /// whole group stands on)
     func testEveryToolMapsToLiveCommandTableEntries() {
         XCTAssertFalse(MCPToolMap.tools.isEmpty)
-        XCTAssertEqual(Set(MCPToolMap.tools.map(\.name)).count, MCPToolMap.tools.count, "工具重名")
+        XCTAssertEqual(Set(MCPToolMap.tools.map(\.name)).count, MCPToolMap.tools.count, "duplicate tool name")
         for tool in MCPToolMap.tools {
             XCTAssertTrue(tool.name.hasPrefix("quickterm_"),
-                          "\(tool.name) 要带前缀：宿主里同时挂着十几个 server")
-            XCTAssertFalse(tool.commandNames.isEmpty, "\(tool.name) 背后一条命令都没有")
+                          "\(tool.name) needs the prefix: a host has a dozen servers mounted at once")
+            XCTAssertFalse(tool.commandNames.isEmpty, "\(tool.name) has no command behind it at all")
             for name in tool.commandNames {
                 XCTAssertNotNil(ControlCommandTable.command(name),
-                                "\(tool.name) 引用了命令表里没有的 \(name)")
+                                "\(tool.name) references \(name), which is not in the command table")
             }
             XCTAssertFalse(tool.description.isEmpty)
-            XCTAssertTrue(tool.description.contains("Safety:"), "\(tool.name) 的描述要写明安全语义")
+            XCTAssertTrue(tool.description.contains("Safety:"),
+                          "the description of \(tool.name) has to state its safety semantics")
         }
-        // 一条命令只能落在一个工具里：落两处的话，宿主那边同一件事会有两套注解
+        // A command belongs to exactly one tool: land it in two and the host ends up with two sets
+        // of annotations for the same act
         let all = MCPToolMap.tools.flatMap(\.commandNames)
-        XCTAssertEqual(Set(all).count, all.count, "有命令被两个工具同时收了")
+        XCTAssertEqual(Set(all).count, all.count, "a command was picked up by two tools at once")
     }
 
-    /// **注解必须机械地跟着安全分级走**。这是宿主那一层闸门的全部依据：
-    /// 把一条破坏性命令混进一个 readOnlyHint 的工具里，Claude Code / Codex 会直接自动放行
+    /// **The annotations follow the safety classification mechanically.** They are everything the
+    /// host's own gate has to go on: slip a destructive command into a tool with readOnlyHint and
+    /// Claude Code / Codex waves it straight through
     func testAnnotationsMatchTheCommandClass() {
         for tool in MCPToolMap.tools {
             let classes = tool.commands.map(\.cls)
             XCTAssertEqual(tool.readOnlyHint, classes.allSatisfy { $0 == .read },
-                           "\(tool.name) 的 readOnlyHint 与它背后命令的分级不一致")
+                           "the readOnlyHint of \(tool.name) disagrees with the class of the commands behind it")
             XCTAssertEqual(tool.destructiveHint,
                            classes.contains { $0 == .destructive || $0 == .sensitive },
-                           "\(tool.name) 的 destructiveHint 与它背后命令的分级不一致")
+                           "the destructiveHint of \(tool.name) disagrees with the class of the commands behind it")
             XCTAssertEqual(tool.idempotentHint, tool.commands.allSatisfy(\.idempotent),
-                           "\(tool.name) 的 idempotentHint 与命令表的 idempotent 不一致")
-            XCTAssertFalse(tool.openWorldHint, "控制面只驱动本机这一个 QuickTerm")
+                           "the idempotentHint of \(tool.name) disagrees with idempotent in the command table")
+            XCTAssertFalse(tool.openWorldHint,
+                           "the control plane drives this one QuickTerm on this machine, nothing else")
             if tool.readOnlyHint {
-                XCTAssertFalse(tool.destructiveHint, "\(tool.name) 不可能既只读又破坏性")
+                XCTAssertFalse(tool.destructiveHint, "\(tool.name) cannot be read-only and destructive at the same time")
             }
-            // interactive 类（会弹面板的动作）永远不该整条命令暴露出去
-            XCTAssertFalse(classes.contains(.interactive), "\(tool.name) 收了一条 interactive 命令")
+            // The interactive class (actions that pop a panel open) is never exposed as a command
+            // at all
+            XCTAssertFalse(classes.contains(.interactive), "\(tool.name) picked up an interactive command")
         }
-        // 具名钉死最要紧的三个，免得将来有人"顺手"把分组改宽
+        // Pin the three that matter most by name, so nobody later widens a grouping "while they
+        // are in there"
         XCTAssertEqual(MCPToolMap.tool(named: "quickterm_state")?.readOnlyHint, true)
         XCTAssertEqual(MCPToolMap.tool(named: "quickterm_close")?.destructiveHint, true)
         XCTAssertEqual(MCPToolMap.tool(named: "quickterm_send_text")?.destructiveHint, true)
     }
 
-    /// 命令表里的每一条，要么被某个工具覆盖，要么在 `excluded` 里写明理由。
-    /// 加了新命令却忘了上 MCP，会在这里当场停下——而不是半年后由某个 agent 发现
+    /// Every entry in the command table is either covered by a tool or carries a reason in
+    /// `excluded`. Adding a command and forgetting to expose it over MCP stops right here — rather
+    /// than being discovered by some agent six months later
     func testEveryCommandIsEitherExposedOrExplicitlyExcluded() {
         let exposed = Set(MCPToolMap.tools.flatMap(\.commandNames))
         for spec in ControlCommandTable.commands {
             if exposed.contains(spec.name) { continue }
             XCTAssertNotNil(MCPToolMap.excluded[spec.name],
-                            "命令 \(spec.cli) 既没上 MCP，也没写明为什么不上")
+                            "command \(spec.cli) is neither exposed over MCP nor given a reason for staying off")
         }
         for (name, reason) in MCPToolMap.excluded {
-            XCTAssertNotNil(ControlCommandTable.command(name), "excluded 里有表外的命令 \(name)")
-            XCTAssertFalse(reason.isEmpty, "\(name) 的排除理由是空的")
-            XCTAssertFalse(exposed.contains(name), "\(name) 既被排除又被暴露")
+            XCTAssertNotNil(ControlCommandTable.command(name), "excluded lists \(name), which is not in the table")
+            XCTAssertFalse(reason.isEmpty, "the exclusion reason for \(name) is empty")
+            XCTAssertFalse(exposed.contains(name), "\(name) is excluded and exposed at the same time")
         }
     }
 
-    /// 每个命令**分组**都得有工具覆盖：漏掉一整组等于 agent 从 MCP 这一侧完全够不着它
+    /// Every command **group** needs tool coverage: miss a whole group and an agent cannot reach
+    /// it from the MCP side at all
     func testEveryCommandGroupIsCovered() {
         let exposed = Set(MCPToolMap.tools.flatMap(\.commandNames))
         for group in ControlCommandTable.groups {
             let covered = ControlCommandTable.commands(inGroup: group)
                 .contains { exposed.contains($0.name) }
-            XCTAssertTrue(covered, "命令组 \(group) 在 MCP 工具表里一个都没有")
+            XCTAssertTrue(covered, "command group \(group) has not a single entry in the MCP tool table")
         }
-        // 顶层的查询类同样要够得着
+        // The top-level query commands have to be reachable too
         for name in ["state", "list", "get", "action", "describe"] {
-            XCTAssertNotNil(MCPToolMap.tool(forCommand: name), "\(name) 没有对应的 MCP 工具")
+            XCTAssertNotNil(MCPToolMap.tool(forCommand: name), "\(name) has no MCP tool of its own")
         }
     }
 
-    /// 输入 schema 覆盖每条命令的每个参数（`--file` 除外：读文件永远是调用方那侧的事）
+    /// The input schema covers every argument of every command (except `--file`: reading a file is
+    /// always the caller's side of the fence)
     func testInputSchemaCoversEveryArgument() throws {
         for tool in MCPToolMap.tools {
             let schema = try XCTUnwrap(tool.inputSchema.objectValue)
@@ -110,10 +122,10 @@ final class MCPToolMapTests: XCTestCase {
             for spec in tool.commands {
                 for arg in spec.args where !MCPToolMap.argsNotExposed.contains(arg.name) {
                     let property = try XCTUnwrap(properties[arg.name]?.objectValue,
-                                                 "\(tool.name) 的 schema 里没有 \(spec.cli) 的 \(arg.name)")
-                    XCTAssertNotNil(property["type"], "\(arg.name) 没写类型")
+                                                 "the schema of \(tool.name) is missing \(arg.name) of \(spec.cli)")
+                    XCTAssertNotNil(property["type"], "\(arg.name) declares no type")
                     XCTAssertFalse((property["description"]?.stringValue ?? "").isEmpty,
-                                   "\(arg.name) 没有说明")
+                                   "\(arg.name) has no description")
                 }
                 if spec.acceptsTarget { XCTAssertNotNil(properties["target"], tool.name) }
                 if spec.honorsMutationFlags {
@@ -122,25 +134,27 @@ final class MCPToolMapTests: XCTestCase {
                 }
             }
             if tool.commands.count > 1 {
-                XCTAssertTrue(required.contains("command"), "\(tool.name) 背多条命令，command 必填")
+                XCTAssertTrue(required.contains("command"), "\(tool.name) backs several commands, so command is required")
                 let values = Set((properties["command"]?["enum"]?.arrayValue ?? [])
                     .compactMap(\.stringValue))
                 XCTAssertEqual(values, Set(tool.commands.map(\.cli)))
             } else if let spec = tool.commands.first {
                 for arg in spec.args where arg.required && !MCPToolMap.argsNotExposed.contains(arg.name) {
                     XCTAssertTrue(required.contains(arg.name),
-                                  "\(tool.name)：\(spec.cli) 的 \(arg.name) 是必填的")
+                                  "\(tool.name): \(arg.name) of \(spec.cli) is required")
                 }
             }
         }
     }
 
-    /// **`required` 只能写"这个工具背的每一条命令都要"的那些参数。**
+    /// **`required` may only list arguments that every command behind this tool takes.**
     ///
-    /// 回归：`quickterm_dump_spec` 背着 `spec dump`（不读正文）与 `spec validate`（读），
-    /// 曾经"只要有一条 readsFile 就把 spec 标成工具级必填"。守 schema 的宿主于是逼模型每次都带上
-    /// `spec`，而服务端按解析出的那条命令校验参数——`spec dump` 一律被自己人拒掉，
-    /// 也就是 dump → 改 → apply 这条主路的前半截在 MCP 上根本走不通
+    /// Regression: `quickterm_dump_spec` backs `spec dump` (which reads no body) and `spec validate`
+    /// (which does), and it used to mark `spec` required at the tool level as soon as one of them
+    /// was readsFile. A schema-enforcing host then forced the model to pass `spec` every time, while
+    /// the server validated the arguments against the command it had parsed — so `spec dump` was
+    /// refused by our own side, which means the first half of the dump -> edit -> apply path did not
+    /// work over MCP at all
     func testRequiredOnlyListsArgumentsEveryBackingCommandAccepts() throws {
         for tool in MCPToolMap.tools {
             let required = Set((tool.inputSchema["required"]?.arrayValue ?? [])
@@ -148,20 +162,22 @@ final class MCPToolMapTests: XCTestCase {
             for name in required where name != "command" {
                 for spec in tool.commands {
                     XCTAssertTrue(spec.args.contains { $0.name == name },
-                                  "\(tool.name) 把 \(name) 标成必填，但 \(spec.cli) 根本不认这个参数")
+                                  "\(tool.name) marks \(name) required, but \(spec.cli) does not "
+                                      + "accept that argument at all")
                 }
             }
         }
         let dump = try XCTUnwrap(MCPToolMap.tool(named: "quickterm_dump_spec"))
         XCTAssertFalse((dump.inputSchema["required"]?.arrayValue ?? [])
             .compactMap(\.stringValue).contains("spec"),
-            "spec dump 不读正文，spec 不能是这个工具的必填项")
-        // apply 只背一条命令，而 MCP 这侧没有 -f，所以那里 spec 仍然必填
+            "spec dump reads no body, so spec cannot be required on this tool")
+        // apply backs one command and there is no -f on the MCP side, so spec stays required
+        // there
         let apply = try XCTUnwrap(MCPToolMap.tool(named: "quickterm_apply_spec"))
         XCTAssertTrue((apply.inputSchema["required"]?.arrayValue ?? [])
             .compactMap(\.stringValue).contains("spec"))
 
-        // 端到端：不带 spec 调 `spec dump`，服务端必须真的放行
+        // End to end: calling `spec dump` without a spec really has to go through
         var sent: [ControlRequest] = []
         let server = try Self.initializedServer { request in
             sent.append(request)
@@ -175,21 +191,24 @@ final class MCPToolMapTests: XCTestCase {
         "arguments":{"command":"spec dump"}}}
         """))
         XCTAssertEqual(reply["result"]?["isError"]?.boolValue, false,
-                       "spec dump 必须走得通：\(reply)")
+                       "spec dump has to work: \(reply)")
         XCTAssertEqual(sent.last?.cmd, "spec.dump")
     }
 
-    /// **"跑两次结果一样"这句话只能写在真的幂等的工具上。**
-    /// 回归：`safetyLine` 只看 readOnly / destructive 两个分支，于是 `quickterm_new_pane`
-    /// （背着 pane new / screen new，两条都 idempotent:false）的描述里写着"绝对设值，跑两次一样"，
-    /// 而它自己的注解写着 idempotentHint:false——同一个工具对象里两句话打架，模型信的是正文
+    /// **"running it twice gives the same result" may only be written on a tool that really is
+    /// idempotent.**
+    /// Regression: `safetyLine` only branched on readOnly / destructive, so the description of
+    /// `quickterm_new_pane` (backing pane new / screen new, both idempotent:false) claimed
+    /// "absolute setters, safe to repeat" while its own annotation said idempotentHint:false — two
+    /// contradicting sentences inside one tool object, and the model believes the prose
     func testTheSafetyLineNeverClaimsRepeatSafetyForNonIdempotentTools() {
         for tool in MCPToolMap.tools where !tool.idempotentHint {
             XCTAssertFalse(tool.safetyLine.contains("Absolute setters"),
-                           "\(tool.name) 不是幂等的，描述里不能说跑两次结果一致：\(tool.safetyLine)")
+                           "\(tool.name) is not idempotent, so the description must not claim "
+                               + "repeats are safe: \(tool.safetyLine)")
             if !tool.readOnlyHint, !tool.destructiveHint {
                 XCTAssertTrue(tool.safetyLine.contains("NOT idempotent"),
-                              "\(tool.name) 要明说重试会再来一次：\(tool.safetyLine)")
+                              "\(tool.name) has to say outright that a retry does it again: \(tool.safetyLine)")
             }
         }
         for tool in MCPToolMap.tools where tool.idempotentHint && !tool.readOnlyHint
@@ -200,47 +219,52 @@ final class MCPToolMapTests: XCTestCase {
         XCTAssertEqual(MCPToolMap.tool(named: "quickterm_action")?.idempotentHint, false)
     }
 
-    /// **描述里提到的参数，schema 里必须真的有。**
-    /// 回归：`safetyLine` 的 destructive 分支一律写"Run with dry-run first"，
-    /// 而 `quickterm_read_terminal`（背着 pane.capture-text，readOnlyEffect）
-    /// 根本不收这个参数——照着描述发一次的下场是 bad_request，或者模型自己编一个 schema 里没有的键
+    /// **An argument the description mentions has to actually exist in the schema.**
+    /// Regression: the destructive branch of `safetyLine` always wrote "Run with dry-run first",
+    /// while `quickterm_read_terminal` (backing pane.capture-text, readOnlyEffect) does not accept
+    /// that argument at all — following the description gets you a bad_request, or a model
+    /// inventing a key the schema never had
     func testAToolNeverAdvisesAFlagItsSchemaDoesNotAccept() throws {
         for tool in MCPToolMap.tools {
             let properties = try XCTUnwrap(tool.inputSchema["properties"]?.objectValue)
             let exposed = properties[ControlCommandTable.Flag.dryRun] != nil
             if !exposed {
                 XCTAssertFalse(tool.safetyLine.lowercased().contains("dry-run first"),
-                               "\(tool.name) 的 schema 里没有 dry_run，就不能劝模型先跑一次："
+                               "\(tool.name) has no dry_run in its schema, so it must not advise a trial run first: "
                                    + tool.safetyLine)
             }
             XCTAssertEqual(exposed, tool.commands.contains(where: \.honorsMutationFlags),
-                           "\(tool.name)：dry_run 出现在 schema 里，当且仅当背后有命令认这个参数")
+                           "\(tool.name): dry_run appears in the schema if and only if a command behind it accepts it")
         }
         let read = try XCTUnwrap(MCPToolMap.tool(named: "quickterm_read_terminal"))
-        XCTAssertTrue(read.destructiveHint, "sensitive 仍然要让宿主每次确认")
+        XCTAssertTrue(read.destructiveHint, "sensitive still makes the host confirm every time")
         XCTAssertTrue(read.safetyLine.contains("takes no dry-run"),
-                      "要明说它不收这两个参数：\(read.safetyLine)")
+                      "it has to say outright that it takes neither of those two arguments: \(read.safetyLine)")
     }
 
-    /// 取值集合各不相同时**不写 enum**：写一个只对其中一条命令成立的 enum 比不写更糟
+    /// When the value sets differ, **declare no enum**: an enum that holds for only one of the
+    /// commands is worse than none at all
     func testEnumsAreOnlyDeclaredWhenTheyHoldForEveryCommand() throws {
         let arrange = try XCTUnwrap(MCPToolMap.tool(named: "quickterm_arrange"))
         let properties = try XCTUnwrap(arrange.inputSchema["properties"]?.objectValue)
-        // pane set --width 是 double，pane resize --width 是 "+0.05" 这样的字符串：两种类型都要写出来
+        // pane set --width is a double while pane resize --width is a string like "+0.05": both
+        // types have to be declared
         let width = try XCTUnwrap(properties["width"]?.objectValue)
         let types = Set((width["type"]?.arrayValue ?? []).compactMap(\.stringValue))
-        XCTAssertEqual(types, ["number", "string"], "两条命令的 width 类型不同，schema 要把两种都写出来")
+        XCTAssertEqual(types, ["number", "string"],
+                       "the two commands type width differently, so the schema has to declare both")
         XCTAssertNil(width["enum"])
-        // 只有一条命令用的枚举照常写出来
+        // An enum used by only one command is declared as usual
         let layout = try XCTUnwrap(properties["layout"]?.objectValue)
         XCTAssertEqual(Set((layout["enum"]?.arrayValue ?? []).compactMap(\.stringValue)),
                        ["scrolling", "dwindle"])
     }
 
-    // MARK: outputSchema 与命令**真的**回的东西对得上
+    // MARK: outputSchema against what the commands **really** return
 
-    /// 拿真实响应比 schema：命令回了一个 schema 里没有的键，就是 schema 漂了。
-    /// （比对另一份手写的字段清单毫无意义——那份清单本身就是要防的东西）
+    /// Compare the schema against real replies: a command returning a key the schema does not have
+    /// means the schema has drifted. (Comparing it against a second hand-written field list would be
+    /// pointless — that list is the very thing being guarded against.)
     func testOutputSchemaMatchesWhatQueryCommandsActuallyReturn() throws {
         let pane = try harness.newTerminal()
         let handle = ControlHandleRegistry.shared.handle(for: pane)
@@ -255,33 +279,34 @@ final class MCPToolMapTests: XCTestCase {
             ("version", nil, [:]),
             ("spec.dump", nil, [:]),
             ("events.poll", nil, ["since": .int(harness.seq), "timeout": .string("0")]),
-            // 变更信封也走一遍（dry-run：一个字节都不改）
+            // Walk the mutation envelope too (dry-run: not a byte changes)
             ("pane.set", handle, ["zoom": .string("on"), ControlCommandTable.Flag.dryRun: .bool(true)]),
         ]
         cases.append(("action", nil, ["list": .bool(true)]))
 
         for item in cases {
             let reply = try harness.run(item.command, target: item.target, args: item.args)
-            XCTAssertTrue(reply.ok, "\(item.command) 没跑通：\(String(describing: reply.error))")
+            XCTAssertTrue(reply.ok, "\(item.command) did not go through: \(String(describing: reply.error))")
             let tool = try XCTUnwrap(MCPToolMap.tool(forCommand: item.command),
-                                     "\(item.command) 没有对应的 MCP 工具")
+                                     "\(item.command) has no MCP tool of its own")
             let schema = try XCTUnwrap(tool.outputSchema.objectValue)
             let envelope = try XCTUnwrap(schema["properties"]?.objectValue)
-            // 信封本身
+            // The envelope itself
             for key in ["ok", "seq", "resolved", "data", "error"] {
-                XCTAssertNotNil(envelope[key], "\(tool.name) 的 outputSchema 缺信封字段 \(key)")
+                XCTAssertNotNil(envelope[key], "the outputSchema of \(tool.name) is missing envelope field \(key)")
             }
-            // data 的键
+            // The keys inside data
             let declared = Set((envelope["data"]?["properties"]?.objectValue ?? [:]).keys)
-            guard !declared.isEmpty else { continue }   // describe 那种"大对象"是刻意不展开的
+            guard !declared.isEmpty else { continue }   // The "big object" of describe is deliberately not expanded
             let actual = Set((reply.data?.objectValue ?? [:]).keys)
             let missing = actual.subtracting(declared)
             XCTAssertTrue(missing.isEmpty,
-                          "\(tool.name) 的 outputSchema 没写 \(item.command) 真的会回的键：\(missing.sorted())")
+                          "the outputSchema of \(tool.name) omits keys \(item.command) really returns: \(missing.sorted())")
         }
     }
 
-    /// 记录数组里的记录也要展开到字段级：agent 读的是 `panes[].handle`，不是"一个数组"
+    /// Records inside an array are described field by field as well: an agent reads
+    /// `panes[].handle`, not "an array"
     func testPaneRecordsAreDescribedFieldByField() throws {
         let pane = try harness.newTerminal()
         let reply = try harness.run("list", args: ["what": .string("panes")])
@@ -293,14 +318,15 @@ final class MCPToolMapTests: XCTestCase {
         XCTAssertTrue(declared.contains("kind"))
         let actual = Set((reply.data?["panes"]?.arrayValue?.first?.objectValue ?? [:]).keys)
         XCTAssertTrue(actual.subtracting(declared).isEmpty,
-                      "pane 记录里出现了 schema 没写的字段：\(actual.subtracting(declared).sorted())")
+                      "the pane record carries fields the schema never declared: \(actual.subtracting(declared).sorted())")
         XCTAssertFalse(ControlHandleRegistry.shared.handle(for: pane).isEmpty)
     }
 
-    // MARK: stdio 服务真的会说 MCP
+    // MARK: The stdio server really does speak MCP
 
-    /// initialize → tools/list → 一次读 → 一次被拒的破坏性调用。
-    /// **不挂到真的宿主上**：协议这一层同进程驱动就够，真宿主只会把用例变成一个不确定的外部依赖
+    /// initialize -> tools/list -> one read -> one refused destructive call.
+    /// **Not hooked up to a real host**: driving the protocol layer in-process is enough, and a real
+    /// host would only turn the case into a nondeterministic external dependency
     func testInitializeListToolsAndDispatchOneReadAndOneRefusedDestructiveCall() throws {
         var sent: [ControlRequest] = []
         let server = MCPServer(cliVersion: "1.5.8", environment: [:]) { request in
@@ -308,15 +334,16 @@ final class MCPToolMapTests: XCTestCase {
             if request.cmd == "pane.close" {
                 return try Self.decode(ControlResponse.failure(
                     id: request.id, seq: 412,
-                    error: ControlErrorBody(.confirmationRequired, "需要在 QuickTerm 里确认",
-                                            hint: "去 QuickTerm 里批准后重试")))
+                    error: ControlErrorBody(.confirmationRequired, "needs confirmation in QuickTerm",
+                                            hint: "approve it in QuickTerm, then retry")))
             }
             return try Self.decode(ControlResponse.success(
                 id: request.id, seq: 412, resolved: ResolvedTarget(screen: 1, workspace: 2),
                 data: ControlListPayload(panes: [.object(["handle": .string("t7")])])))
         }
 
-        // initialize 之前只回 ping：MCP 允许服务端这样拒绝，而这条拒绝本身要是干净的 JSON-RPC 错误
+        // Before initialize only ping is answered: MCP allows a server to refuse like this, and the
+        // refusal itself has to be a clean JSON-RPC error
         let early = try XCTUnwrap(Self.call(server, #"{"jsonrpc":"2.0","id":0,"method":"tools/list"}"#))
         XCTAssertEqual(early["error"]?["code"]?.intValue, -32002)
         XCTAssertNil(early["result"])
@@ -329,9 +356,9 @@ final class MCPToolMapTests: XCTestCase {
         XCTAssertEqual(initialize["result"]?["serverInfo"]?["name"]?.stringValue, "quickterm")
         XCTAssertNotNil(initialize["result"]?["capabilities"]?["tools"])
         XCTAssertTrue((initialize["result"]?["instructions"]?.stringValue ?? "")
-            .contains("quickterm_describe"), "instructions 要把 agent 指向 describe")
+            .contains("quickterm_describe"), "instructions have to point an agent at describe")
 
-        // 通知没有 id：**一个字节都不能回**
+        // A notification has no id: **not one byte may be written back**
         XCTAssertNil(Self.call(server, #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#))
 
         let list = try XCTUnwrap(Self.call(server, #"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#))
@@ -344,7 +371,7 @@ final class MCPToolMapTests: XCTestCase {
             XCTAssertNotNil(tool["annotations"]?["readOnlyHint"]?.boolValue)
         }
 
-        // 一次读：落到 list 命令上，结果原样回来
+        // One read: it lands on the list command and the result comes back unchanged
         let read = try XCTUnwrap(Self.call(server, """
         {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"quickterm_state",\
         "arguments":{"command":"list","what":"panes"}}}
@@ -355,16 +382,18 @@ final class MCPToolMapTests: XCTestCase {
             .arrayValue?.first?["handle"]?.stringValue, "t7")
         XCTAssertEqual(sent.last?.cmd, "list")
         XCTAssertEqual(sent.last?.args["what"]?.stringValue, "panes")
-        // 不认 structuredContent 的宿主看 content：那一份必须是同一个信封
+        // A host that does not understand structuredContent reads content: that copy has to be the
+        // very same envelope
         let text = try XCTUnwrap(read["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue)
         XCTAssertTrue(text.contains("\"ok\""))
 
-        // 一次被拒的破坏性调用：错误**不是** JSON-RPC 错误，而是 isError 的工具结果
+        // One refused destructive call: the error is **not** a JSON-RPC error but a tool result
+        // with isError
         let destructive = try XCTUnwrap(Self.call(server, """
         {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"quickterm_close",\
         "arguments":{"command":"pane close","target":"t7"}}}
         """))
-        XCTAssertNil(destructive["error"], "工具执行失败要走 isError，不是协议错误")
+        XCTAssertNil(destructive["error"], "a tool that fails goes through isError, not through a protocol error")
         XCTAssertEqual(destructive["result"]?["isError"]?.boolValue, true)
         XCTAssertEqual(destructive["result"]?["structuredContent"]?["error"]?["code"]?.stringValue,
                        ControlErrorCode.confirmationRequired.rawValue)
@@ -374,14 +403,16 @@ final class MCPToolMapTests: XCTestCase {
         XCTAssertEqual(sent.last?.target, "t7")
     }
 
-    /// 参数校验在 MCP 这一侧就做完：认不得的键、不在枚举里的值、缺的必填，一律当场报，
-    /// **绝不悄悄丢掉**——静默丢参数是最难查的一类 agent 故障
+    /// Argument validation happens on the MCP side: an unrecognized key, a value outside the enum,
+    /// a missing required argument — every one of them is reported on the spot and **never silently
+    /// dropped**, because a silently dropped argument is the hardest class of agent failure to track
+    /// down
     func testArgumentValidationRefusesRatherThanSilentlyDropping() throws {
         let server = try Self.initializedServer { _ in
-            XCTFail("参数没过校验就不该发出去")
+            XCTFail("arguments that failed validation must never be sent")
             throw ControlErrorBody(.internalError, "unreachable")
         }
-        // 属于另一条命令的参数
+        // An argument that belongs to a different command
         let stray = try XCTUnwrap(Self.call(server, """
         {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"quickterm_arrange",\
         "arguments":{"command":"pane move","zoom":"on","to":":4"}}}
@@ -389,13 +420,14 @@ final class MCPToolMapTests: XCTestCase {
         XCTAssertEqual(stray["result"]?["isError"]?.boolValue, true)
         XCTAssertEqual(stray["result"]?["structuredContent"]?["error"]?["code"]?.stringValue,
                        ControlErrorCode.badRequest.rawValue)
-        // 缺必填
+        // A missing required argument
         let missing = try XCTUnwrap(Self.call(server, """
         {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"quickterm_send_text",\
         "arguments":{"target":"t7"}}}
         """))
         XCTAssertEqual(missing["result"]?["isError"]?.boolValue, true)
-        // 不存在的工具：报错时把全部工具名列出来，别让 agent 靠猜
+        // A tool that does not exist: the error lists every tool name, so an agent never has to
+        // guess
         let unknown = try XCTUnwrap(Self.call(server, """
         {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"quickterm_nope","arguments":{}}}
         """))
@@ -404,7 +436,8 @@ final class MCPToolMapTests: XCTestCase {
         XCTAssertEqual(candidates?.count, MCPToolMap.tools.count)
     }
 
-    /// `-t` 只在命令表说它接受目标时才送出去；`--file` 在 MCP 这一侧根本不存在
+    /// `-t` is only sent when the command table says the command accepts a target; `--file` does
+    /// not exist on the MCP side at all
     func testTargetAndFileFollowTheCommandTable() throws {
         var sent: [ControlRequest] = []
         let server = try Self.initializedServer { request in
@@ -424,20 +457,22 @@ final class MCPToolMapTests: XCTestCase {
         XCTAssertNotNil(sent.last?.args["spec"])
         for tool in MCPToolMap.tools {
             XCTAssertNil(tool.inputSchema["properties"]?["file"],
-                         "\(tool.name) 不该暴露 --file：读文件永远是调用方那一侧的事")
+                         "\(tool.name) must not expose --file: reading a file is always the caller's side of the fence")
         }
     }
 
-    /// 真的走一对管道（宿主看到的就是这个）：一行进、一行出，对端关掉标准输入就干净退出
+    /// Through a real pair of pipes, which is exactly what a host sees: one line in, one line out,
+    /// and a clean exit as soon as the peer closes stdin
     func testServeOverAPipe() throws {
         let input = Pipe()
         let output = Pipe()
         let server = MCPServer(cliVersion: "1.5.8", environment: [:]) { _ in
-            throw ControlErrorBody(.notRunning, "用例不连真的 QuickTerm")
+            throw ControlErrorBody(.notRunning, "this case does not connect to a real QuickTerm")
         }
-        let done = expectation(description: "serve 退出")
+        let done = expectation(description: "serve returned")
         DispatchQueue.global().async {
-            // gate 显式传：默认参数 `.load()` 会去读开发者自己的配置文件
+            // Pass the gate explicitly: the default argument `.load()` would read the developer's
+            // own config file
             server.serve(input: input.fileHandleForReading, output: output.fileHandleForWriting,
                          gate: ControlConfigGate())
             try? output.fileHandleForWriting.close()
@@ -458,10 +493,12 @@ final class MCPToolMapTests: XCTestCase {
             lines.append(rest.subdata(in: rest.startIndex..<index))
             rest.removeSubrange(rest.startIndex...index)
         }
-        XCTAssertEqual(lines.count, 2, "一行请求一行应答")
-        // 空数组下标会把整个 test bundle 打断（不止红一条），所以先 unwrap
+        XCTAssertEqual(lines.count, 2, "one line of request, one line of reply")
+        // Subscripting an empty array takes the whole test bundle down (not just this one case),
+        // so unwrap first
         let first = try ControlJSON.decoder.decode(JSONValue.self, from: try XCTUnwrap(lines.first))
-        // 客户端报的老版本我们支持，就照它回（不然宿主会以为握手失败）
+        // When the client names an older version we support, answer with that version (otherwise
+        // the host thinks the handshake failed)
         XCTAssertEqual(first["result"]?["protocolVersion"]?.stringValue, "2024-11-05")
         let second = try ControlJSON.decoder.decode(JSONValue.self, from: try XCTUnwrap(lines.dropFirst().first))
         XCTAssertEqual(second["id"]?.intValue, 2)
@@ -470,23 +507,26 @@ final class MCPToolMapTests: XCTestCase {
 
     // MARK: helpEN / describe
 
-    /// 67 个动作**每一个**都要有英文说明：describe 的输出会被原样粘进中英混排的 agent 提示里
+    /// **Every one** of the 67 actions needs English help: the output of describe gets pasted
+    /// verbatim into agent prompts that mix Chinese and English
     func testEveryActionHasBothLanguages() {
         for action in WMAction.allCases {
-            XCTAssertFalse(action.help.isEmpty, "\(action.rawValue) 缺中文说明")
-            XCTAssertFalse(action.helpEN.isEmpty, "\(action.rawValue) 缺英文说明")
-            XCTAssertNotEqual(action.help, action.helpEN, "\(action.rawValue) 的两份说明是同一句")
-            XCTAssertFalse(action.helpEN.contains("？"), "\(action.rawValue) 的英文说明里混进了中文标点")
+            XCTAssertFalse(action.help.isEmpty, "\(action.rawValue) has no Chinese help")
+            XCTAssertFalse(action.helpEN.isEmpty, "\(action.rawValue) has no English help")
+            XCTAssertNotEqual(action.help, action.helpEN, "both help strings of \(action.rawValue) are the same sentence")
+            XCTAssertFalse(action.helpEN.contains("？"),
+                           "the English help of \(action.rawValue) has Chinese punctuation in it")
         }
         let docs = ControlCommandTable.actionDocs
         XCTAssertEqual(docs.count, WMAction.allCases.count)
         for doc in docs {
-            XCTAssertFalse(doc.helpZH.isEmpty, "\(doc.name) 缺 helpZH")
-            XCTAssertFalse(doc.helpEN.isEmpty, "\(doc.name) 缺 helpEN")
+            XCTAssertFalse(doc.helpZH.isEmpty, "\(doc.name) has no helpZH")
+            XCTAssertFalse(doc.helpEN.isEmpty, "\(doc.name) has no helpEN")
         }
     }
 
-    /// describe 里要能看见 MCP 工具表（不然 agent 只能靠猜有没有 MCP 这条路）
+    /// The MCP tool table has to be visible in describe (otherwise an agent can only guess whether
+    /// the MCP path exists)
     func testDescribeDocumentsTheToolMap() throws {
         let document = ControlDescribeDocument.make(cliVersion: "1.5.8", appVersion: "1.5.8",
                                                     socket: "/tmp/x.sock", mode: "ask")
@@ -498,27 +538,29 @@ final class MCPToolMapTests: XCTestCase {
             XCTAssertEqual(doc.readOnlyHint, tool.readOnlyHint)
             XCTAssertEqual(doc.destructiveHint, tool.destructiveHint)
         }
-        // 再走一遍 JSONEncoder：describe 是 agent 会话开始读的那一份，不能有半个手拼的字节
+        // Through JSONEncoder once more: describe is what an agent reads at the start of a session
+        // and may not contain half a hand-assembled byte
         let data = try ControlJSON.encoder.encode(document)
         let raw = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual((raw["mcpTools"] as? [[String: Any]])?.count, MCPToolMap.tools.count)
         let actions = try XCTUnwrap(raw["actions"] as? [[String: Any]])
         XCTAssertTrue(actions.allSatisfy { !(($0["helpEN"] as? String) ?? "").isEmpty },
-                      "describe 的动作表要中英各一份")
+                      "the action table in describe carries both the Chinese and the English help")
     }
 
-    /// `mcp` 是本地命令：经 socket 发过来要被明确拒掉，而不是掉进"本阶段还没有实现"
+    /// `mcp` is a local command: sent over the socket it has to be refused explicitly, not fall
+    /// into "not implemented in this phase yet"
     func testLocalCommandsAreRefusedOverTheSocket() throws {
         for name in ["mcp", "install-cli"] {
             let spec = try XCTUnwrap(ControlCommandTable.command(name))
-            XCTAssertTrue(spec.local, "\(name) 应当是本地命令")
+            XCTAssertTrue(spec.local, "\(name) should be a local command")
             let reply = try harness.run(name)
             XCTAssertFalse(reply.ok)
             XCTAssertEqual(reply.error?.code, ControlErrorCode.unknownCommand.rawValue)
         }
     }
 
-    // MARK: 工具
+    // MARK: Helpers
 
     private static func call(_ server: MCPServer, _ line: String) -> JSONValue? {
         guard let data = server.handle(line: Data(line.utf8)) else { return nil }
@@ -534,7 +576,8 @@ final class MCPToolMapTests: XCTestCase {
         return server
     }
 
-    /// 服务端写出的 `ControlResponse` → 客户端读到的 `ControlReply`（走一遍真的编解码）
+    /// The `ControlResponse` the server writes -> the `ControlReply` the client reads (through the
+    /// real encode/decode)
     private static func decode(_ response: ControlResponse) throws -> ControlReply {
         try ControlJSON.decoder.decode(ControlReply.self, from: ControlJSON.line(response))
     }

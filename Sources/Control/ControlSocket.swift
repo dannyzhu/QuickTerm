@@ -2,34 +2,40 @@ import Darwin
 import Foundation
 import OSLog
 
-/// AF_UNIX / SOCK_STREAM 监听器。
+/// AF_UNIX / SOCK_STREAM listener.
 ///
-/// 为什么是裸 BSD socket 而不是 `NWListener`：安全模型需要在**已 accept 的 fd** 上做
-/// `getsockopt(LOCAL_PEERCRED / LOCAL_PEERPID)`，NWListener 不暴露这两样。
+/// Why raw BSD sockets rather than `NWListener`: the security model needs
+/// `getsockopt(LOCAL_PEERCRED / LOCAL_PEERPID)` **on the already-accepted fd**, and NWListener
+/// exposes neither of those.
 ///
-/// 绑定前的四道检查（都在 `prepare` 里）：
-/// 1. `sun_path` 只有 104 字节 —— home 太长就回退 `$TMPDIR/quickterm.sock` 并记日志；
-/// 2. 路径本身是符号链接 → 拒绝（否则等于让别人指定我们往哪写）；
-/// 3. 父目录必须存在且强制 0700，且自身不是符号链接；
-/// 4. 陈旧 socket：先探测性 connect，确认没人在听才 unlink。真有人在听就**不抢**。
+/// Four checks before binding, all of them in `prepare`:
+/// 1. `sun_path` is only 104 bytes — if home is too long, fall back to
+///    `$TMPDIR/quickterm.sock` and log that;
+/// 2. the path itself is a symlink → refuse (otherwise somebody else gets to pick where we
+///    write);
+/// 3. the parent directory must exist, is forced to 0700, and must not be a symlink itself;
+/// 4. stale socket: connect to it first as a probe, and unlink only once it is established that
+///    nobody is listening. If somebody really is, **do not take it from them**.
 final class ControlSocket {
     static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "dev.danny.quickterm",
                                category: "ControlSocket")
 
-    /// 已 accept 的对端。`pid` 来自内核（LOCAL_PEERPID），所以确认框里显示的进程名是**真的**——
-    /// 即使调用方抄走了别人的 QUICKTERM_TOKEN
+    /// An accepted peer. `pid` comes from the kernel (LOCAL_PEERPID), so the process name the
+    /// confirmation alert shows is **real** — even when the caller has copied somebody else's
+    /// QUICKTERM_TOKEN
     struct Peer {
         let fd: Int32
         let uid: uid_t
         let pid: pid_t
         let processName: String
-        /// 本进程内单调递增的连接编号。**不能用 fd 代替**：fd 号会被复用，
-        /// 一条刚关掉的连接与紧接着 accept 到的新连接可以是同一个数字，
-        /// 于是"对端走了，把它的 events follow 摘掉"会摘掉别人的流
+        /// Connection number, monotonic within this process. **The fd cannot stand in for it**:
+        /// fd numbers are reused, so a connection that just closed and the next one accepted can
+        /// be the same number — and then "the peer left, drop its events follow" tears down
+        /// somebody else's stream
         var connectionID: UInt64 = 0
     }
 
-    /// 连接编号的发号器（只在 accept 队列上自增）
+    /// Issues connection numbers (only ever incremented on the accept queue)
     nonisolated(unsafe) private static var connectionCounter: UInt64 = 0
 
     enum SocketError: Error, CustomStringConvertible {
@@ -41,11 +47,11 @@ final class ControlSocket {
 
         var description: String {
             switch self {
-            case .pathTooLong(let p): "socket 路径超过 sun_path 上限：\(p)"
-            case .symlink(let p): "socket 路径是符号链接，拒绝绑定：\(p)"
-            case .insecureDirectory(let p): "socket 父目录权限不安全且无法收紧：\(p)"
-            case .alreadyListening(let p): "已有 QuickTerm 在监听 \(p)"
-            case .system(let what, let err): "\(what) 失败：\(String(cString: strerror(err)))（errno \(err)）"
+            case .pathTooLong(let p): "socket path is over the sun_path limit: \(p)"
+            case .symlink(let p): "socket path is a symlink, refusing to bind: \(p)"
+            case .insecureDirectory(let p): "socket parent directory is insecure and cannot be tightened: \(p)"
+            case .alreadyListening(let p): "another QuickTerm is already listening on \(p)"
+            case .system(let what, let err): "\(what) failed: \(String(cString: strerror(err))) (errno \(err))"
             }
         }
     }
@@ -57,17 +63,19 @@ final class ControlSocket {
 
     var isListening: Bool { listenFD >= 0 }
 
-    // MARK: 绑定前的准备
+    // MARK: Preparation before binding
 
-    /// 目录建好并收紧到 0700；陈旧 socket 清掉。返回真正可用的路径（可能是 $TMPDIR 回退）。
-    /// `allowFallback` 只对**默认**路径开：显式指定路径（用例注入）时绝不悄悄换地方——
-    /// 否则一个路径过长的用例会去抢用户正在跑的那个 QuickTerm 的 $TMPDIR socket
+    /// Create the directory and tighten it to 0700, then clear away a stale socket. Returns the
+    /// path that is actually usable (which may be the $TMPDIR fallback).
+    /// `allowFallback` is on for the **default** path only: when a path is given explicitly (as
+    /// tests do), never quietly move somewhere else — otherwise a test with an over-long path
+    /// would go and take the $TMPDIR socket out from under the QuickTerm the user is running
     static func prepare(preferred: String, allowFallback: Bool = true) throws -> String {
         var path = preferred
         if !ControlPaths.fits(path) {
             guard allowFallback else { throw SocketError.pathTooLong(path) }
             let fallback = ControlPaths.fallbackSocketPath
-            logger.warning("控制 socket 路径超过 sun_path 104 字节，回退到 \(fallback, privacy: .public)")
+            logger.warning("Control socket path is over the 104-byte sun_path limit, falling back to \(fallback, privacy: .public)")
             path = fallback
             guard ControlPaths.fits(path) else { throw SocketError.pathTooLong(path) }
         }
@@ -90,18 +98,19 @@ final class ControlSocket {
                     atPath: directory, withIntermediateDirectories: true,
                     attributes: [.posixPermissions: 0o700])
             } catch {
-                throw SocketError.system("创建目录 \(directory)", errno)
+                throw SocketError.system("creating directory \(directory)", errno)
             }
         }
     }
 
-    /// 探测：能连上说明真有实例在听（不抢）；ECONNREFUSED / ENOENT 说明是陈旧残留，删掉
+    /// The probe: if it connects, a real instance is listening, so leave it alone;
+    /// ECONNREFUSED / ENOENT mean stale leftovers, so delete them
     static func reclaimStaleSocket(at path: String) throws {
         var st = stat()
         guard lstat(path, &st) == 0 else { return }
         if (st.st_mode & S_IFMT) == S_IFLNK { throw SocketError.symlink(path) }
         guard (st.st_mode & S_IFMT) == S_IFSOCK else {
-            // 不是 socket 的普通文件：绝不替用户删东西
+            // A regular file that is not a socket: never delete something on the user's behalf
             throw SocketError.insecureDirectory(path)
         }
         let probe = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -132,12 +141,13 @@ final class ControlSocket {
         return addr
     }
 
-    // MARK: 监听
+    // MARK: Listening
 
-    /// 绑定并开始 accept。`onPeer` 在内部 accept 队列上调用（**不是**主线程）
+    /// Bind and start accepting. `onPeer` is called on the internal accept queue (**not** on
+    /// the main thread)
     func start(path preferred: String, allowFallback: Bool = true,
                onPeer: @escaping (Peer) -> Void) throws {
-        precondition(listenFD < 0, "ControlSocket 已在监听")
+        precondition(listenFD < 0, "ControlSocket is already listening")
         let path = try Self.prepare(preferred: preferred, allowFallback: allowFallback)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw SocketError.system("socket()", errno) }
@@ -145,7 +155,8 @@ final class ControlSocket {
         defer { if !ok { close(fd) } }
 
         var addr = try Self.sockaddrUn(path)
-        // umask 收紧到 0600：bind 建出来的 socket 文件不能有组/其他位（chmod 之前那一瞬也不行）
+        // umask tightened to 0600: the socket file bind creates must never carry group or other
+        // bits, not even for the instant before the chmod
         let saved = umask(0o177)
         let bound = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
@@ -167,7 +178,7 @@ final class ControlSocket {
         acceptSource = source
         self.path = path
         ok = true
-        Self.logger.info("控制 socket 已监听 \(path, privacy: .public)")
+        Self.logger.info("Control socket listening on \(path, privacy: .public)")
     }
 
     private func acceptPending(onPeer: @escaping (Peer) -> Void) {
@@ -175,7 +186,7 @@ final class ControlSocket {
             let client = Darwin.accept(listenFD, nil, nil)
             if client < 0 {
                 if errno == EINTR { continue }
-                return   // EAGAIN / EWOULDBLOCK：这轮收完了
+                return   // EAGAIN / EWOULDBLOCK: that is everything for this round
             }
             guard var peer = Self.peerIdentity(of: client) else {
                 close(client)
@@ -183,9 +194,9 @@ final class ControlSocket {
             }
             Self.connectionCounter &+= 1
             peer.connectionID = Self.connectionCounter
-            // 同 uid 硬校验：这是唯一一道**不可绕过**的身份检查
+            // Hard same-uid check: this is the one identity check that **cannot be bypassed**
             guard Self.accepts(peer) else {
-                Self.logger.error("拒绝 uid \(peer.uid) 的控制连接（本进程 uid \(getuid())）")
+                Self.logger.error("Refused a control connection from uid \(peer.uid) (this process runs as uid \(getuid()))")
                 close(client)
                 continue
             }
@@ -193,9 +204,11 @@ final class ControlSocket {
         }
     }
 
-    /// 唯一不可绕过的身份检查：对端必须与本进程同 uid。
-    /// （应用是 ad-hoc 签名、hardened runtime 关闭的，所以对端的**代码签名**证明不了任何东西——
-    /// 身份到 uid + pid 为止，设计文档就是这么写的，不假装更多。）
+    /// The one identity check that cannot be bypassed: the peer must run under the same uid as
+    /// this process.
+    /// (The app is ad-hoc signed with the hardened runtime off, so the peer's **code signature**
+    /// proves nothing whatsoever — identity stops at uid + pid, which is exactly what the design
+    /// document says, and we do not pretend to more.)
     static func accepts(_ peer: Peer) -> Bool { peer.uid == getuid() }
 
     static func peerIdentity(of fd: Int32) -> Peer? {
@@ -214,7 +227,8 @@ final class ControlSocket {
         return Peer(fd: fd, uid: cred.cr_uid, pid: pid, processName: processName(for: pid))
     }
 
-    /// 内核视角的真实进程名（确认框里显示它，而不是调用方自称的任何东西）
+    /// The real process name from the kernel's point of view (this is what the confirmation
+    /// alert shows, never anything the caller claims about itself)
     static func processName(for pid: pid_t) -> String {
         guard pid > 0 else { return "unknown process" }
         var buffer = [CChar](repeating: 0, count: 256)

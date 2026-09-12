@@ -259,7 +259,7 @@ final class LocalizationTests: XCTestCase {
     func testConfigKeyDrivesTheRuntime() {
         XCTAssertEqual(ConfigStore.Settings().language, "auto", "the default is auto")
         XCTAssertEqual(ConfigStore.parse("[general]\nlanguage = \"zh-Hans\"\n").language, "zh",
-                       "the schema normalises the spelling")
+                       "the schema normalizes the spelling")
         XCTAssertEqual(ConfigStore.parse("[general]\nlanguage = \"klingon\"\n").language, "auto",
                        "an unknown value is rejected and the default stands")
 

@@ -8,22 +8,23 @@ final class WorkspaceTests: XCTestCase {
         get throws { try XCTUnwrap((NSApp.delegate as? AppDelegate)?.controller) }
     }
 
-    // 注意：不用 `override func setUp() async`——override 会剥离 @MainActor 隔离，
-    // 在后台线程改 @Published 状态会炸掉 TEST_HOST（SwiftUI 后台发布）。
-    // 需要归位的用例在（@MainActor 的）测试体内自行 switchTo(0)。
+    // Note: do not use `override func setUp() async`. The override strips the @MainActor isolation, and
+    // touching @Published state from a background thread blows up the TEST_HOST (SwiftUI publishing off the
+    // main thread).
+    // A case that needs to reset calls switchTo(0) itself, inside its (@MainActor) body.
 
     func testDefaultFiveWorkspaces() throws {
         let c = try controller
-        XCTAssertEqual(c.model.layouts.count, 5, "默认 5 个工作区（决策点已确认）")
+        XCTAssertEqual(c.model.layouts.count, 5, "five workspaces by default (a confirmed decision point)")
         XCTAssertEqual(WorkspaceModel.workspaceCount, 5)
     }
 
     func testDefaultLayoutIsScrolling() throws {
-        // spec §4.2-bis v5：新工作区默认 scrolling 无限画布
+        // spec §4.2-bis v5: a new workspace defaults to the scrolling infinite canvas.
         let c = try controller
         c.switchWorkspace(1)
         if case .scrolling = c.model.layout {} else {
-            XCTFail("空工作区默认应为 scrolling（实际 \(c.model.layout.name)）")
+            XCTFail("an empty workspace should default to scrolling (actual \(c.model.layout.name))")
         }
         c.model.switchTo(0)
     }
@@ -34,9 +35,9 @@ final class WorkspaceTests: XCTestCase {
         let ws0Count = c.paneList.count
         c.switchWorkspace(1)
         XCTAssertEqual(c.model.activeIndex, 1)
-        XCTAssertTrue(c.model.layout.isEmpty, "工作区 2 初始为空")
+        XCTAssertTrue(c.model.layout.isEmpty, "workspace 2 starts out empty")
         c.switchWorkspace(0)
-        XCTAssertEqual(c.paneList.count, ws0Count, "切回后工作区 1 不变")
+        XCTAssertEqual(c.paneList.count, ws0Count, "workspace 1 is unchanged after switching back")
     }
 
     func testSwitchOutOfBoundsIsSafe() throws {
@@ -50,26 +51,26 @@ final class WorkspaceTests: XCTestCase {
     func testMoveFocusedPaneToEmptyWorkspaceAndBack() throws {
         let c = try controller
         c.model.switchTo(0)
-        c.perform(.newTerminal)                       // 焦点列右侧插入
+        c.perform(.newTerminal)                       // Inserted to the right of the focused column
         let ws0Before = c.paneList.count
         let moved = try XCTUnwrap(c.focusedSurface)
 
         c.moveFocusedPane(to: 2)
-        XCTAssertEqual(c.model.activeIndex, 2, "移动后跟随到目标工作区")
-        XCTAssertEqual(c.paneList.count, 1, "目标工作区应含被移动的 pane")
+        XCTAssertEqual(c.model.activeIndex, 2, "the move follows the pane to the target workspace")
+        XCTAssertEqual(c.paneList.count, 1, "the target workspace holds the moved pane")
         XCTAssertTrue(c.paneList.first === moved)
 
         c.switchWorkspace(0)
-        XCTAssertEqual(c.paneList.count, ws0Before - 1, "源工作区少一个 pane")
+        XCTAssertEqual(c.paneList.count, ws0Before - 1, "the source workspace is one pane lighter")
 
-        // 清理
+        // Cleanup
         c.switchWorkspace(2)
         if let pane = c.paneList.first { c.closePane(pane, confirmIfNeeded: false, animated: false) }
         c.model.switchTo(0)
     }
 
     func testLayoutToggleRoundTripPreservesPanes() throws {
-        // Cmd+L：scrolling ⇄ dwindle 保 pane（spec §4.2-bis）
+        // Cmd+L: scrolling ⇄ dwindle keeps every pane (spec §4.2-bis).
         let c = try controller
         c.model.switchTo(0)
         c.perform(.newTerminal)
@@ -77,12 +78,12 @@ final class WorkspaceTests: XCTestCase {
         let extra = try XCTUnwrap(c.focusedSurface)
 
         c.perform(.toggleLayout)
-        if case .dwindle = c.model.layout {} else { XCTFail("应切到 dwindle") }
-        XCTAssertEqual(c.paneList.count, before, "切换保 pane")
+        if case .dwindle = c.model.layout {} else { XCTFail("it should switch to dwindle") }
+        XCTAssertEqual(c.paneList.count, before, "the switch keeps every pane")
 
         c.perform(.toggleLayout)
-        if case .scrolling = c.model.layout {} else { XCTFail("应切回 scrolling") }
-        XCTAssertEqual(c.paneList.count, before, "往返保 pane")
+        if case .scrolling = c.model.layout {} else { XCTFail("it should switch back to scrolling") }
+        XCTAssertEqual(c.paneList.count, before, "the round trip keeps every pane")
 
         c.closePane(extra, confirmIfNeeded: false, animated: false)
     }
@@ -94,7 +95,7 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertEqual(map.action(key: "3", modifiers: [.command, .shift])?.action, .moveToWorkspace3)
         XCTAssertEqual(map.action(key: "space", modifiers: [.command, .shift])?.action, .toggleBar)
         XCTAssertEqual(map.action(key: "l", modifiers: .command)?.action, .toggleLayout)
-        XCTAssertNil(map.action(key: "6", modifiers: .command), "工作区仅 1–5")
+        XCTAssertNil(map.action(key: "6", modifiers: .command), "workspaces only go 1-5")
     }
 }
 
@@ -108,14 +109,14 @@ extension WorkspaceTests {
         let tiledBefore = c.model.layout.paneList.count
 
         c.toggleFloat(pane)
-        XCTAssertEqual(c.model.floating.count, 1, "浮起后浮动层 +1")
-        XCTAssertEqual(c.model.layout.paneList.count, tiledBefore - 1, "平铺层 -1")
+        XCTAssertEqual(c.model.floating.count, 1, "floating adds one to the floating layer")
+        XCTAssertEqual(c.model.layout.paneList.count, tiledBefore - 1, "and takes one from the tiling layer")
         XCTAssertTrue(c.model.floating.first?.pane === pane)
-        XCTAssertTrue(c.paneList.contains(pane), "paneList 覆盖浮动层")
+        XCTAssertTrue(c.paneList.contains(pane), "paneList covers the floating layer")
 
         c.toggleFloat(pane)
-        XCTAssertTrue(c.model.floating.isEmpty, "塞回后浮动层清空")
-        XCTAssertEqual(c.model.layout.paneList.count, tiledBefore, "平铺层恢复")
+        XCTAssertTrue(c.model.floating.isEmpty, "putting it back empties the floating layer")
+        XCTAssertEqual(c.model.layout.paneList.count, tiledBefore, "the tiling layer is restored")
 
         c.closePane(pane, confirmIfNeeded: false, animated: false)
     }
@@ -123,23 +124,24 @@ extension WorkspaceTests {
     func testToggleFloatKeybinding() {
         let map = KeybindingMap()
         XCTAssertEqual(map.action(key: "t", modifiers: .command)?.action, .toggleFloat,
-                       "Cmd+T = 浮动切换（不再穿透给 ghostty new_tab）")
+                       "Cmd+T toggles floating; it no longer passes through to ghostty's new_tab")
     }
 
-    /// 浮起默认几何（类 Omarchy）：宽 = 默认列宽 × 0.75，高 = 内容区 45%，居中
+    /// The default geometry when floating (Omarchy-like): width = the default column width × 0.75, height =
+    /// 45% of the content area, centered.
     func testFloatDefaultRectOmarchyGeometry() {
-        let r = FloatingPane.defaultRect(columnFactor: 0.49)  // 2 列默认
-        XCTAssertEqual(r.width, 0.3675, accuracy: 0.0001, "宽 = 0.49 × 0.75")
-        XCTAssertEqual(r.height, 0.45, accuracy: 0.0001, "高 = 内容区 45%")
-        XCTAssertEqual(r.midX, 0.5, accuracy: 0.0001, "水平居中")
-        XCTAssertEqual(r.midY, 0.5, accuracy: 0.0001, "垂直居中")
-        // 4 列更窄；极小因子有下限（保持可用）
+        let r = FloatingPane.defaultRect(columnFactor: 0.49)  // The two-column default
+        XCTAssertEqual(r.width, 0.3675, accuracy: 0.0001, "width = 0.49 × 0.75")
+        XCTAssertEqual(r.height, 0.45, accuracy: 0.0001, "height = 45% of the content area")
+        XCTAssertEqual(r.midX, 0.5, accuracy: 0.0001, "centered horizontally")
+        XCTAssertEqual(r.midY, 0.5, accuracy: 0.0001, "centered vertically")
+        // Four columns are narrower, and a tiny factor hits a floor so the pane stays usable.
         XCTAssertEqual(FloatingPane.defaultRect(columnFactor: 0.245).width,
                        0.18375, accuracy: 0.0001)
         XCTAssertEqual(FloatingPane.defaultRect(columnFactor: 0.05).width, 0.15)
     }
 
-    /// 浮起走 defaultRect（不再原地沿用平铺大尺寸）
+    /// Floating goes through defaultRect rather than keeping the large tiled size in place.
     @MainActor
     func testToggleFloatUsesDefaultRect() throws {
         let c = try controller
@@ -155,42 +157,44 @@ extension WorkspaceTests {
         XCTAssertEqual(rect, FloatingPane.defaultRect(columnFactor: c.columnFactor))
     }
 
-    /// 归一化换算与 NSHostingView 的 flipped 坐标一致
-    /// （回归：曾按 bottom-left 假设双重翻转，遮挡带整体垂直镜像）
+    /// The normalized conversion agrees with NSHostingView's flipped coordinates.
+    /// (Regression: it once assumed bottom-left and flipped twice, mirroring the whole occlusion band vertically.)
     @MainActor
     func testNormalizedContentPointTopLeft() throws {
         let c = try controller
         let content = try XCTUnwrap(c.window?.contentView)
         let W = content.bounds.width
         let H = content.bounds.height
-        let innerH = H - StatusBarView.height  // barVisible 默认 true
-        // 窗口坐标恒为 bottom-left：取状态条正下方 10pt、左缘 1/4 处
+        let innerH = H - StatusBarView.height  // barVisible defaults to true
+        // Window coordinates are always bottom-left: take a point 10pt below the status bar, a quarter of the
+        // way in from the left.
         let loc = NSPoint(x: W / 4, y: H - StatusBarView.height - 10)
         let p = try XCTUnwrap(c.normalizedContentPoint(loc))
         XCTAssertEqual(p.x, 0.25, accuracy: 0.01)
-        XCTAssertEqual(p.y, 10 / innerH, accuracy: 0.01, "top-left 基准：条下 10pt ≈ 顶部")
-        // 内容区底缘上方 10pt → 接近 1
+        XCTAssertEqual(p.y, 10 / innerH, accuracy: 0.01, "top-left origin: 10pt under the bar is near the top")
+        // 10pt above the bottom of the content area comes out close to 1.
         let low = try XCTUnwrap(c.normalizedContentPoint(NSPoint(x: W / 2, y: 10)))
         XCTAssertEqual(low.y, (innerH - 10) / innerH, accuracy: 0.01)
     }
 
-    /// hover 遮挡：只有更高 z 的浮动 pane 构成遮挡（模型几何，不依赖 hitTest——
-    /// ⌘ 拖拽源浮层、overlay 滚动条等非 surface 覆盖不会误判）
+    /// Hover occlusion: only a floating pane with a higher z occludes. This is model geometry and never calls
+    /// hitTest, so a non-surface cover such as the Cmd drag-source overlay or an overlay scroller is never
+    /// mistaken for one.
     func testHoverOcclusionGeometry() {
         let a = CGRect(x: 0.1, y: 0.1, width: 0.3, height: 0.3)   // z0
-        let b = CGRect(x: 0.3, y: 0.3, width: 0.3, height: 0.3)   // z1（最顶）
+        let b = CGRect(x: 0.3, y: 0.3, width: 0.3, height: 0.3)   // z1 (topmost)
         let rects = [a, b]
         let inBoth = CGPoint(x: 0.35, y: 0.35)
         let onlyA = CGPoint(x: 0.15, y: 0.15)
         let outside = CGPoint(x: 0.9, y: 0.9)
-        // 平铺 pane（nil）：任一浮动覆盖即遮挡
+        // A tiled pane (nil): any floating pane covering the point occludes it.
         XCTAssertTrue(HoverOcclusion.isOccluded(paneFloatIndex: nil, floatingRects: rects, at: onlyA))
         XCTAssertTrue(HoverOcclusion.isOccluded(paneFloatIndex: nil, floatingRects: rects, at: inBoth))
         XCTAssertFalse(HoverOcclusion.isOccluded(paneFloatIndex: nil, floatingRects: rects, at: outside))
-        // 浮动 z0：只被更高 z 遮挡，不被自己遮挡
+        // Floating at z0: occluded only by a higher z, never by itself.
         XCTAssertTrue(HoverOcclusion.isOccluded(paneFloatIndex: 0, floatingRects: rects, at: inBoth))
         XCTAssertFalse(HoverOcclusion.isOccluded(paneFloatIndex: 0, floatingRects: rects, at: onlyA))
-        // 最顶浮动永不被遮挡；无浮动即无遮挡
+        // The topmost floating pane is never occluded, and with no floating panes there is no occlusion.
         XCTAssertFalse(HoverOcclusion.isOccluded(paneFloatIndex: 1, floatingRects: rects, at: inBoth))
         XCTAssertFalse(HoverOcclusion.isOccluded(paneFloatIndex: nil, floatingRects: [], at: inBoth))
     }
@@ -205,7 +209,8 @@ extension WorkspaceTests {
         XCTAssertLessThanOrEqual(wild.rect.height, 1.0)
         XCTAssertGreaterThanOrEqual(wild.rect.origin.y, 0)
 
-        // v5 往返含浮动层；v2 JSON（无 floatings 字段）经迁移仍可解且浮动为空
+        // A v5 round trip includes the floating layer; v2 JSON, which has no floatings field, still decodes
+        // after migration, with an empty floating layer.
         let state = PersistedState(windows: [
             WindowState(layouts: c.model.layouts, floatings: c.model.floatings, activeIndex: 0)
         ])
@@ -222,35 +227,37 @@ extension WorkspaceTests {
         v2.removeValue(forKey: "floatings")
         let v2data = try JSONSerialization.data(withJSONObject: v2)
         let decodedV2 = try JSONDecoder().decode(LegacyPersistedState.self, from: v2data)
-        XCTAssertNil(decodedV2.floatings, "v2 存档兼容：浮动层缺省")
+        XCTAssertNil(decodedV2.floatings, "v2 archive compatibility: the floating layer defaults to absent")
     }
 }
 
 extension WorkspaceTests {
-    /// 退出语义：有 pane 才确认；关掉最后一个 pane 窗口仍在且能直接新建
+    /// Quit semantics: confirm only when panes are open; closing the last pane leaves the window standing and
+    /// a new terminal can be created straight away.
     @MainActor
     func testLastPaneCloseKeepsWindowAndQuitConfirmRule() throws {
-        XCTAssertFalse(AppDelegate.shouldConfirmQuit(openPaneCount: 0), "没有 pane → 直接退出")
-        XCTAssertTrue(AppDelegate.shouldConfirmQuit(openPaneCount: 1), "有 pane → 确认")
+        XCTAssertFalse(AppDelegate.shouldConfirmQuit(openPaneCount: 0), "no panes -> quit straight away")
+        XCTAssertTrue(AppDelegate.shouldConfirmQuit(openPaneCount: 1), "panes open -> confirm")
 
         let c = try controller
         let home = c.model.activeIndex
         let ws = c.model.layouts.count - 1
         c.model.switchTo(ws)
         defer { c.model.switchTo(home) }
-        XCTAssertTrue(c.model.layout.isEmpty, "末位工作区应为空")
+        XCTAssertTrue(c.model.layout.isEmpty, "the last workspace should be empty")
         c.perform(.newTerminal)
         let only = try XCTUnwrap(c.paneList.first)
         c.closePane(only, confirmIfNeeded: false, animated: false)
-        XCTAssertTrue(c.model.layout.isEmpty, "最后一个 pane 已关")
-        XCTAssertTrue(c.window?.isVisible ?? false, "窗口保留，不随最后一个 pane 关闭")
+        XCTAssertTrue(c.model.layout.isEmpty, "the last pane is closed")
+        XCTAssertTrue(c.window?.isVisible ?? false, "the window stays; it does not close with the last pane")
         c.perform(.newTerminal)
-        XCTAssertEqual(c.paneList.count, 1, "空工作区可直接新建终端")
+        XCTAssertEqual(c.paneList.count, 1, "a new terminal can be created in an empty workspace")
         c.closePane(try XCTUnwrap(c.paneList.first), confirmIfNeeded: false, animated: false)
     }
 
-    /// 关闭动效：关闭先标记淡出（pane 仍在布局、焦点已交给接班人），动效到点后才真正移除；
-    /// 任何布局操作前先把淡出中的 pane 立即移除（flush），定时器到点不再有副作用
+    /// The close animation: a close first marks the pane as fading (it stays in the layout, and focus has
+    /// already gone to its successor), and only removes it once the animation is done.
+    /// Any layout operation flushes a fading pane out first, so the timer has no side effect when it fires.
     @MainActor
     func testClosePaneAnimatedDefersRemovalAndFocusesSuccessor() throws {
         let c = try controller
@@ -260,9 +267,9 @@ extension WorkspaceTests {
         let ws = c.model.layouts.count - 1
         c.model.switchTo(ws)
         defer { c.model.switchTo(home) }
-        XCTAssertTrue(c.model.layout.isEmpty, "末位工作区应为空")
+        XCTAssertTrue(c.model.layout.isEmpty, "the last workspace should be empty")
         c.model.layout = .dwindle(SplitTree())
-        c.closeAnimationEnabled = true   // 不受系统"减弱动态效果"影响
+        c.closeAnimationEnabled = true   // Not subject to the system's "reduce motion" setting
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         c.perform(.newTerminal)
         let a = try XCTUnwrap(c.paneList.first)
@@ -270,26 +277,26 @@ extension WorkspaceTests {
         c.perform(.newTerminal)
         let b = try XCTUnwrap(c.paneList.first { $0 !== a })
         RunLoop.main.run(until: Date().addingTimeInterval(0.6))
-        XCTAssertTrue(c.window?.firstResponder === b, "新 pane 应为焦点")
+        XCTAssertTrue(c.window?.firstResponder === b, "the new pane takes focus")
 
-        c.closePane(b, confirmIfNeeded: false)   // animated 默认开
-        XCTAssertEqual(c.paneList.count, 2, "动效期间 pane 仍在布局")
+        c.closePane(b, confirmIfNeeded: false)   // animated defaults to true
+        XCTAssertEqual(c.paneList.count, 2, "the pane stays in the layout while the animation runs")
         XCTAssertTrue(c.model.closingPanes.contains(b.id))
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        XCTAssertTrue(c.window?.firstResponder === a, "焦点在关闭开始时就交给接班人")
+        XCTAssertTrue(c.window?.firstResponder === a, "focus goes to the successor the moment the close starts")
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
-        XCTAssertEqual(c.paneList.count, 1, "动效到点后真正移除")
+        XCTAssertEqual(c.paneList.count, 1, "it is really removed once the animation is done")
         XCTAssertTrue(c.model.closingPanes.isEmpty)
         XCTAssertTrue(c.window?.firstResponder === a)
 
-        // flush：淡出中再做布局操作 → 立即移除；到点的定时器不再有副作用
+        // flush: a layout operation during the fade removes it at once, and the timer firing later has no effect.
         c.perform(.newTerminal)
         let d = try XCTUnwrap(c.paneList.first { $0 !== a })
         RunLoop.main.run(until: Date().addingTimeInterval(0.6))
         c.closePane(d, confirmIfNeeded: false)
         XCTAssertEqual(c.paneList.count, 2)
         c.perform(.focusLeft)
-        XCTAssertEqual(c.paneList.count, 1, "布局操作前 flush 淡出中的 pane")
+        XCTAssertEqual(c.paneList.count, 1, "a layout operation flushes the fading pane first")
         XCTAssertTrue(c.model.closingPanes.isEmpty)
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
         XCTAssertEqual(c.paneList.count, 1)
@@ -297,10 +304,11 @@ extension WorkspaceTests {
         c.closePane(a, confirmIfNeeded: false, animated: false)
     }
 
-    /// dwindle 三 pane 夹具：split(A, split(B, C))，焦点 C（末位空工作区，动效开）
+    /// A three-pane dwindle fixture: split(A, split(B, C)) with C focused, in the last, empty workspace, with
+    /// the animation enabled.
     @MainActor
     private func dwindleTriple(_ c: MainWindowController) throws -> (a: PaneView, b: PaneView, cc: PaneView) {
-        XCTAssertTrue(c.model.layout.isEmpty, "末位工作区应为空")
+        XCTAssertTrue(c.model.layout.isEmpty, "the last workspace should be empty")
         c.model.layout = .dwindle(SplitTree())
         c.closeAnimationEnabled = true
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
@@ -313,9 +321,10 @@ extension WorkspaceTests {
         let a = try spawn(), b = try spawn(), cc = try spawn()
         guard case .dwindle(let tree) = c.model.layout, case .split(let root)? = tree.root,
               case .leaf(let l) = root.left, l === a, case .split = root.right else {
-            // 夹具形状在测试宿主里是确定的（1024×720 窗口，新 pane 相对焦点插入）：
-            // 不成形 = 焦点交接回归，必须失败而不是跳过
-            XCTFail("期望 split(A, split(B, C))，实际 \(c.model.layout)")
+            // The fixture's shape is deterministic in the test host (a 1024×720 window, new panes inserted
+            // relative to the focused one): a different shape means a focus-handover regression, so this has
+            // to fail rather than skip.
+            XCTFail("expected split(A, split(B, C)), actual \(c.model.layout)")
             throw FixtureShapeError()
         }
         return (a, b, cc)
@@ -323,11 +332,13 @@ extension WorkspaceTests {
 
     private struct FixtureShapeError: Error {}
 
-    /// 窗口坐标里的 pane 矩形
+    /// A pane's rect in window coordinates.
     private func windowRect(_ v: PaneView) -> NSRect { v.convert(v.bounds, to: nil) }
 
-    /// 关闭的 pane 其兄弟是子树时，兄弟子树会顶到父分裂视图的位置被 SwiftUI 复用（连同锁存的关闭态）；
-    /// 派生几何必须立刻回到正常——否则幸存子树的一个孩子被压成 0 宽、内容钉在旧尺寸盖住另一个
+    /// When the closed pane's sibling is a subtree, that subtree moves up into the parent split view's place
+    /// and SwiftUI reuses the view, latched closing state and all. The derived geometry has to snap back to
+    /// normal at once, or one child of the surviving subtree is squeezed to zero width while its content stays
+    /// pinned at the old size, covering the other.
     @MainActor
     func testCloseAnimationSurvivorSubtreeKeepsGeometry() throws {
         let c = try controller
@@ -338,20 +349,22 @@ extension WorkspaceTests {
         defer { c.model.switchTo(home) }
         let (a, b, cc) = try dwindleTriple(c)
         defer { for p in [b, cc] where c.paneList.contains(p) { c.closePane(p, confirmIfNeeded: false, animated: false) } }
-        c.closePane(a, confirmIfNeeded: false)   // 动效关闭；根变成 split(B, C)，复用根分裂视图
+        c.closePane(a, confirmIfNeeded: false)   // Animated close; the root becomes split(B, C) and reuses the root split view
         RunLoop.main.run(until: Date().addingTimeInterval(0.7))
         XCTAssertEqual(c.paneList.count, 2)
         let rb = windowRect(b), rc = windowRect(cc)
-        XCTAssertGreaterThan(rb.width, 40, "B 尺寸异常 \(rb)")
-        XCTAssertGreaterThan(rb.height, 40, "B 尺寸异常 \(rb)")
-        XCTAssertGreaterThan(rc.width, 40, "C 尺寸异常 \(rc)")
-        XCTAssertGreaterThan(rc.height, 40, "C 尺寸异常 \(rc)")
+        XCTAssertGreaterThan(rb.width, 40, "B has a bad size \(rb)")
+        XCTAssertGreaterThan(rb.height, 40, "B has a bad size \(rb)")
+        XCTAssertGreaterThan(rc.width, 40, "C has a bad size \(rc)")
+        XCTAssertGreaterThan(rc.height, 40, "C has a bad size \(rc)")
         let overlap = rb.intersection(rc)
-        XCTAssertLessThan(overlap.width * overlap.height, 100, "B/C 重叠：B=\(rb) C=\(rc)（残留的关闭态几何）")
+        XCTAssertLessThan(overlap.width * overlap.height, 100,
+                          "B and C overlap: B=\(rb) C=\(rc) (geometry left over from the closing state)")
     }
 
-    /// 淡出中紧接着新建：perform 先 flush（根 → 叶 B）再插入 D（根 → split(B, D)），同一轮更新里
-    /// 根分裂视图被复用；B 不能被压成 0 宽
+    /// Creating a pane in the middle of a fade-out: perform flushes first (root -> leaf B) and then inserts D
+    /// (root -> split(B, D)), so the root split view is reused inside a single update.
+    /// B must not be squeezed to zero width.
     @MainActor
     func testCloseThenNewTerminalReusesBranchWithoutStaleState() throws {
         let c = try controller
@@ -372,19 +385,20 @@ extension WorkspaceTests {
         RunLoop.main.run(until: Date().addingTimeInterval(0.6))
         c.closePane(a, confirmIfNeeded: false)
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        c.perform(.newTerminal)                 // flush + 插入
+        c.perform(.newTerminal)                 // flush plus insert
         XCTAssertEqual(c.paneList.count, 2)
         let d = try XCTUnwrap(c.paneList.first { $0 !== b })
         defer { for p in [b, d] where c.paneList.contains(p) { c.closePane(p, confirmIfNeeded: false, animated: false) } }
         RunLoop.main.run(until: Date().addingTimeInterval(0.7))
         let rb = windowRect(b), rd = windowRect(d)
-        XCTAssertGreaterThan(rb.width, 40, "B 尺寸异常 \(rb)")
-        XCTAssertGreaterThan(rd.width, 40, "D 尺寸异常 \(rd)")
+        XCTAssertGreaterThan(rb.width, 40, "B has a bad size \(rb)")
+        XCTAssertGreaterThan(rd.width, 40, "D has a bad size \(rd)")
         let overlap = rb.intersection(rd)
-        XCTAssertLessThan(overlap.width * overlap.height, 100, "B/D 重叠：B=\(rb) D=\(rd)")
+        XCTAssertLessThan(overlap.width * overlap.height, 100, "B and D overlap: B=\(rb) D=\(rd)")
     }
 
-    /// 并发关闭（子进程同时退出，不经 perform 不 flush）：接班人不能是正在淡出的 pane
+    /// Concurrent closes (child processes exiting at once, which never goes through perform and so never
+    /// flushes): the successor must not be a pane that is already fading out.
     @MainActor
     func testConcurrentCloseSuccessorSkipsFadingPane() throws {
         let c = try controller
@@ -396,17 +410,18 @@ extension WorkspaceTests {
         let (a, b, cc) = try dwindleTriple(c)
         defer { if c.paneList.contains(a) { c.closePane(a, confirmIfNeeded: false, animated: false) } }
         XCTAssertTrue(c.window?.firstResponder === cc)
-        c.closePane(b, confirmIfNeeded: false)    // B 淡出（非焦点）
-        c.closePane(cc, confirmIfNeeded: false)   // C 淡出：兄弟 B 在淡出中，接班人应为 A
+        c.closePane(b, confirmIfNeeded: false)    // B fades out; it is not the focused pane
+        c.closePane(cc, confirmIfNeeded: false)   // C fades out: its sibling B is already fading, so A has to take over
         RunLoop.main.run(until: Date().addingTimeInterval(0.15))
-        XCTAssertTrue(c.window?.firstResponder === a, "接班人应跳过淡出中的 B")
+        XCTAssertTrue(c.window?.firstResponder === a, "the successor has to skip B, which is fading out")
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
         XCTAssertEqual(c.paneList.count, 1)
         XCTAssertTrue(c.paneList.first === a)
         XCTAssertTrue(c.window?.firstResponder === a)
     }
 
-    /// 非活动工作区里 shell 退出：pane 直接从所在工作区移除（原先只处理活动工作区，死 surface 会残留）
+    /// A shell exiting in an inactive workspace: the pane is removed from the workspace it lives in (this used
+    /// to handle only the active workspace, leaving dead surfaces behind).
     @MainActor
     func testChildExitInBackgroundWorkspaceRemovesPane() throws {
         let c = try controller
@@ -423,12 +438,13 @@ extension WorkspaceTests {
         XCTAssertFalse(c.paneList.contains(p))
         NotificationCenter.default.post(name: Ghostty.Notification.ghosttyCloseSurface, object: p,
                                         userInfo: ["process_alive": false])
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))   // 移除在回调栈外异步进行
-        XCTAssertTrue(c.model.layouts[ws].isEmpty, "后台工作区的 pane 应被移除")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))   // The removal runs asynchronously, outside the callback stack
+        XCTAssertTrue(c.model.layouts[ws].isEmpty, "a pane in a background workspace has to be removed")
     }
 
-    /// pane 间隔在两种布局下一致：相邻 SurfaceView 的窗口矩形间距 = 2×pane-gap（dwindle 分隔线不占布局），
-    /// dwindle 左缘到内容区边 = 外圈 + 留白 = 2×pane-gap
+    /// Pane spacing is the same in both layouts: the window rects of two adjacent SurfaceViews are 2×pane-gap
+    /// apart (the dwindle divider takes no layout space), and the dwindle's left edge sits the outer ring plus
+    /// the gap, again 2×pane-gap, from the content area.
     @MainActor
     func testPaneGapConsistentAcrossLayouts() throws {
         let c = try controller
@@ -436,7 +452,7 @@ extension WorkspaceTests {
         c.model.switchTo(c.model.layouts.count - 1)
         defer { c.model.switchTo(home) }
         XCTAssertTrue(c.model.layout.isEmpty)
-        let gap = c.themeManager.paneGap   // 测试宿主读真实配置：不假设具体值（默认 5 由 ConfigStoreTests 覆盖）
+        let gap = c.themeManager.paneGap   // The test host reads the real config: assume no value (the default of 5 is ConfigStoreTests' job)
         XCTAssertGreaterThan(gap, 0)
         func spawn() throws -> PaneView {
             let before = Set(c.paneList.map(ObjectIdentifier.init))
@@ -446,29 +462,30 @@ extension WorkspaceTests {
         }
         func rect(_ v: PaneView) -> NSRect { v.convert(v.bounds, to: nil) }
 
-        // dwindle：A | B
+        // dwindle: A | B
         c.model.layout = .dwindle(SplitTree())
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         let a = try spawn(), b = try spawn()
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
         let ra = rect(a), rb = rect(b)
-        XCTAssertEqual(rb.minX - ra.maxX, 2 * gap, accuracy: 0.6, "dwindle 相邻间距 A=\(ra) B=\(rb)")
-        XCTAssertEqual(ra.minX, 2 * gap, accuracy: 0.6, "dwindle 左缘 = 外圈 + 留白")
+        XCTAssertEqual(rb.minX - ra.maxX, 2 * gap, accuracy: 0.6, "dwindle neighbour spacing A=\(ra) B=\(rb)")
+        XCTAssertEqual(ra.minX, 2 * gap, accuracy: 0.6, "the dwindle's left edge is the outer ring plus the gap")
         for p in [a, b] { c.closePane(p, confirmIfNeeded: false, animated: false) }
 
-        // scrolling：两列（不溢出居中），相邻间距同值
+        // scrolling: two columns, centered without overflow, with the same neighbour spacing.
         c.model.layout = .empty
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         let x = try spawn(), y = try spawn()
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
         let rx = rect(x), ry = rect(y)
         let (left, right) = rx.minX < ry.minX ? (rx, ry) : (ry, rx)
-        XCTAssertEqual(right.minX - left.maxX, 2 * gap, accuracy: 0.6, "scrolling 相邻间距 \(left) \(right)")
+        XCTAssertEqual(right.minX - left.maxX, 2 * gap, accuracy: 0.6, "scrolling neighbour spacing \(left) \(right)")
         for p in [x, y] { c.closePane(p, confirmIfNeeded: false, animated: false) }
         c.model.layout = .empty
     }
 
-    /// file-manager 动作：新 pane 以指定程序启动并获得焦点（用 vim 代替 yazi：接受目录参数且常驻）
+    /// The file-manager action: a new pane starts the configured program and takes focus (vim stands in for
+    /// yazi: it takes a directory argument and stays running).
     @MainActor
     func testFileManagerActionOpensFocusedPane() throws {
         let c = try controller
@@ -483,13 +500,14 @@ extension WorkspaceTests {
         XCTAssertEqual(c.paneList.count, 1)
         let pane = try XCTUnwrap(c.paneList.first)
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
-        XCTAssertTrue(c.window?.firstResponder === pane, "文件管理器 pane 应获焦点")
-        XCTAssertTrue(c.paneList.contains(pane), "程序常驻，pane 不应自行关闭")
-        c.closePane(pane, confirmIfNeeded: true, animated: false)   // 文件管理器 pane 不弹确认，直接关
-        XCTAssertTrue(c.paneList.isEmpty, "关闭不应被进程确认拦住")
+        XCTAssertTrue(c.window?.firstResponder === pane, "the file-manager pane takes focus")
+        XCTAssertTrue(c.paneList.contains(pane), "the program stays running, so the pane must not close itself")
+        c.closePane(pane, confirmIfNeeded: true, animated: false)   // A file-manager pane raises no confirmation and closes right away
+        XCTAssertTrue(c.paneList.isEmpty, "closing must not be blocked by a process confirmation")
     }
 
-    /// 程序缺失：pane 仍然打开（提示安装并进入登录 shell），不是静默失败
+    /// A missing program still opens the pane, showing an install hint and dropping into a login shell, rather
+    /// than failing silently.
     @MainActor
     func testFileManagerMissingProgramOpensHintPane() throws {
         let c = try controller
@@ -502,11 +520,12 @@ extension WorkspaceTests {
         c.perform(.fileManager)
         XCTAssertEqual(c.paneList.count, 1)
         RunLoop.main.run(until: Date().addingTimeInterval(1.2))
-        XCTAssertEqual(c.paneList.count, 1, "提示 pane 应常驻（exec 交互登录 shell）")
+        XCTAssertEqual(c.paneList.count, 1, "the hint pane stays open; it execs an interactive login shell")
         for p in c.paneList { c.closePane(p, confirmIfNeeded: false, animated: false) }
     }
 
-    /// 文件管理器退出且目录已变：旁边开终端并关掉本 pane（新 pane 顶上、获焦点），临时 cwd 文件清理
+    /// The file manager exits with a changed directory: a terminal opens in its place and this pane closes (the
+    /// new pane takes over and takes focus), and the temporary cwd file is cleaned up.
     @MainActor
     func testFileManagerExitOpensTerminalAtChangedDirectory() throws {
         let c = try controller
@@ -524,16 +543,16 @@ extension WorkspaceTests {
         c.registerFileManagerSession(fm, .init(startDirectory: "/tmp", cwdFile: cwdFile))
         NotificationCenter.default.post(name: Ghostty.Notification.ghosttyCloseSurface, object: fm,
                                         userInfo: ["process_alive": true])
-        RunLoop.main.run(until: Date().addingTimeInterval(0.7))   // 关闭动效到点
-        XCTAssertEqual(c.paneList.count, 1, "旧 pane 关闭、新终端顶上")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.7))   // Wait out the close animation
+        XCTAssertEqual(c.paneList.count, 1, "the old pane closed and a new terminal took its place")
         let replacement = try XCTUnwrap(c.paneList.first)
         XCTAssertFalse(replacement === fm)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: cwdFile), "临时 cwd 文件已清理")
-        XCTAssertTrue(c.window?.firstResponder === replacement, "焦点在新终端")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cwdFile), "the temporary cwd file was cleaned up")
+        XCTAssertTrue(c.window?.firstResponder === replacement, "focus is on the new terminal")
         c.closePane(replacement, confirmIfNeeded: false, animated: false)
     }
 
-    /// 可执行的假文件管理器脚本（忽略参数），body 为脚本正文
+    /// An executable fake file-manager script that ignores its arguments; body is the script's contents.
     private func fakeFileManager(_ body: String) throws -> (dir: String, path: String) {
         let dir = NSTemporaryDirectory() + "quickterm-fake-fm-" + UUID().uuidString
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -543,8 +562,9 @@ extension WorkspaceTests {
         return (dir, path)
     }
 
-    /// 真实退出路径：引擎对带 command 的 surface 不自行 close，只发 SHOW_CHILD_EXITED；
-    /// 程序正常退出（运行时长 > 250ms）pane 就该自动关闭，而不是显示 "Process exited. Press any key"
+    /// The real exit path: for a surface started with a command the engine does not close itself, it only sends
+    /// SHOW_CHILD_EXITED. When the program exits normally, having run for more than 250ms, the pane has to
+    /// close on its own rather than showing "Process exited. Press any key".
     @MainActor
     func testFileManagerProcessExitAutoClosesPane() throws {
         let c = try controller
@@ -553,16 +573,17 @@ extension WorkspaceTests {
         defer { c.model.switchTo(home) }
         let prevCmd = c.fileManagerCommand
         defer { c.fileManagerCommand = prevCmd }
-        let fake = try fakeFileManager("sleep 0.5")   // 正常运行后退出、不写 cwd 文件
+        let fake = try fakeFileManager("sleep 0.5")   // Runs normally, exits, writes no cwd file
         defer { try? FileManager.default.removeItem(atPath: fake.dir) }
         c.fileManagerCommand = fake.path
         c.perform(.fileManager)
         XCTAssertEqual(c.paneList.count, 1)
         RunLoop.main.run(until: Date().addingTimeInterval(2.5))
-        XCTAssertTrue(c.paneList.isEmpty, "子进程退出后 pane 应自动关闭")
+        XCTAssertTrue(c.paneList.isEmpty, "the pane closes itself once the child process exits")
     }
 
-    /// 启动即失败（≤250ms 退出，如 yazi 配置坏了）：不抑制引擎的诊断，pane 保留等待按键
+    /// Failing at launch, exiting within 250ms (a broken yazi config, say): the engine's diagnostics are not
+    /// suppressed and the pane stays, waiting for a key.
     @MainActor
     func testFileManagerAbnormalFastExitKeepsPaneForDiagnostics() throws {
         let c = try controller
@@ -574,12 +595,13 @@ extension WorkspaceTests {
         c.fileManagerCommand = "/usr/bin/false"
         c.perform(.fileManager)
         RunLoop.main.run(until: Date().addingTimeInterval(1.5))
-        XCTAssertEqual(c.paneList.count, 1, "异常退出的 pane 应保留（引擎显示 failed to launch）")
+        XCTAssertEqual(c.paneList.count, 1, "a pane that exited abnormally stays (the engine shows failed to launch)")
         for p in c.paneList { c.closePane(p, confirmIfNeeded: false, animated: false) }
     }
 
-    /// 真实 cd-here 路径：假 yazi 把 --cwd-file 写成别的目录后退出 → 原位开终端并聚焦它
-    /// （scrolling 下左侧已有 pane A：焦点必须落在新终端而不是 A）
+    /// The real cd-here path: the fake yazi writes a different directory into --cwd-file and exits, so a
+    /// terminal opens in its place and takes focus
+    /// (in scrolling there is already a pane A to its left, and focus has to land on the new terminal, not on A).
     @MainActor
     func testFileManagerRealExitOpensTerminalAtWrittenDirectoryAndFocusesIt() throws {
         let c = try controller
@@ -588,25 +610,25 @@ extension WorkspaceTests {
         defer { c.model.switchTo(home) }
         let prevCmd = c.fileManagerCommand
         defer { c.fileManagerCommand = prevCmd }
-        // 假 yazi：正常运行一会儿，把 --cwd-file=<path> 里的 path 写成 /usr 然后退出
+        // The fake yazi: run for a moment, write /usr into the path from --cwd-file=<path>, then exit.
         let fake = try fakeFileManager("sleep 0.4\nprintf '/usr\\n' > \"${1#--cwd-file=}\"")
         defer { try? FileManager.default.removeItem(atPath: fake.dir) }
         c.fileManagerCommand = fake.path
-        c.perform(.newTerminal)                  // 左侧已有 pane A
+        c.perform(.newTerminal)                  // Pane A already exists on the left
         let a = try XCTUnwrap(c.paneList.first)
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
         c.perform(.fileManager)
         let fm = try XCTUnwrap(c.paneList.first { $0 !== a })
         RunLoop.main.run(until: Date().addingTimeInterval(3.0))
-        XCTAssertEqual(c.paneList.count, 2, "文件管理器 pane 已关、新终端顶上")
+        XCTAssertEqual(c.paneList.count, 2, "the file-manager pane closed and a new terminal took its place")
         XCTAssertFalse(c.paneList.contains(fm))
         let replacement = try XCTUnwrap(c.paneList.first { $0 !== a })
-        XCTAssertTrue(c.window?.firstResponder === replacement, "焦点在新终端而不是左邻 A")
-        XCTAssertEqual(replacement.workingDirectory, "/usr", "新终端目录 = yazi 写的目录")
+        XCTAssertTrue(c.window?.firstResponder === replacement, "focus is on the new terminal, not on its left neighbour A")
+        XCTAssertEqual(replacement.workingDirectory, "/usr", "the new terminal's directory is the one yazi wrote")
         for p in c.paneList { c.closePane(p, confirmIfNeeded: false, animated: false) }
     }
 
-    /// 退出但目录未变（或 Q 不写文件）：只关 pane
+    /// Exiting with the directory unchanged (or quitting with Q, which writes no file): only the pane closes.
     @MainActor
     func testFileManagerExitWithoutDirectoryChangeJustCloses() throws {
         let c = try controller
@@ -625,11 +647,13 @@ extension WorkspaceTests {
         NotificationCenter.default.post(name: Ghostty.Notification.ghosttyCloseSurface, object: fm,
                                         userInfo: ["process_alive": false])
         RunLoop.main.run(until: Date().addingTimeInterval(0.7))
-        XCTAssertTrue(c.paneList.isEmpty, "目录未变：只关 pane")
+        XCTAssertTrue(c.paneList.isEmpty, "directory unchanged: only the pane closes")
         XCTAssertFalse(FileManager.default.fileExists(atPath: cwdFile))
     }
 
-    /// 每屏 3 列时：新建、Cmd+J 併入再拆出、再新建，所有列宽因子都等于当前因子（截图 bug：拆出列变 0.485）
+    /// With three visible columns: create, merge with Cmd+J and split back out, then create again, and every
+    /// column's width factor still equals the current factor (the screenshot bug: the column split back out
+    /// came back as 0.485).
     @MainActor
     func testScrollingColumnsStayEqualAfterMergeSplitWithThreeVisible() throws {
         let c = try controller
@@ -660,55 +684,60 @@ extension WorkspaceTests {
         let b = try spawn()
         XCTAssertEqual(factors(), [f, f])
         _ = c.window?.makeFirstResponder(b)
-        c.perform(.toggleSplitDirection)   // b 併入左列
+        c.perform(.toggleSplitDirection)   // b merges into the left column
         XCTAssertEqual(factors(), [f])
-        c.perform(.toggleSplitDirection)   // b 拆出
-        XCTAssertEqual(factors(), [f, f], "拆出的列不能用两列默认宽")
+        c.perform(.toggleSplitDirection)   // b splits back out
+        XCTAssertEqual(factors(), [f, f], "a column split back out must not take the two-column default width")
         _ = try spawn()
         XCTAssertEqual(factors(), [f, f, f])
     }
 
-    /// 条带几何断言：pane 视图宽度 = 模型列宽 − 2×pane-gap，且整列完整落在视口内
+    /// Strip geometry: a pane view's width equals the model's column width − 2×pane-gap, and the whole column
+    /// lands inside the viewport.
     @MainActor
     private func assertFillsColumnInsideViewport(
         _ c: MainWindowController, _ pane: PaneView, _ label: String,
         file: StaticString = #filePath, line: UInt = #line) throws {
-        // pane 内边距与外圈留白同值，且都跟着 gaps 开关走（PaneChrome / RootView）
+        // A pane's inner padding and the outer ring share one value, and both follow the gaps switch
+        // (PaneChrome / RootView).
         let gap = c.themeManager.gapsEnabled ? c.themeManager.paneGap : 0
         let outer = gap
-        let content = try XCTUnwrap(c.window?.contentView, "窗口内容区", file: file, line: line)
-        let viewport = content.bounds.width - 2 * outer   // 条带视口 = 内容区宽 − 外圈留白
+        let content = try XCTUnwrap(c.window?.contentView, "the window's content view", file: file, line: line)
+        let viewport = content.bounds.width - 2 * outer   // Strip viewport = content width − the outer ring
         guard case .scrolling(let strip) = c.model.layout else {
-            return XCTFail("布局应为 scrolling", file: file, line: line)
+            return XCTFail("the layout should be scrolling", file: file, line: line)
         }
-        let pos = try XCTUnwrap(strip.position(of: pane), "\(label) 不在条带里", file: file, line: line)
+        let pos = try XCTUnwrap(strip.position(of: pane), "\(label) is not in the strip", file: file, line: line)
         let widths = strip.columnWidths(viewport: viewport, gap: 0)
-        let rect = pane.convert(pane.bounds, to: nil)     // 窗口坐标
+        let rect = pane.convert(pane.bounds, to: nil)     // Window coordinates
         XCTAssertEqual(rect.width, widths[pos.col] - 2 * gap, accuracy: 1.0,
-                       "\(label) 宽度应 = 列宽 \(widths[pos.col]) − 2×gap，实为 \(rect)",
+                       "\(label)'s width should be the column width \(widths[pos.col]) − 2×gap, actual \(rect)",
                        file: file, line: line)
         XCTAssertGreaterThanOrEqual(rect.minX, outer - 1.0,
-                                    "\(label) 被视口左缘裁掉：\(rect)", file: file, line: line)
+                                    "\(label) is clipped by the viewport's left edge: \(rect)", file: file, line: line)
         XCTAssertLessThanOrEqual(rect.maxX, outer + viewport + 1.0,
-                                 "\(label) 被视口右缘裁掉：\(rect)", file: file, line: line)
+                                 "\(label) is clipped by the viewport's right edge: \(rect)", file: file, line: line)
     }
 
-    /// 回归（用户报告「新建浏览器，宽度不对」：新浏览器 pane 亮着焦点边框却被窗口右缘裁掉）：
-    /// scrolling 里新建的 pane —— 浏览器与终端一视同仁 —— 必须
-    /// ①视图宽度 = 模型列宽 − 2×pane-gap（NSViewRepresentable 不得被内部 fittingSize 撑开），
-    /// ②所在列完整落在视口内（新列由条带滚动揭示出来）。窄列一并覆盖：浏览器 pane 的 fittingSize
-    /// （工具条 + 地址栏 200pt 下限）远大于列宽时也不许撑出列外。
+    /// Regression from the user report "new browser, wrong width": the new browser pane was lit with the focus
+    /// border and clipped by the right edge of the window. A pane created in scrolling, browser and terminal
+    /// alike, has to
+    /// (1) have a view width equal to the model's column width − 2×pane-gap (an NSViewRepresentable must not
+    ///     be stretched open by its own fittingSize), and
+    /// (2) sit in a column that lands entirely inside the viewport (the strip scrolls the new column in).
+    /// Narrow columns are covered as well: a browser pane's fittingSize (the toolbar plus the 200pt minimum
+    /// address field) is far wider than the column, and it still must not spill out of it.
     @MainActor
     func testNewPaneInScrollingFillsColumnAndIsRevealed() throws {
         let c = try controller
         let home = c.model.activeIndex
         c.model.switchTo(c.model.layouts.count - 1)
         XCTAssertTrue(c.model.layout.isEmpty)
-        c.model.layout = .empty   // 前面的用例可能把这块工作区留成（空的）dwindle
+        c.model.layout = .empty   // An earlier case may have left this workspace as an (empty) dwindle
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         let prevVisible = c.visibleColumns
         let prevSettings = BrowserPaneView.settings
-        BrowserPaneView.settings.home = "about:blank"   // 不联网
+        BrowserPaneView.settings.home = "about:blank"   // No network
         c.setVisibleColumns(3, persist: false)
         var created: [PaneView] = []
         defer {
@@ -721,42 +750,44 @@ extension WorkspaceTests {
         func spawn(_ action: WMAction) throws -> PaneView {
             let before = Set(c.paneList.map(ObjectIdentifier.init))
             c.perform(action)
-            // 揭示动画 0.15s + 弹入 0.2s + 焦点落地（浏览器经 WKWebView 更慢）
+            // 0.15s reveal animation, 0.2s pop-in, plus focus landing (a browser goes through WKWebView and is slower).
             RunLoop.main.run(until: Date().addingTimeInterval(0.8))
             let p = try XCTUnwrap(c.paneList.first { !before.contains(ObjectIdentifier($0)) })
             created.append(p)
             return p
         }
 
-        // 每屏 3 列：第 4 列起溢出，新列只能靠滚动揭示
+        // Three visible columns: from the fourth on it overflows, and a new column is only revealed by scrolling.
         for _ in 0..<3 { _ = try spawn(.newTerminal) }
         let browser = try spawn(.newBrowser)
-        XCTAssertTrue(browser is BrowserPaneView, "Cmd+B 应新建浏览器 pane")
-        try assertFillsColumnInsideViewport(c, browser, "新建浏览器")
-        let terminal = try spawn(.newTerminal)   // 对照组：同一位置的新终端
-        try assertFillsColumnInsideViewport(c, terminal, "新建终端（对照）")
+        XCTAssertTrue(browser is BrowserPaneView, "Cmd+B has to create a browser pane")
+        try assertFillsColumnInsideViewport(c, browser, "new browser")
+        let terminal = try spawn(.newTerminal)   // Control: a new terminal in the same position
+        try assertFillsColumnInsideViewport(c, terminal, "new terminal (control)")
 
-        // 窄列：5 个 pane 摊在「每屏 6 列」上（填充模式，全部可见），列宽远小于浏览器 fittingSize
+        // Narrow columns: 5 panes spread over "6 visible columns" (fill mode, all visible), with column widths
+        // far below the browser's fittingSize.
         c.setVisibleColumns(6, persist: false)
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))
         XCTAssertLessThan(browser.frame.width, browser.fittingSize.width,
-                          "窄列断言要有意义：列宽必须小于浏览器 pane 的 fittingSize")
+                          "for the narrow-column assertion to mean anything, the column has to be narrower than the browser pane's fittingSize")
         for (i, p) in c.paneList.enumerated() {
-            try assertFillsColumnInsideViewport(c, p, "窄列 pane #\(i)")
+            try assertFillsColumnInsideViewport(c, p, "narrow-column pane #\(i)")
         }
     }
 
-    /// 回归：新插进条带的列必须被**揭示**出来，与「焦点何时落到新 pane」无关。
-    /// 焦点是异步的（PaneView.moveFocus 等挂载；浏览器 pane 的 FR 是内部 WKWebView，还慢一拍，
-    /// 且可能被悬停焦点/重挂抢走）——只按焦点对齐时新列会停在视口右缘外。
-    /// 这里刻意不给新 pane 焦点：条带仍须按身份把它滚进来。
+    /// Regression: a column newly inserted into the strip has to be **revealed**, no matter when focus lands
+    /// on the new pane. Focus is asynchronous (PaneView.moveFocus waits for mounting; a browser pane's first
+    /// responder is its inner WKWebView, a beat later still, and hover focus or a remount can steal it), so
+    /// aligning on focus alone leaves the new column parked outside the right edge of the viewport.
+    /// This case deliberately withholds focus from the new pane: the strip still has to scroll it in by identity.
     @MainActor
     func testInsertedColumnIsRevealedWithoutFocusLanding() throws {
         let c = try controller
         let home = c.model.activeIndex
         c.model.switchTo(c.model.layouts.count - 1)
         XCTAssertTrue(c.model.layout.isEmpty)
-        c.model.layout = .empty   // 前面的用例可能把这块工作区留成（空的）dwindle
+        c.model.layout = .empty   // An earlier case may have left this workspace as an (empty) dwindle
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         let prevVisible = c.visibleColumns
         c.setVisibleColumns(3, persist: false)
@@ -775,28 +806,30 @@ extension WorkspaceTests {
         }
         let window = try XCTUnwrap(c.window)
         let anchor = try XCTUnwrap(c.focusedPane)
-        guard case .scrolling(let strip) = c.model.layout else { return XCTFail("布局应为 scrolling") }
+        guard case .scrolling(let strip) = c.model.layout else { return XCTFail("the layout should be scrolling") }
         let pane = BrowserPaneView(url: URL(string: "about:blank"))
         created.append(pane)
-        // 只改布局，不请求焦点（模拟焦点迟到/被抢走）
+        // Change only the layout, never request focus (simulating focus arriving late or being stolen).
         c.model.layout = .scrolling(strip.insertingColumnRight(
             of: anchor, pane: pane, widthFactor: c.columnFactor))
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))
-        XCTAssertFalse(pane.holdsFirstResponder(of: window), "本例前提：焦点没落到新 pane")
-        try assertFillsColumnInsideViewport(c, pane, "无焦点插入的浏览器列")
+        XCTAssertFalse(pane.holdsFirstResponder(of: window), "precondition for this case: focus did not land on the new pane")
+        try assertFillsColumnInsideViewport(c, pane, "a browser column inserted without focus")
     }
 
-    /// 回归：**zoom 中插列**（Cmd+F 之后 Cmd+B / ⌘点链接）同样要按身份揭示。
-    /// 结构操作顺手清 zoom（insertingColumnRight），于是「解除 zoom」与「插进一列」落在同一次
-    /// SwiftUI 更新里，条带的 HStack 被整条重建：揭示逻辑若挂在 zoom 分支内部，重建只走 onAppear
-    /// （把刚插进来的 pane 也认成早就见过的），onChange 又不对刚创建的视图触发——新列没人滚进来。
+    /// Regression: **inserting a column while zoomed** (Cmd+B, or a Cmd+clicked link, after Cmd+F) has to be
+    /// revealed by identity too. A structural operation clears the zoom on its way through
+    /// (insertingColumnRight), so "leave zoom" and "insert a column" land in the same SwiftUI update and the
+    /// strip's HStack is rebuilt whole: with the reveal logic inside the zoom branch, the rebuild only runs
+    /// onAppear (which counts the freshly inserted pane as one it has already seen),
+    /// and onChange does not fire for a view that was just created, so nothing scrolls the new column in.
     @MainActor
     func testInsertedColumnIsRevealedAfterZoomWithoutFocusLanding() throws {
         let c = try controller
         let home = c.model.activeIndex
         c.model.switchTo(c.model.layouts.count - 1)
         XCTAssertTrue(c.model.layout.isEmpty)
-        c.model.layout = .empty   // 前面的用例可能把这块工作区留成（空的）dwindle
+        c.model.layout = .empty   // An earlier case may have left this workspace as an (empty) dwindle
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         let prevVisible = c.visibleColumns
         c.setVisibleColumns(3, persist: false)
@@ -815,27 +848,31 @@ extension WorkspaceTests {
         }
         let window = try XCTUnwrap(c.window)
         let anchor = try XCTUnwrap(c.focusedPane)
-        c.perform(.toggleZoom)   // Cmd+F：只剩焦点 pane 挂着，条带的 HStack 被拆掉
+        c.perform(.toggleZoom)   // Cmd+F: only the focused pane stays mounted, the strip's HStack is torn down
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
-        guard case .scrolling(let strip) = c.model.layout else { return XCTFail("布局应为 scrolling") }
-        XCTAssertNotNil(strip.zoomedID, "本例前提：条带处于 zoom")
+        guard case .scrolling(let strip) = c.model.layout else { return XCTFail("the layout should be scrolling") }
+        XCTAssertNotNil(strip.zoomedID, "precondition for this case: the strip is zoomed")
         let pane = BrowserPaneView(url: URL(string: "about:blank"))
         created.append(pane)
-        // 只改布局（顺手解除 zoom），不请求焦点（模拟焦点迟到/被悬停抢走）
+        // Change only the layout (clearing the zoom along the way), never request focus (simulating focus
+        // arriving late or being stolen by hover).
         c.model.layout = .scrolling(strip.insertingColumnRight(
             of: anchor, pane: pane, widthFactor: c.columnFactor))
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))
-        guard case .scrolling(let after) = c.model.layout else { return XCTFail("布局应为 scrolling") }
-        XCTAssertNil(after.zoomedID, "插列清 zoom")
-        XCTAssertFalse(pane.holdsFirstResponder(of: window), "本例前提：焦点没落到新 pane")
-        try assertFillsColumnInsideViewport(c, pane, "zoom 中插入的浏览器列")
+        guard case .scrolling(let after) = c.model.layout else { return XCTFail("the layout should be scrolling") }
+        XCTAssertNil(after.zoomedID, "inserting a column clears the zoom")
+        XCTAssertFalse(pane.holdsFirstResponder(of: window), "precondition for this case: focus did not land on the new pane")
+        try assertFillsColumnInsideViewport(c, pane, "a browser column inserted while zoomed")
     }
 
-    /// 回归：条带停在右端时逐事件调宽（⌘+右键拖拽）不许把视口甩到内容外——
-    /// 列宽变化必须触发夹取（layoutSignature 刻意不含 widthFactor，没人替它重排），末列始终贴视口右缘。
-    /// 注意：这条**测不出**"夹取有没有带动画"——SwiftUI 动画期间 NSView 的 frame 已经是终值，
-    /// 逐事件动画造成的拖尾只在屏幕上看得见（实测把 animated 写死 true 本例照样绿）。
-    /// 不带动画的理由见 ScrollingStripView.clampOffset。
+    /// Regression: resizing event by event (Cmd plus a right-drag) while the strip sits at its right end must
+    /// not fling the viewport past the content. A change in column width has to trigger the clamp
+    /// (layoutSignature deliberately leaves widthFactor out, so nothing else re-lays it out), and the last
+    /// column stays flush with the viewport's right edge.
+    /// Note: this **cannot** test whether the clamp is animated. During a SwiftUI animation an NSView's frame
+    /// is already at its final value, and the smearing a per-event animation causes is only visible on screen
+    /// (hard-coding animated to true was measured to leave this case green).
+    /// The reason it is not animated is in ScrollingStripView.clampOffset.
     @MainActor
     func testResizeDragKeepsStripClampedAtRightEnd() throws {
         let c = try controller
@@ -853,35 +890,36 @@ extension WorkspaceTests {
             c.model.switchTo(home)
             RunLoop.main.run(until: Date().addingTimeInterval(0.4))
         }
-        for _ in 0..<4 {   // 每屏 3 列 → 4 列溢出，末列揭示后条带贴在右端
+        for _ in 0..<4 {   // 3 visible columns, so 4 overflow; once the last is revealed the strip sits at its right end
             let before = Set(c.paneList.map(ObjectIdentifier.init))
             c.perform(.newTerminal)
             RunLoop.main.run(until: Date().addingTimeInterval(0.5))
             created.append(try XCTUnwrap(c.paneList.first { !before.contains(ObjectIdentifier($0)) }))
         }
         let last = try XCTUnwrap(created.last)
-        try assertFillsColumnInsideViewport(c, last, "末列（调宽前）")
+        try assertFillsColumnInsideViewport(c, last, "last column (before the resize)")
         let content = try XCTUnwrap(c.window?.contentView)
         let gap = c.themeManager.gapsEnabled ? c.themeManager.paneGap : 0
         let viewport = content.bounds.width - 2 * gap
         let rightEdge = gap + viewport
         XCTAssertEqual(last.convert(last.bounds, to: nil).maxX + gap, rightEdge,
-                       accuracy: 1.5, "前提：末列贴着视口右缘（条带在右端）")
-        // 模拟一串收窄的拖拽事件（resizeByDrag 是逐事件写 widthFactor）
+                       accuracy: 1.5, "precondition: the last column is flush with the viewport's right edge")
+        // Simulate a run of narrowing drag events (resizeByDrag writes widthFactor once per event).
         for _ in 0..<5 {
-            guard case .scrolling(let strip) = c.model.layout else { return XCTFail("布局应为 scrolling") }
+            guard case .scrolling(let strip) = c.model.layout else { return XCTFail("the layout should be scrolling") }
             c.model.layout = .scrolling(strip.resizingWidth(of: last, delta: -0.05))
             RunLoop.main.run(until: Date().addingTimeInterval(0.02))
         }
-        // 只等一次布局提交（远短于 0.15s 动画）：夹取跟手就已经到位
+        // Wait for one layout commit, far shorter than the 0.15s animation: the clamp is already in place.
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        try assertFillsColumnInsideViewport(c, last, "末列（逐事件调宽后）")
+        try assertFillsColumnInsideViewport(c, last, "last column (after the per-event resize)")
         XCTAssertEqual(last.convert(last.bounds, to: nil).maxX + gap, rightEdge,
-                       accuracy: 1.5, "收窄后末列仍贴右缘：视口逐事件跟手夹取，不留空档")
+                       accuracy: 1.5, "after narrowing, the last column is still flush right: the viewport clamps on every event, leaving no gap")
     }
 
-    /// 终端 ⌘+点击链接：没有浏览器 pane → 新开；已有 → 最近激活的那个里开新标签；多个 → 最近聚焦的；
-    /// 非 http(s) 与 link-opener = system 不接管
+    /// A Cmd+clicked link in a terminal: with no browser pane one is created; with one, a new tab opens in the
+    /// most recently activated pane; with several, in the most recently focused. Anything that is not http(s),
+    /// and link-opener = system, are not taken over.
     @MainActor
     func testTerminalLinkOpensInMostRecentBrowserPane() throws {
         let c = try controller
@@ -899,31 +937,31 @@ extension WorkspaceTests {
         let term = try XCTUnwrap(c.paneList.first)
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
         let link1 = URL(string: "http://127.0.0.1:9/one")!
-        XCTAssertTrue(c.openLink(link1, from: term), "http 链接被接管")
-        let b1 = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView } as? BrowserPaneView, "没有浏览器 pane 时新开一个")
+        XCTAssertTrue(c.openLink(link1, from: term), "the http link is taken over")
+        let b1 = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView } as? BrowserPaneView, "with no browser pane, one is created")
         XCTAssertEqual(b1.tabs.count, 1)
         XCTAssertEqual(b1.activeTab?.lastRequestedURL, link1)
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
         let link2 = URL(string: "http://127.0.0.1:9/two")!
         XCTAssertTrue(c.openLink(link2, from: term))
-        XCTAssertEqual(c.paneList.filter { $0 is BrowserPaneView }.count, 1, "已有浏览器 pane 时不新开")
-        XCTAssertEqual(b1.tabs.count, 2, "在已有 pane 里开新标签")
-        XCTAssertEqual(b1.activeTab?.lastRequestedURL, link2, "新标签激活")
+        XCTAssertEqual(c.paneList.filter { $0 is BrowserPaneView }.count, 1, "with a browser pane already there, none is created")
+        XCTAssertEqual(b1.tabs.count, 2, "a new tab opens in the existing pane")
+        XCTAssertEqual(b1.activeTab?.lastRequestedURL, link2, "the new tab becomes active")
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
         c.perform(.newBrowser)
         let b2 = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView && $0 !== b1 } as? BrowserPaneView)
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
-        XCTAssertTrue(c.mostRecentBrowserPane() === b2, "刚新建并聚焦的浏览器 pane 是最近的")
+        XCTAssertTrue(c.mostRecentBrowserPane() === b2, "the browser pane just created and focused is the most recent")
         c.requestFocus(to: b1)
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
-        XCTAssertTrue(c.mostRecentBrowserPane() === b1, "重新聚焦 b1 后它是最近的")
+        XCTAssertTrue(c.mostRecentBrowserPane() === b1, "refocusing b1 makes it the most recent")
         let link3 = URL(string: "http://127.0.0.1:9/three")!
         XCTAssertTrue(c.openLink(link3, from: term))
-        XCTAssertEqual(b1.tabs.count, 3, "多个浏览器 pane 时用最近激活的")
+        XCTAssertEqual(b1.tabs.count, 3, "with several browser panes, the most recently activated one is used")
         XCTAssertEqual(b2.tabs.count, 1)
-        XCTAssertFalse(c.openLink(URL(string: "mailto:a@b.c")!, from: term), "非 http(s) 交给系统")
+        XCTAssertFalse(c.openLink(URL(string: "mailto:a@b.c")!, from: term), "anything that is not http(s) goes to the system")
         c.linkOpener = "system"
-        XCTAssertFalse(c.openLink(link1, from: term), "system 模式不接管")
+        XCTAssertFalse(c.openLink(link1, from: term), "system mode does not take over")
         XCTAssertEqual(b1.tabs.count, 3)
         for p in c.paneList { c.closePane(p, confirmIfNeeded: false, animated: false) }
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
@@ -934,8 +972,9 @@ extension WorkspaceTests {
                            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
     }
 
-    /// ⌘ 按住时平铺 pane 上叠着拖拽源浮层：纯点击（没拖过阈值）必须整体转交给 surface（引擎收到 PRESS + RELEASE，
-    /// ⌘+点击链接才会触发 open_url）；轻微抖动不算拖
+    /// While Cmd is held, a drag-source overlay covers the tiled pane: a plain click, one that never passes the
+    /// drag threshold, has to be forwarded to the surface whole (the engine sees PRESS + RELEASE, which is
+    /// what makes a Cmd+clicked link fire open_url). A small jitter is not a drag.
     @MainActor
     func testCommandClickPassesThroughDragSourceOverlay() throws {
         let c = try controller
@@ -951,27 +990,29 @@ extension WorkspaceTests {
         ModifierState.shared.commandHeld = true
         defer { ModifierState.shared.commandHeld = false }
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
-        // 精确匹配类名：SwiftUI 的宿主视图类名里也含 "SurfaceDragSourceViewRepresentable"
+        // Match the class name exactly: SwiftUI's host view class name also contains "SurfaceDragSourceViewRepresentable".
         func findOverlay(_ v: NSView) -> NSView? {
             if String(describing: type(of: v)) == "SurfaceDragSourceView" { return v }
             for sub in v.subviews { if let hit = findOverlay(sub) { return hit } }
             return nil
         }
-        let overlay = try XCTUnwrap(window.contentView.flatMap(findOverlay), "⌘ 按住时应挂上拖拽源浮层")
+        let overlay = try XCTUnwrap(window.contentView.flatMap(findOverlay), "the drag-source overlay is mounted while ⌘ is held")
         let center = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.midY), to: nil)
         let press0 = pane.leftPressCountForTesting, release0 = pane.leftReleaseCountForTesting
         overlay.mouseDown(with: mouse(.leftMouseDown, at: center, in: window))
-        overlay.mouseDragged(with: mouse(.leftMouseDragged, at: NSPoint(x: center.x + 1, y: center.y + 1), in: window))   // 抖动 < 阈值
-        XCTAssertEqual(pane.leftPressCountForTesting, press0, "按下时不转发（拖起来就没 release 了）")
+        overlay.mouseDragged(with: mouse(.leftMouseDragged, at: NSPoint(x: center.x + 1, y: center.y + 1), in: window))   // Jitter below the threshold
+        XCTAssertEqual(pane.leftPressCountForTesting, press0, "nothing is forwarded on the press (a drag would leave no release)")
         overlay.mouseUp(with: mouse(.leftMouseUp, at: center, in: window))
-        XCTAssertEqual(pane.leftPressCountForTesting, press0 + 1, "抬起时补送 PRESS")
-        XCTAssertEqual(pane.leftReleaseCountForTesting, release0 + 1, "再送 RELEASE")
+        XCTAssertEqual(pane.leftPressCountForTesting, press0 + 1, "the PRESS is sent on mouse-up")
+        XCTAssertEqual(pane.leftReleaseCountForTesting, release0 + 1, "followed by the RELEASE")
         overlay.mouseUp(with: mouse(.leftMouseUp, at: center, in: window))
-        XCTAssertEqual(pane.leftReleaseCountForTesting, release0 + 1, "没有配对按下的抬起不转发")
+        XCTAssertEqual(pane.leftReleaseCountForTesting, release0 + 1, "a mouse-up with no matching press is not forwarded")
     }
 
-    /// ⌘ 拖拽源浮层盖满整个 pane，但它是 pane 的**兄弟**子树：不转交的话滚轮顺着浮层自己的
-    /// 响应链走进 SwiftUI 容器，终端 / 网页永远收不到——用户报的"抓手光标不消失，而且终端滚不动了"
+    /// The Cmd drag-source overlay covers the whole pane, but it is a **sibling** subtree of it: without
+    /// forwarding, the wheel follows the overlay's own responder chain into the SwiftUI container and the
+    /// terminal or page never sees it. That is the user report "the grab cursor will not go away, and the
+    /// terminal stopped scrolling".
     @MainActor
     func testDragSourceOverlayForwardsScrollToSurface() throws {
         let c = try controller
@@ -992,22 +1033,24 @@ extension WorkspaceTests {
             for sub in v.subviews { if let hit = findOverlay(sub) { return hit } }
             return nil
         }
-        let overlay = try XCTUnwrap(window.contentView.flatMap(findOverlay), "⌘ 按住时应挂上拖拽源浮层")
+        let overlay = try XCTUnwrap(window.contentView.flatMap(findOverlay), "the drag-source overlay is mounted while ⌘ is held")
         let center = pane.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.midY), to: nil)
         let event = try scrollEvent(at: center, in: window)
-        XCTAssertEqual(event.locationInWindow.x, center.x, accuracy: 1, "合成滚轮事件落在 pane 中心")
+        XCTAssertEqual(event.locationInWindow.x, center.x, accuracy: 1, "the synthesized wheel event lands in the center of the pane")
         XCTAssertEqual(event.locationInWindow.y, center.y, accuracy: 1)
         let before = pane.scrollCountForTesting
         overlay.scrollWheel(with: event)
-        XCTAssertEqual(pane.scrollCountForTesting, before + 1, "浮层把滚轮转交给 surface，不能吃掉")
-        // ⌘ 一松（哪怕抬起落在别的 app 上，靠 sync 自愈）浮层就该消失，抓手光标随之消失
+        XCTAssertEqual(pane.scrollCountForTesting, before + 1, "the overlay forwards the wheel to the surface instead of swallowing it")
+        // The moment Cmd is released the overlay has to go, and the grab cursor with it, even when the key-up
+        // lands in another app and only sync heals it.
         ModifierState.shared.sync(.init())
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
-        XCTAssertNil(window.contentView.flatMap(findOverlay), "⌘ 释放后浮层必须摘掉")
+        XCTAssertNil(window.contentView.flatMap(findOverlay), "the overlay has to be removed once ⌘ is released")
     }
 
-    /// `commandHeld` 只有本地监视器一个写者，看不见落在别的 app 上的 ⌘ 抬起
-    /// （⌘+Tab / ⌘+Space / 截图 / ⌘+H）：必须能自愈，否则浮层永远挂着
+    /// `commandHeld` has exactly one writer, the local monitor, and it never sees a Cmd key-up that lands in
+    /// another app (Cmd+Tab, Cmd+Space, a screenshot, Cmd+H):
+    /// it has to heal itself, or the overlay stays mounted forever.
     @MainActor
     func testModifierStateSelfHealsOnDeactivationAndSync() throws {
         let previous = ModifierState.shared.commandHeld
@@ -1015,16 +1058,18 @@ extension WorkspaceTests {
         ModifierState.shared.commandHeld = true
         NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        XCTAssertFalse(ModifierState.shared.commandHeld, "app 失活时无条件清零（⌘ 的抬起会落在别的 app）")
+        XCTAssertFalse(ModifierState.shared.commandHeld,
+                       "deactivating the app clears it unconditionally (the ⌘ key-up lands in another app)")
         ModifierState.shared.sync(.command)
-        XCTAssertTrue(ModifierState.shared.commandHeld, "按事件自带的修饰键重建")
+        XCTAssertTrue(ModifierState.shared.commandHeld, "rebuilt from the modifiers the event itself carries")
         ModifierState.shared.sync([.shift, .option])
-        XCTAssertFalse(ModifierState.shared.commandHeld, "任何鼠标 / 滚轮事件都能把漏掉的抬起补回来")
+        XCTAssertFalse(ModifierState.shared.commandHeld, "any mouse or wheel event makes up for a key-up that was missed")
     }
 
-    /// 终端 pane 在 SwiftUI 重建层级期间会短暂脱离窗口（window == nil）。引擎的 open_url 回调
-    /// 若此刻解析不出控制器，⌘+点击的 http 链接就被甩给系统默认浏览器——用户报的
-    /// "有时会打开系统默认浏览器，而不是 pane 浏览器"
+    /// A terminal pane briefly leaves its window (window == nil) while SwiftUI rebuilds the hierarchy. If the
+    /// engine's open_url callback cannot resolve a controller at that moment, a Cmd+clicked http link is thrown
+    /// at the system default browser: the user report
+    /// "sometimes it opens the system browser instead of the pane browser".
     @MainActor
     func testDetachedPaneKeepsControllerSoLinksNeverLeakToSystem() throws {
         let c = try controller
@@ -1043,39 +1088,42 @@ extension WorkspaceTests {
         defer { Ghostty.App.systemOpener = prevSystemOpener }
         Ghostty.App.systemOpener = { systemOpened.append($0) }
 
-        // 挂一个 pane 进窗口再摘掉：正是重建层级那一瞬间的状态（superview 有、window 没有）
+        // Mount a pane in the window and take it back out: exactly the state during a hierarchy rebuild, with
+        // a superview but no window.
         let content = try XCTUnwrap(c.window?.contentView)
         let orphan = PaneView(frame: NSRect(x: 0, y: 0, width: 10, height: 10))
         content.addSubview(orphan)
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
-        XCTAssertTrue(orphan.controller === c, "挂在窗口里时解析出本窗口的控制器")
+        XCTAssertTrue(orphan.controller === c, "mounted in the window, it resolves to that window's controller")
         orphan.removeFromSuperview()
-        XCTAssertNil(orphan.window, "前提：已脱离窗口")
-        XCTAssertTrue(orphan.controller === c, "脱离窗口后仍认得最近一次的控制器")
+        XCTAssertNil(orphan.window, "precondition: it is off the window")
+        XCTAssertTrue(orphan.controller === c, "detached, it still knows the controller it last had")
 
         let link = URL(string: "http://127.0.0.1:9/detached")!
-        XCTAssertTrue(Ghostty.App.routeLink(link, from: orphan), "脱离窗口的 pane 也要被接管")
-        XCTAssertTrue(systemOpened.isEmpty, "http 链接绝不能漏给系统默认浏览器")
+        XCTAssertTrue(Ghostty.App.routeLink(link, from: orphan), "a detached pane's link is taken over too")
+        XCTAssertTrue(systemOpened.isEmpty, "an http link must never leak to the system default browser")
         let browser = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView } as? BrowserPaneView)
-        XCTAssertEqual(browser.activeTab?.lastRequestedURL, link, "落在 QuickTerm 自己的浏览器 pane 里")
+        XCTAssertEqual(browser.activeTab?.lastRequestedURL, link, "it lands in QuickTerm's own browser pane")
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
 
-        // 连来源 pane 都没有（target 解析不出 surface）时，退到 key / 任意终端窗口，同样不漏
+        // With no source pane at all, when the target does not resolve to a surface, it falls back to the key
+        // window or any terminal window, and still does not leak.
         let link2 = URL(string: "http://127.0.0.1:9/nosurface")!
         XCTAssertTrue(Ghostty.App.routeLink(link2, from: nil))
         XCTAssertTrue(systemOpened.isEmpty)
-        // 非 http(s) 与 link-opener = system 照旧交给系统（不接管 → 引擎调 systemOpener）
-        XCTAssertFalse(Ghostty.App.routeLink(URL(string: "mailto:a@b.c")!, from: orphan), "非 http(s) 不接管")
+        // Non-http(s) and link-opener = system still go to the system (not taken over, so the engine calls systemOpener).
+        XCTAssertFalse(Ghostty.App.routeLink(URL(string: "mailto:a@b.c")!, from: orphan), "non-http(s) is not taken over")
         c.linkOpener = "system"
-        XCTAssertFalse(Ghostty.App.routeLink(link, from: orphan), "system 模式不接管")
+        XCTAssertFalse(Ghostty.App.routeLink(link, from: orphan), "system mode does not take over")
         c.linkOpener = "browser-pane"
         for p in c.paneList { c.closePane(p, confirmIfNeeded: false, animated: false) }
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
     }
 
-    /// 合成一个真实的滚轮事件（NSEvent.mouseEvent 造不出 .scrollWheel）。
-    /// windowNumber = 0 的事件里 `locationInWindow` 就是屏幕坐标：量一次差值补偿，
-    /// 免得依赖具体的显示器排布
+    /// Synthesize a real scroll-wheel event (NSEvent.mouseEvent cannot produce a .scrollWheel).
+    /// In an event whose windowNumber is 0, `locationInWindow` is the screen coordinate: measure the
+    /// difference once and compensate,
+    /// rather than depending on a particular arrangement of displays.
     private func scrollEvent(at windowPoint: NSPoint, in window: NSWindow) throws -> NSEvent {
         func make(_ location: CGPoint) throws -> NSEvent {
             let cg = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
@@ -1092,7 +1140,8 @@ extension WorkspaceTests {
         return try make(location)
     }
 
-    /// 浮动 pane 的 ⌘ 会话：抬起时没拖过阈值 = 纯点击交给 pane 本体；拖过阈值 = 移动且不点击
+    /// The Cmd session on a floating pane: a mouse-up before the drag threshold is a plain click and goes to
+    /// the pane itself; past the threshold the pane moves and no click is delivered.
     @MainActor
     func testCommandClickOnFloatingPaneReachesSurface() throws {
         let c = try controller
@@ -1117,34 +1166,38 @@ extension WorkspaceTests {
         }
         let center = windowPoint(fp.rect.midX, fp.rect.midY)
         let press0 = pane.leftPressCountForTesting, release0 = pane.leftReleaseCountForTesting
-        // 纯点击
+        // A plain click.
         XCTAssertTrue(c.beginFloatingDrag(with: mouse(.leftMouseDown, at: center, in: window)))
         XCTAssertEqual(c.floatingSessionEvent(mouse(.leftMouseDragged, at: NSPoint(x: center.x + 1, y: center.y), in: window)), true)
         XCTAssertEqual(c.floatingSessionEvent(mouse(.leftMouseUp, at: center, in: window)), true)
-        XCTAssertEqual(pane.leftPressCountForTesting, press0 + 1, "没拖 → 点击交给 surface")
+        XCTAssertEqual(pane.leftPressCountForTesting, press0 + 1, "no drag -> the click goes to the surface")
         XCTAssertEqual(pane.leftReleaseCountForTesting, release0 + 1)
-        XCTAssertEqual(c.model.floating.first?.rect.midX ?? 0, fp.rect.midX, accuracy: 0.001, "没拖就不移动")
-        // 真拖：过阈值后移动（阈值前的位移在跨过时一次补上，不丢），抬起不点击
+        XCTAssertEqual(c.model.floating.first?.rect.midX ?? 0, fp.rect.midX, accuracy: 0.001, "without a drag it does not move")
+        // A real drag: it moves once the threshold is crossed (the displacement from before the threshold is
+        // applied in one go rather than lost), and the mouse-up delivers no click.
         let before = try XCTUnwrap(c.model.floating.first).rect
         XCTAssertTrue(c.beginFloatingDrag(with: mouse(.leftMouseDown, at: center, in: window)))
         XCTAssertEqual(c.floatingSessionEvent(mouse(.leftMouseDragged, at: NSPoint(x: center.x + 2, y: center.y), in: window)), true)
-        XCTAssertEqual(c.model.floating.first?.rect.midX ?? 0, before.midX, accuracy: 0.0001, "阈值内不动")
+        XCTAssertEqual(c.model.floating.first?.rect.midX ?? 0, before.midX, accuracy: 0.0001, "nothing moves inside the threshold")
         XCTAssertEqual(c.floatingSessionEvent(mouse(.leftMouseDragged, at: NSPoint(x: center.x + 40, y: center.y), in: window)), true)
-        XCTAssertEqual(((c.model.floating.first?.rect.midX ?? 0) - before.midX) * W, 40, accuracy: 0.5, "累计位移全部补上")
+        XCTAssertEqual(((c.model.floating.first?.rect.midX ?? 0) - before.midX) * W, 40, accuracy: 0.5,
+                       "the accumulated displacement is applied in full")
         XCTAssertEqual(c.floatingSessionEvent(mouse(.leftMouseUp, at: NSPoint(x: center.x + 40, y: center.y), in: window)), true)
-        XCTAssertEqual(pane.leftPressCountForTesting, press0 + 1, "拖动不产生点击")
-        XCTAssertNil(c.floatingSessionEvent(mouse(.leftMouseUp, at: center, in: window)), "会话已结束")
-        // 按住期间 pane 离开浮动层（Cmd+T 回平铺）：抬起不转交、不崩
+        XCTAssertEqual(pane.leftPressCountForTesting, press0 + 1, "a drag produces no click")
+        XCTAssertNil(c.floatingSessionEvent(mouse(.leftMouseUp, at: center, in: window)), "the session is over")
+        // The pane leaves the floating layer while the button is held (Cmd+T puts it back in the tiling): the
+        // mouse-up forwards nothing and does not crash.
         let center2 = { () -> NSPoint in let r = c.model.floating.first!.rect; return windowPoint(r.midX, r.midY) }()
         XCTAssertTrue(c.beginFloatingDrag(with: mouse(.leftMouseDown, at: center2, in: window)))
         c.toggleFloat(pane)
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
         XCTAssertEqual(c.floatingSessionEvent(mouse(.leftMouseUp, at: center2, in: window)), true)
-        XCTAssertEqual(pane.leftPressCountForTesting, press0 + 1, "pane 已不在浮动层：不转交点击")
-        c.toggleFloat(pane)   // 还原为浮动，defer 里统一关闭
+        XCTAssertEqual(pane.leftPressCountForTesting, press0 + 1, "the pane is no longer floating: the click is not forwarded")
+        c.toggleFloat(pane)   // Float it again; the defer closes everything
     }
 
-    /// 别的 pane zoom 时复用浏览器 pane：先解除 zoom，标签才看得见、焦点才交得过去；从 Scratchpad 点链接先收起 Scratchpad
+    /// Reusing a browser pane while another pane is zoomed: the zoom has to be released first, or the tab is
+    /// invisible and focus cannot be handed over. A link clicked from the Scratchpad hides the Scratchpad first.
     @MainActor
     func testTerminalLinkUnzoomsAndHidesScratchpad() throws {
         let c = try controller
@@ -1166,28 +1219,29 @@ extension WorkspaceTests {
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
         c.requestFocus(to: term)
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
-        c.perform(.toggleZoom)   // 终端 zoom，浏览器 pane 卸载
+        c.perform(.toggleZoom)   // The terminal zooms, which unmounts the browser pane
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
-        XCTAssertNil(browser.window, "zoom 后浏览器 pane 没挂载")
+        XCTAssertNil(browser.window, "after the zoom the browser pane is not mounted")
         XCTAssertTrue(c.openLink(URL(string: "http://127.0.0.1:9/z")!, from: term))
         RunLoop.main.run(until: Date().addingTimeInterval(0.6))
-        XCTAssertNotNil(browser.window, "复用时解除 zoom，浏览器 pane 重新挂载")
+        XCTAssertNotNil(browser.window, "reusing it releases the zoom and remounts the browser pane")
         XCTAssertEqual(browser.tabs.count, 2)
-        XCTAssertTrue(c.window?.firstResponder === browser.webView, "焦点交给浏览器 pane")
-        // Scratchpad 里点链接
+        XCTAssertTrue(c.window?.firstResponder === browser.webView, "focus is handed to the browser pane")
+        // Click a link inside the Scratchpad.
         c.perform(.scratchpad)
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
         let scratch = try XCTUnwrap(c.model.scratchpadSurface)
         XCTAssertTrue(c.model.scratchpadVisible)
         XCTAssertTrue(c.openLink(URL(string: "http://127.0.0.1:9/s")!, from: scratch))
-        XCTAssertFalse(c.model.scratchpadVisible, "先收起 Scratchpad")
+        XCTAssertFalse(c.model.scratchpadVisible, "the Scratchpad is hidden first")
         XCTAssertEqual(browser.tabs.count, 3)
         for p in c.paneList { c.closePane(p, confirmIfNeeded: false, animated: false) }
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
     }
 
-    /// 浏览器 pane：Cmd+B 新建并聚焦（FR 是内部 WKWebView，pane 视为持有焦点）、布局切换后仍在且保持焦点、
-    /// 存档带 kind=browser、关闭不弹确认、焦点回到终端
+    /// Browser panes: Cmd+B creates one and focuses it (the first responder is the inner WKWebView, and the
+    /// pane counts as holding focus), it survives a layout switch with its focus, the archive carries
+    /// kind=browser, closing raises no confirmation, and focus returns to the terminal.
     @MainActor
     func testBrowserPaneLifecycle() throws {
         let c = try controller
@@ -1198,36 +1252,39 @@ extension WorkspaceTests {
         XCTAssertTrue(c.model.layout.isEmpty)
         let prevSettings = BrowserPaneView.settings
         defer { BrowserPaneView.settings = prevSettings }
-        BrowserPaneView.settings.home = "about:blank"   // 不依赖网络
+        BrowserPaneView.settings.home = "about:blank"   // No network dependency
         c.perform(.newTerminal)
         let a = try XCTUnwrap(c.paneList.first)
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
-        // Cmd+Shift+K 清屏：焦点终端时消费并由引擎执行 clear_screen（返回 true = 动作合法且已执行）
+        // Cmd+Shift+K clears the screen: with a terminal focused it is consumed and the engine runs
+        // clear_screen (true means the action was valid and has run).
         XCTAssertTrue(MainWindowController.consumes(.clearTerminal, focusedPane: a))
-        XCTAssertTrue(c.clearTarget === a, "清屏目标 = 焦点终端")
+        XCTAssertTrue(c.clearTarget === a, "the clear target is the focused terminal")
         XCTAssertTrue(c.clearFocusedTerminal())
-        // Scratchpad 打开时目标必须是 Scratchpad（它不在 paneList 里，focusedPane 会退回到第一块平铺 pane）
+        // While the Scratchpad is open the target has to be the Scratchpad: it is not in paneList, so
+        // focusedPane would otherwise fall back to the first tiled pane.
         c.perform(.scratchpad)
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
         let scratch = try XCTUnwrap(c.model.scratchpadSurface)
         XCTAssertTrue(c.model.scratchpadVisible)
-        XCTAssertTrue(c.clearTarget === scratch, "Scratchpad 聚焦时清屏目标是 Scratchpad")
-        XCTAssertFalse(c.clearTarget === a, "不能清掉被盖住的平铺终端")
+        XCTAssertTrue(c.clearTarget === scratch, "with the Scratchpad focused, the clear target is the Scratchpad")
+        XCTAssertFalse(c.clearTarget === a, "the tiled terminal underneath must not be cleared")
         XCTAssertTrue(MainWindowController.consumes(.clearTerminal, focusedPane: c.clearTarget))
         XCTAssertTrue(c.clearFocusedTerminal())
-        c.perform(.scratchpad)   // 收起
+        c.perform(.scratchpad)   // Hide it again
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
         XCTAssertFalse(c.model.scratchpadVisible)
-        XCTAssertTrue(c.clearTarget === a, "收起后回到平铺终端")
+        XCTAssertTrue(c.clearTarget === a, "once hidden it goes back to the tiled terminal")
         c.perform(.newBrowser)
         let b = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView } as? BrowserPaneView)
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))
-        XCTAssertTrue(b.holdsFirstResponder(of: try XCTUnwrap(c.window)), "FR 应是浏览器 pane 内部的 WKWebView")
+        XCTAssertTrue(b.holdsFirstResponder(of: try XCTUnwrap(c.window)),
+                      "the first responder should be the WKWebView inside the browser pane")
         XCTAssertTrue(c.focusedPane === b)
         XCTAssertTrue(b.focused)
-        XCTAssertFalse(a.focused, "单焦点不变量")
+        XCTAssertFalse(a.focused, "the single-focus invariant")
 
-        // 存档：叶子 kind=browser + url
+        // The archive: a leaf with kind=browser plus a url.
         let state = PersistedState(windows: [
             WindowState(layouts: c.model.layouts, floatings: c.model.floatings, activeIndex: ws)
         ])
@@ -1235,42 +1292,44 @@ extension WorkspaceTests {
         XCTAssertTrue(json.contains("\"kind\":\"browser\""))
         XCTAssertTrue(json.contains("about:blank"))
 
-        // 新 pane 插入会让邻居的 tracking area 重建、AppKit 合成 mouseMoved：鼠标停在旧 pane 上时
-        // 悬停不得把刚交给新 pane 的焦点抢回去（控制器有待聚焦意图）
+        // Inserting a new pane rebuilds the neighbours' tracking areas and AppKit synthesizes a mouseMoved:
+        // with the mouse resting over the old pane, hover must not steal back the focus just handed to the
+        // new one (the controller holds a pending focus intent).
         c.perform(.newBrowser)
         let b2 = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView && $0 !== b } as? BrowserPaneView)
-        a.hoverFocusIfNeeded()                    // 模拟合成的 mouseMoved 命中旧 pane
+        a.hoverFocusIfNeeded()                    // Simulate the synthesized mouseMoved landing on the old pane
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))
-        XCTAssertTrue(c.focusedPane === b2, "悬停不能抢走刚交给新 pane 的焦点")
+        XCTAssertTrue(c.focusedPane === b2, "hover must not steal the focus just handed to the new pane")
         c.closePane(b2, confirmIfNeeded: false, animated: false)
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
-        XCTAssertTrue(c.focusedPane === b, "关闭后焦点回到相邻的浏览器 pane")
+        XCTAssertTrue(c.focusedPane === b, "after closing, focus returns to the neighbouring browser pane")
 
-        // 地址栏编辑中：字段编辑器是 pane 的后代，pane 仍持焦（边框亮、Cmd+W 会交接焦点）
+        // While the address bar is being edited: the field editor is a descendant of the pane, so the pane
+        // still holds focus (its border stays lit, and Cmd+W hands focus on).
         b.focusAddressBar()
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         XCTAssertTrue(b.holdsFirstResponder(of: try XCTUnwrap(c.window)))
-        XCTAssertTrue(b.focused, "地址栏编辑中 focused 标志不能掉")
+        XCTAssertTrue(b.focused, "the focused flag must not drop while the address bar is being edited")
         XCTAssertTrue(c.focusedPane === b)
         _ = c.window?.makeFirstResponder(b.webView)
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
 
-        // 布局切换后浏览器 pane 仍在且保持焦点（重挂后夺回）
+        // After a layout switch the browser pane is still there and still focused (it takes focus back once remounted).
         c.perform(.toggleLayout)
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))
         XCTAssertTrue(c.paneList.contains { $0 === b })
-        XCTAssertTrue(c.focusedPane === b, "布局切换后焦点仍在浏览器 pane")
+        XCTAssertTrue(c.focusedPane === b, "focus is still on the browser pane after the layout switch")
 
-        // 多标签时 Cmd+W 关当前标签而不是 pane；最后一个标签才关 pane
+        // With several tabs, Cmd+W closes the active tab rather than the pane; only the last tab closes the pane.
         b.newTab()
         XCTAssertEqual(b.tabs.count, 2)
         c.perform(.closePane)
-        XCTAssertEqual(b.tabs.count, 1, "Cmd+W 关掉的是标签")
-        XCTAssertTrue(c.paneList.contains { $0 === b }, "pane 还在")
+        XCTAssertEqual(b.tabs.count, 1, "Cmd+W closed the tab")
+        XCTAssertTrue(c.paneList.contains { $0 === b }, "the pane is still here")
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
-        XCTAssertTrue(c.window?.firstResponder === b.webView, "关标签后键盘焦点必须落在幸存标签的页面上")
+        XCTAssertTrue(c.window?.firstResponder === b.webView, "after a tab closes, keyboard focus has to land on the surviving tab's page")
 
-        // 关闭：不弹进程确认，焦点回终端
+        // Closing: no process confirmation, and focus goes back to the terminal.
         c.closePane(b, confirmIfNeeded: true, animated: false)
         XCTAssertFalse(c.paneList.contains { $0 === b })
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
@@ -1279,7 +1338,8 @@ extension WorkspaceTests {
         c.model.layout = .empty
     }
 
-    /// ⌘ 拖动命中判定按浮动 pane 的矩形（含留白带）：中间 = 移动，边框带 = 缩放，角 = 双轴
+    /// Cmd+drag hit testing goes by the floating pane's rect, gap band included: the middle moves it, the
+    /// border band resizes, and a corner does both axes.
     @MainActor
     func testFloatingDragHitZonesInWindowCoordinates() throws {
         let c = try controller
@@ -1296,24 +1356,25 @@ extension WorkspaceTests {
         let content = try XCTUnwrap(c.window?.contentView)
         let barH: CGFloat = c.model.barVisible ? StatusBarView.height : 0
         let W = content.bounds.width, H = content.bounds.height - barH
-        // 归一化 → 窗口坐标（contentView 为 flipped：y 自顶向下）
+        // Normalized -> window coordinates (contentView is flipped, so y runs top to bottom).
         func windowPoint(_ nx: CGFloat, _ ny: CGFloat) -> NSPoint {
             let local = NSPoint(x: nx * W, y: content.isFlipped ? ny * H + barH : content.bounds.height - (ny * H + barH))
             return content.convert(local, to: nil)
         }
         let r = fp.rect
-        XCTAssertEqual(c.floatingDragHit(atWindowPoint: windowPoint(r.midX, r.midY))?.edges, [], "中间 = 移动")
+        XCTAssertEqual(c.floatingDragHit(atWindowPoint: windowPoint(r.midX, r.midY))?.edges, [], "the middle means move")
         XCTAssertEqual(c.floatingDragHit(atWindowPoint: windowPoint(r.minX + 3 / W, r.midY))?.edges, [.left])
         XCTAssertEqual(c.floatingDragHit(atWindowPoint: windowPoint(r.maxX - 3 / W, r.maxY - 3 / H))?.edges, [.right, .bottom])
-        XCTAssertNil(c.floatingDragHit(atWindowPoint: windowPoint(r.minX - 0.05, r.midY)), "矩形外不命中")
+        XCTAssertNil(c.floatingDragHit(atWindowPoint: windowPoint(r.minX - 0.05, r.midY)), "outside the rect there is no hit")
     }
 
-    /// 新建 pane 后焦点必须落在新 pane（dwindle：原 pane 在 leaf→split 重挂时会"夺回"焦点，需让位）
+    /// After a new pane is created, focus has to land on it (in dwindle the original pane grabs focus back
+    /// when it is remounted from leaf to split, so it has to yield).
     @MainActor
     func testNewTerminalFocusesNewPaneInDwindle() throws {
         let c = try controller
         let home = c.model.activeIndex
-        let ws = c.model.layouts.count - 1          // 用空工作区，隔离前序用例遗留状态
+        let ws = c.model.layouts.count - 1          // The empty workspace, clear of state left by earlier cases
         c.model.switchTo(ws)
         defer { c.model.switchTo(home) }
         XCTAssertTrue(c.model.layout.isEmpty)
@@ -1325,20 +1386,21 @@ extension WorkspaceTests {
             if let s = c.window?.firstResponder as? PaneView { return "Surface(\(s.id.uuidString.prefix(4)))" }
             return c.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
         }
-        for round in 0..<3 {   // 根叶 → 分裂 → 再分裂
+        for round in 0..<3 {   // Root leaf -> split -> split again
             let before = Set(c.paneList.map(ObjectIdentifier.init))
             c.perform(.newTerminal)
             RunLoop.main.run(until: Date().addingTimeInterval(0.6))
             let fresh = try XCTUnwrap(c.paneList.first { !before.contains(ObjectIdentifier($0)) })
             created.append(fresh)
             XCTAssertTrue(c.window?.firstResponder === fresh,
-                          "round \(round): 新 pane \(fresh.id.uuidString.prefix(4)) 应为 FR，实际 \(frDesc())")
-            XCTAssertTrue(fresh.focused, "round \(round): 新 pane 的 focused 应为 true")
-            XCTAssertEqual(c.paneList.filter(\.focused).count, 1, "round \(round): 只有一个 pane 激活")
+                          "round \(round): the new pane \(fresh.id.uuidString.prefix(4)) should be the first responder, actual \(frDesc())")
+            XCTAssertTrue(fresh.focused, "round \(round): the new pane's focused should be true")
+            XCTAssertEqual(c.paneList.filter(\.focused).count, 1, "round \(round): exactly one pane is active")
         }
     }
 
-    /// 回归：Cmd+L 重建视图层级后不得出现多个 pane 同时 focused（多激活边框 + 悬停失效）
+    /// Regression: after Cmd+L rebuilds the view hierarchy, no two panes may be focused at once (two lit
+    /// borders, and hover stops working).
     @MainActor
     func testToggleLayoutKeepsSingleFocus() throws {
         let c = try controller
@@ -1352,28 +1414,30 @@ extension WorkspaceTests {
         PaneView.moveFocus(to: target)
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
 
-        for _ in 0..<2 {   // scrolling → dwindle → scrolling
+        for _ in 0..<2 {   // scrolling -> dwindle -> scrolling
             c.perform(.toggleLayout)
-            // 竞态复现：SwiftUI 尚未重建层级时，另一 pane 成为 FR（模拟悬停 moveFocus 恰好落地），
-            // 随后它在重建中被移出窗口——AppKit 不发 resign，focused 会残留
+            // Reproduce the race: before SwiftUI has rebuilt the hierarchy another pane becomes first responder
+            // (as if a hover moveFocus landed right then), and the rebuild then takes it out of the window.
+            // AppKit sends no resign, so focused would be left behind.
             let other = try XCTUnwrap(created.first { $0 !== (c.window?.firstResponder as? PaneView) })
             _ = c.window?.makeFirstResponder(other)
             RunLoop.main.run(until: Date().addingTimeInterval(0.6))
-            // 再模拟一次切换后的悬停
+            // Simulate one more hover after the switch.
             let another = try XCTUnwrap(created.first { $0 !== (c.window?.firstResponder as? PaneView) })
             PaneView.moveFocus(to: another)
             RunLoop.main.run(until: Date().addingTimeInterval(0.3))
             let focusedPanes = c.paneList.filter(\.focused)
             XCTAssertLessThanOrEqual(focusedPanes.count, 1,
-                                     "\(c.model.layout.name) 布局下 \(focusedPanes.count) 个 pane 同时 focused")
+                                     "\(focusedPanes.count) panes focused at once in the \(c.model.layout.name) layout")
             if let fr = c.window?.firstResponder as? PaneView {
-                XCTAssertTrue(focusedPanes.first === fr, "focused 标志应与窗口 first responder 一致")
+                XCTAssertTrue(focusedPanes.first === fr, "the focused flag has to agree with the window's first responder")
             }
         }
     }
 
-    /// 双指横滑：鼠标下是**激活的**浏览器 pane → 事件交给网页（横向滚动 / 前进后退手势）；
-    /// 终端持焦、或浏览器 pane 只是被路过 → 照旧平移画布
+    /// A two-finger horizontal swipe: with the **active** browser pane under the pointer the event goes to the
+    /// page (horizontal scrolling, the back/forward gesture).
+    /// With a terminal focused, or a browser pane merely passed over, the canvas pans as before.
     func testFocusedBrowserPaneClaimsHorizontalScroll() throws {
         let c = try controller
         let home = c.model.activeIndex
@@ -1392,16 +1456,17 @@ extension WorkspaceTests {
         RunLoop.main.run(until: Date().addingTimeInterval(0.8))
         let window = try XCTUnwrap(c.window)
         XCTAssertTrue(b.holdsFirstResponder(of: window))
-        XCTAssertTrue(c.browserPaneClaimingScroll(under: b.webView) === b, "激活的浏览器 pane 吃横滑")
+        XCTAssertTrue(c.browserPaneClaimingScroll(under: b.webView) === b, "the active browser pane takes the horizontal swipe")
         func descendants(_ v: NSView) -> [NSView] { v.subviews.flatMap { [$0] + descendants($0) } }
         let strip = try XCTUnwrap(descendants(b).first { $0 is BrowserTabBarView })
-        XCTAssertTrue(c.browserPaneClaimingScroll(under: strip) === b, "标签条 / 地址栏也算在 pane 内")
-        XCTAssertNil(c.browserPaneClaimingScroll(under: a), "终端上不归网页")
+        XCTAssertTrue(c.browserPaneClaimingScroll(under: strip) === b, "the tab bar and the address field count as inside the pane")
+        XCTAssertNil(c.browserPaneClaimingScroll(under: a), "over a terminal it does not belong to a page")
 
         _ = window.makeFirstResponder(a.focusTarget)
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
         XCTAssertTrue(a.holdsFirstResponder(of: window))
-        XCTAssertNil(c.browserPaneClaimingScroll(under: b.webView), "没激活的浏览器 pane 只是被路过：照旧平移画布")
+        XCTAssertNil(c.browserPaneClaimingScroll(under: b.webView),
+                     "an inactive browser pane is only being passed over: the canvas pans as before")
 
         c.closePane(b, confirmIfNeeded: false, animated: false)
         c.closePane(a, confirmIfNeeded: false, animated: false)

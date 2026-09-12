@@ -389,7 +389,8 @@ extension Ghostty.Notification {
     /// Close the calling surface.
     static let ghosttyCloseSurface = Notification.Name("com.mitchellh.ghostty.closeSurface")
 
-    /// QuickTerm：标记 closesOnChildExit 的 surface 子进程已退出（引擎不会自行 close；object = SurfaceView）
+    /// QuickTerm: the child process of a surface marked `closesOnChildExit` has exited. The engine
+    /// will not close the surface on its own; object = SurfaceView.
     static let ghosttyChildExited = Notification.Name("dev.danny.quickterm.childExited")
 
     /// Focus previous/next split. Has a SplitFocusDirection in the userinfo.

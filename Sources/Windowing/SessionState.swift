@@ -1,21 +1,28 @@
 import AppKit
 
-// MARK: - 存档 v5 的数据结构（spec v9 §3.1）
+// MARK: - Data structures of archive v5 (spec v9 §3.1)
 //
-// 「一键复原」的定义（用户 2026-09-08）：退出再打开能还原之前的每个「屏幕」、每个屏幕上的
-// pane 与布局、每个终端 pane 的所在目录、每个浏览器 pane 已经打开的网页。
-// 前三样在 v4 时代就已经在存了（`WorkspaceLayout` / `ScrollingStrip.Column` / `SplitTree` /
-// `FloatingPane` / `PaneCodable`）——v5 **只换信封**：把单窗口的三个字段包进 `windows[]`，
-// 再补上「这个窗口在哪台显示器、多大、是不是全屏」。pane / 布局的编码字节一律不动，
-// 于是 v2–v4 的存档只要换个信封就能读，pane 级的用例也一个都不用改。
+// What "restore everything in one go" means (settled with the user on 2026-09-08): quit and reopen,
+// and you get back every "screen" you had, the panes and layout on each screen, the directory each
+// terminal pane was in, and the page each browser pane had open.
+// The first three were already being persisted back in v4 (`WorkspaceLayout` /
+// `ScrollingStrip.Column` / `SplitTree` / `FloatingPane` / `PaneCodable`) - v5 **only changes the
+// envelope**: it wraps the three single-window fields into `windows[]` and adds "which display this
+// window is on, how big it is, and whether it is fullscreen". Not one byte of the pane and layout
+// encoding changes, so a v2-v4 archive only needs a new envelope to be readable and not a single
+// pane-level test has to change.
 
-/// 显示器身份：UUID 主、名称次、frame 只用于重新定位（分辨率 / 排列一变就不同，绝不能当身份）
+/// Display identity: the UUID first, the name second. `frame` is only used for repositioning -
+/// it changes the moment the resolution or the display arrangement does, so it must never be
+/// treated as identity.
 struct DisplayRef: Codable, Equatable {
-    /// `CGDisplayCreateUUIDFromDisplayID` 的 UUID 字符串（跨重连 / 重启稳定）
+    /// The UUID string from `CGDisplayCreateUUIDFromDisplayID` (stable across reconnects and
+    /// reboots)
     var uuid: String?
-    /// `NSScreen.localizedName`（UUID 没命中时的兜底；同型号会重名）
+    /// `NSScreen.localizedName` (the fallback when the UUID does not match; two displays of the
+    /// same model share a name)
     var name: String?
-    /// 存档时该显示器的 frame（仅供参考 / 调试）
+    /// The display's frame at archive time (informational, for debugging)
     var frame: CGRect?
 
     init(uuid: String? = nil, name: String? = nil, frame: CGRect? = nil) {
@@ -24,7 +31,8 @@ struct DisplayRef: Codable, Equatable {
         self.frame = frame
     }
 
-    /// 从 NSScreen 取身份（screen 为 nil → nil，表示「不知道在哪」= 按主屏居中的历史行为）
+    /// Take the identity from an NSScreen (a nil screen gives nil, meaning "we do not know where
+    /// it was" = the historical behavior of centering on the main display)
     init?(screen: NSScreen?) {
         guard let screen else { return nil }
         self.uuid = screen.displayUUID?.uuidString
@@ -33,26 +41,30 @@ struct DisplayRef: Codable, Equatable {
     }
 }
 
-/// 一个「屏幕」（窗口）的存档
+/// The archived state of one "screen" (window)
 struct WindowState: Codable {
     var id: UUID
-    /// 每工作区布局（编码与 v2–v4 完全一致）
+    /// Per-workspace layout (encoded exactly as in v2-v4)
     var layouts: [WorkspaceLayout]
-    /// 每工作区浮动层（v3 起；缺省 = 空浮动层）
+    /// Per-workspace floating layer (v3 and later; absent = an empty floating layer)
     var floatings: [[FloatingPane]]?
     var activeIndex: Int
-    /// 每工作区的名字（与 layouts 平行；nil = 这份存档里一个名字都没起过）。
-    /// **可选字段**：v5 老档缺它照常解码，所以不动信封版本号
+    /// Per-workspace name (parallel to `layouts`; nil = no workspace in this archive was ever
+    /// named).
+    /// It is an **optional field**: an older v5 archive without it still decodes, which is why the
+    /// envelope version is left alone.
     var workspaceTitles: [String?]?
-    /// scrolling 每屏可见列数（nil = 用全局默认 / config）
+    /// Visible columns per screen in scrolling mode (nil = use the global default / the config)
     var visibleColumns: Int?
-    /// 存档时窗口所在的显示器（nil = 未知 → 主屏）
+    /// The display the window was on at archive time (nil = unknown, so the main display)
     var display: DisplayRef?
-    /// 非全屏 frame（全局坐标；全屏中存的是退出全屏后要恢复的那个）
+    /// The non-fullscreen frame (in global coordinates; while fullscreen this holds the frame to
+    /// restore on leaving fullscreen)
     var frame: CGRect?
     var isFullscreen: Bool
     var joinAllSpaces: Bool
-    /// 存档时持有焦点的 pane（信封字段：pane 编码字节不动）。nil / 找不到 → 第一块 pane
+    /// The pane that held focus at archive time (an envelope field, so the pane encoding is
+    /// untouched). nil, or an id that no longer resolves, means the first pane.
     var focusedPaneID: UUID?
 
     init(id: UUID = UUID(), layouts: [WorkspaceLayout], floatings: [[FloatingPane]]? = nil,
@@ -73,7 +85,8 @@ struct WindowState: Codable {
         self.focusedPaneID = focusedPaneID
     }
 
-    /// 这个窗口一个 pane 都没有（平铺与浮动都空）——恢复时直接丢掉，绝不开一个空窗口出来
+    /// This window has no pane at all (both tiled and floating are empty) - it is dropped on
+    /// restore rather than opening an empty window.
     var isEmpty: Bool {
         layouts.allSatisfy(\.isEmpty) && (floatings ?? []).allSatisfy(\.isEmpty)
     }
@@ -83,8 +96,10 @@ struct WindowState: Codable {
              isFullscreen, joinAllSpaces, focusedPaneID
     }
 
-    /// 手写解码：缺字段一律走默认值（合成的解码器对非可选字段缺键会直接抛错，
-    /// 而 v5 以后新增字段必须能被老存档「缺着读」——否则加一个字段就废掉一次用户会话）
+    /// Hand-written decoding so that any missing field falls back to its default. The synthesized
+    /// decoder throws outright on a missing key for a non-optional field, and every field added
+    /// after v5 has to be readable-while-absent from an older archive - otherwise adding one field
+    /// throws away a user's session.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
@@ -101,15 +116,17 @@ struct WindowState: Codable {
     }
 }
 
-/// 存档信封 v5：多屏幕 + 哪个屏幕是 key
+/// Archive envelope v5: several screens, plus which screen is key
 struct PersistedState: Codable {
     static let currentVersion = 5
 
     var version: Int
     var windows: [WindowState]
     var keyWindowID: UUID?
-    /// 叠放次序（前 → 后）。`windows[]` 保持注册表/创建顺序（屏幕序号与标题按它分配），
-    /// 谁压着谁另存这一份。nil / 缺项 = 未知，按存档顺序排
+    /// Stacking order (front to back). `windows[]` keeps the registry / creation order, since
+    /// screen numbers and titles are assigned from it, so which window covers which is stored
+    /// separately here. nil, or a window missing from the list, means unknown and it is ordered by
+    /// its position in the archive.
     var stackingOrder: [UUID]?
 
     init(windows: [WindowState], keyWindowID: UUID? = nil, stackingOrder: [UUID]? = nil,
@@ -126,36 +143,40 @@ struct PersistedState: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         version = try c.decodeIfPresent(Int.self, forKey: .version) ?? PersistedState.currentVersion
         stackingOrder = try c.decodeIfPresent([UUID].self, forKey: .stackingOrder)
-        // 逐个窗口宽松解码：某个屏幕的存档坏了（引擎拒绝某个 pane、字段被手改坏）
-        // 只丢它一个，其余屏幕照常恢复——一份坏窗口不该带走整个会话
+        // Decode window by window, leniently: if one screen's archive is broken (the engine
+        // refused a pane, a field was hand-edited into nonsense) only that one is dropped and the
+        // remaining screens restore as usual - one bad window must not take the whole session down.
         windows = try c.decode([LossyWindow].self, forKey: .windows).compactMap(\.value)
         keyWindowID = try c.decodeIfPresent(UUID.self, forKey: .keyWindowID)
     }
 
-    /// 解码失败即视为「没有这个窗口」的包装（元素自己的解码器永远成功，不会打断整个数组）
+    /// Wrapper that turns a decoding failure into "there is no such window" (the element's own
+    /// decoder always succeeds, so it never aborts the whole array)
     private struct LossyWindow: Decodable {
         let value: WindowState?
         init(from decoder: Decoder) throws { value = try? WindowState(from: decoder) }
     }
 }
 
-/// v2–v4 的单窗口存档（只用于读旧文件；v5 起不再写出这个形状）
+/// The single-window archive of v2-v4 (only used to read old files; v5 and later never write this
+/// shape)
 struct LegacyPersistedState: Codable {
-    var version = 4   // v4：叶子带 kind（terminal/browser）；v2/v3 无 kind = 终端
+    var version = 4   // v4: leaves carry a kind (terminal/browser); in v2/v3 no kind means terminal
     var layouts: [WorkspaceLayout]
-    /// v3 起；v2 存档缺省为空浮动层
+    /// v3 and later; in a v2 archive this is absent and means an empty floating layer
     var floatings: [[FloatingPane]]?
     var activeIndex: Int
 }
 
-// MARK: - 读盘 / 迁移 / 写盘（spec v9 §3.2–§3.4）
+// MARK: - Reading, migrating and writing the archive (spec v9 §3.2-§3.4)
 
-/// 会话存档（进程唯一，挂在 `AppSession` 上）。
-/// 与 1.5.x 的差别：不再「只在退出时存一次」——布局变化 / 窗口移动缩放 / 开关屏幕 / 全屏切换
-/// 都会 `scheduleSave()`（防抖 1.5s），退出时再同步写一次。
+/// The session archive (one per process, owned by `AppSession`).
+/// What changed since 1.5.x: it is no longer "saved once, on quit" - a layout change, moving or
+/// resizing a window, opening or closing a screen, and toggling fullscreen all call
+/// `scheduleSave()` (debounced by 1.5s), and quitting writes once more synchronously.
 @MainActor
 final class SessionStore {
-    /// 布局变化后的写盘防抖（连续变化只写一次）
+    /// Write debounce after a layout change (a burst of changes writes once)
     static let debounceInterval: TimeInterval = 1.5
 
     static var defaultURL: URL {
@@ -163,20 +184,25 @@ final class SessionStore {
     }
 
     let url: URL
-    /// v5 首次写盘前留下的旧档副本（v5 不可降级：老版本读不懂会当损坏档，退出时用 v4 覆盖）
+    /// Copy of the old archive kept before v5's first write (v5 cannot be downgraded to: an older
+    /// build cannot read it, treats it as corrupt, and overwrites it with v4 on quit)
     var backupURL: URL { backupURL(forVersion: PersistedState.currentVersion - 1) }
 
-    /// 上一次会话的存档副本：本进程第一次写盘前留一份。
-    /// 保命用——一次坏掉的启动（比如目录权限被拒、pane 没能复原）在第一次存档时就会把
-    /// 用户的会话覆盖掉，没有这份副本就再也找不回来了
+    /// Copy of the previous session's archive, taken before this process's first write.
+    /// This is the safety net: one bad launch (a directory permission denied, panes that failed to
+    /// restore) overwrites the user's session at the very first save, and without this copy it is
+    /// gone for good.
     var previousSessionURL: URL {
         url.deletingLastPathComponent().appendingPathComponent("state.previous.json")
     }
 
-    /// 「别的版本写的存档」的副本落点：
-    /// - 老版本（< v5）一律 `state.pre-v5.json`（升级路径只会有一份）；
-    /// - 更新的版本（> v5，用户从新版回滚到本版时会遇到）按版本号各存一份 `state.v<N>.json`，
-    ///   互不覆盖——本版**拒读**新版存档，但绝不能悄悄把它覆盖掉
+    /// Where a copy of "an archive written by a different version" goes:
+    /// - an older version (< v5) always lands in `state.pre-v5.json` (the upgrade path only ever
+    ///   produces one);
+    /// - a newer version (> v5, which happens when the user rolls back to this build from a newer
+    ///   one) gets its own `state.v<N>.json` per version number, so they never overwrite each
+    ///   other - this build **refuses to read** a newer archive, and must certainly not silently
+    ///   overwrite it.
     func backupURL(forVersion version: Int) -> URL {
         let name = version < PersistedState.currentVersion
             ? "state.pre-v\(PersistedState.currentVersion).json"
@@ -184,22 +210,26 @@ final class SessionStore {
         return url.deletingLastPathComponent().appendingPathComponent(name)
     }
 
-    /// 屏幕注册表（强引用：注册表不反向持有本对象，不成环）
+    /// The screen registry (a strong reference: the registry holds no reference back to this
+    /// object, so there is no cycle)
     private let screens: ScreenRegistry
-    /// 测试宿主里绝不碰用户真实存档：只有显式注入了 URL（临时目录）才允许写盘
+    /// The test host never touches the user's real archive: writes are only allowed when a URL (in
+    /// a temp directory) was injected explicitly.
     private let writesAllowed: Bool
-    /// 测试注入的快照来源（nil = 从注册表取）
+    /// Snapshot source injected by tests (nil = take it from the registry)
     var snapshotOverride: (() -> PersistedState)?
-    /// 实际写盘次数（防抖用例的计数桩）
+    /// How many writes actually hit the disk (the counter the debounce tests assert on)
     private(set) var writeCount = 0
-    /// 排过多少次防抖存档（触发点用例的计数桩；测试宿主里不写盘也照记）
+    /// How many debounced saves have been queued (the counter the trigger-point tests assert on;
+    /// it is still counted in the test host, where nothing is written)
     private(set) var scheduleCount = 0
     private var pendingSave: DispatchWorkItem?
     private var didCheckBackup = false
-    /// 本进程是否已经留过「上一次会话」的副本（每个进程只留一次）
+    /// Whether this process has already taken its "previous session" copy (once per process)
     private var didCopyPreviousSession = false
-    /// 复原进行中：模型只有一半（屏幕建了、pane 还没灌完），这期间**绝不写盘**——
-    /// 一次半途的存档会把用户的会话截断掉。`AppDelegate.restoreSession(from:)` 括住整段
+    /// Restore in progress: the model is only half-built (the screens exist, the panes are not all
+    /// filled in yet), and during that window we **never write** - one half-finished save truncates
+    /// the user's session. `AppDelegate.restoreSession(from:)` brackets the whole stretch.
     private(set) var isRestoring = false
 
     init(screens: ScreenRegistry, url: URL? = nil) {
@@ -208,39 +238,45 @@ final class SessionStore {
         self.writesAllowed = url != nil || !AppDelegate.isRunningTests
     }
 
-    // MARK: 复原闸门
+    // MARK: The restore gate
 
-    /// 复原开始：期间排下来的存档一律丢掉（`newScreen` 每建一个屏幕就排一次）。
-    /// 已经排在路上的那一个也取消——它可能在复原中途落地
+    /// Restore begins: every save queued in the meantime is dropped (`newScreen` queues one for
+    /// each screen it creates).
+    /// The one already in flight is cancelled too - it could otherwise land halfway through the
+    /// restore.
     func beginRestore() {
         isRestoring = true
         pendingSave?.cancel()
         pendingSave = nil
     }
 
-    /// 复原结束：恢复正常写盘。这里**不主动补一次存档**——盘上那份就是刚读进来的这份
+    /// Restore is done: writes resume. We deliberately do **not** save here - what is on disk is
+    /// exactly what we just read in.
     func endRestore() {
         isRestoring = false
     }
 
-    // MARK: 读
+    // MARK: Reading
 
-    /// 读档并迁移到 v5。返回 nil = 没有存档 / 损坏 / 全空（→ 全新开始，与 1.5.x 行为一致）
+    /// Read the archive and migrate it to v5. nil means there is no archive, it is corrupt, or it
+    /// is entirely empty - in which case we start fresh, exactly as 1.5.x did.
     func load() -> PersistedState? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return Self.decode(data)
     }
 
-    /// 版本探针：先只读 version，再决定走哪条解码路径
+    /// Version probe: read only `version` first, then pick the decoding path
     private struct VersionProbe: Codable { var version: Int? }
 
-    /// 解码 + 迁移：v5 直读；v2–v4 包成 `windows[0]`（display / frame 均 nil → 保持今天的主屏居中行为）。
-    /// 全空的窗口一律丢掉；一个都不剩 → nil
+    /// Decode and migrate: v5 is read directly; v2-v4 is wrapped into `windows[0]` (with `display`
+    /// and `frame` both nil, which keeps today's center-on-the-main-display behavior).
+    /// Entirely empty windows are dropped; if none are left, return nil.
     ///
-    /// 版本**精确匹配**：更新的版本（v6+）一律拒读。按 v5 的形状去读一份 v6 存档是有损的——
-    /// 本版不认识的 pane 种类会让整个窗口解码失败（`LossyWindow` 把它丢掉），
-    /// 随后启动 1.5s 的防抖存档就会把截断后的结果写回去。宁可「全新开始」，
-    /// 再由 `backupForeignArchiveIfNeeded` 把原档整份留下来。
+    /// The version has to match **exactly**: a newer version (v6+) is refused. Reading a v6 archive
+    /// through the v5 shape is lossy - a pane kind this build does not know fails the decode of the
+    /// whole window (`LossyWindow` then drops it), and 1.5s later the debounced save at startup
+    /// writes the truncated result back. Better to start fresh and let
+    /// `backupForeignArchiveIfNeeded` keep the original archive whole.
     static func decode(_ data: Data) -> PersistedState? {
         let version = (try? JSONDecoder().decode(VersionProbe.self, from: data))?.version ?? 0
         var state: PersistedState
@@ -264,9 +300,10 @@ final class SessionStore {
         return state
     }
 
-    // MARK: 写
+    // MARK: Writing
 
-    /// 防抖写盘：连续变化（拖列宽、连开 pane、拖窗口）只落一次盘
+    /// Debounced write: a burst of changes (dragging a column width, opening panes one after
+    /// another, dragging the window) hits the disk once.
     func scheduleSave() {
         scheduleCount += 1
         guard writesAllowed, !isRestoring else { return }
@@ -276,13 +313,14 @@ final class SessionStore {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.debounceInterval, execute: item)
     }
 
-    /// 立即同步写盘（`applicationWillTerminate` / 关掉最后一个屏幕）
+    /// Write synchronously, right now (`applicationWillTerminate`, or closing the last screen)
     func saveNow() {
         pendingSave?.cancel()
         pendingSave = nil
         guard writesAllowed, !isRestoring else { return }
         let state = snapshot()
-        // 一个窗口都没有（全关掉了 / 都 teardown 过）绝不写：否则会用空档覆盖掉用户的会话
+        // Never write when there is no window left (all closed, or all torn down): that would
+        // overwrite the user's session with an empty archive.
         guard !state.windows.isEmpty else { return }
         backupForeignArchiveIfNeeded()
         backupPreviousSessionIfNeeded()
@@ -291,14 +329,17 @@ final class SessionStore {
         writeCount += 1
     }
 
-    /// 当前所有屏幕的快照（teardown 过的屏幕不进档）
+    /// A snapshot of every screen right now (a screen that has been torn down does not go into the
+    /// archive)
     func snapshot() -> PersistedState {
         if let snapshotOverride { return snapshotOverride() }
         let live = screens.controllers.filter { !$0.isClosed }
-        // key 用 `current` 而不是 `key`：sheet（JS 对话框 / 文件选择器）或下载 popover 是 key 窗口时
-        // `screens.key` 为 nil，退回 primary 会把「下次启动置前哪个屏幕」记成第一个屏幕
+        // Use `current` rather than `key` here: when a sheet (a JS dialog, a file picker) or the
+        // downloads popover is the key window, `screens.key` is nil, and falling back to primary
+        // would record "the screen to bring forward next launch" as the first screen.
         let key = screens.current
-        // 叠放次序：orderedWindows 是前 → 后；最小化 / 尚未 order-in 的窗口不在里面，补到末尾
+        // Stacking order: orderedWindows is front to back. Minimized windows and ones not yet
+        // ordered in are missing from it, so append them at the end.
         var stacking = NSApp.orderedWindows
             .compactMap { $0.windowController as? MainWindowController }
             .filter { !$0.isClosed }
@@ -309,8 +350,11 @@ final class SessionStore {
                               stackingOrder: stacking)
     }
 
-    /// 第一次写盘前，把「别的版本写的存档」原封不动留一份（只做一次，且不覆盖已有副本）。
-    /// 老档（v2–v4）是升级留痕；新档（v6+）是降级保命——本版拒读它，更不能无声覆盖掉
+    /// Before the first write, keep a verbatim copy of "an archive written by a different version"
+    /// (done once, and never overwriting an existing copy).
+    /// For an old archive (v2-v4) it is a record of the upgrade; for a newer one (v6+) it is the
+    /// safety net for a downgrade - this build refuses to read it, so it certainly must not
+    /// overwrite it silently.
     private func backupForeignArchiveIfNeeded() {
         guard !didCheckBackup else { return }
         didCheckBackup = true
@@ -322,8 +366,10 @@ final class SessionStore {
         try? data.write(to: backup, options: .atomic)
     }
 
-    /// 本进程第一次写盘前，把盘上那份（= 这次启动读进来的那份）留成 `state.previous.json`。
-    /// 每个进程只做一次：之后的每一次防抖存档都是同一次会话的续写，覆盖它就没有意义了
+    /// Before this process's first write, keep what is on disk (= what this launch read in) as
+    /// `state.previous.json`.
+    /// Done once per process: every later debounced save is a continuation of the same session, so
+    /// overwriting the copy with one of those would defeat the point.
     private func backupPreviousSessionIfNeeded() {
         guard !didCopyPreviousSession else { return }
         didCopyPreviousSession = true
@@ -331,10 +377,11 @@ final class SessionStore {
         try? data.write(to: previousSessionURL, options: .atomic)
     }
 
-    // MARK: 显示器解析与 frame 约束（spec v9 §3.3）
+    // MARK: Resolving the display and constraining the frame (spec v9 §3.3)
 
-    /// 按存档里的显示器身份找回 NSScreen：UUID → 名称（唯一命中才算）→ 没有。
-    /// 纯函数（可注入屏幕列表）以便用例覆盖
+    /// Resolve the archived display identity back to an NSScreen: UUID first, then the name (only
+    /// if it matches exactly one display), then nothing.
+    /// A pure function with an injectable screen list, so tests can cover it.
     static func matchScreen(for ref: DisplayRef?, in screens: [NSScreen] = NSScreen.screens) -> NSScreen? {
         guard let ref else { return nil }
         if let uuid = ref.uuid,
@@ -348,12 +395,15 @@ final class SessionStore {
         return nil
     }
 
-    /// 恢复窗口时的落点显示器：解析不到一律回主屏——**绝不因为显示器没了就丢掉窗口和布局**
+    /// Which display a restored window lands on: anything that does not resolve falls back to the
+    /// main display - **a missing display never costs the user the window and its layout**.
     static func resolveScreen(for ref: DisplayRef?, in screens: [NSScreen] = NSScreen.screens) -> NSScreen? {
         matchScreen(for: ref, in: screens) ?? NSScreen.main
     }
 
-    /// 把 frame 收进可见区：先夹尺寸再夹位置（存档时的显示器更大 / 分辨率变了 / 显示器没了都靠它兜底）
+    /// Fit a frame into the visible area: clamp the size first, then the position. This is the
+    /// catch-all for an archive made on a larger display, a resolution change, and a display that
+    /// is gone.
     static func constrain(_ frame: CGRect, into visible: CGRect) -> CGRect {
         var f = frame
         f.size.width = min(max(f.width, 200), visible.width)

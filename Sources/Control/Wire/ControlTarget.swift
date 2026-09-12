@@ -1,14 +1,18 @@
 import Foundation
 
-/// 寻址语法：`screen:workspace.pane`，每段可省，向右默认取上下文（tmux 的形状）。
-/// **纯值类型，不碰任何窗口**——所以能和 ScrollingStripTests 一样在无窗口的用例层跑。
+/// Addressing syntax: `screen:workspace.pane`, every part optional, defaulting rightwards from the
+/// current context (tmux's shape).
+/// **A pure value type that touches no window** — which is why it can run in the window-less test
+/// layer, the same way ScrollingStripTests does.
 ///
-/// 消歧规则（写进 `--help` 与 `describe`，不留"看情况"）：
-/// - 纯数字 / `@current` / `@primary` 且不带 `:` `.` → **屏幕**（pane 句柄一律带类型前缀 `t7`/`b3`，
-///   所以裸数字永远不会是 pane）；
-/// - `#uuid` 不带 `:` 时是 **pane**；要按 uuid 指屏幕必须写 `#uuid:`（带冒号）；
-/// - 谓词里的 `:`（`title:~foo`）与 `.`（`cwd:/a/b.c`）不会被当成分隔符——
-///   只有当分隔符左边**本身就是**合法的屏幕 / 工作区引用时才切分。
+/// Disambiguation rules (written into `--help` and `describe`, with no "it depends" left over):
+/// - a bare number / `@current` / `@primary` with no `:` or `.` -> a **screen** (pane handles
+///   always carry a type prefix, `t7`/`b3`, so a bare number can never be a pane);
+/// - `#uuid` without a `:` is a **pane**; to name a screen by uuid you must write `#uuid:`
+///   (with the colon);
+/// - a `:` inside a predicate (`title:~foo`) and a `.` inside one (`cwd:/a/b.c`) are not treated as
+///   separators — we only split when what stands to the left of the separator **is itself** a valid
+///   screen or workspace reference.
 struct ControlTarget: Equatable {
     var screen: ScreenRef?
     var workspace: WorkspaceRef?
@@ -17,24 +21,24 @@ struct ControlTarget: Equatable {
     var isEmpty: Bool { screen == nil && workspace == nil && pane == nil }
 
     enum ScreenRef: Equatable {
-        case index(Int)          // 1 起，与窗口标题一致
-        case id(String)          // #uuid（MainWindowController.windowID）
+        case index(Int)          // 1-based, matching the window title
+        case id(String)          // #uuid (MainWindowController.windowID)
         case current
         case primary
     }
 
     enum WorkspaceRef: Equatable {
-        case index(Int)          // 1 起，与 Cmd+1..0 一致（内部 0 起绝不外泄）
+        case index(Int)          // 1-based, matching Cmd+1..0 (the internal 0-based index never leaks)
         case active
         case next
         case prev
     }
 
     enum PaneRef: Equatable {
-        case handle(String)      // t7 / b3（进程内稳定）
-        case id(String)          // #uuid 或 ≥4 位前缀
+        case handle(String)      // t7 / b3 (stable for the lifetime of the process)
+        case id(String)          // #uuid, or a prefix of ≥4
         case focused
-        case selfPane            // @self：读 QUICKTERM_PANE
+        case selfPane            // @self: read from QUICKTERM_PANE
         case direction(Direction)
         case cycle(next: Bool)
         case title(String)       // title:~<regex>
@@ -67,7 +71,7 @@ struct ControlTarget: Equatable {
 
     static let paneHandlePattern = "^[tb][0-9]+$"
 
-    // MARK: 解析
+    // MARK: Parsing
 
     static func parse(_ raw: String) throws -> ControlTarget {
         let text = raw.trimmingCharacters(in: .whitespaces)
@@ -79,7 +83,8 @@ struct ControlTarget: Equatable {
         var rest = Substring(text)
 
         if text.hasPrefix(":") {
-            // `:3` / `:3.t7` —— 显式省略屏幕，冒号右边一定从工作区开始
+            // `:3` / `:3.t7` — the screen is explicitly omitted, so what follows the colon always
+            // starts at the workspace
             screenOmitted = true
             rest = rest.dropFirst()
         } else if let colon = text.firstIndex(of: ":") {
@@ -88,7 +93,8 @@ struct ControlTarget: Equatable {
                 screen = parsed
                 rest = text[text.index(after: colon)...]
             }
-            // head 不是合法屏幕引用（`title:~foo`）→ 整串按 pane 处理，不切分
+            // head is not a valid screen reference (`title:~foo`) -> treat the whole string as a
+            // pane, do not split
         }
         let afterScreen = screen != nil || screenOmitted
 
@@ -98,7 +104,8 @@ struct ControlTarget: Equatable {
         guard !rest.isEmpty else { throw ParseError.empty }
 
         let tail = String(rest)
-        // 整串就是一个屏幕引用？只在没写过冒号 / 点、也没显式省略屏幕时成立
+        // Is the whole string just a screen reference? Only when no colon or dot was written and
+        // the screen was not explicitly omitted
         if !afterScreen, !tail.contains(":"), !tail.contains("."), let onlyScreen = bareScreen(tail) {
             return ControlTarget(screen: onlyScreen, workspace: nil, pane: nil)
         }
@@ -110,7 +117,7 @@ struct ControlTarget: Equatable {
             let head = String(tail[tail.startIndex..<dot])
             let after = String(tail[tail.index(after: dot)...])
             if head.isEmpty {
-                // `2:.t7` / `.t7` —— 工作区留空
+                // `2:.t7` / `.t7` — the workspace is left empty
                 panePart = after.isEmpty ? nil : after
             } else if let parsed = parseWorkspace(head) {
                 workspace = parsed
@@ -118,7 +125,7 @@ struct ControlTarget: Equatable {
             }
         }
         if workspace == nil, afterScreen, let candidate = panePart, let parsed = parseWorkspace(candidate) {
-            // `2:3` / `:3` —— 冒号右边整体就是工作区
+            // `2:3` / `:3` — everything to the right of the colon is the workspace
             workspace = parsed
             panePart = nil
         }
@@ -130,7 +137,8 @@ struct ControlTarget: Equatable {
         return ControlTarget(screen: screen, workspace: workspace, pane: pane)
     }
 
-    /// 控制字符（< 0x20）一律拒绝：agent 会幻觉出参数，绝不能让它们进日志 / 标题 / 路径
+    /// Control characters (< 0x20) are rejected outright: agents hallucinate arguments, and those
+    /// must never reach a log, a title or a path.
     static func validateNoControlCharacters(_ text: String) throws {
         if text.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) {
             throw ParseError.badPane(text.debugDescription)
@@ -213,7 +221,8 @@ struct ControlTarget: Equatable {
         throw ParseError.badPane(text)
     }
 
-    // MARK: 回写（用例的往返基准；也是错误信息里回显目标的形式）
+    // MARK: Writing it back (the round-trip baseline for the tests, and the form error messages use
+    // to echo the target)
 
     var text: String {
         var out = ""
@@ -252,12 +261,12 @@ struct ControlTarget: Equatable {
             }
         }
         if case .id = screen, workspace == nil, pane == nil {
-            out += ":"   // `#uuid:` —— 裸 `#uuid` 是 pane，带冒号才是屏幕
+            out += ":"   // `#uuid:` — a bare `#uuid` is a pane; only with the colon is it a screen
         }
         return out
     }
 
-    /// `--help` / `describe` 里那六行语法说明的唯一出处
+    /// The single source for the six lines of grammar shown in `--help` and `describe`.
     static let grammarLines: [String] = [
         "-t screen:workspace.pane   every part optional, defaults to the current context",
         "screen     1-based index (= the window title) · #uuid: · @current · @primary",

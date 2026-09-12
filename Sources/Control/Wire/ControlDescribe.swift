@@ -1,8 +1,10 @@
 import Foundation
 
-/// `quickterm describe --json`：整个控制面一次性吐成机器 schema。
-/// 这是"把控制方法通过命令帮助信息提供给大模型"的正解——agent 会话开始时读一次，之后不必再读 `--help`。
-/// **全部字段都从 `ControlCommandTable` / `WMAction` 生成**，没有第二份手写描述。
+/// `quickterm describe --json`: the whole control plane emitted once as a machine schema.
+/// This is the right way to hand an LLM the means of control through command help — an agent reads
+/// it once at the start of a session and never needs `--help` again.
+/// **Every field is generated from `ControlCommandTable` / `WMAction`**; there is no second,
+/// hand-written description anywhere.
 struct ControlDescribeDocument: Codable, Equatable {
     var schema = "quickterm.describe/1"
     var protocolVersion: Int
@@ -19,15 +21,17 @@ struct ControlDescribeDocument: Codable, Equatable {
     var exitCodes: [ExitCodeDoc]
     var errorCodes: [ErrorCodeDoc]
     var actions: [ControlCommandTable.ActionDoc]
-    /// `app get/set` 认的设置项（枚举即清单）
+    /// The settings `app get/set` accepts (the enum is the list).
     var appSettings: [AppSettingDoc]
-    /// `quickterm.workspace/1` 的字段表（Phase 3：agent 靠它一次读懂 spec 怎么写）
+    /// The field table for `quickterm.workspace/1` (Phase 3: this is how an agent learns to write a
+    /// spec in one read).
     var specSchema: SpecSchemaDoc
-    /// 事件类型（Phase 4）。`events poll --since <seq>` 是 agent 该用的那一种
+    /// Event types (Phase 4). `events poll --since <seq>` is the form an agent should use.
     var events: [EventDoc]
-    /// MCP 工具表（Phase 5）——**从命令表生成**，每个工具背后是哪几条命令一并写明
+    /// The MCP tool table (Phase 5) — **generated from the command table**, and each tool states
+    /// which commands stand behind it.
     var mcpTools: [MCPTool.Doc]
-    /// 名词分组（`pane` / `workspace` / `screen` / `app`）→ 动词
+    /// Noun groups (`pane` / `workspace` / `screen` / `app`) -> their verbs.
     var groups: [GroupDoc]
     var envVars: [EnvDoc]
     var notes: [String]
@@ -64,14 +68,16 @@ struct ControlDescribeDocument: Codable, Equatable {
         var help: String
     }
 
-    /// 公开 schema 的字段表。**刻意不是内部存档 v5 的形状**：两者由
-    /// `Sources/Control/Spec/SpecCodec.swift` 的投影对连起来，各自独立演进
+    /// The field table of the public schema. **Deliberately not the shape of the internal v5
+    /// archive**: the two are joined by the projection pair in
+    /// `Sources/Control/Spec/SpecCodec.swift` and evolve independently of each other.
     struct SpecSchemaDoc: Codable, Equatable {
         var workspace: String
         var screen: String
         var session: String
         var fields: [FieldDoc]
-        /// 两种布局形态各一份完整样例（都是合法 JSON，`ControlSpecTests` 会重新解析它们）
+        /// One complete sample per layout form (both are valid JSON, and `ControlSpecTests` parses
+        /// them back).
         var examples: [String]
         var minimal: String
         var notes: [String]
@@ -99,8 +105,9 @@ struct ControlDescribeDocument: Codable, Equatable {
         var summary: String
     }
 
-    /// 破坏性命令的现行策略。**跟着实际 mode 走**：写死一句"会确认"的话，
-    /// 在 readonly / off 下就成了假话，而 agent 是拿 describe 当合同读的
+    /// The policy in force for destructive commands. **It follows the actual mode**: a hard-coded
+    /// "you will be asked to confirm" becomes a lie under readonly / off, and an agent reads
+    /// describe as a contract.
     static func destructivePolicy(mode: String?) -> String {
         switch mode {
         case "off": "The control plane is off ([control] mode = \"off\"): nothing is executed."
@@ -110,7 +117,8 @@ struct ControlDescribeDocument: Codable, Equatable {
         }
     }
 
-    /// 敏感命令（`input send-text`）的现行策略。同样**跟着实际 mode 与开关走**
+    /// The policy in force for sensitive commands (`input send-text`). It likewise **follows the
+    /// actual mode and the actual switches**.
     static func sensitivePolicy(mode: String?) -> String {
         switch mode {
         case "off": "The control plane is off ([control] mode = \"off\"): nothing is executed."
@@ -135,7 +143,8 @@ struct ControlDescribeDocument: Codable, Equatable {
         }
     }
 
-    /// `quickterm.workspace/1` 的字段表（`spec --help` 与 describe 同一出处）
+    /// The field table for `quickterm.workspace/1` (one source shared by `spec --help` and
+    /// describe).
     static var specSchema: SpecSchemaDoc {
         typealias Field = SpecSchemaDoc.FieldDoc
         return SpecSchemaDoc(
@@ -200,7 +209,8 @@ struct ControlDescribeDocument: Codable, Equatable {
             ])
     }
 
-    /// 唯一构造入口。`appVersion == nil` = 应用没在运行，CLI 拿本地命令表兜底
+    /// The one construction entry point. `appVersion == nil` means the app is not running and the
+    /// CLI falls back to its local command table.
     static func make(cliVersion: String, appVersion: String?, socket: String?, mode: String?) -> ControlDescribeDocument {
         ControlDescribeDocument(
             protocolVersion: ControlProtocol.version,

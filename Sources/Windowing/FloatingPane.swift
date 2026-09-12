@@ -1,8 +1,9 @@
 import AppKit
 
-/// 浮动层的 pane（spec v7：Cmd+T / Hyprland togglefloating 语义）。
-/// rect 为归一化坐标（0–1，SwiftUI top-left 坐标系）——窗口缩放时按比例跟随。
-/// 数组序即 z 序（末位最顶）。
+/// A pane on the floating layer (spec v7: Cmd+T, Hyprland's togglefloating semantics).
+/// `rect` is in normalized coordinates (0-1, SwiftUI top-left coordinate system) so the pane scales
+/// proportionally when the window is resized.
+/// Array order is z order (last entry is topmost).
 struct FloatingPane: Codable, Identifiable {
     var pane: PaneView
     var rect: CGRect
@@ -28,15 +29,15 @@ struct FloatingPane: Codable, Identifiable {
         try c.encode(rect, forKey: .rect)
     }
 
-    /// 浮起默认几何（类 Omarchy togglefloating：固定尺寸 + 居中）：
-    /// 宽 = 默认列宽 × 0.75，高 = 内容区 45%。
+    /// Default geometry when a pane floats up (Omarchy-style togglefloating: fixed size, centered):
+    /// width = default column width x 0.75, height = 45% of the content area.
     static func defaultRect(columnFactor: Double) -> CGRect {
         let w = min(max(columnFactor * 0.75, 0.15), 1.0)
         let h = 0.45
         return CGRect(x: (1 - w) / 2, y: (1 - h) / 2, width: w, height: h)
     }
 
-    /// 限制在内容区内且保留最小可用尺寸
+    /// Clamp into the content area while keeping a minimum usable size
     func clamped() -> FloatingPane {
         var next = self
         next.rect.size.width = min(max(rect.width, 0.15), 1.0)
@@ -48,24 +49,27 @@ struct FloatingPane: Codable, Identifiable {
 }
 
 extension FloatingPane {
-    /// ⌘+左键在浮动 pane 上的拖动语义：中间 = 移动；四边带 = 沿该轴缩放；四角 = 双轴缩放
+    /// What a Cmd+left-drag on a floating pane means: the middle = move, an edge band = resize
+    /// along that axis, a corner = resize on both axes.
     struct DragEdges: OptionSet, Equatable {
         let rawValue: Int
         static let left = DragEdges(rawValue: 1)
         static let right = DragEdges(rawValue: 2)
         static let top = DragEdges(rawValue: 4)
         static let bottom = DragEdges(rawValue: 8)
-        /// 空 = 中间区域（移动）
+        /// Empty = the middle region (move)
         var isMove: Bool { isEmpty }
     }
 
     static let minSize: CGFloat = 0.15
 
-    /// 命中区判定。point / rect 为归一化内容坐标（top-left）；band 为边框带宽换算成的归一化值（按轴各自换算）。
-    /// 点不在 rect 内返回 nil。
+    /// Hit-region test. `point` / `rect` are normalized content coordinates (top-left); `bandX` and
+    /// `bandY` are the edge band width converted to normalized units, separately per axis.
+    /// Returns nil when the point is outside `rect`.
     static func dragEdges(at point: CGPoint, in rect: CGRect, bandX: CGFloat, bandY: CGFloat) -> DragEdges? {
         guard rect.contains(point) else { return nil }
-        // 带宽不超过半边：很小的 pane 上左右带不重叠
+        // Cap each band at half the side so the left and right bands do not overlap on a tiny
+        // pane.
         let bx = min(bandX, rect.width / 2), by = min(bandY, rect.height / 2)
         var edges: DragEdges = []
         if point.x - rect.minX < bx { edges.insert(.left) } else if rect.maxX - point.x < bx { edges.insert(.right) }
@@ -73,9 +77,12 @@ extension FloatingPane {
         return edges
     }
 
-    /// 按边缩放：被拖的边跟随指针，对边**绝不动**；被拖的边夹在 [内容区边缘, 对边 − 最小尺寸] 之内
-    /// （已经出界的 pane 不强行拉回：下界取 min(0, 当前边)）。在这里直接夹住，不依赖 clamped()——
-    /// clamped() 只夹 origin 不回补尺寸，拖过顶端/右端会把本该固定的对边推走。
+    /// Edge resize: the dragged edge follows the pointer and the opposite edge **never moves**. The
+    /// dragged edge is clamped into [content-area edge, opposite edge - minSize] (a pane that is
+    /// already outside the content area is not yanked back in: the lower bound is
+    /// min(0, current edge)). The clamping happens right here instead of going through clamped() -
+    /// clamped() only clamps the origin and never compensates the size, so dragging past the top or
+    /// the right edge would push the very edge that is supposed to stay pinned.
     func resized(edges: DragEdges, dx: CGFloat, dy: CGFloat) -> FloatingPane {
         var r = rect
         if edges.contains(.left) {

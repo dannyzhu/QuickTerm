@@ -1,9 +1,10 @@
 import AppKit
 
-/// 组合键：规范化键名 + 修饰键集合（仅比较 cmd/alt/ctrl/shift 四位）。
+/// A key combo: a normalized key name plus a modifier set (only the four bits cmd/alt/ctrl/shift
+/// are compared).
 struct KeyCombo: Hashable {
     let key: String              // "w" / "return" / "up" / "[" / "=" / "tab" …
-    let modifiers: UInt          // NSEvent.ModifierFlags 与 relevantMask 交集的 rawValue
+    let modifiers: UInt          // rawValue of NSEvent.ModifierFlags intersected with relevantMask
 
     static let relevantMask: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
 
@@ -13,8 +14,9 @@ struct KeyCombo: Hashable {
     }
 }
 
-/// WM 级默认键位表（spec §5.1，已确认的两处偏移含在内）。
-/// 不在表内的组合一律放行给终端 surface——绝不拦截 Cmd+C/V、字号键等。
+/// The WM-level default keymap (spec §5.1, including the two confirmed deviations from it).
+/// Any combo that is not in the table is passed straight through to the terminal surface: we
+/// never intercept Cmd+C/V, the font-size keys, and so on.
 struct KeybindingMap {
     private let map: [KeyCombo: WMAction]
 
@@ -22,8 +24,8 @@ struct KeybindingMap {
         self.map = map
     }
 
-    /// 从默认表 + config 覆盖构建（spec §4.7 [keybinds]）。
-    /// workspaceCount > 5 时追加 Cmd+6…9,0（及 Shift 变体）。
+    /// Build from the defaults plus the config overrides (spec §4.7 [keybinds]).
+    /// With workspaceCount > 5, Cmd+6…9,0 (and their Shift variants) are appended.
     init(workspaceCount: Int = 5,
          overrides: [WMAction: KeyCombo] = [:],
          unbound: Set<WMAction> = []) {
@@ -40,7 +42,7 @@ struct KeybindingMap {
             }
         }
         for (action, combo) in overrides {
-            m = m.filter { $0.value != action }  // 一个动作只保留一个组合
+            m = m.filter { $0.value != action }  // one action keeps exactly one combo
             m[combo] = action
         }
         for action in unbound {
@@ -51,7 +53,7 @@ struct KeybindingMap {
 
     static let defaults: [KeyCombo: WMAction] = [
         KeyCombo(key: "return", .command): .newTerminal,
-        KeyCombo(key: "b", [.command, .shift]): .fileManager,   // Omarchy Super+Shift+F；Cmd+F 已是 toggle-zoom
+        KeyCombo(key: "b", [.command, .shift]): .fileManager,   // Omarchy Super+Shift+F; Cmd+F is toggle-zoom
         KeyCombo(key: "b", .command): .newBrowser,              // Omarchy Super+B
         KeyCombo(key: "[", [.command, .shift]): .webBack,
         KeyCombo(key: "]", [.command, .shift]): .webForward,
@@ -61,7 +63,7 @@ struct KeybindingMap {
         KeyCombo(key: "=", .command): .webZoomIn,
         KeyCombo(key: "-", .command): .webZoomOut,
         KeyCombo(key: "0", .command): .webZoomReset,
-        KeyCombo(key: "n", .command): .webNewTab,               // Cmd+T 已是浮动开关
+        KeyCombo(key: "n", .command): .webNewTab,               // Cmd+T is already the float toggle
         KeyCombo(key: "tab", .control): .webNextTab,
         KeyCombo(key: "tab", [.control, .shift]): .webPrevTab,
         KeyCombo(key: "e", [.command, .shift]): .webExtensions,
@@ -101,7 +103,7 @@ struct KeybindingMap {
         KeyCombo(key: "backspace", .command): .toggleOpacity,
         KeyCombo(key: "backspace", [.command, .shift]): .toggleGaps,
         KeyCombo(key: "k", .command): .keybindingHelp,
-        KeyCombo(key: "k", [.command, .shift]): .clearTerminal,   // ghostty 默认的 Cmd+K 被速查表占用
+        KeyCombo(key: "k", [.command, .shift]): .clearTerminal,   // ghostty's default Cmd+K is the cheat sheet
         KeyCombo(key: "space", [.command, .option]): .mainMenu,
         KeyCombo(key: "s", .command): .scratchpad,
         KeyCombo(key: "f", [.command, .control]): .toggleFullscreen,
@@ -111,7 +113,7 @@ struct KeybindingMap {
         KeyCombo(key: "t", .command): .toggleFloat,
     ]
 
-    /// 事件 → 动作。resize 系列附加 Shift = 10px 微调（precise）。
+    /// Event -> action. On the resize family, an extra Shift means a 10px fine step (`precise`).
     func action(for event: NSEvent) -> (action: WMAction, precise: Bool)? {
         guard let key = KeybindingMap.normalizedKey(for: event) else { return nil }
         return action(key: key, modifiers: event.modifierFlags)
@@ -121,7 +123,7 @@ struct KeybindingMap {
         if let hit = map[KeyCombo(key: key, modifiers)] {
             return (hit, false)
         }
-        // resize 微调：去掉 shift 再查一次，命中 resize* 则 precise
+        // Fine resize: look the combo up again without shift; a resize* hit means precise.
         if modifiers.contains(.shift) {
             let withoutShift = modifiers.subtracting(.shift)
             if let hit = map[KeyCombo(key: key, withoutShift)],
@@ -132,7 +134,7 @@ struct KeybindingMap {
         return nil
     }
 
-    /// 键名速查（Cmd+K 面板数据源）：action → 显示用组合键描述
+    /// Data source for the Cmd+K cheat sheet: action -> the combo rendered for display.
     func displayBindings() -> [(combo: String, action: WMAction)] {
         map.map { (Self.describe($0.key), $0.value) }
             .sorted { $0.1.rawValue < $1.1.rawValue }
@@ -151,7 +153,8 @@ struct KeybindingMap {
         return parts.joined()
     }
 
-    /// NSEvent → 规范化键名（方向/回车/Tab 用 keyCode，其余用忽略修饰键的字符）
+    /// NSEvent -> normalized key name (arrows/return/tab go by keyCode, everything else by the
+    /// character with modifiers ignored).
     static func normalizedKey(for event: NSEvent) -> String? {
         switch event.keyCode {
         case 123: return "left"
@@ -164,9 +167,11 @@ struct KeybindingMap {
         case 51: return "backspace"
         case 53: return "escape"
         default:
-            // Cmd 组合里的 Shift 不能进键名：charactersIgnoringModifiers 对符号/数字键保留 Shift 转换
-            // （Cmd+Shift+[ → "{"、Cmd+Shift+1 → "!"），而表里登记的是基础键。取无修饰字符；
-            // 合成事件（无 CGEvent 背书）拿不到时退回 charactersIgnoringModifiers
+            // Shift must not leak into the key name of a Cmd combo: charactersIgnoringModifiers
+            // still applies the Shift translation to symbol and number keys (Cmd+Shift+[ -> "{",
+            // Cmd+Shift+1 -> "!"), while the table is keyed by the base key. So ask for the
+            // characters with no modifiers applied, and fall back to charactersIgnoringModifiers
+            // for synthetic events (no backing CGEvent), where that call returns nothing.
             let base = event.characters(byApplyingModifiers: []).flatMap { $0.isEmpty ? nil : $0 }
                 ?? event.charactersIgnoringModifiers
             guard let chars = base, !chars.isEmpty else { return nil }

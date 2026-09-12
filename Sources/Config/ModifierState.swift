@@ -1,13 +1,18 @@
 import AppKit
 
-/// 全局修饰键状态（由 MainWindowController 的鼠标 / 滚轮监视器更新）。
-/// TerminalSplitLeaf 据此在按住 ⌘ 时浮出拖拽源覆盖层（spec §4.2 Cmd+拖拽）。
+/// Global modifier-key state, updated by `MainWindowController`'s mouse and scroll-wheel
+/// monitors. `TerminalSplitLeaf` reads it to float the drag-source overlay while Cmd is held
+/// (spec §4.2, Cmd+drag).
 ///
-/// 自愈是硬要求：喂它的是**本地** NSEvent 监视器，只看得见投递给本 app 的事件。⌘ 的抬起要是落在
-/// 别的 app 上（⌘+Tab、⌘+Space、⌘+Shift+4 截图、⌘+H、按着 ⌘ 点别的窗口 / Dock、锁屏），
-/// 本地监视器永远收不到，`commandHeld` 就会一直卡在 true——整个 pane 上盖着拖拽源浮层，
-/// 表现为"抓手光标不消失，而且终端再也滚不动了"（见 porting-notes「本地监视器盲区」）。
-/// 因此：app 失活时清零，回到前台按真实键盘状态重建，并且任何鼠标 / 滚轮事件都会顺手 `sync`。
+/// Self-healing is a hard requirement: what feeds this is a **local** NSEvent monitor, and a
+/// local monitor only sees events delivered to this app. If the Cmd key-up lands in some other app
+/// (Cmd+Tab, Cmd+Space, the Cmd+Shift+4 screenshot, Cmd+H, Cmd+clicking another window or the Dock, the
+/// lock screen), the local monitor never receives it and `commandHeld` stays stuck at true: the
+/// drag-source overlay then covers the entire pane, which the user sees as "the grab cursor
+/// won't go away, and the terminal doesn't scroll any more" (see "local monitor blind spots" in
+/// porting-notes). Hence: clear it when the app resigns active, rebuild it from the real
+/// keyboard state on the way back to the front, and `sync` on the side of every mouse and
+/// scroll-wheel event.
 final class ModifierState: ObservableObject {
     static let shared = ModifierState()
     @Published var commandHeld = false
@@ -24,8 +29,8 @@ final class ModifierState: ObservableObject {
         }
     }
 
-    /// 用权威的当前修饰键状态重新同步（`NSEvent.modifierFlags` 不需要辅助功能授权）。
-    /// 幂等：值没变就不发 @Published 通知
+    /// Re-sync from the authoritative current modifier state (`NSEvent.modifierFlags` needs no
+    /// Accessibility permission). Idempotent: an unchanged value publishes nothing.
     func sync(_ flags: NSEvent.ModifierFlags = NSEvent.modifierFlags) {
         let held = flags.contains(.command)
         if commandHeld != held { commandHeld = held }

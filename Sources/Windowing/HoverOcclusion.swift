@@ -1,14 +1,17 @@
 import Foundation
 
-/// 浮动 pane 遮挡判定（spec v7 修订）。
-/// NSTrackingArea 不感知兄弟视图遮挡，浮动 pane 叠在平铺 pane 上时两层都收到
-/// hover 事件——需按**模型几何**过滤：只有「更高 z 的浮动 pane」构成遮挡。
-/// 刻意不用 hitTest：⌘ 拖拽源浮层、overlay 滚动条等可命中的非 surface
-/// 覆盖视图会让 hitTest 方案把毫无遮挡的 pane 误判为被遮挡。
+/// Occlusion test for floating panes (spec v7 revision).
+/// NSTrackingArea knows nothing about a sibling view covering it: when a floating pane sits on top
+/// of a tiled one, both layers receive the hover events - so the filtering is done on **model
+/// geometry** instead, where only a "floating pane with a higher z" counts as occluding.
+/// hitTest is deliberately not used: hittable non-surface overlay views (the drag overlay behind
+/// a Cmd+drag, overlay scrollers, ...) would make a hitTest-based check report a pane that is not
+/// covered at all as occluded.
 enum HoverOcclusion {
-    /// point 为归一化内容区坐标（SwiftUI top-left，0–1）。
-    /// paneFloatIndex：pane 在浮动数组的下标（数组序 = z 序，末位最顶）；
-    /// 平铺 pane 传 nil——浮动层整体在平铺层之上。
+    /// `point` is in normalized content-area coordinates (SwiftUI top-left, 0-1).
+    /// `paneFloatIndex`: the pane's index in the floating array (array order = z order, last entry
+    /// is topmost); pass nil for a tiled pane - the floating layer as a whole is above the tiled
+    /// layer.
     static func isOccluded(paneFloatIndex: Int?, floatingRects: [CGRect],
                            at point: CGPoint) -> Bool {
         let start = paneFloatIndex.map { $0 + 1 } ?? 0

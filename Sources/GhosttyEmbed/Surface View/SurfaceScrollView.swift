@@ -334,8 +334,9 @@ class SurfaceScrollView: NSView {
     /// This bug is only present in macOS 26.0.
     @available(macOS, introduced: 26.0, obsoleted: 26.1)
     private func handleFrameChangeForNSScrollPocket(_ notification: Notification) {
-        // QuickTerm 裁剪：原判断 Ghostty 的 HiddenTitlebarTerminalWindow；该 workaround
-        // 仅存在于 macOS 26.0（26.1 已废弃），对任意窗口执行同样安全。
+        // QuickTerm trim: upstream checked for Ghostty's HiddenTitlebarTerminalWindow here. The
+        // workaround only exists on macOS 26.0 (obsoleted in 26.1), so running it for any window
+        // is just as safe.
         guard let window = self.window else { return }
         guard !window.styleMask.contains(.fullScreen) else { return }
         guard let view = notification.object as? NSView else { return }

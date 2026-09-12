@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// 仿 waybar 顶栏（spec §4.4）：26pt · Monaco 12 · SF Symbols 单色 · 无圆角。
-/// 左 logo+工作区胶囊 / 中时钟 / 右 cpu·网络·音量·电池。
+/// Waybar-style top bar (spec §4.4): 26pt, Monaco 12, monochrome SF Symbols, no rounded corners.
+/// Left: logo + workspace pills. Center: clock. Right: cpu, network, volume, battery.
 struct StatusBarView: View {
-    /// 条高（MainWindowController 换算内容区坐标时引用）
+    /// Bar height (MainWindowController refers to it when converting content-area coordinates).
     static let height: CGFloat = 26
 
     @EnvironmentObject var theme: ThemeManager
@@ -11,12 +11,14 @@ struct StatusBarView: View {
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var stats: SystemStatsService
     let onSelectWorkspace: (Int) -> Void
-    /// 右键工作区胶囊：给这个槽位起名 / 改名（左键仍旧是切工作区）
+    /// Right-clicking a workspace pill names or renames that slot (left click still switches to
+    /// the workspace).
     let onRenameWorkspace: (Int) -> Void
     let onToggleMute: () -> Void
 
     @State private var altClock = false
-    /// 内容区宽度（不含左右各 8pt 内边距）：胶囊要不要显示名字全看它，见 `WorkspacePill`
+    /// Content width, excluding the 8pt of padding on each side. Whether the pills show names hangs
+    /// entirely on it; see `WorkspacePill`.
     @State private var contentWidth: CGFloat = 0
 
     var body: some View {
@@ -26,32 +28,38 @@ struct StatusBarView: View {
                 Spacer(minLength: 0)
                 rightSection
             }
-            clock  // 独立居中，不受两侧宽度影响（waybar center 模块语义）
+            clock  // centered independently of either side's width (waybar center module)
         }
         .font(.custom("Monaco", size: 12))
         .foregroundStyle(theme.foreground)
         .frame(height: Self.height)
-        // 量的是**内边距之内**那一段（`padding` 在下一行才加）：胶囊、时钟、右侧统计量都排在这里面。
-        // 用 `onGeometryChange` 而不是 `background(GeometryReader)` + preference：
-        // 背景里的 preference 传不上来（试过，量到的永远是 0），而这一段宽度是
-        // "名字放不放得下"的唯一输入，量不到就等于整个功能不生效
+        // What gets measured is the stretch **inside** the padding (`padding` is only applied on
+        // the next line): the pills, the clock and the right-hand stats all lay out in there.
+        // This uses `onGeometryChange` rather than `background(GeometryReader)` + a preference,
+        // because a preference set from the background never makes it up (tried it: the value
+        // measured that way is always 0), and this width is the only input to "do the names fit" -
+        // without it the whole feature is dead.
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
         .padding(.horizontal, 8)
         .background(theme.background.opacity(theme.effectiveChromeOpacity))
         .contentShape(Rectangle())
-        // 标准标题栏行为：空白处双击 = zoom 铺满屏幕可视区域，再双击还原。
-        // 胶囊/时钟/音量等子控件的手势优先，不受影响。
+        // Standard title bar behavior: double-clicking empty space zooms the window to fill the
+        // screen's visible area, and double-clicking again restores it.
+        // Gestures on the subviews (pills, clock, volume) take precedence and are unaffected.
         .onTapGesture(count: 2) {
             (NSApp.mainWindow ?? NSApp.keyWindow)?.zoom(nil)
         }
     }
 
     private var leftSection: some View {
-        // **画哪几个胶囊、按哪几个算宽度，取的必须是同一个数组。** `model.titles` 缩容时不裁
-        // （名字是槽位的，工作区数调回来名字还得在），拿它原样去量就会替几个根本不画的胶囊
-        // 买单——那几个名字凭空吃掉预算，真正画出来的这一排明明放得下，却整排退回了序号。
-        // 整排的答案也**每帧只算一次**：它要量一遍时钟与每个名字，
-        // 而且几个胶囊必须拿到同一个答案（半排名字半排序号读起来就是个 bug）
+        // **The pills that get drawn and the pills that get measured have to come from the same
+        // array.** `model.titles` is not trimmed when the workspace count shrinks (a name belongs
+        // to the slot, and it has to still be there when the count goes back up), so measuring it
+        // as-is pays for pills that are never drawn - those names eat budget out of nowhere, and a
+        // row that plainly fits falls back to numbers anyway.
+        // The answer for the row is also computed **once per frame**: it has to measure the clock
+        // and every name, and all the pills have to get the same answer (half names and half
+        // numbers just reads as a bug).
         let titles = model.visibleTitles
         let showingTitles = showsWorkspaceTitles(titles)
         return HStack(spacing: WorkspacePill.sectionSpacing) {
@@ -67,9 +75,11 @@ struct StatusBarView: View {
         }
     }
 
-    /// 这一排胶囊现在显示名字还是序号。**整排一起**：配置关掉、一个名字都没起、
-    /// 或者左边这一段放不进"时钟左沿之前"，三种情况一律回到序号。
-    /// 名字由调用方传进来（就是它画出去的那一排），免得量的与画的各读各的
+    /// Whether this row of pills currently shows names or numbers. **All or nothing for the whole
+    /// row**: the config switch being off, not one slot having a name, or the left section not
+    /// fitting before the clock's left edge all fall back to numbers.
+    /// The names are passed in by the caller (exactly the row it draws), so what gets measured and
+    /// what gets drawn cannot come from two different reads.
     private func showsWorkspaceTitles(_ titles: [String?]) -> Bool {
         theme.workspaceTitleEnabled
             && WorkspacePill.showsTitles(contentWidth: contentWidth, titles: titles,
@@ -77,9 +87,11 @@ struct StatusBarView: View {
                                          clockWidth: clockWidth, flash: model.controlFlash?.text)
     }
 
-    /// 控制面活动提示（spec 控制面 §安全）：`mutate` 类命令不弹框、不问人——
-    /// 它被允许这么静默的**前提**就是事后有一眼能看见的痕迹。
-    /// 停留 2.5s 后自行消失；完整记录在「控制面活动…」里
+    /// Control-plane activity indicator (control plane spec, §Security): `mutate` commands put up
+    /// no dialog and ask no one - the **precondition** for letting them be that silent is that they
+    /// leave a trace you can see at a glance afterwards.
+    /// It lingers 2.5s and then disappears on its own; the full record lives under
+    /// "Control Plane Activity...".
     @ViewBuilder
     private var controlFlash: some View {
         if let flash = model.controlFlash {
@@ -100,9 +112,11 @@ struct StatusBarView: View {
         return Button {
             onSelectWorkspace(i)
         } label: {
-            // 起了名就把名字画在序号 / ■ 的位置上：活动态照旧是重音色（那本来就是"活动"的标记），
-            // 非活动态照旧是前景色 + 空工作区的半透明。
-            // 排版（字号、下限宽、留白）在 `WorkspacePill.pill` 里——宽度也是在那个文件里算的
+            // A named slot draws its name where the number or the ■ would go: the active pill
+            // still uses the accent color (that is what marks it active), and inactive pills still
+            // use the foreground color plus the half alpha of an empty workspace.
+            // Layout (font size, minimum width, padding) lives in `WorkspacePill.pill` - the same
+            // file that computes the width.
             WorkspacePill.pill(title: title, index: i, active: active,
                                showingTitles: showingTitles)
                 .foregroundStyle(active ? theme.accent : theme.foreground)
@@ -110,7 +124,8 @@ struct StatusBarView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // 右键改名。名字放不下（或配置关掉）时也照样能改——改名是槽位的事，与显示无关
+        // Right-click renames. It still works when the names do not fit (or the config switch is
+        // off): renaming is a property of the slot and has nothing to do with what is displayed.
         .overlay(RightClickCatcher { onRenameWorkspace(i) })
         .accessibilityLabel(title.map { i18n("status.workspace.label-with-name", i + 1, $0) }
                             ?? i18n("status.workspace.label", i + 1))
@@ -130,14 +145,15 @@ struct StatusBarView: View {
         // locale: the config may pin the UI to a language the Mac is not set to, and a Chinese
         // weekday sitting next to an English menu is exactly where that seam would show.
         fmt.locale = Locale(identifier: i18n.language.lprojName)
-        // Omarchy："Sunday 14:32"；点击换 "31 August W36 2026"
+        // Omarchy: "Sunday 14:32"; a click switches it to "31 August W36 2026".
         // The pattern itself is in the catalog: the two languages order a date differently.
         fmt.dateFormat = i18n(alt ? "status.clock.format-alt" : "status.clock.format")
         return fmt.string(from: date)
     }
 
-    /// 时钟占多宽。**两种格式都量，取宽的那个**：点一下时钟会换格式，
-    /// 只按当前那个算的话，用户点一下日期就可能把整排工作区名字点没了
+    /// How wide the clock is. **Measure both formats and take the wider one**: clicking the clock
+    /// switches format, and sizing by the current one alone means a single click on the date can
+    /// make the whole row of workspace names disappear.
     private var clockWidth: CGFloat {
         let now = Date()
         return max(WorkspacePill.width(of: clockText(now, alt: false)),
@@ -170,7 +186,8 @@ struct StatusBarView: View {
     private func battery(_ percent: Int) -> some View {
         let low = percent <= 20 && !stats.batteryCharging
         HStack(spacing: 3) {
-            // 充/放电时仅图标；其余 `85%`+图标（Omarchy 语义）；低电量红色预警
+            // While charging, the icon alone; otherwise `85%` plus the icon (Omarchy semantics);
+            // a low battery warns in red.
             if !stats.batteryCharging || low {
                 Text("\(percent)%").monospacedDigit()
             }
@@ -191,15 +208,18 @@ struct StatusBarView: View {
     }
 }
 
-/// **只吃右键**的一层透明视图。左键（以及别的一切）原样穿过去落到下面那个 `Button` 上——
-/// 胶囊的左键语义是"切到这个工作区"，这条一个字都不能变。
-/// SwiftUI 没有"右键点了一下"这个手势（`contextMenu` 要的是一份菜单，这里要的是一个对话框），
-/// 所以借一块 NSView：`hitTest` 只在当前事件真是右键时才认领自己
+/// A transparent layer that **eats right clicks only**. Left clicks (and everything else) pass
+/// straight through to the `Button` underneath - a left click on a pill means "switch to this
+/// workspace", and not one word of that changes.
+/// SwiftUI has no "right-clicked once" gesture (`contextMenu` wants a menu; what is needed here is
+/// a dialog), so this borrows an NSView: `hitTest` claims itself only when the current event really
+/// is a right click.
 struct RightClickCatcher: NSViewRepresentable {
     let action: () -> Void
 
-    /// 认领不认领这一下点击。**判据只有事件类型**，单独拎出来是为了测得动：
-    /// 这里多认一种类型，胶囊的左键（切工作区）就当场哑掉，而那是要用眼睛才看得出来的回归
+    /// Whether to claim this click. **The event type is the only criterion**, split out so it can
+    /// be tested: claim one type too many here and a pill's left click (switch workspace) goes dead
+    /// on the spot - a regression you can only catch with your eyes.
     static func claims(_ type: NSEvent.EventType?) -> Bool {
         type == .rightMouseDown || type == .rightMouseUp
     }
@@ -216,7 +236,7 @@ struct RightClickCatcher: NSViewRepresentable {
         }
 
         @available(*, unavailable)
-        required init?(coder: NSCoder) { fatalError("init(coder:) 用不上") }
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
         override func hitTest(_ point: NSPoint) -> NSView? {
             guard RightClickCatcher.claims(NSApp.currentEvent?.type) else { return nil }

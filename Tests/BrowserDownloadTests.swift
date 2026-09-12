@@ -3,17 +3,19 @@ import WebKit
 import XCTest
 @testable import QuickTerm
 
-/// 浏览器 pane 的下载 UI（模型 / 按钮 / 弹出层 / 真实下载）。
-/// WebKit 的下载要靠主 runloop 推进：这些用例一律是非 async 的，用 `RunLoop.main.run(until:)` 轮询
-/// （async 测试体里的 await 推不动主 runloop——见 BrowserExtensionTests 的同款注释）。
+/// The download UI of a browser pane (model / button / popover / real downloads).
+/// WebKit drives downloads off the main runloop, so every case here is non-async and polls with
+/// `RunLoop.main.run(until:)` (an await inside an async test body never turns the main runloop; see the
+/// same note in BrowserExtensionTests).
 @MainActor
 final class BrowserDownloadTests: XCTestCase {
-    // MARK: - 模型
+    // MARK: - Model
 
-    /// 聚合进度 = 活动项已完成字节之和 / 总字节之和；任一条不知道总大小 → nil（不确定）
+    /// Aggregate progress = completed bytes over total bytes across the active items; if any one of them
+    /// has an unknown total, the answer is nil (indeterminate).
     func testAggregateFraction() {
         let list = BrowserDownloadList()
-        XCTAssertNil(list.aggregateFraction, "空列表没有进度")
+        XCTAssertNil(list.aggregateFraction, "an empty list has no progress")
         let a = Self.fakeItem(name: "a.bin", total: 100, done: 50)
         let b = Self.fakeItem(name: "b.bin", total: 200, done: 100)
         list.add(a)
@@ -22,17 +24,18 @@ final class BrowserDownloadTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(list.aggregateFraction), 0.5, accuracy: 0.0001, "150 / 300")
         let unknown = Self.fakeItem(name: "c.bin", total: -1, done: 10)
         list.add(unknown)
-        XCTAssertNil(list.aggregateFraction, "有一条总大小未知 → 整体不确定")
-        // 已完成的不参与聚合
+        XCTAssertNil(list.aggregateFraction, "one unknown total makes the whole thing indeterminate")
+        // Completed items do not count toward the aggregate.
         list.markCompleted(unknown)
         XCTAssertEqual(try XCTUnwrap(list.aggregateFraction), 0.5, accuracy: 0.0001)
         list.markCompleted(a)
         list.markCompleted(b)
-        XCTAssertNil(list.aggregateFraction, "没有活动项 → nil")
+        XCTAssertNil(list.aggregateFraction, "no active items -> nil")
         XCTAssertEqual(list.activeCount, 0)
     }
 
-    /// 取消：调下载自己的取消闭包 + 状态置为已取消；已结束的条目不再被状态流转覆盖
+    /// Cancelling calls the download's own cancel closure and marks it cancelled; an item that already
+    /// finished is never overwritten by a later state transition.
     func testCancelInvokesHandlerAndMarksCancelled() {
         let list = BrowserDownloadList()
         var cancelled = 0
@@ -45,13 +48,15 @@ final class BrowserDownloadTests: XCTestCase {
         XCTAssertEqual(item.state, .cancelled)
         XCTAssertTrue(item.isFinished)
         list.cancel(item)
-        XCTAssertEqual(cancelled, 1, "已取消的不再重复取消")
-        // WebKit 随后还会回调一次 didFail(NSURLErrorCancelled)：markCancelled 幂等，不能翻成失败
+        XCTAssertEqual(cancelled, 1, "an already-cancelled item is not cancelled twice")
+        // WebKit follows up with one more didFail(NSURLErrorCancelled): markCancelled is idempotent and
+        // must not flip the item to failed.
         list.markFailed(item, message: "boom")
         XCTAssertEqual(item.state, .cancelled)
     }
 
-    /// clearFinished 只删已完成 / 失败 / 取消；remove 删单行；两者都触发 onChange
+    /// clearFinished removes only completed / failed / cancelled items, remove drops one row, and both fire
+    /// onChange.
     func testClearFinishedKeepsActiveItems() {
         let list = BrowserDownloadList()
         var changes = 0
@@ -61,22 +66,23 @@ final class BrowserDownloadTests: XCTestCase {
         let failed = Self.fakeItem(name: "failed.bin", total: 100, done: 5)
         let cancelled = Self.fakeItem(name: "cancelled.bin", total: 100, done: 5)
         for item in [active, done, failed, cancelled] { list.add(item) }
-        XCTAssertEqual(changes, 4, "每次增加都刷新界面")
+        XCTAssertEqual(changes, 4, "every add refreshes the UI")
         list.markCompleted(done)
-        list.markFailed(failed, message: "网络错误")
+        list.markFailed(failed, message: "network error")
         list.markCancelled(cancelled)
-        XCTAssertEqual(failed.state, .failed("网络错误"))
-        XCTAssertTrue(failed.statusText.contains("网络错误"))
+        XCTAssertEqual(failed.state, .failed("network error"))
+        XCTAssertTrue(failed.statusText.contains("network error"))
         let before = changes
         list.clearFinished()
         XCTAssertEqual(list.items.count, 1)
         XCTAssertTrue(list.items.first === active)
-        XCTAssertEqual(changes, before + 1, "清除也刷新界面")
+        XCTAssertEqual(changes, before + 1, "clearing refreshes the UI too")
         list.remove(active)
         XCTAssertTrue(list.items.isEmpty)
     }
 
-    /// 进度回调节流到 ≤ 10 Hz：一轮里刷 50 次进度，界面刷新不会跟着刷 50 次
+    /// Progress callbacks are throttled to <= 10 Hz: bump the progress 50 times in one go and the UI does
+    /// not refresh 50 times.
     func testProgressNotificationsAreThrottled() {
         let list = BrowserDownloadList()
         let item = Self.fakeItem(name: "throttle.bin", total: 100, done: 0)
@@ -85,17 +91,17 @@ final class BrowserDownloadTests: XCTestCase {
         list.onChange = { changes += 1 }
         for i in 1...50 { item.progress.completedUnitCount = Int64(i) }
         RunLoop.main.run(until: Date().addingTimeInterval(0.35))
-        XCTAssertGreaterThanOrEqual(changes, 1, "进度变化最终要刷到界面")
-        XCTAssertLessThanOrEqual(changes, 4, "0.35s 内最多 10Hz × 0.35 ≈ 4 次，实际 \(changes)")
+        XCTAssertGreaterThanOrEqual(changes, 1, "a progress change has to reach the UI eventually")
+        XCTAssertLessThanOrEqual(changes, 4, "at most 10Hz × 0.35 ≈ 4 refreshes in 0.35s; actual \(changes)")
         XCTAssertEqual(item.progress.completedUnitCount, 50)
     }
 
-    /// 状态文字用 ByteCountFormatter
+    /// The status text goes through ByteCountFormatter.
     func testStatusText() {
         pinUILanguage(.en)
         let item = Self.fakeItem(name: "x.bin", total: 5_000_000, done: 1_200_000)
-        XCTAssertTrue(item.statusText.contains("/"), "进行中显示 已下载 / 总量：\(item.statusText)")
-        XCTAssertTrue(item.statusText.contains("24%"), "1.2M / 5M ≈ 24%：\(item.statusText)")
+        XCTAssertTrue(item.statusText.contains("/"), "in progress shows downloaded / total: \(item.statusText)")
+        XCTAssertTrue(item.statusText.contains("24%"), "1.2M / 5M ≈ 24%: \(item.statusText)")
         item.state = .completed
         XCTAssertTrue(item.statusText.hasPrefix("Completed"), item.statusText)
         item.state = .cancelled
@@ -103,9 +109,10 @@ final class BrowserDownloadTests: XCTestCase {
         XCTAssertEqual(BrowserDownloadItem.formatBytes(0), ByteCountFormatter().string(fromByteCount: 0))
     }
 
-    // MARK: - 按钮 / 弹出层
+    // MARK: - Button and popover
 
-    /// 空列表隐藏；有条目显示；全部完成后仍显示（画勾）直到清除
+    /// Hidden while the list is empty, shown once an item exists, and still shown as a checkmark after
+    /// everything finishes, until it is cleared.
     func testDownloadButtonVisibility() {
         pinUILanguage(.en)
         let list = BrowserDownloadList()
@@ -113,18 +120,18 @@ final class BrowserDownloadTests: XCTestCase {
         button.list = list
         list.onChange = { button.update() }
         button.update()
-        XCTAssertTrue(button.isHidden, "没有下载 → 隐藏")
+        XCTAssertTrue(button.isHidden, "no downloads -> hidden")
         let item = Self.fakeItem(name: "a.bin", total: 100, done: 20)
         list.add(item)
-        XCTAssertFalse(button.isHidden, "有下载 → 显示")
+        XCTAssertFalse(button.isHidden, "a download -> shown")
         XCTAssertTrue(button.toolTip?.contains("1 in progress") ?? false, button.toolTip ?? "nil")
         list.markCompleted(item)
-        XCTAssertFalse(button.isHidden, "全部完成仍显示（勾）")
+        XCTAssertFalse(button.isHidden, "still shown when everything is done (the checkmark)")
         XCTAssertEqual(list.activeCount, 0)
         list.clearFinished()
-        XCTAssertTrue(button.isHidden, "清除后隐藏")
+        XCTAssertTrue(button.isHidden, "hidden again after clearing")
         XCTAssertEqual(button.intrinsicContentSize.width, BrowserDownloadButton.size, accuracy: 0.01)
-        // 自绘不能崩（进行中 / 不确定 / 全部完成三种画法）
+        // The custom drawing must not crash in any of its three modes: in progress, indeterminate, all done.
         for state in [0, 1, 2] {
             if state == 1 { list.add(Self.fakeItem(name: "b.bin", total: -1, done: 3)) }
             if state == 2 { list.items.forEach { list.markCompleted($0) } }
@@ -134,7 +141,8 @@ final class BrowserDownloadTests: XCTestCase {
         }
     }
 
-    /// 弹出层：一条下载一行，行按状态给出取消 / 移除；「清除已完成」按钮只在有结束项时出现
+    /// The popover: one row per download, each offering cancel or remove according to its state, and the
+    /// "clear completed" button showing up only once something has finished.
     func testPopoverRowsFollowList() {
         pinUILanguage(.en)
         let list = BrowserDownloadList()
@@ -149,18 +157,19 @@ final class BrowserDownloadTests: XCTestCase {
         XCTAssertEqual(popover.rowsForTesting.count, 2)
         let row = try? XCTUnwrap(popover.rowsForTesting.first as? BrowserDownloadRow)
         XCTAssertEqual(row?.nameForTesting, "a.bin")
-        XCTAssertEqual(row?.primaryButtonForTesting.toolTip, "Cancel", "进行中的行给取消钮")
-        XCTAssertNil(popover.clearButtonForTesting.superview, "没有已结束的下载 → 不显示清除")
+        XCTAssertEqual(row?.primaryButtonForTesting.toolTip, "Cancel", "a row in progress offers a cancel button")
+        XCTAssertNil(popover.clearButtonForTesting.superview, "nothing finished -> no clear button")
         list.markCompleted(a)
         list.markCompleted(b)
         popover.rebuild()
-        XCTAssertNotNil(popover.clearButtonForTesting.superview, "有已结束的下载 → 显示清除")
+        XCTAssertNotNil(popover.clearButtonForTesting.superview, "something finished -> the clear button appears")
         list.clearFinished()
         popover.rebuild()
-        XCTAssertTrue(popover.rowsForTesting.isEmpty, "清除后行也没了")
+        XCTAssertTrue(popover.rowsForTesting.isEmpty, "the rows are gone after clearing")
     }
 
-    /// 中心符号：进行中 = 箭头；全部完成 = 勾；只要有失败 / 取消 = 感叹号（不能拿勾当"成功"报）
+    /// The center glyph: in progress is an arrow, all done is a checkmark, and a single failure or
+    /// cancellation makes it an exclamation mark. A checkmark must never claim "success" that did not happen.
     func testDownloadButtonGlyphFollowsItemStates() {
         pinUILanguage(.en)
         let list = BrowserDownloadList()
@@ -168,55 +177,57 @@ final class BrowserDownloadTests: XCTestCase {
         button.list = list
         list.onChange = { button.update() }
         button.update()
-        XCTAssertEqual(button.glyph, .arrow, "空列表（隐藏）默认箭头")
+        XCTAssertEqual(button.glyph, .arrow, "an empty (hidden) list defaults to the arrow")
         let a = Self.fakeItem(name: "a.bin", total: 100, done: 20)
         list.add(a)
-        XCTAssertEqual(button.glyph, .arrow, "进行中 → 箭头")
+        XCTAssertEqual(button.glyph, .arrow, "in progress -> arrow")
         list.markCompleted(a)
-        XCTAssertEqual(button.glyph, .check, "全部完成 → 勾")
+        XCTAssertEqual(button.glyph, .check, "all done -> checkmark")
         XCTAssertEqual(button.toolTip, "Downloads (1 item)")
         let b = Self.fakeItem(name: "b.bin", total: 100, done: 5)
         list.add(b)
-        list.markFailed(b, message: "连接被拒")
-        XCTAssertEqual(button.glyph, .warning, "有失败项 → 感叹号，不能画勾")
+        list.markFailed(b, message: "connection refused")
+        XCTAssertEqual(button.glyph, .warning, "a failed item -> exclamation mark, never a checkmark")
         XCTAssertTrue(button.toolTip?.contains("failed") ?? false, button.toolTip ?? "nil")
         let c = Self.fakeItem(name: "c.bin", total: 100, done: 5)
         list.add(c)
-        XCTAssertEqual(button.glyph, .arrow, "又有新下载 → 回到箭头")
+        XCTAssertEqual(button.glyph, .arrow, "a new download -> back to the arrow")
         list.cancel(c)
-        XCTAssertEqual(button.glyph, .warning, "取消也算没成功")
+        XCTAssertEqual(button.glyph, .warning, "a cancellation counts as not-succeeded too")
         list.remove(b)
         list.remove(c)
-        XCTAssertEqual(button.glyph, .check, "只剩已完成 → 勾")
+        XCTAssertEqual(button.glyph, .check, "only completed items left -> checkmark")
         button.setFrameSize(NSSize(width: BrowserDownloadButton.size, height: BrowserDownloadButton.size))
-        button.draw(button.bounds)   // 感叹号 / 勾两种画法都不能崩
+        button.draw(button.bounds)   // Neither the exclamation mark nor the checkmark drawing may crash
     }
 
-    /// 自绘方向：NSButton 默认 isFlipped == true（y 向下），而 draw(_:) 的几何是按 y 向上写的。
-    /// 少了 isFlipped 覆写就会画成"向上的箭头 + 从 6 点逆时针的进度环"——这里按像素验。
+    /// Drawing orientation: NSButton defaults to isFlipped == true (y pointing down), while the geometry in
+    /// draw(_:) is written for y pointing up. Without the isFlipped override this comes out as "an upward
+    /// arrow plus a progress ring running counter-clockwise from 6 o'clock", so this checks the pixels.
     func testDownloadButtonDrawsDownArrowAndClockwiseArc() throws {
         let list = BrowserDownloadList()
         let button = BrowserDownloadButton()
         button.list = list
-        XCTAssertFalse(button.isFlipped, "draw(_:) 用 y 向上的坐标系")
+        XCTAssertFalse(button.isFlipped, "draw(_:) works in a y-up coordinate system")
         let item = Self.fakeItem(name: "a.bin", total: 100, done: 25)
         list.add(item)
         button.update()
         button.setFrameSize(NSSize(width: BrowserDownloadButton.size, height: BrowserDownloadButton.size))
         let rep = try XCTUnwrap(button.bitmapImageRepForCachingDisplay(in: button.bounds))
-        button.cacheDisplay(in: button.bounds, to: rep)   // 走 isFlipped，直接调 draw 验不出来
+        button.cacheDisplay(in: button.bounds, to: rep)   // Goes through isFlipped; calling draw directly proves nothing
 
         let scale = Double(rep.pixelsWide) / Double(button.bounds.width)
         let center = Double(BrowserDownloadButton.size) / 2
-        var glyphTop = 0.0, glyphBottom = 0.0          // 中心箭头：头在下 → 下半更多墨
-        var arcTopRight = 0.0, arcElsewhere = 0.0      // 25% 的进度弧：12 点 → 3 点
+        var glyphTop = 0.0, glyphBottom = 0.0          // Center arrow: head at the bottom -> more ink below
+        var arcTopRight = 0.0, arcElsewhere = 0.0      // The 25% progress arc: 12 o'clock -> 3 o'clock
         for py in 0..<rep.pixelsHigh {
             for px in 0..<rep.pixelsWide {
                 guard let alpha = rep.colorAt(x: px, y: py)?.alphaComponent, alpha > 0.6 else { continue }
-                // 位图第 0 行在屏幕上方；轨道圆环画的是 25% 透明度，>0.6 只会命中实线部分
+                // Row 0 of the bitmap is the top of the screen; the track ring is drawn at 25% alpha, so
+                // a threshold of > 0.6 only hits the solid stroke.
                 let dx = (Double(px) + 0.5) / scale - center
-                let dy = (Double(py) + 0.5) / scale - center   // 向下为正
-                if abs(dx) <= 3.5, abs(dy) <= 6 {              // 只框中心符号（圆环在 |dy| ≥ 6.6 处）
+                let dy = (Double(py) + 0.5) / scale - center   // Down is positive
+                if abs(dx) <= 3.5, abs(dy) <= 6 {              // Box in the center glyph only (the ring sits at |dy| >= 6.6)
                     if dy < 0 { glyphTop += alpha } else { glyphBottom += alpha }
                 } else if (dx * dx + dy * dy).squareRoot() >= 6 {
                     if dx >= 0, dy < 0 { arcTopRight += alpha } else { arcElsewhere += alpha }
@@ -224,17 +235,18 @@ final class BrowserDownloadTests: XCTestCase {
             }
         }
         XCTAssertGreaterThan(glyphBottom, glyphTop * 2,
-                             "箭头头部在下半边（上 \(glyphTop) / 下 \(glyphBottom)）")
+                             "the arrowhead is in the lower half (top \(glyphTop) / bottom \(glyphBottom))")
         XCTAssertGreaterThan(arcTopRight, arcElsewhere * 5,
-                             "25% 的弧应在右上象限（右上 \(arcTopRight) / 其它 \(arcElsewhere)）")
+                             "the 25% arc belongs in the top-right quadrant (top-right \(arcTopRight) / elsewhere \(arcElsewhere))")
     }
 
-    /// 弹出层控制器不能反过来持有 NSPopover：`contentViewController` 是强引用，
-    /// 控制器自己再存一个 NSPopover 就成环，pane 关掉后列表连同 WKDownload 永远释放不掉
+    /// The popover controller must not hold the NSPopover back: `contentViewController` is a strong
+    /// reference, so a controller that also stores an NSPopover closes a cycle, and once the pane is closed
+    /// the list and its WKDownloads can never be released.
     func testPopoverControllerIsReleasedWithItsOwner() {
         let structure = Mirror(reflecting: BrowserDownloadPopover(list: BrowserDownloadList()))
         XCTAssertFalse(structure.children.contains { $0.value is NSPopover },
-                       "控制器不能存 NSPopover（contentViewController 是强引用，存了就成环）")
+                       "the controller must not store an NSPopover: contentViewController is strong, so that closes a cycle")
         weak var weakController: BrowserDownloadPopover?
         weak var weakList: BrowserDownloadList?
         autoreleasepool {
@@ -242,23 +254,24 @@ final class BrowserDownloadTests: XCTestCase {
             let controller = BrowserDownloadPopover(list: list)
             controller.loadView()
             controller.rebuild()
-            let host = NSPopover()          // 持有方是 NSPopover（真实情况是 pane 持有它）
+            let host = NSPopover()          // The NSPopover owns it here; in the real app the pane owns the popover
             host.contentViewController = controller
             weakController = controller
             weakList = list
             XCTAssertNotNil(weakController)
         }
-        // AppKit 会把控制器 autorelease 一手，转一圈 runloop 再看
+        // AppKit autoreleases the controller once, so turn the runloop before looking again.
         let deadline = Date().addingTimeInterval(2)
         while Date() < deadline, weakController != nil {
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         }
-        XCTAssertNil(weakController, "NSPopover 一放手，控制器就该走")
-        XCTAssertNil(weakList, "列表（连同条目与 WKDownload）跟着一起走")
+        XCTAssertNil(weakController, "the moment NSPopover lets go, the controller has to go")
+        XCTAssertNil(weakList, "and the list goes with it, items and WKDownloads included")
     }
 
-    /// pane 关掉之后，下载列表 / 弹出层控制器都要能释放（原来控制器 ↔ NSPopover 成环，
-    /// 而且第一次下载就会把这个环建出来——`downloadsDidChange` 为了读 isShown 把它实例化了）
+    /// Once the pane is closed, both the download list and the popover controller have to be released. There
+    /// used to be a controller <-> NSPopover cycle, and the very first download built it: `downloadsDidChange`
+    /// instantiated the popover just to read isShown.
     func testClosedPaneReleasesDownloadUI() throws {
         weak var weakPane: BrowserPaneView?
         weak var weakList: BrowserDownloadList?
@@ -268,7 +281,7 @@ final class BrowserDownloadTests: XCTestCase {
             pane.downloads.add(Self.fakeItem(name: "a.bin", total: 100, done: 10))
             weakPane = pane
             weakList = pane.downloads
-            weakPopover = pane.downloadPopoverForTesting   // 访问即实例化
+            weakPopover = pane.downloadPopoverForTesting   // Touching it instantiates it
             pane.paneWillClose()
             teardown(pane)
         }
@@ -276,12 +289,12 @@ final class BrowserDownloadTests: XCTestCase {
         while Date() < deadline, weakPane != nil || weakPopover != nil {
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         }
-        XCTAssertNil(weakPane, "pane 关掉后要能释放")
-        XCTAssertNil(weakList, "下载列表（连同条目与 WKDownload）跟着走")
-        XCTAssertNil(weakPopover, "弹出层控制器跟着走")
+        XCTAssertNil(weakPane, "a closed pane has to be released")
+        XCTAssertNil(weakList, "the download list goes with it, items and WKDownloads included")
+        XCTAssertNil(weakPopover, "the popover controller goes with it")
     }
 
-    /// pane 关闭：进行中的下载明确取消掉，不留没人管的传输
+    /// Closing a pane cancels in-flight downloads outright, leaving no orphaned transfer.
     func testPaneCloseCancelsActiveDownloads() throws {
         let pane = try makePane(downloadDirectory: FileManager.default.temporaryDirectory.path)
         defer { teardown(pane) }
@@ -294,14 +307,15 @@ final class BrowserDownloadTests: XCTestCase {
         pane.downloads.add(done)
         pane.downloads.markCompleted(done)
         pane.paneWillClose()
-        XCTAssertEqual(cancelled, 1, "进行中的下载被取消")
+        XCTAssertEqual(cancelled, 1, "the in-flight download was cancelled")
         XCTAssertEqual(active.state, .cancelled)
-        XCTAssertEqual(done.state, .completed, "已完成的不动")
+        XCTAssertEqual(done.state, .completed, "a completed one is left alone")
     }
 
-    // MARK: - 真实下载
+    // MARK: - Real downloads
 
-    /// data: URL 下载：落到配置的目录、状态变成已完成、文件内容一致、弹出层一行
+    /// A data: URL download: it lands in the configured directory, the state turns completed, the contents
+    /// match, and the popover shows one row.
     func testRealDownloadLandsInConfiguredDirectory() throws {
         let fm = FileManager.default
         let dir = fm.temporaryDirectory.appendingPathComponent("qt-dl-\(UUID().uuidString)", isDirectory: true)
@@ -317,42 +331,43 @@ final class BrowserDownloadTests: XCTestCase {
             MainActor.assumeIsolated { pane.beginDownload(download) }
         }
         let item = try wait(for: pane, until: { $0.downloads.items.first?.state == .completed })
-        XCTAssertEqual(item.state, .completed, "下载应在 5s 内完成；状态 = \(item.state)")
+        XCTAssertEqual(item.state, .completed, "the download should finish within 5s; state = \(item.state)")
         let destination = try XCTUnwrap(item.destination)
         XCTAssertEqual(destination.deletingLastPathComponent().standardizedFileURL,
-                       dir.standardizedFileURL, "应落在配置的目录里")
+                       dir.standardizedFileURL, "it has to land in the configured directory")
         XCTAssertEqual(try Data(contentsOf: destination), payload)
         XCTAssertEqual(item.filename, destination.lastPathComponent)
         XCTAssertEqual(pane.downloads.activeCount, 0)
-        XCTAssertFalse(pane.downloadButton.isHidden, "有下载记录 → 按钮显示")
+        XCTAssertFalse(pane.downloadButton.isHidden, "a download on record -> the button shows")
         let popover = pane.downloadPopoverForTesting
         popover.loadView()
         popover.rebuild()
         XCTAssertEqual(popover.rowsForTesting.count, 1)
     }
 
-    /// 连接被拒的下载：进列表并显示为失败（连不上服务器时 decideDestination 根本不会被调用，
-    /// 条目要在挂代理那一刻就建好）
+    /// A refused connection still enters the list and shows as failed: when the server cannot be reached
+    /// decideDestination is never called at all, so the item has to exist the moment the delegate is attached.
     func testFailedDownloadShowsFailureState() throws {
         pinUILanguage(.en)
         let pane = try makePane(downloadDirectory: FileManager.default.temporaryDirectory.path)
         defer { teardown(pane) }
-        // 9 = discard 端口，本机上没人监听 → 连接被拒
+        // Port 9 is discard, and nothing listens on it locally, so the connection is refused.
         let url = try XCTUnwrap(URL(string: "http://127.0.0.1:9/nope.bin"))
         pane.webView.startDownload(using: URLRequest(url: url)) { download in
             MainActor.assumeIsolated { pane.beginDownload(download) }
         }
         let item = try wait(for: pane, until: { $0.downloads.items.first?.isFinished == true })
         guard case .failed(let message) = item.state else {
-            return XCTFail("应该是失败状态，实际 \(item.state)")
+            return XCTFail("expected the failed state; actual \(item.state)")
         }
-        XCTAssertFalse(message.isEmpty, "失败原因要能显示给用户")
+        XCTAssertFalse(message.isEmpty, "the reason has to be showable to the user")
         XCTAssertEqual(pane.downloads.activeCount, 0)
         XCTAssertTrue(item.statusText.hasPrefix("Failed:"), item.statusText)
     }
 
-    /// 两条同名下载几乎同时定目的地：WebKit 要收到我们的回复才建文件，只查磁盘会给出同一个路径
-    /// （后一条 EEXIST 失败）。目的地去重必须把"已经交给别的进行中下载"的路径也算上
+    /// Two same-named downloads settle their destinations almost simultaneously: WebKit only creates the file
+    /// after it has our answer, so checking the disk alone hands out the same path twice and the second one
+    /// fails with EEXIST. Destination deduplication has to count paths already given to another in-flight download.
     func testConcurrentSameNameDownloadsGetDistinctDestinations() throws {
         let fm = FileManager.default
         let dir = fm.temporaryDirectory.appendingPathComponent("qt-dl-\(UUID().uuidString)", isDirectory: true)
@@ -361,7 +376,7 @@ final class BrowserDownloadTests: XCTestCase {
         let pane = try makePane(downloadDirectory: dir.path)
         defer { teardown(pane) }
 
-        // 两个 data: URL：建议文件名都是 "Unknown"，内容不同（要能分辨谁是谁）
+        // Two data: URLs: both suggest the filename "Unknown", with different contents so they can be told apart.
         let payloads = [Data("first payload\n".utf8), Data("second payload\n".utf8)]
         for payload in payloads {
             let url = try XCTUnwrap(URL(string: "data:application/octet-stream;base64,"
@@ -377,40 +392,40 @@ final class BrowserDownloadTests: XCTestCase {
         }
         XCTAssertEqual(pane.downloads.items.count, 2)
         let states = pane.downloads.items.map(\.state)
-        XCTAssertEqual(states, [.completed, .completed], "两条都要下完，实际 \(states)")
+        XCTAssertEqual(states, [.completed, .completed], "both have to finish; actual \(states)")
         let destinations = pane.downloads.items.compactMap(\.destination)
         XCTAssertEqual(Set(destinations.map(\.standardizedFileURL.path)).count, 2,
-                       "落盘路径要各不相同：\(destinations.map(\.lastPathComponent))")
+                       "the paths on disk have to differ: \(destinations.map(\.lastPathComponent))")
         for (destination, payload) in zip(destinations, payloads) {
-            XCTAssertEqual(try Data(contentsOf: destination), payload, "内容不能互相覆盖")
+            XCTAssertEqual(try Data(contentsOf: destination), payload, "the contents must not overwrite each other")
         }
     }
 
-    /// 工具条：没有下载时按钮宽度为 0 且不额外占间距——布局与「地址栏 | 6pt | 扩展条」完全一样；
-    /// 有下载时才让出 22 + 右侧 6pt
+    /// The toolbar: with no downloads the button is 0 wide and claims no extra spacing, so the layout is
+    /// exactly "address field | 6pt | extension bar". Only with a download does it take 22 plus 6pt on its right.
     func testDownloadButtonTakesNoSpaceWhenIdle() throws {
         let pane = try makePane(downloadDirectory: FileManager.default.temporaryDirectory.path)
         defer { teardown(pane) }
         pane.layoutSubtreeIfNeeded()
         let idleWidth = pane.addressFieldForTesting.frame.width
         XCTAssertTrue(pane.downloadButton.isHidden)
-        XCTAssertEqual(pane.downloadButton.frame.width, 0, accuracy: 0.01, "隐藏时不占宽度")
+        XCTAssertEqual(pane.downloadButton.frame.width, 0, accuracy: 0.01, "hidden means zero width")
         XCTAssertEqual(pane.extensionBar.frame.minX - pane.addressFieldForTesting.frame.maxX, 6,
-                       accuracy: 0.5, "空闲时保留地址栏与扩展条之间原有的 6pt 间距")
+                       accuracy: 0.5, "while idle, the original 6pt between address field and extension bar stays")
         pane.downloads.add(Self.fakeItem(name: "a.bin", total: 100, done: 10))
         pane.layoutSubtreeIfNeeded()
         XCTAssertFalse(pane.downloadButton.isHidden)
         XCTAssertEqual(pane.downloadButton.frame.width, BrowserDownloadButton.size, accuracy: 0.01)
         XCTAssertEqual(pane.addressFieldForTesting.frame.width,
                        idleWidth - BrowserDownloadButton.size - 6, accuracy: 1,
-                       "按钮 22 + 新增的右侧 6pt 间距从地址栏里让出来")
+                       "the button's 22 plus the new 6pt to its right come out of the address field")
         XCTAssertLessThanOrEqual(pane.addressFieldForTesting.frame.maxX,
-                                 pane.downloadButton.frame.minX + 0.5, "下载按钮在地址栏右侧")
+                                 pane.downloadButton.frame.minX + 0.5, "the download button sits right of the address field")
         XCTAssertLessThanOrEqual(pane.downloadButton.frame.maxX,
-                                 pane.extensionBar.frame.minX + 0.5, "扩展条在下载按钮右侧")
+                                 pane.extensionBar.frame.minX + 0.5, "the extension bar sits right of the download button")
     }
 
-    // MARK: - 夹具
+    // MARK: - Fixtures
 
     private static func fakeItem(name: String, total: Int64, done: Int64) -> BrowserDownloadItem {
         let progress = Progress(totalUnitCount: total)
@@ -422,7 +437,8 @@ final class BrowserDownloadTests: XCTestCase {
     private var windows: [NSWindow] = []
     private var previousSettings: BrowserPaneView.Settings?
 
-    /// 一个挂在窗口里的浏览器 pane（下载目录指到临时目录；扩展指向空管理器，别看用户真装了什么）
+    /// A browser pane mounted in a window: downloads go to a temporary directory, and extensions point at an
+    /// empty manager so whatever the user really installed stays out of it.
     private func makePane(downloadDirectory: String) throws -> BrowserPaneView {
         if previousSettings == nil { previousSettings = BrowserPaneView.settings }
         BrowserPaneView.settings.home = "about:blank"
@@ -448,7 +464,7 @@ final class BrowserDownloadTests: XCTestCase {
         previousSettings = nil
     }
 
-    /// 转主 runloop 等下载状态落地（WebKit 的下载全靠主 runloop 推进）
+    /// Turn the main runloop until the download state lands (WebKit drives downloads from the main runloop).
     private func wait(for pane: BrowserPaneView,
                       until condition: (BrowserPaneView) -> Bool,
                       timeout: TimeInterval = 8) throws -> BrowserDownloadItem {
@@ -457,11 +473,12 @@ final class BrowserDownloadTests: XCTestCase {
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         }
         return try XCTUnwrap(pane.downloads.items.first,
-                             "下载没有进入列表（items=\(pane.downloads.items.count)）")
+                             "the download never entered the list (items=\(pane.downloads.items.count))")
     }
 
-    /// 视觉快照（仅当设置 QUICKTERM_SNAPSHOT_DIR）：四种按钮状态（25% / 不确定 / 全部完成 / 只剩失败）放大 4 倍，
-    /// 以及三行下载列表的弹出层内容，画成 PNG 供人工核对
+    /// Visual snapshot, only when QUICKTERM_SNAPSHOT_DIR is set: the four button states (25% / indeterminate /
+    /// all done / failures only) at 4x, plus the popover content for a three-row list, rendered to PNGs for a
+    /// human to check.
     @MainActor
     func testDownloadUISnapshot() throws {
         guard let dir = ProcessInfo.processInfo.environment["QUICKTERM_SNAPSHOT_DIR"] else { return }
@@ -481,7 +498,7 @@ final class BrowserDownloadTests: XCTestCase {
             window.contentView = nil
         }
         let bg = NSColor(srgbRed: 0.09, green: 0.09, blue: 0.11, alpha: 1)
-        // 按钮四态
+        // The four button states.
         let strip = NSView(frame: NSRect(x: 0, y: 0, width: 4 * 34 + 10, height: 34))
         strip.wantsLayer = true
         strip.layer?.backgroundColor = bg.cgColor
@@ -490,14 +507,14 @@ final class BrowserDownloadTests: XCTestCase {
             ("25%", { list in
                 let p = Progress(totalUnitCount: 100); p.completedUnitCount = 25
                 list.add(BrowserDownloadItem(filename: "a.zip", progress: p) {}) }),
-            ("不确定", { list in
+            ("indeterminate", { list in
                 list.add(BrowserDownloadItem(filename: "b.bin", progress: Progress(totalUnitCount: 0)) {}) }),
-            ("完成", { list in
+            ("completed", { list in
                 let item = BrowserDownloadItem(filename: "c.dmg", progress: Progress(totalUnitCount: 10)) {}
                 list.add(item); list.markCompleted(item) }),
-            ("失败", { list in
+            ("failed", { list in
                 let item = BrowserDownloadItem(filename: "d.iso", progress: Progress(totalUnitCount: 10)) {}
-                list.add(item); list.markFailed(item, message: "连接被拒绝") }),
+                list.add(item); list.markFailed(item, message: "Connection refused") }),
         ]
         for (i, (_, fill)) in states.enumerated() {
             let list = BrowserDownloadList(); fill(list); lists.append(list)
@@ -508,14 +525,14 @@ final class BrowserDownloadTests: XCTestCase {
             strip.addSubview(button)
         }
         try render(strip, scale: 4, name: "downloads-button.png")
-        // 弹出层内容：三行
+        // Popover content: three rows.
         let list = BrowserDownloadList()
         let p1 = Progress(totalUnitCount: 5_000_000); p1.completedUnitCount = 2_250_000
         list.add(BrowserDownloadItem(filename: "QuickTerm-1.5.3.dmg", progress: p1) {})
         let done = BrowserDownloadItem(filename: "report-final-v2-really-final.pdf", progress: Progress(totalUnitCount: 120_000)) {}
         list.add(done); done.progress.completedUnitCount = 120_000; list.markCompleted(done)
         let failed = BrowserDownloadItem(filename: "dataset.tar.gz", progress: Progress(totalUnitCount: 0)) {}
-        list.add(failed); list.markFailed(failed, message: "连接被拒绝")
+        list.add(failed); list.markFailed(failed, message: "Connection refused")
         let popover = BrowserDownloadPopover(list: list)
         popover.rebuild()
         let content = popover.view

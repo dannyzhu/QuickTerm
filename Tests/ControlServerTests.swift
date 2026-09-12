@@ -2,10 +2,10 @@ import Darwin
 import XCTest
 @testable import QuickTerm
 
-/// socket 生命周期 + 端到端一次往返。
-/// **绝不碰用户真在跑的那个 QuickTerm 的 socket**：每个用例都把路径注入到临时目录，
-/// 而测试宿主自己的 `AppSession` 因为 `AppDelegate.isRunningTests` 根本不会去绑定
-/// （与 `SessionStore.writesAllowed` 同一策略）。
+/// Socket lifecycle plus one end-to-end round trip.
+/// **Never touches the socket of the QuickTerm the user is actually running**: every case injects
+/// a path under a temp directory, and the test host's own `AppSession` never binds at all because
+/// of `AppDelegate.isRunningTests` (the same policy as `SessionStore.writesAllowed`).
 @MainActor
 final class ControlServerTests: XCTestCase {
     private var paths: [String] = []
@@ -14,7 +14,8 @@ final class ControlServerTests: XCTestCase {
         let path = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("qtc-\(UUID().uuidString.prefix(8)).sock")
         try XCTSkipUnless(ControlPaths.fits(path),
-                          "临时目录太长，装不进 sun_path 104 字节（用例不会去抢 $TMPDIR 的默认回退路径）")
+                          "temp directory is too long to fit in the 104 bytes of sun_path "
+                          + "(these cases will not grab the default $TMPDIR fallback path)")
         paths.append(path)
         return path
     }
@@ -36,11 +37,11 @@ final class ControlServerTests: XCTestCase {
         var config = ControlCommandRunner.Config()
         config.mode = mode
         server.apply(config)
-        XCTAssertTrue(server.isListening, "服务应已在 \(path) 监听")
+        XCTAssertTrue(server.isListening, "the server should already be listening on \(path)")
         return server
     }
 
-    // MARK: 绑定与权限
+    // MARK: Binding and permissions
 
     func testBindsWithTightPermissions() throws {
         let path = try tempSocketPath()
@@ -50,7 +51,7 @@ final class ControlServerTests: XCTestCase {
         var st = stat()
         XCTAssertEqual(lstat(path, &st), 0)
         XCTAssertEqual(st.st_mode & S_IFMT, S_IFSOCK)
-        XCTAssertEqual(st.st_mode & 0o777, 0o600, "socket 必须是 0600")
+        XCTAssertEqual(st.st_mode & 0o777, 0o600, "the socket has to be 0600")
     }
 
     func testDirectoryIsForcedTo0700() throws {
@@ -62,7 +63,7 @@ final class ControlServerTests: XCTestCase {
         try ControlSocket.prepareDirectory(directory)
         var st = stat()
         XCTAssertEqual(lstat(directory, &st), 0)
-        XCTAssertEqual(st.st_mode & 0o777, 0o700, "父目录必须收紧到 0700")
+        XCTAssertEqual(st.st_mode & 0o777, 0o700, "the parent directory has to be tightened to 0700")
     }
 
     func testRefusesToBindThroughASymlink() throws {
@@ -72,19 +73,19 @@ final class ControlServerTests: XCTestCase {
         FileManager.default.createFile(atPath: real, contents: Data())
         try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: real)
         XCTAssertThrowsError(try ControlSocket.reclaimStaleSocket(at: link),
-                             "路径是符号链接就等于让别人指定我们往哪写")
+                             "a symlink for a path means somebody else gets to pick where we write")
     }
 
     func testRefusesToDeleteANonSocketFile() throws {
         let path = try tempSocketPath()
-        FileManager.default.createFile(atPath: path, contents: Data("不是 socket".utf8))
+        FileManager.default.createFile(atPath: path, contents: Data("not a socket".utf8))
         XCTAssertThrowsError(try ControlSocket.reclaimStaleSocket(at: path),
-                             "绝不替用户删一个普通文件")
+                             "never delete a regular file on the user's behalf")
     }
 
     func testReclaimsAStaleSocket() throws {
         let path = try tempSocketPath()
-        // 绑一个然后直接关掉 fd：文件还在，但没人在听
+        // Bind and then close the fd outright: the file is still there, but nobody is listening
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         var addr = try ControlSocket.sockaddrUn(path)
         _ = withUnsafePointer(to: &addr) {
@@ -93,9 +94,9 @@ final class ControlServerTests: XCTestCase {
             }
         }
         Darwin.close(fd)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: path), "前提：陈旧 socket 文件还在")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path), "precondition: the stale socket file is still there")
 
-        let server = try makeServer(at: path)   // 能起来 = 陈旧文件被清掉了
+        let server = try makeServer(at: path)   // coming up at all means the stale file was reclaimed
         defer { server.stop() }
     }
 
@@ -104,16 +105,17 @@ final class ControlServerTests: XCTestCase {
         let server = try makeServer(at: path)
         defer { server.stop() }
         XCTAssertThrowsError(try ControlSocket.reclaimStaleSocket(at: path),
-                             "真有实例在听就不抢") { error in
+                             "do not steal it when a real instance is listening") { error in
             guard case ControlSocket.SocketError.alreadyListening = error else {
-                return XCTFail("应报 alreadyListening，实得 \(error)")
+                return XCTFail("expected alreadyListening, got \(error)")
             }
         }
     }
 
     func testExplicitPathNeverFallsBackToTheSharedTmpSocket() {
-        // 显式路径过长时必须报错，绝不能悄悄改用 $TMPDIR/quickterm.sock
-        // ——那是用户正在跑的那个 QuickTerm 可能占着的位置
+        // An explicit path that is too long has to error out; it must never quietly switch to
+        // $TMPDIR/quickterm.sock — that is the spot the QuickTerm the user is running may be
+        // holding
         let tooLong = "/tmp/" + String(repeating: "x", count: 120) + ".sock"
         XCTAssertThrowsError(try ControlSocket.prepare(preferred: tooLong, allowFallback: false))
         XCTAssertNoThrow(try ControlSocket.prepare(preferred: tooLong, allowFallback: true))
@@ -124,16 +126,18 @@ final class ControlServerTests: XCTestCase {
         let server = try makeServer(at: path)
         server.stop()
         XCTAssertFalse(server.isListening)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: path), "停掉之后不留陈旧 socket")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path), "no stale socket left behind after a stop")
     }
 
-    // MARK: 对端身份
+    // MARK: Peer identity
 
     func testOnlySameUIDIsAccepted() {
         let mine = ControlSocket.Peer(fd: -1, uid: getuid(), pid: 1, processName: "self")
         let other = ControlSocket.Peer(fd: -1, uid: getuid() &+ 1, pid: 2, processName: "someone")
         XCTAssertTrue(ControlSocket.accepts(mine))
-        XCTAssertFalse(ControlSocket.accepts(other), "不同 uid 必须硬拒——这是唯一不可绕过的身份检查")
+        XCTAssertFalse(ControlSocket.accepts(other),
+                       "a different uid has to be refused outright -- this is the one identity "
+                       + "check nothing can bypass")
     }
 
     func testPeerIdentityReportsTheRealProcess() throws {
@@ -146,10 +150,11 @@ final class ControlServerTests: XCTestCase {
         XCTAssertEqual(ControlSocket.processName(for: getpid()).isEmpty, false)
     }
 
-    /// 确认框的**默认按钮必须是"拒绝"**。
-    /// 这条是实测事故的回归：默认按钮原本是"允许"，冒烟时一次落在窗口上的回车
-    /// 直接把一条破坏性命令批准了（日志里留下 `控制面确认结果：allow`，用户根本没读那个框）。
-    /// 安全闸门的默认答案只能是"不"
+    /// The consent alert's **default button has to be the deny one**.
+    /// This is a regression test for a real incident: the default button used to be allow, and a
+    /// single Return that landed on the window during a smoke test approved a destructive command
+    /// outright (the log was left holding `Control consent result: allow`, with the user
+    /// never having read the alert at all). The default answer of a safety gate can only be no
     func testConsentAlertDefaultsToDeny() {
         // The alert text follows the UI language; this case pins it so it cannot go red on a
         // machine whose system language is English.
@@ -157,42 +162,48 @@ final class ControlServerTests: XCTestCase {
         defer { Localization.shared.setLanguage(language) }
         Localization.shared.setLanguage(.zh)
         let alert = ControlConsent.makeAlert(.init(peerName: "node", peerPID: 4821, cls: .destructive,
-                                                   summary: "关闭 pane t7", originPane: "t3",
+                                                   summary: "close pane t7", originPane: "t3",
                                                    tokenPresent: true))
-        XCTAssertEqual(alert.buttons.first?.title, "拒绝", "第一个按钮 = 默认按钮，必须是拒绝")
-        XCTAssertEqual(alert.buttons.first?.keyEquivalent, "\r", "回车必须落在拒绝上")
+        XCTAssertEqual(alert.buttons.first?.title, "拒绝",
+                       "first button = default button, and it has to be the deny one")
+        XCTAssertEqual(alert.buttons.first?.keyEquivalent, "\r", "Return has to land on deny")
         XCTAssertEqual(alert.buttons.last?.title, "允许")
-        XCTAssertEqual(alert.buttons.last?.keyEquivalent, "", "允许绝不能有键等价：它必须被点")
+        XCTAssertEqual(alert.buttons.last?.keyEquivalent, "",
+                       "allow may never carry a key equivalent: it has to be clicked")
         XCTAssertEqual(ControlConsent.allowResponse, .alertSecondButtonReturn,
-                       "映射要跟着按钮顺序走，否则回车会变成允许")
-        XCTAssertTrue(alert.informativeText.contains("pid 4821"), "框里要写内核给的真实身份")
-        XCTAssertTrue(alert.informativeText.contains("自称来自 pane t3"), "来源是自报的，措辞必须写明")
+                       "the mapping has to follow the button order, otherwise Return turns into allow")
+        XCTAssertTrue(alert.informativeText.contains("pid 4821"),
+                      "the alert has to state the real identity the kernel handed us")
+        XCTAssertTrue(alert.informativeText.contains("自称来自 pane t3"),
+                      "the origin is self-reported, so the wording has to say so -- the Chinese UI "
+                      + "string reads \"claims to come from pane t3\"")
     }
 
-    // MARK: 端到端（同时也是"主线程 hop"的用例）
+    // MARK: End to end (this doubles as the "main-thread hop" case)
 
-    /// socket 回调在 io 队列上；命令必须被送回主线程执行。
-    /// 送错线程的话 `ControlCommandRunner` 里的 `dispatchPrecondition(.onQueue(.main))` 会直接把用例打断，
-    /// 而不是留下一个"偶尔崩在 SwiftUI publish from background"的幽灵。
+    /// The socket callback runs on the io queue; the command has to be handed back to the main
+    /// thread to execute. Send it to the wrong thread and the `dispatchPrecondition(.onQueue(.main))`
+    /// inside `ControlCommandRunner` trips the case right there, instead of leaving behind a ghost
+    /// that "occasionally crashes on a SwiftUI publish from a background thread".
     func testRequestFromBackgroundThreadIsExecutedOnMain() throws {
         let path = try tempSocketPath()
         let server = try makeServer(at: path)
         defer { server.stop() }
 
         let box = Box<ControlReply>()
-        let done = expectation(description: "state 返回")
+        let done = expectation(description: "state replied")
         DispatchQueue.global().async {
             defer { done.fulfill() }
             guard let client = try? ControlClient.connect(candidates: [path]) else { return }
             defer { client.close() }
             box.value = try? client.send(ControlRequest(id: "1", cmd: "state"))
         }
-        // 主线程必须继续转：命令就是排在这条 run loop 上执行的
+        // The main thread has to keep turning: the command is scheduled onto exactly this run loop
         let deadline = Date().addingTimeInterval(5)
         while box.value == nil, Date() < deadline { spin(0.05) }
         wait(for: [done], timeout: 5)
 
-        let got = try XCTUnwrap(box.value, "没有收到响应")
+        let got = try XCTUnwrap(box.value, "no reply came back")
         XCTAssertTrue(got.ok, "\(String(describing: got.error))")
         XCTAssertEqual(got.data?["schema"]?.stringValue, "quickterm.state/1")
         XCTAssertNotNil(got.resolved?.screen)
@@ -209,7 +220,7 @@ final class ControlServerTests: XCTestCase {
         XCTAssertEqual(reply.error?.code, ControlErrorCode.protocolMismatch.rawValue)
         XCTAssertEqual(reply.error?.exit, ControlExit.protocolMismatch.rawValue)
         XCTAssertTrue(reply.error?.message.contains("v\(ControlProtocol.version)") ?? false,
-                      "版本不匹配必须同时报出两边的版本")
+                      "a version mismatch has to report both sides' versions")
     }
 
     func testInteractiveActionIsRefusedOverTheSocket() throws {
@@ -219,9 +230,9 @@ final class ControlServerTests: XCTestCase {
         for action in ControlCommandTable.interactiveActions {
             let reply = try roundTrip(ControlRequest(id: "1", cmd: "action",
                                                      args: ["name": .string(action.rawValue)]), at: path)
-            XCTAssertFalse(reply.ok, "\(action.rawValue) 不该被执行")
+            XCTAssertFalse(reply.ok, "\(action.rawValue) should not have been executed")
             XCTAssertEqual(reply.error?.code, ControlErrorCode.interactiveAction.rawValue, action.rawValue)
-            XCTAssertNotNil(reply.error?.hint, "拒绝时要给出具体去处")
+            XCTAssertNotNil(reply.error?.hint, "a refusal has to name a concrete place to go")
         }
     }
 
@@ -250,19 +261,21 @@ final class ControlServerTests: XCTestCase {
             reply(.allow)
         }
         let request = ControlConsent.Request(peerName: "node", peerPID: 4821, cls: .destructive,
-                                             summary: "关闭 pane", originPane: "t3", tokenPresent: true)
+                                             summary: "close pane", originPane: "t3", tokenPresent: true)
         for _ in 0..<3 {
             consent.evaluate(request) { XCTAssertEqual($0, .allow) }
         }
-        XCTAssertEqual(asked, 1, "按 (pid, 类) 只问一次——agent 是成批发命令的，每条都问等于没问")
+        XCTAssertEqual(asked, 1, "ask once per (pid, class) -- agents send commands in batches, "
+                       + "and asking for every single one is the same as not asking")
         consent.evaluate(ControlConsent.Request(peerName: "node", peerPID: 9999, cls: .destructive,
-                                                summary: "关闭 pane", originPane: nil,
+                                                summary: "close pane", originPane: nil,
                                                 tokenPresent: false)) { _ in }
-        XCTAssertEqual(asked, 2, "换一个进程要重新问")
+        XCTAssertEqual(asked, 2, "a different process has to be asked again")
     }
 
     func testTokenNeverSkipsConsent() throws {
-        // token 是来源证明，不是权限边界：带着正确的 token 也照样要问
+        // The token is proof of origin, not a permission boundary: even the correct token still
+        // gets asked
         let app = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         let consent = ControlConsent(screens: app.screens)
         var asked = 0
@@ -272,7 +285,7 @@ final class ControlServerTests: XCTestCase {
             reply(.allow)
         }
         consent.evaluate(.init(peerName: "codex", peerPID: 12, cls: .destructive,
-                               summary: "关闭 pane", originPane: "t1", tokenPresent: true)) { _ in }
+                               summary: "close pane", originPane: "t1", tokenPresent: true)) { _ in }
         XCTAssertEqual(asked, 1)
     }
 
@@ -281,7 +294,7 @@ final class ControlServerTests: XCTestCase {
         let server = try makeServer(at: path, mode: "readonly")
         defer { server.stop() }
         let read = try roundTrip(ControlRequest(id: "1", cmd: "state"), at: path)
-        XCTAssertTrue(read.ok, "只读模式下读仍然放行")
+        XCTAssertTrue(read.ok, "reads still go through in readonly mode")
         let write = try roundTrip(ControlRequest(id: "2", cmd: "action",
                                                  args: ["name": .string("new-terminal")]), at: path)
         XCTAssertFalse(write.ok)
@@ -308,7 +321,7 @@ final class ControlServerTests: XCTestCase {
         defer { server.stop() }
 
         let box = Box<String>()
-        let done = expectation(description: "坏行也要有结构化响应")
+        let done = expectation(description: "a bad line gets a structured response too")
         DispatchQueue.global().async {
             defer { done.fulfill() }
             let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -319,7 +332,7 @@ final class ControlServerTests: XCTestCase {
                     Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
                 }
             }
-            _ = "{ 这不是 JSON\n".withCString { write(fd, $0, strlen($0)) }
+            _ = "{ this is not JSON\n".withCString { write(fd, $0, strlen($0)) }
             var buffer = [UInt8](repeating: 0, count: 4096)
             let n = read(fd, &buffer, buffer.count)
             if n > 0 { box.value = String(bytes: buffer[0..<n], encoding: .utf8) }
@@ -329,22 +342,23 @@ final class ControlServerTests: XCTestCase {
         while box.value == nil, Date() < deadline { spin(0.05) }
         wait(for: [done], timeout: 5)
         let got = try XCTUnwrap(box.value)
-        XCTAssertTrue(got.contains("bad_request"), "得到的是：\(got)")
+        XCTAssertTrue(got.contains("bad_request"), "got: \(got)")
     }
 
-    // MARK: 对抗评审后补的回归用例
+    // MARK: Regression cases added after the adversarial review
 
-    /// 超过 1 MiB 的单行**必须**收到结构化错误，而不是只有一个 EOF。
-    /// 原来那行 `send()` 是死代码：它把写排到 io 队列上，而紧接着的 `close()`
-    /// 同步跑在前面把 closed 置了位，写到点被 `guard !closed` 吞掉，
-    /// 对端只看到"QuickTerm 在应答之前关闭了连接"
+    /// A single line over 1 MiB **has to** get a structured error back, not just an EOF.
+    /// That `send()` line used to be dead code: it queued the write onto the io queue, while the
+    /// `close()` right behind it ran synchronously first and set `closed`, so by the time the
+    /// write came up `guard !closed` swallowed it and the peer only ever saw "QuickTerm closed the
+    /// connection before answering"
     func testOversizedLineGetsAStructuredErrorNotJustEOF() throws {
         let path = try tempSocketPath()
         let server = try makeServer(at: path)
         defer { server.stop() }
 
         let box = Box<String>()
-        let done = expectation(description: "超长行也要有结构化响应")
+        let done = expectation(description: "an oversized line gets a structured response too")
         DispatchQueue.global().async {
             defer { done.fulfill() }
             let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -354,7 +368,8 @@ final class ControlServerTests: XCTestCase {
                     Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
                 }
             }
-            // 一行到底不带换行：分帧器永远等不到行尾，只能撞上单行上限
+            // One line all the way with no newline: the framer never sees an end of line and can
+            // only run into the per-line cap
             var payload = Data("{\"v\":1,\"id\":\"1\",\"cmd\":\"state\",\"target\":\"".utf8)
             payload.append(Data(repeating: UInt8(ascii: "x"), count: ControlServer.maxLineBytes + 16))
             payload.withUnsafeBytes { raw in
@@ -364,7 +379,9 @@ final class ControlServerTests: XCTestCase {
                     let n = Darwin.write(fd, base.advanced(by: offset), raw.count - offset)
                     if n > 0 { offset += n; continue }
                     if errno == EINTR { continue }
-                    break   // 服务端已经关了连接：写不完也没关系，读回应答才是重点
+                    // The server already closed the connection: an unfinished write is fine,
+                    // reading the reply back is the point
+                    break
                 }
             }
             var buffer = [UInt8](repeating: 0, count: 8192)
@@ -375,18 +392,21 @@ final class ControlServerTests: XCTestCase {
         let deadline = Date().addingTimeInterval(10)
         while box.value == nil, Date() < deadline { spin(0.05) }
         wait(for: [done], timeout: 10)
-        let got = try XCTUnwrap(box.value, "对端只收到了 EOF —— 承诺的结构化 bad_request 丢了")
-        XCTAssertTrue(got.contains("bad_request"), "得到的是：\(got)")
+        let got = try XCTUnwrap(box.value,
+                                "the peer got nothing but an EOF -- the promised structured "
+                                + "bad_request went missing")
+        XCTAssertTrue(got.contains("bad_request"), "got: \(got)")
     }
 
-    /// 确认闸门批准的是**具体的那一个 pane**：确认期间目标变了就整条 busy 掉。
-    /// 原来是拿调用方的写法（`@focused`，或者干脆没写）去问，用户答完之后才解析——
-    /// 用户读到"关闭焦点 pane"，点允许，挨刀的却是别的 pane
+    /// What the consent gate approves is **that one specific pane**: if the target moves while the
+    /// alert is up, the whole command fails busy. It used to ask with the caller's own spelling
+    /// (`@focused`, or nothing at all) and resolve it only after the user answered — the user read
+    /// "close the focused pane", clicked allow, and a different pane took the knife
     func testConsentPinsTheResolvedPaneSoADriftingFocusCannotRedirectIt() throws {
         let path = try tempSocketPath()
         let app = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         let controller = try XCTUnwrap(app.controller)
-        try XCTSkipUnless(controller.model.layouts.count >= 2, "本用例要至少两个工作区")
+        try XCTSkipUnless(controller.model.layouts.count >= 2, "this case needs at least two workspaces")
         controller.model.switchTo(0)
         controller.perform(.newTerminal)
         spin(0.3)
@@ -401,7 +421,8 @@ final class ControlServerTests: XCTestCase {
         var summary = ""
         consent.decisionStub = { request, reply in
             summary = request.summary
-            // 用户读确认框的这十秒里，焦点被别的东西挪走了（⌘2、另一条不需确认的 mutate 命令……）
+            // In the ten seconds the user spends reading the alert, something else moves the
+            // focus away (Cmd+2, another mutate command that needs no confirmation, ...)
             controller.model.switchTo(1)
             reply(.allow)
         }
@@ -411,29 +432,31 @@ final class ControlServerTests: XCTestCase {
 
         let reply = try roundTrip(ControlRequest(id: "1", cmd: "action",
                                                  args: ["name": .string("close-pane")]), at: path)
-        XCTAssertFalse(reply.ok, "目标已经不是确认时那个 pane 了，绝不能照关")
+        XCTAssertFalse(reply.ok, "the target is no longer the pane that was confirmed, so it must not be closed anyway")
         XCTAssertEqual(reply.error?.code, ControlErrorCode.busy.rawValue)
-        XCTAssertTrue(controller.model.allPanes.contains { $0 === victim }, "本次必须什么都没做")
+        XCTAssertTrue(controller.model.allPanes.contains { $0 === victim }, "this run must have done nothing at all")
 
-        // 确认框的正文里必须点名那个具体的 pane，而不是只回显调用方的写法
+        // The body of the alert has to name that specific pane rather than echoing back the
+        // caller's spelling
         let handle = ControlHandleRegistry.shared.handle(for: victim)
-        XCTAssertTrue(summary.contains(handle), "确认框要点名 \(handle)，实得：\(summary)")
+        XCTAssertTrue(summary.contains(handle), "the alert has to name \(handle), got: \(summary)")
     }
 
-    /// 确认框挂着的时候，**所有**变更命令都得等着。
-    /// `isExecuting` 盖不住这一段：它在 `handle()` 把问题问出去之前就已经复位了
+    /// While an alert is up, **every** mutating command has to wait.
+    /// `isExecuting` does not cover this stretch: it is already cleared by the time `handle()` puts
+    /// the question up
     func testMutationsAreRefusedWhileAConfirmationIsPending() throws {
         let path = try tempSocketPath()
         let app = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         let consent = ControlConsent(screens: app.screens)
         let pending = Box<(ControlConsent.Decision) -> Void>()
-        consent.decisionStub = { _, reply in pending.value = reply }   // 一直挂着不答
+        consent.decisionStub = { _, reply in pending.value = reply }   // Left hanging, never answered
         let server = ControlServer(screens: app.screens, consent: consent, socketPath: path)
         server.apply(ControlCommandRunner.Config())
         defer { server.stop() }
 
         let first = Box<ControlReply>()
-        let firstDone = expectation(description: "破坏性命令最终返回")
+        let firstDone = expectation(description: "the destructive command eventually returns")
         DispatchQueue.global().async {
             defer { firstDone.fulfill() }
             guard let client = try? ControlClient.connect(candidates: [path]) else { return }
@@ -443,27 +466,28 @@ final class ControlServerTests: XCTestCase {
         }
         let armed = Date().addingTimeInterval(5)
         while pending.value == nil, Date() < armed { spin(0.05) }
-        XCTAssertNotNil(pending.value, "前提：确认框已经挂上了")
+        XCTAssertNotNil(pending.value, "precondition: the alert is up")
         XCTAssertTrue(consent.isPrompting)
 
         let blocked = try roundTrip(ControlRequest(id: "2", cmd: "action",
                                                    args: ["name": .string("new-terminal")]), at: path)
-        XCTAssertFalse(blocked.ok, "用户正被一个对话框拦着，绝不能在他背后建 pane")
+        XCTAssertFalse(blocked.ok, "the user is blocked behind a dialog; do not create a pane behind their back")
         XCTAssertEqual(blocked.error?.code, ControlErrorCode.busy.rawValue)
         XCTAssertEqual(blocked.error?.exit, ControlExit.busy.rawValue)
 
-        // 读永远不受影响
+        // Reads are never affected
         let read = try roundTrip(ControlRequest(id: "3", cmd: "state"), at: path)
-        XCTAssertTrue(read.ok, "read 类命令不该被对话框挡住")
+        XCTAssertTrue(read.ok, "a read-class command must not be held up by a dialog")
 
         try XCTUnwrap(pending.value)(.deny)
         wait(for: [firstDone], timeout: 10)
         XCTAssertEqual(first.value?.error?.code, ControlErrorCode.denied.rawValue)
     }
 
-    /// 确认框里那句"来自 pane t3"是调用方自报的（CLI 直接抄 `$QUICKTERM_PANE`），
-    /// 服务端一个字都验不了。没有本次启动的 token 就一个字都不显示——
-    /// 绝不在用户做信任判断的那块屏上，把自报当成事实讲
+    /// The "from pane t3" line in the alert is self-reported by the caller (the CLI copies
+    /// `$QUICKTERM_PANE` straight through) and the server cannot verify a word of it. Without a
+    /// token from this launch, not a word of it is shown — never present a self-reported claim as
+    /// fact on the very screen where the user makes a trust decision
     func testOriginPaneClaimIsSuppressedWithoutAValidToken() throws {
         let path = try tempSocketPath()
         let app = try XCTUnwrap(NSApp.delegate as? AppDelegate)
@@ -501,19 +525,21 @@ final class ControlServerTests: XCTestCase {
             return seen.value ?? nil
         }
 
-        XCTAssertNil(try ask(token: nil), "没有 token = 连\"我来自某个 pane\"都没有证据")
-        XCTAssertNil(try ask(token: "抄错的 token"), "token 不对也一样，不能显示自报的来源")
-        consent.reset()   // 上一次是 deny，没有留下授权；这里只是把 isPrompting 清干净
+        XCTAssertNil(try ask(token: nil),
+                     "no token = not even the claim \"I come from some pane\" has evidence behind it")
+        XCTAssertNil(try ask(token: "a mistyped token"),
+                     "a wrong token is no different: the self-reported origin stays hidden")
+        consent.reset()   // The last answer was deny, so no grant was left behind; this only clears isPrompting
         XCTAssertEqual(try ask(token: ControlEnvironment.token), handle,
-                       "带着本次启动的 token 才显示来源 pane（文案里仍写\"自称\"）")
+                       "only a token from this launch shows the origin pane (the wording still says \"自称\", i.e. claims to be)")
     }
 
-    // MARK: 工具
+    // MARK: Helpers
 
     private func roundTrip(_ request: ControlRequest, at path: String) throws -> ControlReply {
         let box = Box<ControlReply>()
         let errorBox = Box<Error>()
-        let done = expectation(description: "往返 \(request.cmd)")
+        let done = expectation(description: "round trip \(request.cmd)")
         DispatchQueue.global().async {
             defer { done.fulfill() }
             do {
@@ -530,7 +556,8 @@ final class ControlServerTests: XCTestCase {
     }
 }
 
-/// 跨线程传一个值的最小容器（用例里主线程转 run loop、后台线程写结果）
+/// Minimal container for passing one value across threads (in these cases the main thread turns
+/// the run loop while a background thread writes the result)
 final class Box<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: T?

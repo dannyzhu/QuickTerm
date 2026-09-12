@@ -1,7 +1,8 @@
 import Foundation
 
-/// `quickterm install-cli`：把自己软链到 PATH 上（VS Code 的 `code` 那一招）。
-/// **绝不请求管理员权限**：/usr/local/bin 不可写就退到 ~/.local/bin 并打印 PATH 提示。
+/// `quickterm install-cli`: symlink ourselves onto PATH, the same trick VS Code's `code` uses.
+/// **Never asks for administrator privileges**: if /usr/local/bin is not writable, fall back to
+/// ~/.local/bin and print a PATH hint.
 enum InstallCLI {
     struct Result: Codable {
         var installed: [String]
@@ -14,7 +15,8 @@ enum InstallCLI {
     static func run(alias: String?, directory override: String?) throws -> Result {
         let source = URL(fileURLWithPath: CommandLine.arguments[0])
             .resolvingSymlinksInPath().standardizedFileURL.path
-        // Gatekeeper 的 App Translocation：随机只读路径，应用一退出软链就悬空
+        // Gatekeeper's App Translocation: a randomized read-only path, so the symlink dangles the
+        // moment the app quits.
         if source.contains("/AppTranslocation/") {
             throw Failure("""
             QuickTerm is running from a read-only quarantined path (App Translocation).
@@ -28,7 +30,8 @@ enum InstallCLI {
         for candidate in candidates {
             var isDirectory: ObjCBool = false
             if !FileManager.default.fileExists(atPath: candidate, isDirectory: &isDirectory) {
-                // 只自己建 ~/.local/bin；/usr/local/bin 不存在就跳过（建它要管理员权限）
+                // We only create ~/.local/bin ourselves. If /usr/local/bin does not exist, skip
+                // it: creating that one needs administrator privileges.
                 guard candidate.hasPrefix(NSHomeDirectory()) else { continue }
                 try? FileManager.default.createDirectory(atPath: candidate,
                                                          withIntermediateDirectories: true)

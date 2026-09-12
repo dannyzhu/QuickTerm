@@ -4,7 +4,7 @@ import GhosttyKit
 
 final class EngineSmokeTests: XCTestCase {
     override class func setUp() {
-        // ghostty_init 每进程一次（int ghostty_init(uintptr_t, char**)）
+        // ghostty_init runs once per process (int ghostty_init(uintptr_t, char**)).
         _ = ghostty_init(0, nil)
     }
 
@@ -13,10 +13,10 @@ final class EngineSmokeTests: XCTestCase {
             return XCTFail("ghostty_config_new returned nil")
         }
         defer { ghostty_config_free(config) }
-        // 读取 ~/.config/ghostty/config（XDG）——配置链第 2 层
+        // Reads ~/.config/ghostty/config (XDG): layer 2 of the config chain.
         ghostty_config_load_default_files(config)
         ghostty_config_finalize(config)
-        // finalize 后取一个已知键，验证配置系统可用
+        // After finalize, read back a known key to prove the config system works.
         var decoration = false
         let key = "window-decoration"
         let ok = ghostty_config_get(config, &decoration, key, UInt(key.utf8.count))
@@ -25,27 +25,29 @@ final class EngineSmokeTests: XCTestCase {
 }
 
 final class SurfaceHostingTests: XCTestCase {
-    /// 回归锁（拖拽窗口终端不跟随 bug）：M1 起 contentView 为 NSHostingView（RootView →
-    /// TerminalSplitTreeView → SurfaceWrapper → SurfaceScrollView 链），尺寸同步由
-    /// SurfaceScrollView.layout() 驱动；断言窗口结构 + 树非空 + 隐藏标题栏样式。
+    /// Regression lock for the "terminal does not follow while the window is dragged" bug: since M1 the
+    /// contentView is an NSHostingView (the RootView -> TerminalSplitTreeView -> SurfaceWrapper ->
+    /// SurfaceScrollView chain) and size sync is driven by SurfaceScrollView.layout(). Asserts the window
+    /// structure, a non-empty tree, and the hidden-titlebar style.
     @MainActor
     func testWindowHostsSplitTreeContent() throws {
         let window = try XCTUnwrap(NSApp.windows.first { $0.title == "QuickTerm" })
-        XCTAssertTrue(window is HiddenTitlebarWindow, "主窗口应为 HiddenTitlebarWindow")
+        XCTAssertTrue(window is HiddenTitlebarWindow, "the main window must be a HiddenTitlebarWindow")
         XCTAssertTrue(window.styleMask.contains(.fullSizeContentView))
         XCTAssertEqual(window.titleVisibility, .hidden)
         let content = try XCTUnwrap(window.contentView)
         XCTAssertTrue(String(describing: type(of: content)).contains("NSHostingView"),
-                      "contentView 应为 NSHostingView（实际: \(type(of: content))）")
-        // 树非空：窗口内确实存在一个 SurfaceScrollView 后代（尺寸同步宿主在链上）
+                      "contentView must be an NSHostingView (actual: \(type(of: content)))")
+        // Non-empty tree: a SurfaceScrollView descendant really exists inside the window, which is where
+        // size sync is hosted.
         func findScrollHost(_ v: NSView) -> Bool {
             if v is SurfaceScrollView { return true }
             return v.subviews.contains(where: findScrollHost)
         }
-        XCTAssertTrue(findScrollHost(content), "视图链中应存在 SurfaceScrollView 宿主")
+        XCTAssertTrue(findScrollHost(content), "the view chain must contain a SurfaceScrollView host")
     }
 
-    /// 宿主布局行为：resize 后 surfaceView.frame 跟随宿主 bounds。
+    /// Host layout behavior: after a resize, surfaceView.frame follows the host's bounds.
     @MainActor
     func testScrollViewHostSyncsSurfaceFrameOnResize() throws {
         let appDelegate = try XCTUnwrap(NSApp.delegate as? AppDelegate)

@@ -1,11 +1,11 @@
 import SwiftUI
 
-/// 一个 Omarchy 同构主题包：`<dir>/{colors.toml, backgrounds/*}`。
+/// One Omarchy-shaped theme bundle: `<dir>/{colors.toml, backgrounds/*}`.
 struct Theme: Identifiable, Equatable {
-    let name: String              // 目录名，如 "tokyo-night"
-    let isLight: Bool             // colors.toml 的 mode = "light"
-    let colors: [String: String]  // key → "#RRGGBB"
-    let backgroundURLs: [URL]     // 排序后的背景图
+    let name: String              // directory name, e.g. "tokyo-night"
+    let isLight: Bool             // colors.toml says mode = "light"
+    let colors: [String: String]  // key -> "#RRGGBB"
+    let backgroundURLs: [URL]     // wallpapers, sorted
 
     var id: String { name }
     var displayName: String {
@@ -25,7 +25,7 @@ struct Theme: Identifiable, Equatable {
             blue: Double(value & 0xff) / 255.0)
     }
 
-    /// 解析 colors.toml（极简 TOML 子集：`key = "value"` 平铺 + # 注释）
+    /// Parse colors.toml (a minimal TOML subset: flat `key = "value"` lines plus # comments).
     static func parseColors(toml: String) -> (colors: [String: String], isLight: Bool) {
         var colors: [String: String] = [:]
         var isLight = false
@@ -36,13 +36,14 @@ struct Theme: Identifiable, Equatable {
             let key = line[..<eq].trimmingCharacters(in: .whitespaces)
             var value = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
             if value.hasPrefix("\"") {
-                // 引号值：取到闭合引号为止（自然丢弃行尾注释）
+                // Quoted value: read up to the closing quote, which drops a trailing comment
+                // for free.
                 let inner = value.dropFirst()
                 if let endQuote = inner.firstIndex(of: "\"") {
                     value = String(inner[..<endQuote])
                 }
             } else if let hash = value.firstIndex(of: "#") {
-                // 裸值的行尾注释
+                // Trailing comment on a bare value.
                 value = String(value[..<hash]).trimmingCharacters(in: .whitespaces)
             }
             if key == "mode" { isLight = (value == "light") } else { colors[key] = value }
@@ -50,7 +51,7 @@ struct Theme: Identifiable, Equatable {
         return (colors, isLight)
     }
 
-    /// 从主题目录加载；无 colors.toml 返回 nil
+    /// Load from a theme directory; nil when it has no colors.toml.
     static func load(from dir: URL) -> Theme? {
         let tomlURL = dir.appendingPathComponent("colors.toml")
         guard let toml = try? String(contentsOf: tomlURL, encoding: .utf8) else { return nil }

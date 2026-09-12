@@ -1,35 +1,44 @@
 import SwiftUI
 
-/// scrolling 无限画布渲染器（spec §4.2-bis）：
-/// 横向列条带；列宽 = widthFactor×视口；列内纵向等分栈叠；
-/// 视口以最小滚动量跟随焦点列（~0.15s easeOut），相邻列在两缘自然露出。
+/// Renderer for the scrolling layout's endless canvas (spec §4.2-bis):
+/// a horizontal strip of columns, each widthFactor x viewport wide, with panes stacked in equal
+/// shares vertically inside a column.
+/// The viewport follows the focused column by the smallest scroll that works (~0.15s easeOut), and
+/// the neighbouring columns peek in naturally at either edge.
 struct ScrollingStripView: View {
     let strip: ScrollingStrip
     let workspaceIndex: Int
     let pan: WorkspaceModel.StripPanEvent?
     let onDrop: (PaneView, PaneView, TerminalSplitDropZone) -> Void
-    /// 正在淡出的 pane（渐隐；到点后控制器移除、列条带重排）
+    /// Panes currently fading out; once the fade finishes the controller removes them and the strip
+    /// reflows.
     var closingPanes: Set<UUID> = []
 
-    @EnvironmentObject var theme: ThemeManager   // pane-gap（露边下限随之变化）
+    @EnvironmentObject var theme: ThemeManager   // pane-gap (the floor on the peek moves with it)
     @State private var offset: CGFloat = 0
     @State private var lastPanSerial: Int = -1
-    /// 已见过的 pane 身份：结构变化时用来认出「刚插进来的列」（见 revealTarget）
+    /// Pane identities seen so far: used on a structural change to recognize a just-inserted column
+    /// (see revealTarget).
     @State private var knownPaneIDs: Set<UUID>?
 
-    private let columnGap: CGFloat = 0  // 列间隙由 PaneChrome 的 pane-gap 内边距相邻合成 2×gap（= gaps_in×2）
+    // The gap between columns comes from adjacent PaneChrome pane-gap paddings composing into
+    // 2x gap (= gaps_in x 2).
+    private let columnGap: CGFloat = 0
 
     var body: some View {
         GeometryReader { geo in
-            // 列宽在 zoom 分支**之外**算：zoom 期间列宽照样会变（换可见列数、改窗口大小），
-            // 偏移得跟着夹取，解除 zoom 时条带才不会一上来就停在内容外面
+            // Column widths are computed **outside** the zoom branch: widths keep changing while
+            // zoomed (visible column count, window resize), and the offset has to be clamped along
+            // with them, or leaving zoom drops the strip somewhere outside its own content.
             let widths = strip.columnWidths(viewport: geo.size.width, gap: columnGap)
             ZStack(alignment: .topLeading) {
                 if let zoomed = strip.zoomedPane {
-                    // zoom：焦点 pane 占满内容区（同 dwindle 语义）
+                    // Zoom: the focused pane fills the content area (same semantics as dwindle)
                     ScrollingPaneCell(surfaceView: zoomed, onDrop: onDrop,
                                       closing: closingPanes.contains(zoomed.id))
-                        .id(zoomed.id)   // 换了 zoom 的 pane 要换视图身份（faded 等状态不可沿用）
+                        // zooming a different pane needs a new view identity (state such as
+                        // `faded` must not carry over)
+                        .id(zoomed.id)
                 } else {
                     HStack(alignment: .top, spacing: columnGap) {
                         ForEach(Array(strip.columns.enumerated()),
@@ -49,34 +58,45 @@ struct ScrollingStripView: View {
                         scrollToFocus(id: focusedID, viewport: geo.size.width)
                     }
                     .onChange(of: pan) {
-                        applyPan(viewport: geo.size.width)   // 平移只在条带铺开时有意义
+                        // Panning only means anything once the strip is laid out.
+                        applyPan(viewport: geo.size.width)
                     }
                 }
             }
-            // ↓ 视口对齐一律挂在 zoom 分支**外面**：zoom 切换会把整条 HStack 拆掉重建，
-            // 而所有结构操作都顺手清 zoom（insertingColumnRight 等），
-            // 于是「Cmd+F 后 Cmd+B / ⌘点链接」的插列与解除 zoom 落在同一次更新里：
-            // 挂在分支里时重建出来的 HStack 只会走 onAppear（把刚插进来的 pane 也认成「早就见过」），
-            // onChange 又不对刚创建的视图触发 —— 新列就再没人揭示，退回只靠焦点的老路。
+            // ↓ Viewport alignment always hangs **outside** the zoom branch. Toggling zoom tears
+            // down the whole HStack and rebuilds it, and every structural operation clears zoom on
+            // the way past (insertingColumnRight and friends), so "Cmd+B / Cmd+click a link after
+            // Cmd+F" lands the column insert and the un-zoom in one update. Attached inside the
+            // branch, the rebuilt HStack only runs onAppear - which records the just-inserted pane
+            // as one it has "seen all along" - and onChange never fires for a freshly created view,
+            // so nothing is left to reveal the new column and we fall back to the old focus-only
+            // path.
             .onAppear {
-                // 首次挂载先记下现有身份：之后出现的 pane 才算「新插进来的」
+                // Record the existing identities on first mount: only panes that show up later
+                // count as newly inserted.
                 knownPaneIDs = Set(strip.paneList.map(\.id))
             }
             .onChange(of: strip.layoutSignature) {
-                // 结构变化（插/删列、Cmd+Shift+方向换位、併拆）后重新对齐——
-                // 新插进来的列优先，其次当前焦点；被移动/新建的 pane 始终完整可见
+                // Realign after a structural change (insert/remove a column, Cmd+Shift+direction
+                // swap, merge/split): a newly inserted column wins, otherwise current focus, so the
+                // pane that was moved or created is always fully visible.
                 scrollToFocus(id: revealTarget(), viewport: geo.size.width)
             }
             .onChange(of: widths) { old, new in
-                // 列宽/视口变化（换「每屏可见列数」、Cmd+Ctrl+= 重置、拖拽调宽、改窗口大小）：
-                // 只把偏移拉回合法范围，不主动跟焦点——否则会劫持手动平移。
-                // 列数没变 = 纯宽度变化：**不加动画**逐事件跟手夹取（与 applyPan 进行中的处理一致）。
-                // ⌘+右键拖拽调宽是逐事件写宽度，条带停在右端时每个事件都会触发一次夹取：
-                // 带动画的话每帧重设 0.15s easeOut，视口拖着尾巴、右缘漏空。
+                // Column width / viewport changed (a different "visible columns per screen",
+                // Cmd+Ctrl+= reset, drag-resize, window resize): only pull the offset back into
+                // legal range, never chase focus - chasing would hijack a manual pan.
+                // Same column count = a pure width change: clamp per event with **no animation**,
+                // tracking the hand (the same treatment applyPan gives an in-flight gesture).
+                // Cmd+right-drag resizing writes a width per event, and with the strip parked at
+                // the right end every one of those events triggers a clamp: animated, each frame
+                // restarts a 0.15s easeOut, so the viewport drags a tail behind it and the right
+                // edge opens up empty.
                 clampOffset(viewport: geo.size.width, animated: old.count != new.count)
             }
             .onChange(of: workspaceIndex) {
-                knownPaneIDs = Set(strip.paneList.map(\.id))   // 换工作区 = 换一整条带，重新认身份
+                // A new workspace is a whole new strip: relearn the identities.
+                knownPaneIDs = Set(strip.paneList.map(\.id))
                 offset = 0
                 scrollToFocus(id: currentFocusedID(), viewport: geo.size.width)
             }
@@ -84,17 +104,23 @@ struct ScrollingStripView: View {
         .clipped()
     }
 
-    /// 结构变化后要揭示的列：**新插进来的 pane 优先**，没有才退回当前焦点。
+    /// Which column to reveal after a structural change: **a newly inserted pane wins**, and only
+    /// when there is none does it fall back to current focus.
     ///
-    /// 焦点是异步落地的（PaneView.moveFocus 要等新 pane 挂进窗口；浏览器 pane 的 first responder
-    /// 是内部 WKWebView，还要再慢一拍），本回调触发时焦点通常还在原 pane 上——只按焦点对齐会把
-    /// 视口停在旧列，新列就卡在视口右缘外（用户可见为「新建浏览器宽度不对」：焦点边框已经是新
-    /// 浏览器的，内容却被窗口右缘裁掉）。按身份揭示与「焦点何时落地、会不会被悬停抢走」无关。
+    /// Focus lands asynchronously (PaneView.moveFocus waits for the new pane to be mounted into the
+    /// window; a browser pane's first responder is the inner WKWebView, which is another beat
+    /// slower behind that), so when this callback runs focus is usually still on the old pane -
+    /// aligning by focus alone parks the viewport on the old column and strands the new one past
+    /// the right edge of the viewport. What the user sees is "the new browser has the wrong width":
+    /// the focus border already belongs to the new browser, but its content is clipped off by the
+    /// window's right edge. Revealing by identity is independent of when focus lands, and of
+    /// whether hover steals it first.
     private func revealTarget() -> UUID? {
         let ids = strip.paneList.map(\.id)
         defer { knownPaneIDs = Set(ids) }
-        // 整条带被换掉（切工作区、dwindle→scrolling）不算「插进来一列」：
-        // 必须有旧 pane 留存，才把这轮新出现的 pane 当作插入目标
+        // The whole strip being replaced (switching workspaces, dwindle→scrolling) is not "a
+        // column was inserted": at least one old pane has to survive before the panes that are new
+        // this round count as an insertion target.
         guard let known = knownPaneIDs, ids.contains(where: known.contains) else {
             return currentFocusedID()
         }
@@ -102,10 +128,13 @@ struct ScrollingStripView: View {
     }
 
     private func currentFocusedID() -> UUID? {
-        // 真相优先：窗口 first responder 是哪个 pane（或其后代——浏览器 pane 的 FR 是内部 WKWebView）。
-        // focused 标志在 SwiftUI 重挂期间可能同时残留在两个 pane 上（见 PaneView.viewWillMove(toWindow:)），
-        // 退化时取**末位**命中，与 FocusedStripPaneKey.reduce（末位胜出）一致——
-        // 两条滚动路径必须挑同一个 pane，否则一条滚到旧列、另一条不再触发，视口就停在错的位置。
+        // Ground truth first: which pane holds the window's first responder (or one of its
+        // descendants - a browser pane's FR is the inner WKWebView).
+        // During a SwiftUI remount the `focused` flag can linger on two panes at once (see
+        // PaneView.viewWillMove(toWindow:)), so the fallback takes the **last** match, matching
+        // FocusedStripPaneKey.reduce (last one wins). Both scroll paths have to pick the same pane:
+        // otherwise one scrolls to the old column while the other stops firing, and the viewport
+        // sits at the wrong place.
         let panes = strip.paneList
         if let window = panes.compactMap(\.window).first,
            let holder = panes.first(where: { $0.holdsFirstResponder(of: window) }) {
@@ -118,7 +147,8 @@ struct ScrollingStripView: View {
         let target: CGFloat
         let total = strip.totalWidth(viewport: viewport, gap: columnGap)
         if total <= viewport {
-            // 不溢出：无条件居中（单列=全宽 offset 0；两列=左右等隙），与焦点无关
+            // Not overflowing: center unconditionally, regardless of focus (one column = full
+            // width, offset 0; two columns = equal gaps left and right).
             target = (total - viewport) / 2
         } else if let id, let pane = strip.paneList.first(where: { $0.id == id }) {
             target = strip.targetOffset(for: pane, current: offset, viewport: viewport, gap: columnGap,
@@ -130,10 +160,14 @@ struct ScrollingStripView: View {
         withAnimation(.easeOut(duration: 0.15)) { offset = target }
     }
 
-    /// 把偏移拉回合法范围：不溢出时居中，溢出时夹在 [0, 总宽 − 视口]。
-    /// 列宽变了却不重排时，视口会停在内容之外（列变窄后左侧一片空、右侧的列被裁），
-    /// 而 layoutSignature 刻意不含 widthFactor（见 ScrollingStrip），只能由列宽本身触发。
-    /// `animated` 只在列数变化（插/删列）时为真——纯宽度变化是逐事件手势，动画会拖尾巴。
+    /// Pull the offset back into legal range: centered when the strip does not overflow, clamped to
+    /// [0, total width − viewport] when it does.
+    /// When column widths change without a reflow the viewport ends up outside the content
+    /// (narrower columns leave the left side empty and clip the column on the right), and
+    /// layoutSignature deliberately excludes widthFactor (see ScrollingStrip), so only the widths
+    /// themselves can trigger this.
+    /// `animated` is true only when the column count changes (insert/remove); a pure width change
+    /// is a per-event gesture, and animating it drags a tail behind the hand.
     private func clampOffset(viewport: CGFloat, animated: Bool) {
         guard viewport > 0 else { return }
         let total = strip.totalWidth(viewport: viewport, gap: columnGap)
@@ -143,15 +177,17 @@ struct ScrollingStripView: View {
         guard abs(target - offset) > 0.5 else { return }
         guard animated else {
             var transaction = Transaction()
-            transaction.disablesAnimations = true   // 手势进行中：跟手，不要动画尾巴
+            transaction.disablesAnimations = true   // gesture in flight: track the hand, no tail
             withTransaction(transaction) { offset = target }
             return
         }
         withAnimation(.easeOut(duration: 0.15)) { offset = target }
     }
 
-    /// 双指横滑平移（附带项）：滑动跟手，结束吸附最近列左缘。
-    /// 内容不溢出（单列/双列居中）时无可平移量，直接忽略。
+    /// Two-finger horizontal pan (a side feature): the strip tracks the fingers while swiping and
+    /// snaps to the nearest column's left edge when the gesture ends.
+    /// With content that does not overflow (one column, or two centered ones) there is nothing to
+    /// pan, so this is ignored outright.
     private func applyPan(viewport: CGFloat) {
         guard let pan, pan.serial != lastPanSerial else { return }
         lastPanSerial = pan.serial
@@ -159,7 +195,8 @@ struct ScrollingStripView: View {
         guard total > viewport else { return }
         let maxOffset = total - viewport
         if pan.ended {
-            // 吸附到最近的「列左缘 − 露边」（与焦点滚动的对齐规则一致）
+            // Snap to the nearest "column left edge − peek" (the same alignment rule focus
+            // scrolling uses).
             let widths = strip.columnWidths(viewport: viewport, gap: columnGap)
             let peek = ScrollingStrip.peekPoints(viewport: viewport, paneGap: theme.paneGap)
             var x: CGFloat = 0
@@ -176,7 +213,7 @@ struct ScrollingStripView: View {
     }
 }
 
-/// 焦点 pane id 上报（驱动视口滚动跟随，含悬停焦点）
+/// Reports the focused pane id upward, driving the viewport's scroll-follow (hover focus included).
 private struct FocusedStripPaneKey: PreferenceKey {
     static var defaultValue: UUID?
     static func reduce(value: inout UUID?, nextValue: () -> UUID?) {
@@ -184,16 +221,18 @@ private struct FocusedStripPaneKey: PreferenceKey {
     }
 }
 
-/// scrolling 布局的 pane 单元：SurfaceWrapper + 视觉 + 拖放目标 + ⌘拖拽源
-/// （行为对齐 dwindle 的 TerminalSplitLeaf，见 porting-notes）
+/// A pane cell in the scrolling layout: SurfaceWrapper + chrome + drop target + Cmd+drag source.
+/// Its behavior matches dwindle's TerminalSplitLeaf (see porting-notes).
 struct ScrollingPaneCell: View {
     @ObservedObject var surfaceView: PaneView
     let onDrop: (PaneView, PaneView, TerminalSplitDropZone) -> Void
-    /// 浮动层渲染（RootView）：透传给 PaneChrome 关掉非激活磨砂
+    /// Rendering in the floating layer (RootView): passed through to PaneChrome to turn off the
+    /// inactive frosting.
     var floating: Bool = false
-    /// 关闭中 → 渐隐并停止响应鼠标（悬停不再夺焦点）
+    /// Closing → fade out and stop taking the mouse (hover no longer steals focus).
     var closing: Bool = false
-    /// 渐隐由状态驱动（一出生就 closing 的单元也能淡出），见 TerminalSplitLeaf
+    /// The fade is state-driven so that a cell born already closing still fades out; see
+    /// TerminalSplitLeaf.
     @State private var faded = false
 
     @ObservedObject private var modifierState = ModifierState.shared
@@ -203,10 +242,11 @@ struct ScrollingPaneCell: View {
 
     var body: some View {
         GeometryReader { geo in
-            PaneContentView(pane: surfaceView, isSplit: true)   // 按 pane 种类分发内容
+            PaneContentView(pane: surfaceView, isSplit: true)   // dispatches content by pane kind
                 .background {
-                    // 浮动 pane 不是拖放目标（塞回平铺走 Cmd+T）：
-                    // 不注册 delegate，避免亮出无效的落区色块
+                    // A floating pane is not a drop target (getting it back into the tiling is
+                    // Cmd+T): registering no delegate avoids lighting up a drop zone that would
+                    // do nothing.
                     if !floating {
                         Color.clear.onDrop(
                             of: [.ghosttySurfaceId],
@@ -223,8 +263,10 @@ struct ScrollingPaneCell: View {
                     }
                 }
                 .overlay {
-                    // 拖拽进行中也保持挂载：先松 ⌘ 再松左键时不能把活着的 NSDraggingSource 拆掉，
-                    // 否则 draggingSession(endedAt:) 落不到在窗口里的视图，PaneDragState 收不了尾
+                    // Stay mounted while a drag is in flight: releasing Cmd before the left button
+                    // must not tear down a live NSDraggingSource, or draggingSession(endedAt:)
+                    // never reaches a view that is still in the window and PaneDragState never gets
+                    // to clean up after itself.
                     if modifierState.commandHeld || dragSourceDragging {
                         Ghostty.SurfaceDragSource(
                             surfaceView: surfaceView,
@@ -236,7 +278,8 @@ struct ScrollingPaneCell: View {
                 .opacity(faded ? 0 : 1)
                 .allowsHitTesting(!closing)
                 .onChange(of: closing, initial: true) { _, closing in
-                    if !closing { faded = false; return }   // 身份复用兜底：不在关闭中就必须可见
+                    // Identities get reused: a cell that is not closing has to be visible.
+                    if !closing { faded = false; return }
                     guard !faded else { return }
                     withAnimation(.easeOut(duration: 0.28)) { faded = true }
                 }
@@ -246,15 +289,18 @@ struct ScrollingPaneCell: View {
     }
 }
 
-/// 拖放目标（镜像 dwindle 的 SplitDropDelegate 行为；zone 计算复用 TerminalSplitDropZone）
+/// Drop target, mirroring dwindle's SplitDropDelegate; the zone calculation reuses
+/// TerminalSplitDropZone.
 private struct StripDropDelegate: DropDelegate {
     @Binding var zone: TerminalSplitDropZone?
     let viewSize: CGSize
     let destination: PaneView
     let onDrop: (PaneView, PaneView, TerminalSplitDropZone) -> Void
 
-    /// 跨窗口拖放明确拒绝：一个 pane 只能挂在一个窗口里（PaneHostView 返回同一个 NSView 实例），
-    /// 源与目标不同窗口时不认领——落区不亮、光标带禁止标记，不做静默失败
+    /// Cross-window drops are refused explicitly: a pane can only be mounted in one window
+    /// (PaneHostView hands back the same NSView instance), so when source and destination are in
+    /// different windows this does not claim the drop - the zone stays dark and the cursor carries
+    /// the "not allowed" badge, rather than failing silently.
     func validateDrop(info: DropInfo) -> Bool {
         guard PaneDragState.shared.allowsDrop(on: destination) else { return false }
         return info.hasItemsConforming(to: [.ghosttySurfaceId])

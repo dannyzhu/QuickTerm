@@ -1,20 +1,25 @@
 import Foundation
 
-/// Phase 3 的**公开** schema：`quickterm.workspace/1`（+ `quickterm.screen/1` /
-/// `quickterm.session/1` 两个信封，它们原样复用工作区那一份词汇）。
+/// The **public** schema for Phase 3: `quickterm.workspace/1` (plus the two envelopes
+/// `quickterm.screen/1` / `quickterm.session/1`, which reuse the workspace vocabulary verbatim).
 ///
-/// **刻意不是内部存档 `PersistedState` v5**，这是本阶段最该守住的一条界线：
-/// - v5 已经翻过 v2→v3→v4→v5，解码器**拒读比自己新的版本**——把它当公开格式发出去，
-///   等于让用户提交进 dotfiles 的每一份工作区文件都在下一次布局重构时作废；
-/// - v5 的终端叶子只有 `pwd` / `title`：**没有** command、没有 env、没有 hold-on-exit，
-///   而这三样正是"让 agent 一次性组合出一个工作区"必须能写的字段；
-/// - 反过来，公开 schema 也不该背上 v5 的信封字段（窗口 frame 的坐标系、legacy 列宽归一…）。
+/// **Deliberately not the internal `PersistedState` v5 archive**, and this is the line that matters
+/// most to hold in this phase:
+/// - v5 has already rolled v2->v3->v4->v5, and its decoder **refuses to read a version newer than
+///   itself** — shipping it as a public format would mean every workspace file a user commits to
+///   their dotfiles expires at the next layout refactor;
+/// - a v5 terminal leaf only has `pwd` / `title`: **no** command, no env, no hold-on-exit, and
+///   those three are exactly the fields you must be able to write for an agent to compose a
+///   whole workspace in one shot;
+/// - conversely, the public schema should not carry v5's envelope fields (the window frame's
+///   coordinate system, legacy column-width normalization, and so on).
 ///
-/// 两者之间只有一处联系：`Sources/Control/Spec/SpecCodec.swift` 里的投影对
-/// （活模型 → spec 的 dump，spec → 活模型的 plan）。于是两个格式**各自独立演进**。
+/// There is exactly one link between the two: the projection pair in
+/// `Sources/Control/Spec/SpecCodec.swift` (live model -> spec for dump, spec -> live model for
+/// plan). So the two formats **evolve independently**.
 ///
-/// 本文件在 `Sources/Control/Wire`：同时编进 app 与 `quickterm` 工具 target，
-/// 因此只能 `import Foundation`。
+/// This file lives in `Sources/Control/Wire`: compiled into both the app and the `quickterm` tool
+/// target, so it may only `import Foundation`.
 enum SpecSchema {
     static let workspace = "quickterm.workspace/1"
     static let screen = "quickterm.screen/1"
@@ -22,89 +27,110 @@ enum SpecSchema {
     static let all = [workspace, screen, session]
 }
 
-/// spec 里所有数值字段的取值范围。**必须盖住引擎真的能持有的值**——
-/// `ControlSpecTests.testSpecLimitsMatchTheEngine` 逐条钉死（Wire 只能 import Foundation，
-/// 引用不到 `ScrollingStrip`，所以只能各写一份 + 用例锁死）。
-/// 窄了的后果是 dump 出来的文件自己 validate 不过，宽了的后果是 apply 落下去一个引擎摆不出来的值
+/// The permitted ranges of every numeric field in a spec. **They must cover what the engine can
+/// actually hold** — `ControlSpecTests.testSpecLimitsMatchTheEngine` pins them one by one (Wire may
+/// only import Foundation and cannot reference `ScrollingStrip`, so each side keeps its own copy
+/// and the tests lock them together).
+/// Too narrow and a dumped file fails its own validate; too wide and apply pushes down a value the
+/// engine cannot lay out.
 enum SpecLimits {
-    /// 列宽因子。**比 `pane set --width`（0.25–0.90，那是给手动调宽定的）两头都宽**：
-    /// 「每屏可见 N 列」会把整条 strip 等分成 `ScrollingStrip.factor(forVisibleColumns:)`
-    /// = (1−2×peek)/N —— N=1 是 0.97、N=6 是 0.1617，都在 0.25–0.90 之外。
-    /// 公开 schema 比引擎能持有的窄一点点，后果就是 `spec dump` 出来的文件被 `spec validate`
-    /// 当场拒掉（QuickTerm 读不了 QuickTerm 刚写的东西）
+    /// Column width factor. **Wider at both ends than `pane set --width` (0.25-0.90, which is the
+    /// range for dragging a column by hand)**: "N columns visible per screen" divides the whole
+    /// strip into `ScrollingStrip.factor(forVisibleColumns:)` = (1-2×peek)/N — N=1 gives 0.97 and
+    /// N=6 gives 0.1617, both outside 0.25-0.90.
+    /// Make the public schema even slightly narrower than what the engine can hold and a file from
+    /// `spec dump` gets rejected on the spot by `spec validate` (QuickTerm cannot read what
+    /// QuickTerm just wrote).
     static let widthRange = 0.15...0.98
-    /// 分裂比例。同样**比 `pane set --ratio`（0.1–0.9）宽**：鼠标拖分隔条只夹到 10pt，
-    /// 一块 1600pt 宽的 pane 拖到底就是 0.006，而 dump 必须如实写出那个数——
-    /// 静默夹紧的话，这份 dump 描述的就不是这个工作区，apply 回去分隔条还会自己跳一下
+    /// Split ratio. Likewise **wider than `pane set --ratio` (0.1-0.9)**: dragging a divider with
+    /// the mouse only clamps at 10pt, so a 1600pt-wide pane dragged all the way over lands at
+    /// 0.006, and dump has to write that number down honestly — clamp it silently and the dump no
+    /// longer describes this workspace, and applying it back makes the divider jump on its own.
     static let ratioRange = 0.001...0.999
     /// == `screen set --visible-columns`
     static let visibleColumns = 1...6
     /// == `ControlRateLimiter.maxPanesPerWorkspace`
     static let maxPanes = 32
-    /// 一份 spec 的字节上限（NDJSON 单行上限是 1 MiB，转义之后还要留出余量）
+    /// The byte ceiling on one spec (a single NDJSON line caps at 1 MiB, and escaping needs
+    /// headroom on top of that).
     static let maxBytes = 256 * 1024
-    /// == `ControlCommandRunner.maxTitleLength`（工作区名字；Wire 够不着那边，用例锁死两处相等）
+    /// == `ControlCommandRunner.maxTitleLength` (the workspace name; Wire cannot reach that side,
+    /// so the tests lock the two values together).
     static let maxTitleCharacters = 200
 }
 
-/// spec 里的一个 pane。**每个字段都可省**，省掉时的默认值写在各自的注释里——
-/// 于是一个模型可以只写 `{"panes":[{}]}` 就得到一个正常的终端 pane
+/// One pane inside a spec. **Every field may be omitted**, and each one's default when omitted is
+/// in its own comment — so a model can write nothing but `{"panes":[{}]}` and get a working
+/// terminal pane.
 struct PaneSpec: Codable, Equatable {
-    /// `terminal`（默认）/ `browser` / `file-manager`
+    /// `terminal` (the default) / `browser` / `file-manager`.
     var kind: String?
-    /// 起始目录（支持 `~`）。**默认继承锚点 pane 的目录**（见 `SpecApplier.anchorDirectory`）
+    /// The starting directory (`~` is supported). **Defaults to inheriting the anchor pane's
+    /// directory** (see `SpecApplier.anchorDirectory`).
     var cwd: String?
-    /// 要跑的命令。**只进不出**：活着的 surface 不记得自己是被什么命令拉起来的
-    /// （v5 存档里也没有这个字段），所以 `spec dump` 永远不会回吐 `cmd`
+    /// The command to run. **Write-only**: a live surface does not remember what command started it
+    /// (the v5 archive has no such field either), so `spec dump` never gives `cmd` back.
     var cmd: String?
-    /// 命令退出后**不**关闭 pane（默认关闭）。只对 `cmd` 有意义
+    /// Keep the pane open after the command exits (it closes by default). Only meaningful with
+    /// `cmd`.
     var hold: Bool?
-    /// 额外环境变量。同样只进不出
+    /// Extra environment variables. Write-only as well.
     var env: [String: String]?
-    /// 浏览器 pane 打开的网址（= 活动标签）
+    /// The URL a browser pane opens (= the active tab).
     var url: String?
-    /// 浏览器 pane 的全部标签（顺序即标签顺序）；`url` 决定哪一个是活动标签
+    /// All the tabs of a browser pane (array order = tab order); `url` decides which one is
+    /// active.
     var tabs: [String]?
-    /// `dump --include-ids` 才有：pane 的 UUID。`apply --reuse` 用它做最强匹配，其余模式忽略
+    /// Only present with `dump --include-ids`: the pane's UUID. `apply --reuse` uses it as the
+    /// strongest match; every other mode ignores it.
     var id: String?
-    /// `dump --include-ids` 才有：短句柄（只在本次运行期间稳定）
+    /// Only present with `dump --include-ids`: the short handle (stable only for this run).
     var handle: String?
-    /// `dump --include-ids` 才有：当下的标题（易变，仅供人读；apply 一律忽略）
+    /// Only present with `dump --include-ids`: the current title (volatile, for humans to read;
+    /// apply always ignores it).
     var title: String?
-    /// 这个浏览器 pane 的 url / title 因为调用方没有 token 而被打码（apply 会把它当作"没写 url"）
+    /// This browser pane's url / title were redacted because the caller had no token (apply treats
+    /// that as "no url was written").
     var redacted: Bool?
 }
 
-/// 位置引用：scrolling 用 `{column,row}`，dwindle 用 `{path}`，浮动层用 `{floating}`。
-/// `focus` 与 `zoom` 共用它——两者指的都是"布局里的某一格"，而不是某个 pane 的身份
-/// （身份是 apply 时才产生的，spec 本身必须能在 pane 还不存在时写出来）
+/// A positional reference: scrolling uses `{column,row}`, dwindle uses `{path}`, the floating layer
+/// uses `{floating}`.
+/// `focus` and `zoom` share it — both name **a slot in the layout**, not the identity of a
+/// particular pane (identity only comes into existence at apply time, and a spec has to be writable
+/// while the panes do not exist yet).
 struct PaneRef: Codable, Equatable {
     var column: Int?
     var row: Int?
-    /// dwindle 树路径：`a` = 左 / 上，`b` = 右 / 下，点号连接，根是空串
+    /// The dwindle tree path: `a` = left / top, `b` = right / bottom, joined with dots; the root is
+    /// the empty string.
     var path: String?
-    /// 浮动层里的第几个（0 起）
+    /// Which entry in the floating layer (0-based).
     var floating: Int?
 }
 
 struct ColumnSpec: Codable, Equatable {
-    /// 列宽因子（0.15–0.98）。默认 = 屏幕当前的"每屏可见列数"折算出来的列宽
+    /// Column width factor (0.15-0.98). Defaults to the width implied by the screen's current
+    /// "columns visible per screen".
     var width: Double?
-    /// 列内自上而下的 pane 栈。默认 `[{}]`（一个终端）
+    /// The pane stack inside the column, top to bottom. Defaults to `[{}]` (one terminal).
     var panes: [PaneSpec]?
 }
 
-/// dwindle 的树节点：要么是一片叶子（`pane`），要么是一次分裂（`a` / `b`）。
-/// 空对象 `{}` = 一片默认叶子（终端）——两行 spec 也能写出一棵树
+/// A dwindle tree node: either a leaf (`pane`) or a split (`a` / `b`).
+/// The empty object `{}` is a default leaf (a terminal) — two lines of spec are enough to write a
+/// whole tree.
 indirect enum NodeSpec: Equatable {
     case leaf(PaneSpec)
     case split(Split)
 
     struct Split: Equatable {
-        /// `horizontal` = a 左 b 右（默认）；`vertical` = a 上 b 下。
-        /// 与内部 `SplitTree.Direction` 同名同义，绝不各起一套词
+        /// `horizontal` = a on the left, b on the right (the default); `vertical` = a on top, b
+        /// below.
+        /// Same names and same meanings as the internal `SplitTree.Direction` — never a second
+        /// vocabulary for the same thing.
         var direction: String?
-        /// 分裂比例（0.001–0.999；手打的话 0.1–0.9 就够用了），默认 0.5
+        /// The split ratio (0.001-0.999; typing one by hand, 0.1-0.9 is plenty), default 0.5.
         var ratio: Double?
         var a: NodeSpec
         var b: NodeSpec
@@ -148,8 +174,9 @@ extension NodeSpec: Codable {
     }
 }
 
-/// 浮动层的一项：一个 pane + 可选的几何（内容区比例 `[x,y,w,h]`）。
-/// 不写几何 = 应用自己那份"居中、列宽 ×0.75、高 45%"的默认值
+/// One entry in the floating layer: a pane plus optional geometry (as fractions of the content
+/// area, `[x,y,w,h]`).
+/// Omitting the geometry means the app's own default: centered, 0.75 × the column width, 45% tall.
 struct FloatingSpec: Codable, Equatable {
     var rect: [Double]?
     var pane: PaneSpec?
@@ -158,26 +185,28 @@ struct FloatingSpec: Codable, Equatable {
 /// `quickterm.workspace/1`
 struct WorkspaceSpec: Codable, Equatable {
     var schema: String?
-    /// 1 起的工作区序号。只在 `quickterm.screen/1` 的 `workspaces[]` 里有意义
-    /// （不写就按数组下标落位）
+    /// The 1-based workspace index. Only meaningful inside the `workspaces[]` of a
+    /// `quickterm.screen/1` (omitted, the array position decides where it lands).
     var index: Int?
-    /// `scrolling`（默认）/ `dwindle`
+    /// `scrolling` (the default) / `dwindle`.
     var layout: String?
-    /// 这个槽位的名字（不写 = **不动它**，与 `visibleColumns` 同一条规矩；
-    /// 写空串 = 清掉）。名字属于槽位，不属于里面那堆 pane——所以 `apply --replace`
-    /// 换掉全部 pane 时它照样留着，只有这份 spec 明说了才改
+    /// The name of this slot (omitted = **leave it alone**, the same rule as `visibleColumns`; an
+    /// empty string clears it). The name belongs to the slot, not to the panes inside it — so
+    /// `apply --replace` swapping out every pane leaves it standing, and only this spec saying so
+    /// changes it.
     var title: String?
-    /// scrolling 每屏可见列数（1–6）。**作用于整块屏幕**，不写就不动它
+    /// Columns visible per screen in scrolling (1-6). **Applies to the whole screen**; omitted, it
+    /// is left alone.
     var visibleColumns: Int?
-    /// scrolling：列 × 列内纵栈
+    /// scrolling: columns, each with its own vertical stack.
     var columns: [ColumnSpec]?
-    /// dwindle：分裂树
+    /// dwindle: the split tree.
     var tree: NodeSpec?
-    /// 哪一格被 zoom（不写 / null = 没有）
+    /// Which slot is zoomed (omitted / null = none).
     var zoom: PaneRef?
-    /// 哪一格拿焦点（不写 = 第一个 pane）
+    /// Which slot takes focus (omitted = the first pane).
     var focus: PaneRef?
-    /// 浮动层（不写 = 空）
+    /// The floating layer (omitted = empty).
     var floating: [FloatingSpec]?
 
     init(schema: String? = nil, index: Int? = nil, layout: String? = nil, title: String? = nil,
@@ -195,10 +224,10 @@ struct WorkspaceSpec: Codable, Equatable {
         self.floating = floating
     }
 
-    /// 展开默认值之后的布局名
+    /// The layout name with defaults filled in.
     var layoutName: String { layout ?? (tree != nil ? "dwindle" : "scrolling") }
 
-    /// 这份 spec 一共要多少个 pane（平铺 + 浮动）
+    /// How many panes this spec asks for in total (tiled plus floating).
     var paneCount: Int {
         let tiled: Int
         switch layoutName {
@@ -214,18 +243,18 @@ struct DisplaySpec: Codable, Equatable {
     var name: String?
 }
 
-/// `quickterm.screen/1`：工作区那一份词汇的信封
+/// `quickterm.screen/1`: an envelope around the workspace vocabulary.
 struct ScreenSpec: Codable, Equatable {
     var schema: String?
-    /// 1 起的屏幕序号（dump 回显；apply 以 `-t` 为准）
+    /// The 1-based screen index (echoed by dump; apply goes by `-t`).
     var index: Int?
     var display: DisplaySpec?
-    /// `[x, y, w, h]`（全局坐标）
+    /// `[x, y, w, h]` (global coordinates).
     var frame: [Double]?
     var fullscreen: Bool?
     var joinAllSpaces: Bool?
     var visibleColumns: Int?
-    /// 1 起
+    /// 1-based.
     var activeWorkspace: Int?
     var workspaces: [WorkspaceSpec]?
 }
@@ -234,7 +263,7 @@ struct ScreenSpec: Codable, Equatable {
 struct SessionSpec: Codable, Equatable {
     var schema: String?
     var screens: [ScreenSpec]?
-    /// 1 起的 key 屏幕序号
+    /// The 1-based index of the key screen.
     var keyScreen: Int?
 }
 
@@ -242,7 +271,7 @@ enum SpecKind: String, Codable, CaseIterable {
     case workspace, screen, session
 }
 
-/// 一份 spec 文件解出来的东西（三种作用域同一套词汇）
+/// What one spec file parses into (all three scopes share one vocabulary).
 enum SpecDocument: Equatable {
     case workspace(WorkspaceSpec)
     case screen(ScreenSpec)
@@ -256,7 +285,8 @@ enum SpecDocument: Equatable {
         }
     }
 
-    /// 里面一共描述了多少个 pane（限流与 `--dry-run` 的摘要都要用）
+    /// How many panes it describes in total (both rate limiting and the `--dry-run` summary need
+    /// this).
     var paneCount: Int {
         switch self {
         case .workspace(let w): w.paneCount
@@ -276,14 +306,14 @@ enum SpecDocument: Equatable {
         return try ControlJSON.decoder.decode(JSONValue.self, from: data)
     }
 
-    /// 稳定的字节形式（`dump → apply → dump` 的不动点用例比的就是它）
+    /// The stable byte form (this is what the `dump -> apply -> dump` fixed-point test compares).
     func canonicalJSONString() throws -> String {
         String(decoding: try ControlJSON.encoder.encode(json()), as: UTF8.self)
     }
 }
 
-/// 校验出来的一条问题：`path` 与 spec 里的写法同形（`columns[1].panes[0].cwd`），
-/// 这样模型读到的位置就是它要去改的那个键
+/// One problem found by validation: `path` has the same shape as the spec itself
+/// (`columns[1].panes[0].cwd`), so the location a model reads is the key it has to go and edit.
 struct SpecIssue: Codable, Equatable {
     var path: String
     var message: String
@@ -291,9 +321,10 @@ struct SpecIssue: Codable, Equatable {
     var text: String { path.isEmpty ? message : "\(path): \(message)" }
 }
 
-/// 解析 + 校验。**先在原始 JSON 上走一遍**（认得的键、类型、取值范围），再做类型化解码——
-/// 只靠 `JSONDecoder` 的话，写错一个键名（`colums`）会被静默当成"没写"，
-/// 而 agent 拿到的是一个"成功但什么都没发生"的结果，那是最难查的一类错
+/// Parsing plus validation. **The raw JSON is walked first** (known keys, types, value ranges) and
+/// only then decoded into types — relying on `JSONDecoder` alone means a misspelled key (`colums`)
+/// is silently treated as "not written", and what the agent gets back is a result that succeeded
+/// while nothing happened, which is the hardest class of bug to track down.
 enum SpecParser {
     static func parse(_ text: String) throws -> SpecDocument {
         guard text.utf8.count <= SpecLimits.maxBytes else {
@@ -310,8 +341,10 @@ enum SpecParser {
             throw ControlErrorBody(.badRequest, "spec is not valid JSON",
                                    hint: "quickterm spec validate points at every problem one by one.")
         }
-        // 信封形态也认：`quickterm spec dump --json` 的输出被整份存进文件时（{v,ok,data:{spec:…}}），
-        // 直接喂回来也能用——否则用户要先 jq 一遍才能 apply，而那正是最容易出错的一步
+        // The envelope form is accepted too: when the output of `quickterm spec dump --json` is
+        // saved to a file whole ({v,ok,data:{spec:...}}), feeding it straight back works —
+        // otherwise the user has to jq it first before they can apply, and that is exactly the step
+        // people get wrong
         let body = value["data"]?["spec"] ?? value
         guard let object = body.objectValue else {
             throw ControlErrorBody(.badRequest, "The outermost value of a spec must be a JSON object")
@@ -337,7 +370,8 @@ enum SpecParser {
         }
     }
 
-    /// `schema` 说了算；没写就按形状认（有 `screens` = 会话，有 `workspaces` = 屏幕，否则工作区）
+    /// `schema` wins when present; without it we go by shape (`screens` = a session, `workspaces` =
+    /// a screen, otherwise a workspace).
     static func kind(of object: [String: JSONValue]) throws -> SpecKind {
         if let schema = object["schema"]?.stringValue {
             switch schema {
@@ -363,8 +397,9 @@ enum SpecParser {
     }
 }
 
-/// 结构校验（纯函数，不碰任何活的东西）。
-/// 规则有意写死："认得的键"是白名单——写错键名一律报错，绝不静默忽略
+/// Structural validation (pure functions; nothing live is touched).
+/// The rules are hard-coded on purpose: the set of known keys is an allowlist — a misspelled key is
+/// always an error, never silently ignored.
 enum SpecValidator {
     static let workspaceKeys: Set<String> = ["schema", "index", "layout", "title", "visibleColumns",
                                              "columns", "tree", "zoom", "focus", "floating"]
@@ -384,7 +419,7 @@ enum SpecValidator {
     static let layouts = ["scrolling", "dwindle"]
     static let directions = ["horizontal", "vertical"]
 
-    // MARK: 三种作用域
+    // MARK: The three scopes
 
     static func session(_ object: [String: JSONValue], at path: String, into issues: inout [SpecIssue]) {
         unknownKeys(object, allowed: sessionKeys, at: path, into: &issues)
@@ -467,8 +502,10 @@ enum SpecValidator {
             intInRange(columns, SpecLimits.visibleColumns, at: join(path, "visibleColumns"), into: &issues)
         }
         if let title = object["title"], title != .null {
-            // 校验与 `workspace set --title` 逐条对齐：长度、控制字符。
-            // spec 这一侧宽了的后果是"validate 过了、apply 却被命令层拒掉"
+            // Validation lines up item for item with `workspace set --title`: length, control
+            // characters.
+            // If the spec side were the laxer of the two, the result would be "validate passed, but
+            // apply was rejected by the command layer"
             guard let text = title.stringValue else {
                 issues.append(.init(path: join(path, "title"), message: "must be a string (an empty string clears the name)"))
                 return
@@ -556,7 +593,7 @@ enum SpecValidator {
         }
     }
 
-    /// 返回这一列里的 pane 数
+    /// Returns the number of panes in this column.
     private static func column(_ object: [String: JSONValue], at path: String,
                                into issues: inout [SpecIssue]) -> Int {
         unknownKeys(object, allowed: columnKeys, at: path, into: &issues)
@@ -582,7 +619,7 @@ enum SpecValidator {
         return list.count
     }
 
-    /// 返回这棵子树的叶子数
+    /// Returns the number of leaves in this subtree.
     private static func node(_ value: JSONValue, at path: String, into issues: inout [SpecIssue]) -> Int {
         guard let object = value.objectValue else {
             issues.append(.init(path: path, message: "a tree node must be an object: {pane:…} or {split,ratio,a,b}"))
@@ -707,7 +744,7 @@ enum SpecValidator {
         }
     }
 
-    // MARK: 零件
+    // MARK: Small pieces
 
     static func join(_ path: String, _ key: String) -> String {
         path.isEmpty ? key : "\(path).\(key)"
@@ -723,7 +760,7 @@ enum SpecValidator {
 
     static func schema(_ object: [String: JSONValue], expected: String, at path: String,
                        into issues: inout [SpecIssue]) {
-        guard let schema = object["schema"] else { return }   // 不写就按形状认
+        guard let schema = object["schema"] else { return }   // omitted: go by shape instead
         guard schema.stringValue == expected else {
             issues.append(.init(path: join(path, "schema"), message: "the schema at this level should be \(expected)"))
             return
@@ -770,14 +807,16 @@ enum SpecValidator {
             return
         }
         guard range.contains(number) else {
-            // **绝不静默夹紧**：夹紧之后 agent 读回来的值和它写下去的对不上，却没有任何提示
+            // **Never clamp silently**: after a clamp the value the agent reads back does not match
+            // what it wrote, with nothing anywhere to say so
             issues.append(.init(path: path,
                                 message: "must be in \(range.lowerBound)–\(range.upperBound), got \(number)"))
             return
         }
     }
 
-    /// 只认真正的 JSON 数字（`"3"` 这种字符串不算——静默接受它等于鼓励写出下一版会失败的 spec）
+    /// Only a real JSON number counts (a string like `"3"` does not — accepting it silently
+    /// encourages writing specs that will fail in the next version).
     static func strictInt(_ value: JSONValue) -> Int? {
         if case .int(let v) = value { return v }
         if case .double(let v) = value, v == v.rounded() { return Int(v) }
@@ -796,7 +835,9 @@ enum SpecValidator {
         text.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F }
     }
 
-    /// 路径本身合不合法（存不存在留给 apply 前的预检：validate 要能离线校验一份写给别的机器的 spec）
+    /// Whether the path itself is well formed (whether it exists is left to the pre-flight check
+    /// before apply: validate has to be able to check, offline, a spec written for another
+    /// machine).
     static func pathProblem(_ raw: String) -> String? {
         if raw.isEmpty { return "must not be an empty string" }
         if hasControlCharacters(raw) { return "must not contain control characters (NUL included)" }
@@ -806,18 +847,19 @@ enum SpecValidator {
         return nil
     }
 
-    /// 展开 `~` 并归一化 `..`（`/a/b/../c` → `/a/c`）。**不是安全边界**——
-    /// 调用方本来就能直接写任何绝对路径；归一化只是让 dump 出来的路径可比、可读
+    /// Expands `~` and normalizes `..` (`/a/b/../c` -> `/a/c`). **Not a security boundary** — the
+    /// caller could always write any absolute path directly; normalizing just makes dumped paths
+    /// comparable and readable.
     static func normalizedPath(_ raw: String) -> String {
         let expanded = (raw as NSString).expandingTildeInPath
         return URL(fileURLWithPath: expanded).standardizedFileURL.path
     }
 }
 
-// MARK: - 命令负载
+// MARK: - Command payloads
 
-/// `spec dump` 的负载。`spec` 就是那份文件本身——CLI 在 JSON 模式下**只打印它**
-/// （`quickterm spec dump > w.json` 要能直接喂回 `spec apply -f w.json`）
+/// The payload for `spec dump`. `spec` is the document itself — in JSON mode the CLI **prints only
+/// that** (`quickterm spec dump > w.json` has to feed straight back into `spec apply -f w.json`).
 struct ControlSpecDumpPayload: Codable, Equatable {
     var scope: String
     var schema: String
@@ -825,28 +867,30 @@ struct ControlSpecDumpPayload: Codable, Equatable {
     var spec: JSONValue
 }
 
-/// `spec validate` 的负载
+/// The payload for `spec validate`.
 struct ControlSpecValidatePayload: Codable, Equatable {
     var valid: Bool
     var scope: String
     var schema: String
     var panes: Int
-    /// 校验通过但值得说一句的事（比如 dump 不会回吐 cmd）
+    /// Things worth mentioning even though validation passed (for example, that dump never gives
+    /// `cmd` back).
     var notes: [String]
 }
 
-/// `spec apply` 的报告（挂在统一变更信封的 `spec` 字段上）
+/// The report from `spec apply` (carried in the `spec` field of the shared mutation envelope).
 struct ControlSpecApplyReport: Codable, Equatable {
     var mode: String
     var scope: String
-    /// 新建出来的 pane 句柄
+    /// The handles of the panes that were created.
     var created: [String]
-    /// `--reuse` 留下来没动的 pane 句柄
+    /// The handles of the panes `--reuse` kept and left untouched.
     var reused: [String]
-    /// 被顶掉、走了真正关闭路径的 pane 句柄
+    /// The handles of the panes that were displaced and went through the real close path.
     var closed: [String]
-    /// **落刀之后**才失败：工作区已经被改了一半，如实说出来，绝不假装什么都没发生
+    /// The failure came **after the cut**: the workspace is already half changed. Say so honestly;
+    /// never pretend nothing happened.
     var partial: Bool?
-    /// 落地时被跳过的部分（比如会话里多出来的屏幕）
+    /// The parts skipped while applying (for example, extra screens in a session spec).
     var skipped: [String]?
 }

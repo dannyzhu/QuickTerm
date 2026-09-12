@@ -1,14 +1,16 @@
 import AppKit
 
-/// 把活着的注册表编码成 `quickterm.state/1`。
-/// **全部经 JSONEncoder**（`ControlStatePayload` 是 Codable）——绝不手拼 JSON：
-/// yabai 曾在一个版本里给 `query --windows` 拼出一个尾逗号，打断了所有下游 jq 管道。
+/// Encode the live registries as `quickterm.state/1`.
+/// **Everything goes through JSONEncoder** (`ControlStatePayload` is Codable) — never hand-build
+/// JSON: yabai once shipped a release whose `query --windows` emitted a trailing comma, and it
+/// broke every downstream jq pipeline.
 @MainActor
 struct ControlStateEncoder {
     let screens: ScreenRegistry
-    /// 请求带了有效的来源 token（决定浏览器 pane 的 URL / 标题是否打码）
+    /// The request carried a valid origin token (this decides whether a browser pane's URL /
+    /// title get redacted)
     let trusted: Bool
-    /// `[control] expose-browser`：token | always | never
+    /// `[control] expose-browser`: token | always | never
     let exposeBrowser: String
     let mode: String
 
@@ -18,9 +20,10 @@ struct ControlStateEncoder {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
     }
 
-    /// 浏览器 pane 的网址 / 标题是否可见。
-    /// 一条规则，正面回答"浏览器 pane 里装着用户已登录的会话"：
-    /// 没有 token 的调用方读不到——`quickterm state` 本身就是一个外泄面
+    /// Whether a browser pane's URL / title are visible at all.
+    /// One rule, answering head-on the fact that a browser pane holds the user's logged-in
+    /// sessions: a caller without the token does not get to read them — `quickterm state` is
+    /// itself an exfiltration surface
     var exposesBrowser: Bool {
         switch exposeBrowser {
         case "always": true
@@ -31,12 +34,15 @@ struct ControlStateEncoder {
 
     func payload(scope: MainWindowController? = nil) -> ControlStatePayload {
         let controllers = scope.map { [$0] } ?? screens.controllers
-        // **不能用 `screens.key`**：那是 `NSApp.keyWindow`，应用不在前台时是 nil，
-        // 于是每块屏幕都 `key: false`，而每块屏幕又各报一个 `focused: true` 的 pane——
-        // describe 里"全局唯一的那个在 key: true 的屏幕上"这条消歧规则直接无解。
-        // 而 agent 从 Terminal.app / 后台任务驱动时应用**正好**就不在前台，
-        // 本地测的时候（QuickTerm 总在最前）永远复现不出来。
-        // 用与目标解析同一条阶梯（controlCurrent），保证恒有且只有一块 key
+        // **`screens.key` must not be used here**: that is `NSApp.keyWindow`, which is nil
+        // while the app is not frontmost, so every screen would report `key: false` while each
+        // of them reported a pane with `focused: true` — and describe's disambiguation rule,
+        // "the globally unique one is on the screen with `key: true`", would have no answer at
+        // all. An agent driving from Terminal.app or a background job is running in **exactly**
+        // the situation where the app is not frontmost, which is why this never reproduces
+        // locally, where QuickTerm is always in front.
+        // Using the same ladder as target resolution (controlCurrent) guarantees there is
+        // always one key screen and only one
         let keyController = screens.controlCurrent
         return ControlStatePayload(
             app: .init(version: appVersion,
@@ -66,11 +72,13 @@ struct ControlStateEncoder {
             workspaces: model.layouts.indices.map { workspaceInfo(controller, index: $0) })
     }
 
-    /// 去掉正在淡出的那几片叶子之后的布局。
-    /// **树 / 列 / 几何三处共用这一份**：早先只有树塌了、矩形还按没塌的树算，
-    /// 于是关 pane 的那 0.28 秒里 `state` 会一边说"t1 就是整个工作区"、
-    /// 一边给 t1 一个半宽的矩形和一条树里根本不存在的分隔条。控制面别处
-    /// （寻址、事件快照）早就当淡出中的 pane 已经不在了，这里跟上同一条规矩
+    /// The layout with the leaves that are fading out taken out of it.
+    /// **The tree, the columns and the geometry all share this one copy**: it used to be only
+    /// the tree that collapsed while the rects were still computed from the uncollapsed one, so
+    /// for the 0.28 s it takes to close a pane `state` would say "t1 is the entire workspace"
+    /// and in the same breath hand t1 a half-width rect and a divider that no longer exists in
+    /// the tree. Everywhere else in the control plane (addressing, event snapshots) has long
+    /// treated a fading pane as already gone; this follows the same rule
     static func pruned(_ layout: WorkspaceLayout, closing: Set<UUID>) -> WorkspaceLayout {
         guard !closing.isEmpty else { return layout }
         switch layout {
@@ -84,7 +92,8 @@ struct ControlStateEncoder {
         case .scrolling(let strip):
             guard strip.paneList.contains(where: { closing.contains($0.id) }) else { return layout }
             var next = strip
-            // 空列保留：列还在屏幕上（列宽也还在），少的只是那一片淡出中的 pane
+            // Empty columns are kept: the column is still on screen and so is its width; all
+            // that went away is the one pane fading out of it
             for index in next.columns.indices {
                 next.columns[index].panes.removeAll { closing.contains($0.id) }
             }
@@ -92,7 +101,8 @@ struct ControlStateEncoder {
         }
     }
 
-    /// 这个工作区里被 zoom 的那个 pane（zoom 的那一刻，其余平铺 pane 一片都不渲染）
+    /// The pane zoomed in this workspace (while one is zoomed, not a single one of the other
+    /// tiled panes renders)
     static func zoomedPaneID(in layout: WorkspaceLayout) -> UUID? {
         switch layout {
         case .scrolling(let strip):
@@ -106,7 +116,7 @@ struct ControlStateEncoder {
     func workspaceInfo(_ controller: MainWindowController, index: Int) -> ControlStatePayload.WorkspaceInfo {
         let model = controller.model
         let closing = model.closingPanes
-        // 一份形状：树、列、以及每个 pane 的矩形全部从这一份算
+        // One shape: the tree, the columns and every pane's rect all come out of this copy
         let layout = Self.pruned(model.layouts[index], closing: closing)
         let handles = layout.paneList.map { ControlHandleRegistry.shared.handle(for: $0) }
         let floating = model.floatings[index].map(\.pane).filter { !closing.contains($0.id) }
@@ -142,9 +152,11 @@ struct ControlStateEncoder {
             floating: floating)
     }
 
-    /// dwindle 骨架：`{split,ratio,a,b}`，叶子 `{pane:"t1"}`——
-    /// **与 `spec dump` 逐字同一套词**（那边的叶子装的是整份 pane 记录，这边只装句柄）。
-    /// 淡出中的那一片叶子当作已经不在，树塌成另一侧（与 `SpecCodec.node` / `SplitTree.removing` 同规则）
+    /// The dwindle skeleton: `{split,ratio,a,b}`, leaves `{pane:"t1"}` — **word for word the
+    /// same vocabulary as `spec dump`**, where a leaf holds the pane's whole record while here
+    /// it holds only the handle.
+    /// A leaf that is fading out counts as already gone and the tree collapses onto the other
+    /// side (the same rule as `SpecCodec.node` / `SplitTree.removing`)
     static func treeNode(_ node: SplitTree<PaneView>.Node?,
                          closing: Set<UUID>) -> ControlStatePayload.TreeNode? {
         guard let node else { return nil }
@@ -163,7 +175,8 @@ struct ControlStateEncoder {
         }
     }
 
-    /// dwindle 树里的位置：左 = `a`、右 = `b`，点号连接（根是空串）
+    /// Position within the dwindle tree: left = `a`, right = `b`, joined with dots (the root is
+    /// the empty string)
     static func pathString(_ path: SplitTree<PaneView>.Path) -> String {
         path.path.map { component in
             switch component {
@@ -173,14 +186,16 @@ struct ControlStateEncoder {
         }.joined(separator: ".")
     }
 
-    /// 一个 pane 的几何（见 `PaneSize`）。**全部由模型算出来**，不读 frame。
-    /// 尺寸读不出来（pane 已经不在这个工作区里）时返回 nil——宁可没有这一段，
-    /// 也不能给出一个"上一帧的"数字
+    /// One pane's geometry (see `PaneSize`). **All of it computed from the model**, never read
+    /// off a frame.
+    /// When the size cannot be worked out — the pane is no longer in this workspace — it returns
+    /// nil: better to leave the section out than to hand back a number from last frame
     static func paneSize(_ pane: PaneView, controller: MainWindowController,
                          workspace: Int, float: Bool) -> ControlStatePayload.PaneInfo.PaneSize? {
         guard controller.model.layouts.indices.contains(workspace) else { return nil }
         let content = ControlGeometry.contentSize(controller)
-        // 与 `workspaceInfo` 的树 / 列同一份形状（淡出中的叶子已经塌掉）
+        // The same shape as the tree / columns in `workspaceInfo` (leaves that are fading out
+        // have already collapsed)
         let layout = pruned(controller.model.layouts[workspace], closing: controller.model.closingPanes)
         let zoomedID = zoomedPaneID(in: layout)
         var size = ControlStatePayload.PaneInfo.PaneSize(rect: [])
@@ -195,7 +210,8 @@ struct ControlStateEncoder {
             size.rect = ControlGeometry.rect(normalized)
             switch layout {
             case .dwindle(let tree):
-                // 最近父 split = 自己的路径去掉最后一节；根上的孤叶没有父 split
+                // The nearest parent split = this pane's own path minus its last component; a
+                // lone leaf at the root has no parent split
                 if let root = tree.root, let node = root.node(view: pane),
                    let path = root.path(to: node), !path.path.isEmpty {
                     let parent = pathString(SplitTree<PaneView>.Path(path: Array(path.path.dropLast())))
@@ -207,20 +223,21 @@ struct ControlStateEncoder {
                 }
             case .scrolling(let strip):
                 if let (column, _) = strip.position(of: pane) {
-                    // **名义列宽因子**（模型持有的那个数，= `pane set --width` 写的那个），
-                    // 而不是填充模式下放大过的有效宽度：后者在 rect 里
+                    // The **nominal column-width factor** (the number the model holds, i.e. the
+                    // one `pane set --width` writes), not the effective width after fill mode
+                    // has scaled it up: that one is in the rect
                     size.width = ControlGeometry.rounded(strip.columns[column].widthFactor)
                     size.share = ControlGeometry.rounded(1.0 / Double(max(strip.columns[column].panes.count, 1)))
                 }
             }
         }
 
-        // zoom：被放大的那一片独占整块内容区，**其余平铺 pane 一片都不渲染**。
-        // rect / ratio / width 照旧报底下那层平铺（`pane resize` 调的正是它，
-        // 取消 zoom 也回到它），但"当前在屏幕上有多大"这件事必须说实话：
-        // 看不见的那几片不给 points，改打一个 hidden 标记——
-        // `get -t <某个兄弟>` 拿不到工作区上下文，没有这个标记就只能被一个 0×0 的
-        // pane 的点尺寸骗过去
+        // zoom: the magnified pane has the whole content area to itself, and **not one of the
+        // other tiled panes renders**. rect / ratio / width still report the tiling underneath
+        // (that is what `pane resize` adjusts, and un-zooming returns to it), but "how big is
+        // this on screen right now" has to be answered honestly: the ones nobody can see get no
+        // points and a hidden flag instead — `get -t <some sibling>` has no workspace context,
+        // and without that flag it would be taken in by the point size of a 0×0 pane
         let hidden = !float && zoomedID != nil && pane.id != zoomedID
         if hidden { size.hidden = true }
         if let content, !hidden {
@@ -258,9 +275,9 @@ struct ControlStateEncoder {
         return out
     }
 
-    /// 每个 pane 在布局里的位置（`at`）。`closing` 传进来就先把淡出中的叶子塌掉——
-    /// `at.path` 必须与 `tree` 报的那棵树同形，否则 agent 照着 `at.path` 去
-    /// `pane resize --split` 会指到另一条分隔条上
+    /// Each pane's position within the layout (`at`). Pass `closing` and the fading leaves
+    /// collapse first — `at.path` has to have the same shape as the tree reported under `tree`,
+    /// or an agent following `at.path` into `pane resize --split` lands on a different divider
     static func positions(in layout: WorkspaceLayout,
                           closing: Set<UUID> = []) -> [UUID: ControlStatePayload.PaneInfo.Position] {
         var out: [UUID: ControlStatePayload.PaneInfo.Position] = [:]
@@ -281,10 +298,11 @@ struct ControlStateEncoder {
         return out
     }
 
-    /// 浏览器 pane 的逐标签明细。**打码规则与 pane 级的 url / title 逐字相同**
-    /// （同一个 `hide`）：没有 token 的调用方拿得到 index / id / active——
-    /// 那是寻址要用的、且什么都不泄露——但标题与网址一律 `<redacted>`。
-    /// 在这里开一个"tab 级不打码"的口子，等于把 pane 级那条规则作废
+    /// The per-tab detail of a browser pane. **The redaction rule is word for word the one used
+    /// at pane level** for url / title (the same `hide`): a caller without the token still gets
+    /// index / id / active — those are what addressing needs and they leak nothing — but the
+    /// title and the URL are always `<redacted>`.
+    /// Opening a "tab level is not redacted" hole here would void the pane-level rule entirely
     static func tabList(of pane: BrowserPaneView, hide: Bool)
         -> [ControlStatePayload.PaneInfo.TabInfo] {
         pane.tabs.enumerated().map { index, tab in

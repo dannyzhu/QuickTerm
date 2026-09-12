@@ -1,18 +1,20 @@
 import Foundation
 
-/// **一切从这一张表生成**：CLI 解析、`--help`、`describe --json`、安全分级，
-/// 以及（Phase 5）MCP 工具表。命令表之外不得手写第二份命令描述——
-/// 手写的那份两个版本之内必然漂移，而 agent 拿着漂移的 schema 只会得到自己解释不了的退出码 3。
+/// **Everything is generated from this one table**: CLI parsing, `--help`, `describe --json`, the
+/// safety classes, and (Phase 5) the MCP tool table. No second command description may be
+/// hand-written outside this table — a hand-written copy drifts within two releases, and an agent
+/// holding a drifted schema just gets exit code 3 with no way to explain it.
 enum ControlCommandClass: String, Codable, CaseIterable {
-    /// 静默放行（无 token 的调用方读不到浏览器 URL / 标题）
+    /// Allowed silently (a caller with no token cannot read browser URLs or titles).
     case read
-    /// 静默执行，但可见（Phase 2 的状态栏闪烁 + 撤销登记）
+    /// Executed silently, but visibly (the Phase 2 status-bar flash plus an undo registration).
     case mutate
-    /// 会毁掉用户的东西（关 pane / 关屏幕）：按 (peer, 类) 确认一次
+    /// Destroys something of the user's (closing a pane or a screen): confirmed once per
+    /// (peer, class).
     case destructive
-    /// 会打开需要键盘交互的面板 / 弹出菜单：**经 socket 一律拒绝**
+    /// Opens a panel or pop-up menu that needs the keyboard: **always refused over the socket**.
     case interactive
-    /// 触碰用户的隐私或别人的 tty（send-text、读浏览器 URL）：Phase 4
+    /// Touches the user's privacy or someone else's tty (send-text, reading browser URLs): Phase 4.
     case sensitive
 
     var requiresConsent: Bool { self == .destructive || self == .sensitive }
@@ -26,8 +28,9 @@ struct ControlArgSpec: Codable, Equatable {
     var kind: Kind
     var required: Bool
     var positional: Bool
-    /// 可以重复给（`--env A=1 --env B=2`）：值收成数组。
-    /// 刻意不做"逗号分隔"——环境变量的值里本来就可能有逗号
+    /// May be given repeatedly (`--env A=1 --env B=2`): the values collect into an array.
+    /// Deliberately not comma-separated — an environment variable's value can perfectly well
+    /// contain a comma.
     var repeatable: Bool
     var values: [String]?
     var defaultValue: String?
@@ -48,47 +51,57 @@ struct ControlArgSpec: Codable, Equatable {
 }
 
 struct ControlCommandSpec: Codable, Equatable {
-    /// 线上的命令名：顶层命令 = `state`，名词-动词层 = `pane.new`（点号）。
-    /// **只有这一处拼接**：CLI 的 `pane new`、`--help`、describe、MCP 全部由它派生
+    /// The command name on the wire: a top-level command is `state`, the noun-verb layer is
+    /// `pane.new` (with a dot).
+    /// **This is the only place it is assembled**: the CLI's `pane new`, `--help`, describe and MCP
+    /// are all derived from it.
     var name: String
-    /// 名词（`pane` / `workspace` / `screen` / `app`）；顶层命令为 nil
+    /// The noun (`pane` / `workspace` / `screen` / `app`); nil for a top-level command.
     var group: String?
-    /// 动词（`new` / `set-layout` / `state`）
+    /// The verb (`new` / `set-layout` / `state`).
     var verb: String
-    /// 命令行里敲的形式（`pane new`）——与 `name` 同源，不可能各写各的
+    /// The form typed on the command line (`pane new`) — same source as `name`, so the two cannot
+    /// diverge.
     var cli: String
     var summary: String
     var cls: ControlCommandClass
-    /// 同样的输入跑两次结果一致（Phase 5 映射成 MCP 的 idempotentHint）
+    /// The same input run twice leaves the same state (mapped to MCP's idempotentHint in Phase 5).
     var idempotent: Bool
     var acceptsTarget: Bool
-    /// 完全在 CLI 侧完成，不经 socket（`install-cli`、`--help`）
+    /// Handled entirely on the CLI side, never over the socket (`install-cli`, `--help`).
     var local: Bool
-    /// CLI 要先把 `-f <文件>`（或标准输入）读进来，塞进 `spec` 参数再发。
-    /// **服务端绝不去读调用方的文件系统**：两个进程的 cwd 与权限本来就不一样，
-    /// 而"服务端替你 open 一个路径"是个能被滥用的原语
+    /// The CLI reads `-f <file>` (or stdin) first, stuffs it into the `spec` argument, and only
+    /// then sends the request.
+    /// **The server never reads the caller's file system**: the two processes have different cwds
+    /// and different permissions to begin with, and "the server will open a path for you" is an
+    /// abusable primitive.
     var readsFile: Bool
     var args: [ControlArgSpec]
     var examples: [String]
-    /// 查询类命令内嵌一段真实的（节选）输出样例——
-    /// 这是 wezterm 的 `--help` 缺、kitty 的文档有的那一项，能替 agent 省掉每个会话一次探路调用
+    /// A query command embeds a real (excerpted) output sample — the thing wezterm's `--help` lacks
+    /// and kitty's docs have, and it saves an agent one exploratory call per session.
     var outputSample: String?
 
-    /// 非 `read` 类（它触碰隐私 / 别人的 tty），但**什么都不改**：`pane capture-text`。
-    /// 见 `honorsMutationFlags`——这两件事必须分开说，否则"敏感"会被当成"会改东西"
+    /// Not in the `read` class (it touches privacy and someone else's tty), yet **changes
+    /// nothing**: `pane capture-text`.
+    /// See `honorsMutationFlags` — these two things have to be stated separately, or "sensitive"
+    /// gets read as "mutating".
     var readOnlyEffect: Bool
 
-    /// 这条命令真的**实现了** `--dry-run` / `--fail-if-noop`。
+    /// This command really **implements** `--dry-run` / `--fail-if-noop`.
     ///
-    /// 两个开关是从名词-动词层"先算 diff 再决定动不动手"的形状里长出来的（出口是
-    /// `ControlCommandRunner.commit()`）。`action <wm-action>` 是快捷键平价直通车，
-    /// 直通 `perform()`：既算不出 diff，也没有"预演"这回事。
-    /// 静默接受它的后果是双份的——一次"预演"真的落了刀，而 `--dry-run` 还顺手
-    /// 把破坏性命令的确认闸门一起关掉了。
-    /// **`readOnlyEffect` 的命令一律不认这两个开关**，而且这不只是"没意义"那么简单：
-    /// `--dry-run` 在 `handle()` 里同时是**免确认**的理由（预演什么都不改，所以不问用户）。
-    /// 一条什么都不改、却会把别人 shell 屏幕上的字回给调用方的命令要是认了 `--dry-run`，
-    /// 那个开关就成了绕过确认闸门、照样拿到全部内容的后门
+    /// Both flags grew out of the noun-verb layer's shape of "compute the diff first, then decide
+    /// whether to act" (the exit point is `ControlCommandRunner.commit()`). `action <wm-action>` is
+    /// the keybinding-parity passthrough, straight to `perform()`: it can neither compute a diff
+    /// nor rehearse anything.
+    /// Accepting the flag silently costs twice over — a "rehearsal" actually cuts, and `--dry-run`
+    /// also closes the confirmation gate on destructive commands while it is at it.
+    /// **Commands with `readOnlyEffect` never accept these two flags either**, and that is more
+    /// than "they would be meaningless": inside `handle()`, `--dry-run` doubles as the reason to
+    /// **skip the confirmation** (a rehearsal changes nothing, so we do not ask the user). If a
+    /// command that changes nothing but hands the caller the text off someone else's shell screen
+    /// accepted `--dry-run`, that flag would become a back door past the confirmation gate that
+    /// still yields the full contents.
     var honorsMutationFlags: Bool { group != nil && cls.isMutation && !readOnlyEffect }
 
     init(group: String? = nil, _ verb: String, summary: String, cls: ControlCommandClass,
@@ -113,7 +126,7 @@ struct ControlCommandSpec: Codable, Equatable {
 }
 
 enum ControlCommandTable {
-    // MARK: 命令
+    // MARK: Commands
 
     static let commands: [ControlCommandSpec] = [
         ControlCommandSpec(
@@ -203,9 +216,11 @@ enum ControlCommandTable {
             ],
             outputSample: nil),
 
-        // MARK: —— Phase 2：名词-动词层（**绝对设值，绝不 toggle**）——
-        // agent 看不到状态，重试一次 toggle 会把自己撤销。这一层的每条命令跑两次结果一致，
-        // 第二次在 `--fail-if-noop` 下退 7。`action <wm-action>` 是唯一保留 toggle 语义的直通车。
+        // MARK: - Phase 2: the noun-verb layer (**absolute setters, never toggles**) -
+        // An agent cannot see state, so retrying a toggle undoes its own work. Every command in
+        // this layer leaves the same state when run twice, and the second run exits 7 under
+        // `--fail-if-noop`. `action <wm-action>` is the only passthrough that keeps toggle
+        // semantics.
 
         ControlCommandSpec(
             group: "pane", "new",
@@ -352,11 +367,13 @@ enum ControlCommandTable {
             ],
             outputSample: captureTextSample),
 
-        // MARK: —— 浏览器 pane 的标签 ——
-        // `-t` 指的永远是 **pane**（`b3`），`--tab` 才指 pane 里的那一个标签。
-        // 标签有两种写法，都在 `state` / `get` 的 `tabList` 里回显：序号（1 起，会随开关标签移动）
-        // 与 id（标签活着就不变）。**没有 token 的调用方读不到标题与网址**——
-        // 与 pane 级 url / title 同一条打码规则，别处开个后门等于没打码。
+        // MARK: - Tabs inside a browser pane -
+        // `-t` always names the **pane** (`b3`); only `--tab` names one tab inside it.
+        // A tab has two forms, both echoed back in the `tabList` of `state` / `get`: the index
+        // (1-based, and it shifts as tabs are opened and closed) and the id (unchanged for as long
+        // as the tab lives). **A caller without a token cannot read titles or URLs** — the same
+        // redaction rule as the pane-level url / title, because a back door anywhere else is the
+        // same as not redacting at all.
 
         ControlCommandSpec(
             group: "browser", "open",
@@ -563,9 +580,10 @@ enum ControlCommandTable {
             ],
             outputSample: nil),
 
-        // MARK: —— Phase 3：一次性组合（`quickterm.workspace/1`）——
-        // 一次调用摆好整个工作区，而不是发 N 条 pane new 再逐条调宽度：
-        // N 条命令 = N 次重排、N 次动画、N 个失败点，中途失败还会留下一个谁也说不清的半成品。
+        // MARK: - Phase 3: compose it in one shot (`quickterm.workspace/1`) -
+        // Lay out a whole workspace in a single call instead of sending N pane-new commands and
+        // then adjusting widths one by one: N commands = N relayouts, N animations, N failure
+        // points, and a failure partway through leaves a half-built thing nobody can describe.
 
         ControlCommandSpec(
             group: "spec", "dump",
@@ -623,10 +641,12 @@ enum ControlCommandTable {
             ],
             outputSample: specApplySample),
 
-        // MARK: —— Phase 4：事件流 ——
-        // 长轮询是**主形式**：一条永不结束的流对模型来说是昂贵的（每一条都进上下文，
-        // 还得自己盯着），而 `poll --since` 一次调用就回答"我上次看之后发生了什么"。
-        // **任何事件都不携带 pane 的输出内容**——那是隐私外泄面与流控复杂度的所在地。
+        // MARK: - Phase 4: the event stream -
+        // Long polling is the **primary form**: a never-ending stream is expensive for a model
+        // (every line enters its context and it has to watch the stream itself), while one `poll
+        // --since` call answers "what happened since I last looked".
+        // **No event ever carries a pane's output** — that is where the privacy leak surface and
+        // the flow-control complexity both live.
 
         ControlCommandSpec(
             group: "events", "poll",
@@ -669,9 +689,10 @@ enum ControlCommandTable {
             ],
             outputSample: nil),
 
-        // MARK: —— Phase 4：向 pane 注入文本 ——
-        // 这是整个控制面里唯一一条能让别人的 shell 执行任意命令的命令。默认关闭，
-        // 打开之后仍然每次确认（往调用方自己那个 pane 写除外）。
+        // MARK: - Phase 4: injecting text into a pane -
+        // This is the one command in the whole control plane that can make someone else's shell run
+        // arbitrary commands. Off by default, and even once it is on, confirmed every single time
+        // (except when writing into the caller's own pane).
 
         ControlCommandSpec(
             group: "input", "send-text",
@@ -690,9 +711,10 @@ enum ControlCommandTable {
             ],
             outputSample: sendTextSample),
 
-        // MARK: —— Phase 5：MCP（stdio）——
-        // 工具表**从这张命令表生成**（`MCPToolMap`）。手写一份工具描述两个版本之内必然漂移，
-        // 而漂移的代价是 agent 拿着过期 schema 得到自己解释不了的错误。
+        // MARK: - Phase 5: MCP (stdio) -
+        // The tool table is **generated from this command table** (`MCPToolMap`). A hand-written
+        // tool description drifts within two releases, and the cost of that drift is an agent
+        // holding a stale schema and getting errors it cannot explain.
 
         ControlCommandSpec(
             "mcp",
@@ -709,7 +731,7 @@ enum ControlCommandTable {
             outputSample: nil),
     ]
 
-    /// 名词分组的出现顺序（`--help` 与 `describe` 用同一份）
+    /// The order the noun groups appear in (`--help` and `describe` share this one list).
     static var groups: [String] {
         var out: [String] = []
         for spec in commands { if let g = spec.group, !out.contains(g) { out.append(g) } }
@@ -720,13 +742,14 @@ enum ControlCommandTable {
         commands.filter { $0.group == group }
     }
 
-    /// 线名（`pane.new`）与命令行写法（`pane new`）都认——两边是同一处生成的，查得到同一条
+    /// Accepts both the wire name (`pane.new`) and the command-line form (`pane new`) — both are
+    /// generated in the same place, so they resolve to the same row.
     static func command(_ name: String) -> ControlCommandSpec? {
         let normalized = name.replacingOccurrences(of: " ", with: ".")
         return commands.first { $0.name == normalized }
     }
 
-    /// 全局开关（每条子命令都能用）
+    /// The global flags (usable on every subcommand).
     static let globalFlags: [ControlArgSpec] = [
         ControlArgSpec("target", .string, help: "target screen:workspace.pane (-t)"),
         ControlArgSpec("json", .bool, help: "force JSON output (it is already JSON when stdout is not a TTY)"),
@@ -737,24 +760,28 @@ enum ControlCommandTable {
         ControlArgSpec("fail-if-noop", .bool, help: "exit 7 when already in the requested state instead of succeeding silently"),
     ]
 
-    /// 每条变更命令都认的两个全局开关的 key（服务端按它们分流）
+    /// The keys of the two global flags every mutating command accepts (the server branches on
+    /// them).
     enum Flag {
         static let dryRun = "dry-run"
         static let failIfNoop = "fail-if-noop"
         static let force = "force"
     }
 
-    // MARK: WMAction 的安全分级
+    // MARK: Safety classes for WMAction
 
-    /// 打开覆盖面板 / 弹出菜单，之后要靠方向键与回车才能用完——**经 socket 执行等于把 UI 卡在半路**。
-    /// `web-extensions` 也在内：`NSMenu.popUp` 会跑一个事件跟踪循环，直接把主线程连同控制服务一起卡住
-    /// （比另外 5 个更糟：它连"用户按 Esc"都没有明显的提示）。
-    /// 这些动作的替代路径留给 Phase 2 的 `app set theme …` / `app set background …`。
+    /// These open an overlay panel or a pop-up menu that then needs arrow keys and Return to finish
+    /// — **running one over the socket means leaving the UI stuck halfway**.
+    /// `web-extensions` is in the set too: `NSMenu.popUp` runs an event-tracking loop that wedges
+    /// the main thread and the control service along with it (worse than the other 5: it does not
+    /// even hint that the user should press Esc).
+    /// The replacement path for these actions is Phase 2's `app set theme ...` / `app set
+    /// background ...`.
     static let interactiveActions: Set<WMAction> = [
         .themePicker, .backgroundMenu, .keybindingHelp, .mainMenu, .openSettings, .webExtensions,
     ]
 
-    /// 会毁掉用户东西的动作：关闭 pane 会结束其中的进程
+    /// Actions that destroy something of the user's: closing a pane ends the processes inside it.
     static let destructiveActions: Set<WMAction> = [.closePane]
 
     static func actionClass(_ action: WMAction) -> ControlCommandClass {
@@ -763,7 +790,7 @@ enum ControlCommandTable {
         return .mutate
     }
 
-    /// 该动作被 socket 拒绝时给的具体去处
+    /// The concrete alternative offered when the socket refuses that action.
     static func interactiveHint(_ action: WMAction) -> String {
         switch action {
         case .themePicker: "The theme picker is driven by the keyboard. Use app set theme instead, or write theme in ~/.config/quickterm/config.toml."
@@ -779,7 +806,8 @@ enum ControlCommandTable {
         var name: String
         var cls: ControlCommandClass
         var helpZH: String
-        /// 英文说明。**中英两份并列**：describe 的输出会被原样粘进中英混排的 agent 提示里
+        /// The English text. **The Chinese and English copies sit side by side**: describe's output
+        /// gets pasted verbatim into agent prompts that mix the two languages.
         var helpEN: String
         var browserOnly: Bool
         var terminalOnly: Bool
@@ -787,8 +815,8 @@ enum ControlCommandTable {
         var hint: String?
     }
 
-    /// 全部 WMAction 的机器可读清单（`describe` 与 `action --list` 同一出处；
-    /// `ControlActionTests` 钉死它与 `WMAction.allCases` 逐一对应）
+    /// The machine-readable list of every WMAction (one source shared by `describe` and
+    /// `action --list`; `ControlActionTests` pins it one-to-one against `WMAction.allCases`).
     static var actionDocs: [ActionDoc] {
         WMAction.allCases.map { action in
             let cls = actionClass(action)
@@ -804,7 +832,7 @@ enum ControlCommandTable {
         }
     }
 
-    // MARK: 输出样例（`--help` 内嵌；`ControlWireTests` 会把它们重新 parse 一遍）
+    // MARK: Output samples (embedded in `--help`; `ControlWireTests` parses every one of them back)
 
     static let stateSample = """
     {"ok":true,"seq":412,"data":{
@@ -828,7 +856,8 @@ enum ControlCommandTable {
                 "title":"<redacted>","url":"<redacted>","tabs":2,"focused":false}]}}
     """
 
-    /// `pane resize` 的回声：diff 的路径与 `state` 里的 JSON 同形（`1:2.tree.a.ratio`）
+    /// The echo from `pane resize`: the diff paths have the same shape as the JSON in `state`
+    /// (`1:2.tree.a.ratio`).
     static let resizeSample = """
     {"ok":true,"seq":418,"resolved":{"screen":1,"workspace":3,"pane":"t8"},
      "data":{"command":"pane.resize","applied":true,"changed":true,"dryRun":false,
@@ -844,7 +873,8 @@ enum ControlCommandTable {
       {"handle":"b3","kind":"browser","screen":1,"workspace":2,"title":"<redacted>"}]}}
     """
 
-    /// 变更类命令的统一信封（`--dry-run` 时 `applied:false` 且 `changes` 就是那份 diff）
+    /// The single envelope for mutating commands (under `--dry-run`, `applied:false` and `changes`
+    /// is the diff).
     static let paneMutationSample = """
     {"ok":true,"seq":415,"resolved":{"screen":1,"workspace":2,"pane":"t9"},
      "data":{"command":"pane.new","applied":true,"changed":true,"dryRun":false,
@@ -861,8 +891,8 @@ enum ControlCommandTable {
       {"key":"visible-columns","value":"2","choices":["1","2","3","4","5","6"]}]}}
     """
 
-    /// `spec dump` 打印的**就是这份文件本身**（不套响应信封）：
-    /// `quickterm spec dump > w.json` 要能直接喂回 `spec apply -f w.json`
+    /// What `spec dump` prints **is this document itself** (no response envelope around it):
+    /// `quickterm spec dump > w.json` has to feed straight back into `spec apply -f w.json`.
     static let specSample = """
     {"schema":"quickterm.workspace/1","layout":"scrolling","visibleColumns":3,
      "columns":[
@@ -873,7 +903,8 @@ enum ControlCommandTable {
      "focus":{"column":0,"row":0}}
     """
 
-    /// dwindle 形态（同一套词汇）——`spec` 组的帮助与 describe 都印它
+    /// The dwindle form (the same vocabulary) — printed by both the `spec` group's help and
+    /// describe.
     static let specTreeSample = """
     {"schema":"quickterm.workspace/1","layout":"dwindle",
      "tree":{"split":"horizontal","ratio":0.6,
@@ -892,8 +923,9 @@ enum ControlCommandTable {
                "reused":["t3"],"closed":["t4"]}}}
     """
 
-    /// `events poll` / `events follow` 的一批。`data.seq` 就是**下一次 `--since` 该给的值**
-    /// （被 `--limit` 截断时它只走到最后一条真的送出去的事件，同时带 `truncated:true`）
+    /// One batch from `events poll` / `events follow`. `data.seq` is **the value the next `--since`
+    /// should be given** (when `--limit` truncated the batch it only advances to the last event
+    /// actually shipped, and `truncated:true` comes along with it).
     static let eventsSample = """
     {"ok":true,"seq":420,"data":{"schema":"quickterm.events/1","seq":420,"oldest":301,
      "events":[
@@ -911,7 +943,8 @@ enum ControlCommandTable {
        "pane":{"handle":"t7","kind":"terminal","screen":1,"workspace":2}}}
     """
 
-    /// `pane capture-text` 的回声。**text 只在这里出现一次**：不进日志、不进事件流
+    /// The echo from `pane capture-text`. **`text` appears here exactly once**: never in a log,
+    /// never in the event stream.
     static let captureTextSample = """
     {"ok":true,"seq":430,"resolved":{"screen":1,"workspace":2,"pane":"t7"},
      "data":{"command":"pane.capture-text","cols":96,"rows":24,"lines":3,"scrollback":0,
@@ -919,7 +952,8 @@ enum ControlCommandTable {
        "text":"~/proj $ npm test\\n  12 passing\\n~/proj $ "}}
     """
 
-    /// 浏览器标签类命令的回声：`pane.tabList` 就是下一条 `--tab` 该写的东西
+    /// The echo from the browser-tab commands: `pane.tabList` is exactly what the next `--tab`
+    /// should be written from.
     static let browserSample = """
     {"ok":true,"seq":432,"resolved":{"screen":1,"workspace":2,"pane":"b3"},
      "data":{"command":"browser.open","applied":true,"changed":true,"dryRun":false,
@@ -942,8 +976,9 @@ enum ControlCommandTable {
     """
 }
 
-/// `app get` / `app set` 认的设置项。**枚举即清单**：命令表的 values、describe、
-/// 服务端的 switch 全从这里来，不可能出现"帮助里有、实现里没有"的项
+/// The settings `app get` / `app set` accept. **The enum is the list**: the command table's values,
+/// describe, and the server's switch all come from here, so an entry that exists in the help but
+/// not in the implementation is impossible.
 enum ControlAppSetting: String, Codable, CaseIterable {
     case theme
     case background
@@ -963,6 +998,6 @@ enum ControlAppSetting: String, Codable, CaseIterable {
         }
     }
 
-    /// 作用在某一块屏幕上（其余是进程级）
+    /// Applies to one particular screen (the rest are process-level).
     var isPerScreen: Bool { self == .bar || self == .visibleColumns }
 }

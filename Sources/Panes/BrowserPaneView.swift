@@ -1,38 +1,45 @@
 import AppKit
 import WebKit
 
-/// 浏览器 pane：多标签（每标签一个 WKWebView，共享进程池与登录态）+ 标签条 + 顶部薄工具条
-/// （后退 / 前进 / 刷新、地址栏、进度）。工具条、地址栏、进度都绑定当前标签。
-/// 键盘焦点落在当前标签的 WKWebView（focusTarget）；WM 级 Cmd 键由控制器的事件监视器先行拦截，
-/// 其余 Cmd 键先交给页面（WebKit 语义）。
+/// A browser pane: multiple tabs (one WKWebView per tab, sharing a process pool and the login state),
+/// a tab bar, and a thin toolbar on top (back / forward / reload, the address bar, the progress bar).
+/// The toolbar, the address bar and the progress bar are all bound to the current tab.
+/// Keyboard focus lands on the current tab's WKWebView (focusTarget); WM-level Cmd keys are
+/// intercepted first by the controller's event monitor, and every other Cmd key goes to the page
+/// first, which is WebKit's semantics.
 final class BrowserPaneView: PaneView {
     override class var kind: PaneKind { .browser }
 
-    /// 浏览器行为配置（config.toml 顶层键；ConfigStore 解析后由控制器写入）
+    /// Browser behavior configuration: top-level keys in config.toml, parsed by ConfigStore and
+    /// written here by the controller.
     struct Settings {
-        /// Cmd+B 打开的首页
+        /// The home page Cmd+B opens.
         var home = "https://www.google.com"
-        /// 地址栏输入非 URL 时的搜索模板（%s = 关键词）
+        /// Search template used when the address bar gets something that is not a URL (%s = the terms).
         var search = "https://www.google.com/search?q=%s"
-        /// User-Agent：默认伪装成 Safari（Google 登录页拒绝"嵌入式浏览器"）；"webkit" = 不伪装
+        /// User-Agent: by default we pose as Safari, because Google's sign-in pages refuse "embedded
+        /// browsers"; "webkit" means no disguise at all.
         var userAgent = "safari"
-        /// Web Inspector（右键"检查元素"）
+        /// Web Inspector ("Inspect Element" in the context menu).
         var inspectable = false
-        /// 标签条：always = 始终显示（默认）；auto = 只有一个标签时隐藏
+        /// Tab bar: always = always visible (the default); auto = hidden while there is only one tab.
         var tabBar = "always"
-        /// 标签最大 / 最小宽度 pt（config browser-tab-width / browser-tab-min-width）
+        /// Maximum and minimum tab width in points (config browser-tab-width /
+        /// browser-tab-min-width).
         var tabWidth = 200
         var tabMinWidth = 80
-        /// 下载落盘目录（config browser-download-dir，支持 `~`；目录不存在时回退 ~/Downloads）
+        /// Where downloads land (config browser-download-dir, `~` supported; falls back to ~/Downloads
+        /// when the directory does not exist).
         var downloadDirectory = "~/Downloads"
 
-        /// 系统的 ~/Downloads（回退用）
+        /// The system's ~/Downloads, used as the fallback.
         static var systemDownloadsURL: URL {
             FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
                 ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
         }
 
-        /// 解析后的下载目录：展开 `~`，不是个真目录就回退 ~/Downloads
+        /// The resolved download directory: `~` expanded, falling back to ~/Downloads when the path is
+        /// not actually a directory.
         var downloadDirectoryURL: URL {
             let raw = downloadDirectory.trimmingCharacters(in: .whitespaces)
             guard !raw.isEmpty else { return Self.systemDownloadsURL }
@@ -59,7 +66,8 @@ final class BrowserPaneView: PaneView {
         var tabBarAlwaysVisible: Bool { tabBar.lowercased() == "always" }
 
         var homeURL: URL {
-            // URL(string:) 对含空格等的字符串也会返回非 nil（自动百分号编码）：按 scheme/host 校验
+            // URL(string:) returns non-nil even for strings with spaces and the like, percent-encoding
+            // them automatically, so validate by scheme and host instead.
             if let url = URL(string: home), let scheme = url.scheme?.lowercased(),
                ["http", "https"].contains(scheme) && url.host != nil || ["file", "about"].contains(scheme) {
                 return url
@@ -67,10 +75,10 @@ final class BrowserPaneView: PaneView {
             return URL(string: "https://www.google.com")!
         }
 
-        /// 地址栏文本 → URL：有 scheme 直接用；像域名（含点、无空格）补 https；否则搜索
-        /// QuickTerm：**一律**按搜索词构造 URL（右键「Search with …」用）。
-        /// 与 `url(forInput:)` 的区别是不做「像域名就直接打开」的判断：
-        /// 菜单上写着 Search，选中 `github.com/x` 时用户要的是搜索结果
+        /// QuickTerm: **always** builds a search URL, and is what the "Search with ..." context-menu
+        /// item uses. The difference from `url(forInput:)` is that it skips the "looks like a host,
+        /// so just open it" test: the menu says Search, so selecting `github.com/x` means the user
+        /// wants search results.
         func searchURL(for raw: String) -> URL? {
             let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
@@ -78,6 +86,8 @@ final class BrowserPaneView: PaneView {
             return URL(string: search.replacingOccurrences(of: "%s", with: q))
         }
 
+        /// Address bar text -> URL: a string with a scheme is used as is; something that looks like a
+        /// host (contains a dot, contains no space) gets https prepended; anything else is searched.
         func url(forInput raw: String) -> URL? {
             let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
@@ -94,26 +104,31 @@ final class BrowserPaneView: PaneView {
 
     static var settings = Settings()
 
-    /// 所有浏览器 pane 共享的进程池 + 持久化数据存储（登录态跨标签、跨 pane、跨重启保留）
+    /// The process pool and the persistent data store shared by every browser pane: logins survive
+    /// across tabs, across panes and across restarts.
     private static let processPool = WKProcessPool()
 
-    /// 一个标签：自己的 WKWebView 与导航状态。同时是 WebExtensions 眼里的"标签"
-    /// （`WKWebExtensionTab`：扩展的 tabs.* API 全部落到这些方法上）
+    /// One tab: its own WKWebView plus its navigation state. It is also what WebExtensions calls a
+    /// "tab" (`WKWebExtensionTab`: every tabs.* API an extension calls lands on these methods).
     @MainActor
     final class Tab: NSObject, WKWebExtensionTab {
         let id = UUID()
-        /// 所属 pane（= 扩展眼里的"窗口"）
+        /// The pane this tab belongs to, which is what an extension calls a "window".
         weak var pane: BrowserPaneView?
-        /// 当前 webView 是哪个扩展的页面专用的（nil = 普通网页配置）。
-        /// 扩展页与普通页的 WKWebViewConfiguration 不通用，跨界导航时要原地换 webView
+        /// Which extension this webView's pages are dedicated to (nil = an ordinary web configuration).
+        /// The WKWebViewConfiguration for an extension page and for an ordinary page are not
+        /// interchangeable, so navigating across that boundary swaps the webView in place.
         var extensionContext: WKWebExtensionContext?
-        /// 跨界换 webView 时会被替换（见 BrowserPaneView.rebuildWebView）
+        /// Replaced when the webView is swapped across that boundary (see
+        /// BrowserPaneView.rebuildWebView).
         fileprivate(set) var webView: BrowserWebView
         var title = ""
-        /// 最近一次请求的真实 URL：错误页 / about:blank 不能覆盖它（存档、地址栏、重载、外部打开都用它）
+        /// The last real URL that was requested. An error page or about:blank must not overwrite it;
+        /// the archive, the address bar, reload and open-externally all read it.
         var lastRequestedURL: URL?
         var showingErrorPage = false
-        /// 错误页自身的加载也会回调 decidePolicyFor：记下它，别把它当成新的导航
+        /// Loading the error page itself also calls back into decidePolicyFor, so remember it and do
+        /// not mistake it for a new navigation.
         var pendingErrorPageURL: URL?
         var lastProcessTerminationAt: Date?
         var observations: [NSKeyValueObservation] = []
@@ -123,7 +138,8 @@ final class BrowserPaneView: PaneView {
             super.init()
         }
 
-        /// 对外可见的"当前网址"：错误页 / 空白页时回退到最近请求的真实 URL
+        /// The "current URL" as seen from outside: on an error page or a blank page it falls back to
+        /// the last real URL that was requested.
         var effectiveURL: URL? {
             if let url = webView.url, url.scheme != "about", !showingErrorPage { return url }
             return lastRequestedURL ?? webView.url
@@ -134,11 +150,12 @@ final class BrowserPaneView: PaneView {
             return effectiveURL?.host ?? L("browser.tab.untitled")
         }
 
-        // MARK: WKWebExtensionTab（全部可选；没实现的项 WebKit 用默认值）
+        // MARK: WKWebExtensionTab (all optional; WebKit uses a default for anything not implemented)
 
         func window(for context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? { pane }
 
-        /// 头文件要求：不在任何窗口里时返回 NSNotFound（返回 0 会让扩展以为它是第一个标签）
+        /// The header requires NSNotFound when the tab is in no window at all; returning 0 would make
+        /// the extension believe it is the first tab.
         func indexInWindow(for context: WKWebExtensionContext) -> Int {
             pane?.tabs.firstIndex { $0 === self } ?? NSNotFound
         }
@@ -149,7 +166,7 @@ final class BrowserPaneView: PaneView {
 
         func url(for context: WKWebExtensionContext) -> URL? { effectiveURL }
 
-        /// 正在加载中的目标网址（加载完成后为 nil）
+        /// The URL currently being loaded; nil once loading has finished.
         func pendingURL(for context: WKWebExtensionContext) -> URL? {
             webView.isLoading ? lastRequestedURL : nil
         }
@@ -185,8 +202,9 @@ final class BrowserPaneView: PaneView {
             }
         }
 
-        /// tabs.remove：最后一个标签要连 pane 一起关（与 Cmd+W / 标签条关闭钮 / window.close 一致）——
-        /// 只调 closeTab 的话它会被 `tabs.count > 1` 的守卫默默挡掉，而扩展那边收到的是"成功"
+        /// tabs.remove: closing the last tab has to close the pane with it, exactly as Cmd+W, the tab
+        /// bar's close button and window.close do. Calling closeTab alone would be swallowed silently
+        /// by its `tabs.count > 1` guard while the extension is told the call succeeded.
         func close(for context: WKWebExtensionContext,
                    completionHandler: @escaping ((any Error)?) -> Void) {
             guard let pane else {
@@ -225,14 +243,16 @@ final class BrowserPaneView: PaneView {
             completionHandler(nil)
         }
 
-        /// 用户点了扩展按钮就算"用户手势"：activeTab 权限按 Chrome 语义临时授予
+        /// A click on the extension's button counts as a user gesture: activeTab permission is granted
+        /// temporarily, following Chrome's semantics.
         func shouldGrantPermissionsOnUserGesture(for context: WKWebExtensionContext) -> Bool { true }
     }
 
     private(set) var tabs: [Tab] = []
     private(set) var activeTabIndex = 0
     var activeTab: Tab? { tabs.indices.contains(activeTabIndex) ? tabs[activeTabIndex] : nil }
-    /// 当前标签的 WKWebView（无标签时是占位，不会发生：pane 至少一个标签）
+    /// The current tab's WKWebView. With no tabs this is a placeholder, which cannot happen: a pane
+    /// always has at least one tab.
     var webView: BrowserWebView { activeTab?.webView ?? placeholderWebView }
     private lazy var placeholderWebView = BrowserWebView(frame: .zero, configuration: makeConfiguration())
 
@@ -242,45 +262,53 @@ final class BrowserPaneView: PaneView {
     private let backButton = NSButton()
     private let forwardButton = NSButton()
     private let reloadButton = NSButton()
-    let addressField = BrowserAddressField()   // 测试需访问
-    /// 地址栏的保底宽度：扩展固定得再多也不能把它挤得比这还窄（Chrome 也是同一套做法）
+    let addressField = BrowserAddressField()   // tests need access to it
+    /// Floor width for the address bar: no number of pinned extensions may squeeze it below this.
+    /// Chrome does exactly the same.
     static let addressFieldMinimumWidth: CGFloat = 200
-    /// 保底宽度约束的优先级：必须低于 500（SwiftUI 托管 pane 的量宽优先级），否则窄 pane 会被这条约束撑宽
+    /// Priority of that floor constraint: it has to stay below 500, the priority SwiftUI measures a
+    /// hosted pane's width at, or the constraint stretches a narrow pane instead.
     static let addressFieldMinimumPriority = NSLayoutConstraint.Priority(rawValue: 300)
-    /// 地址栏与扩展工具条之间的下载按钮（无下载时隐藏，宽度与两侧间距一起收成 0）
+    /// The download button between the address bar and the extension toolbar. Hidden when there are no
+    /// downloads, with its width and its surrounding gaps collapsing to 0 together.
     let downloadButton = BrowserDownloadButton()
-    /// 本 pane 的下载列表（WKDownloadDelegate 的回调都落到它上面）
+    /// This pane's download list; every WKDownloadDelegate callback lands on it.
     let downloads = BrowserDownloadList()
     private lazy var downloadPopover = BrowserDownloadPopover(list: downloads)
-    /// 弹出层由 pane 持有：`NSPopover.contentViewController` 是强引用，内容控制器再反持 NSPopover
-    /// 就成环（pane 关掉后列表 / 条目 / WKDownload 永远释放不掉）。第一次点开时才建
+    /// The pane owns the popover: `NSPopover.contentViewController` is a strong reference, so a content
+    /// controller that also held the NSPopover would form a cycle and closing the pane would never
+    /// release the list, the items or the WKDownloads. Built lazily on the first click.
     private var downloadPopoverHost: NSPopover?
-    /// 下载按钮的宽度与右侧间距：隐藏时归零，工具条里就当它不存在
-    /// （左侧 6pt 是地址栏与扩展条之间本来就有的间距，一直留着）
+    /// The download button's width and its trailing gap: both go to zero when it is hidden, so the
+    /// toolbar behaves as if it were not there at all. The 6pt on its leading side is the gap that
+    /// already existed between the address bar and the extension toolbar, and it stays.
     private var downloadButtonWidth: NSLayoutConstraint!
     private var downloadTrailingGap: NSLayoutConstraint!
-    /// 地址栏右侧的扩展工具条（下载按钮插在地址栏与它之间）
+    /// The extension toolbar to the right of the address bar; the download button sits between them.
     let extensionBar = BrowserExtensionToolbar()
-    /// Web Store 页面 →「添加到 QuickTerm」的消息处理器（弱引用 pane，避免 WKUserContentController 成环）
+    /// Handler for the "Add to QuickTerm" message posted by a Web Store page. It holds the pane weakly
+    /// so that WKUserContentController does not form a cycle.
     private lazy var scriptHandler = BrowserExtensionScriptHandler(pane: self)
     private let progressBar = NSProgressIndicator()
     private let webArea = NSView()
     private var editingAddress = false
-    /// window.close() 时 pane 不在窗口里：挂回窗口后补发关闭请求（测试要读）
+    /// The pane was not in a window when window.close() arrived: the close request is re-sent once it
+    /// is attached again. Tests read this.
     private(set) var pendingCloseRequest = false
-    /// Web Store 安装进行中（页面消息重入的闸门）
+    /// A Web Store install is in flight; this gates re-entry from further page messages.
     private var webStoreInstallInFlight = false
     private var themeBackground: NSColor = .black
     private var themeForeground: NSColor = .white
 
-    /// 页面标题 / 当前 URL（状态条、存档；当前标签的）
+    /// Page title and current URL of the active tab, for the status bar and the archive.
     var pageTitle: String { activeTab?.title ?? "" }
     var currentURL: URL? { activeTab?.effectiveURL }
     var lastRequestedURL: URL? { activeTab?.lastRequestedURL }
 
     override var paneTitle: String { activeTab?.displayTitle ?? L("browser.pane.title") }
 
-    /// 最近一次激活（成为焦点 / 被送来链接）的时间：终端 ⌘+点击链接时选"最近的"浏览器 pane 用
+    /// When this pane was last activated - focused, or handed a link. Used to pick the "most recent"
+    /// browser pane when a link is Cmd+clicked in a terminal.
     private(set) var lastActivatedAt = Date()
 
     override func paneDidBecomeFirstResponder() {
@@ -288,25 +316,30 @@ final class BrowserPaneView: PaneView {
         makeCurrentForExtensions()
     }
 
-    /// 让扩展世界把本 pane 当成"当前窗口"。
+    /// Make the extension world treat this pane as the current window.
     ///
-    /// `WKWebExtensionContext.focusedWindow` 是**缓存值**，只有 `didFocusWindow(_:)` 会改它，
-    /// WebKit 不会回头问代理。`tabs.query({active:true,currentWindow:true})` 查的就是它——缓存漂了，
-    /// 扩展的消息就发到别的 pane（甚至别的屏幕）的标签上去，看起来就是"点了图标没反应"。
-    /// 所以除了取得键盘焦点，点工具条按钮（不改 first responder）、窗口成为 key 时也要报一次
+    /// `WKWebExtensionContext.focusedWindow` is a **cached value**. Only `didFocusWindow(_:)` changes
+    /// it; WebKit never goes back and asks the delegate. It is exactly what
+    /// `tabs.query({active:true,currentWindow:true})` reads, so once the cache drifts, an extension's
+    /// messages are delivered to a tab in a different pane - possibly on a different screen - which
+    /// looks to the user like "clicking the icon does nothing".
+    /// So besides taking keyboard focus, announce it again when a toolbar button is clicked (which does
+    /// not change the first responder) and when the window becomes key.
     func makeCurrentForExtensions() {
         lastActivatedAt = Date()
         extensionController?.didFocusWindow(self)
     }
 
-    /// 扩展事件的上报目标；config 关掉扩展时为 nil（全部静默）
+    /// Where extension events are reported; nil when the config turns extensions off, which silences
+    /// all of them.
     private var extensionController: WKWebExtensionController? {
         let manager = BrowserExtensionManager.current
         return manager.isEnabled ? manager.controller : nil
     }
 
-    /// 上报给扩展的标签事件（测试用：验顺序，以及上报当刻标签是否还在 pane 上——
-    /// WebKit 就在那一刻回调 `tab.window(for:)` 去算 tabs.onRemoved 的 windowId）
+    /// A tab event as reported to the extensions. For tests: it checks the ordering, and whether the
+    /// tab was still attached to the pane at the moment it was reported - WebKit calls
+    /// `tab.window(for:)` back right then to compute the windowId for tabs.onRemoved.
     struct ReportedTabEvent: Equatable {
         let kind: String
         let tab: UUID?
@@ -314,7 +347,7 @@ final class BrowserPaneView: PaneView {
         let windowAttached: Bool
     }
 
-    /// 测试钩子，生产恒为 nil
+    /// Test hook; always nil in production.
     static var tabEventRecorderForTesting: ((ReportedTabEvent) -> Void)?
 
     private func recordTabEvent(_ kind: String, _ tab: Tab?, previous: Tab? = nil) {
@@ -323,22 +356,27 @@ final class BrowserPaneView: PaneView {
                                   windowAttached: tab?.pane != nil))
     }
 
-    /// 一次性的「已经跑过收尾」标志。**对外只读**：控制面的用例靠它证明
-    /// 被顶掉的浏览器 pane 真的走了关闭路径（`spec apply --replace` 最容易偷懒的地方
-    /// 就是直接按赋值替换掉 pane，那样这里永远是 false，而下载与扩展窗口事件就此泄漏）
+    /// One-shot "teardown already ran" flag. **Read-only from outside**: the control-plane tests use it
+    /// to prove that a browser pane which was displaced really went through the close path. The lazy
+    /// shortcut in `spec apply --replace` is to swap the pane out by assignment, and then this stays
+    /// false forever while the downloads and the extension window events leak.
     private(set) var reportedWindowClose = false
 
-    /// pane 被移出工作区（控制器关 pane 时调用）：告诉扩展这个"窗口"关了。只报一次
+    /// The pane is being removed from the workspace (called when the controller closes it): tell the
+    /// extensions that this "window" is gone. Reported exactly once.
     func paneWillClose() {
         guard !reportedWindowClose else { return }
         reportedWindowClose = true
-        // 下载列表是 pane 私有的：pane 一关就没有界面、没有进度，WKDownload.delegate 又是弱引用
-        // （会自动置空）。与其留一堆没人管的传输，不如明确取消掉
+        // The download list is private to the pane: once the pane is gone there is no UI and no
+        // progress, and WKDownload.delegate is a weak reference that nils itself out. Better to cancel
+        // the transfers explicitly than to leave a pile of them running with nobody watching.
         for item in downloads.items where item.isActive { downloads.cancel(item) }
         downloadPopoverHost?.performClose(nil)
         extensionController?.didCloseWindow(self)
-        // 关掉的正是扩展眼里的"当前窗口"时，focusedWindow 会一直空着（`currentWindow` 的查询落空，
-        // 扩展图标从此点了没反应）：下一轮 runloop 把"当前窗口"交给还活着的浏览器 pane
+        // If the pane we just closed was the extensions' current window, focusedWindow would stay
+        // empty: every `currentWindow` query misses and extension icons stop responding to clicks. So
+        // on the next turn of the run loop, hand "current window" to a browser pane that is still
+        // alive.
         DispatchQueue.main.async { [weak self] in
             guard let next = BrowserExtensionManager.current.host?.focusedBrowserPane,
                   next !== self else { return }
@@ -346,10 +384,13 @@ final class BrowserPaneView: PaneView {
         }
     }
 
-    /// 请求关掉整个 pane（最后一个标签被关 / 扩展 windows.remove / 页面 window.close）。
-    /// pane 在非活动工作区 / 层级重建期间没挂窗口：先记下，挂回窗口再补发。
-    /// 这里必须看**当下**有没有挂在窗口上——`controller` 会兜底给出最近一次的控制器（链接路由要它），
-    /// 而 `closePane` 只认活动工作区里的 pane，拿兜底的控制器去关会是个静默的空操作
+    /// Request that the whole pane be closed (the last tab was closed, an extension called
+    /// windows.remove, or the page called window.close).
+    /// A pane in an inactive workspace, or one caught in a hierarchy rebuild, has no window: record the
+    /// request and re-send it once it is attached again.
+    /// This has to check whether the pane is attached to a window **right now**: `controller` falls
+    /// back to the most recent controller (link routing needs that), but `closePane` only knows panes
+    /// in the active workspace, so closing through the fallback controller is a silent no-op.
     func requestPaneClose() {
         if window != nil, let controller {
             controller.requestClosePane(self)
@@ -358,26 +399,28 @@ final class BrowserPaneView: PaneView {
         }
     }
 
-    /// 外部（终端 ⌘+点击）送来的链接：新标签打开并激活
+    /// A link handed in from outside (a Cmd+click in a terminal): open it in a new tab and activate it.
     func openLink(_ url: URL) {
         addTab(url: url, activate: true)
         lastActivatedAt = Date()
     }
-    /// 容器自己不接受焦点：键盘焦点在当前标签的 WKWebView
+    /// The container itself does not take focus: keyboard focus lives on the current tab's WKWebView.
     override var acceptsFirstResponder: Bool { false }
     override var focusTarget: NSView { webView }
-    /// 悬停即焦点由容器的 tracking area 驱动（WKWebView 的 mouseMoved 覆写收不到事件）
+    /// Hover-to-focus is driven by the container's tracking area; an override of WKWebView's
+    /// mouseMoved never receives the events.
     override var installsHoverTracking: Bool { true }
 
-    // MARK: - 创建
+    // MARK: - Construction
 
     init(id: UUID = UUID(), url: URL?) {
         super.init(id: id, frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         buildChrome()
-        // 扩展是启动时异步加载的（pane 可能先建好）：装 / 卸 / 启停之后重挂注入脚本
+        // Extensions load asynchronously at startup and the pane may well be built first: reinstall
+        // the injected scripts after an install, a removal or an enable/disable.
         NotificationCenter.default.addObserver(self, selector: #selector(extensionsDidChange),
                                                name: .browserExtensionsDidChange, object: nil)
-        extensionController?.didOpenWindow(self)   // 先有窗口再有标签
+        extensionController?.didOpenWindow(self)   // the window has to exist before the tabs do
         _ = addTab(url: url ?? Self.settings.homeURL, activate: true)
     }
 
@@ -398,11 +441,14 @@ final class BrowserPaneView: PaneView {
         for tab in tabs { tearDown(tab) }
     }
 
-    // MARK: - WebKit 自己的 UA
+    // MARK: - WebKit's own UA
 
-    /// 不带我们那份网页伪装的 UA——扩展的后台 / worker / 扩展页面看到的就是它。
-    /// 兜底值是 macOS 上 WKWebView 的默认 UA（WebKit 把系统版本写死在里面）；第一个 pane 起来时实测一次，
-    /// 实测值不同就覆盖并让各标签重挂注入脚本（WebKit 换了版本、或将来加上 applicationNameForUserAgent 都跟得上）
+    /// The UA without the web-facing disguise: it is what an extension's background, its workers and
+    /// its own pages see.
+    /// The fallback value is WKWebView's default UA on macOS, with the system version baked in by
+    /// WebKit. The real one is measured once when the first pane comes up, and if it differs it
+    /// overwrites this and makes every tab reinstall its injected scripts - so a WebKit version bump,
+    /// or adding applicationNameForUserAgent later, is picked up automatically.
     private(set) static var webKitUserAgent =
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"
     private static var userAgentProbe: UserAgentProbe?
@@ -417,13 +463,16 @@ final class BrowserPaneView: PaneView {
             userAgentProbe = nil
             guard !measured.isEmpty, measured != webKitUserAgent else { return }
             webKitUserAgent = measured
-            // 已经开着的标签重挂注入脚本（脚本里的 UA 是生成时写死的）
+            // Reinstall the injected scripts in tabs that are already open: the UA inside a script is
+            // baked in when the script is generated.
             NotificationCenter.default.post(name: .browserExtensionsDidChange, object: nil)
         }
     }
 
-    /// 干净配置（不挂 controller、不设 customUserAgent）里量一次 `navigator.userAgent`。
-    /// 空 WebView 上直接求值不可靠（没有页面），先加载一个空文档再问
+    /// Measure `navigator.userAgent` once in a clean configuration - no controller attached, no
+    /// customUserAgent set.
+    /// Evaluating it on an empty WebView is unreliable because there is no page, so load an empty
+    /// document first and ask afterwards.
     private final class UserAgentProbe: NSObject, WKNavigationDelegate {
         private let webView = WKWebView(frame: .zero)
         private var completion: ((String) -> Void)?
@@ -457,9 +506,11 @@ final class BrowserPaneView: PaneView {
         return config
     }
 
-    /// 扩展接线：每个标签的配置都要挂 controller（不挂的标签对扩展不可见），
-    /// 外加 Web Store 详情页的「添加到 QuickTerm」按钮与它的回传通道。
-    /// 通道注册在私有 content world 里：页面自己的 JS 够不着 `messageHandlers.quicktermExtension`
+    /// Wiring for extensions: every tab's configuration has to carry the controller, because a tab
+    /// without it is invisible to the extensions - plus the "Add to QuickTerm" button on Web Store
+    /// detail pages and the channel it posts back through.
+    /// That channel is registered in a private content world, so a page's own JS cannot reach
+    /// `messageHandlers.quicktermExtension`.
     private func prepareForExtensions(_ configuration: WKWebViewConfiguration, extensionPage: Bool = false) {
         let manager = BrowserExtensionManager.current
         guard manager.isEnabled else { return }
@@ -467,22 +518,27 @@ final class BrowserPaneView: PaneView {
         configuration.webExtensionController = manager.controller
         let content = configuration.userContentController
         let world = BrowserExtensionWebStore.contentWorld
-        // window.open 给回来的 configuration 可能已经注册过：重复注册会抛 ObjC 异常
+        // The configuration handed back by window.open may already be registered, and registering the
+        // same name twice throws an ObjC exception.
         content.removeScriptMessageHandler(forName: BrowserExtensionWebStore.messageHandlerName,
                                            contentWorld: world)
         content.add(scriptHandler, contentWorld: world, name: BrowserExtensionWebStore.messageHandlerName)
         content.addUserScript(BrowserExtensionWebStore.userScript)
-        // 网页里嵌的扩展 iframe：tabs.* 等改走后台转发（直接调会被 WebKit 杀掉页面进程）。扩展配置（扩展页开的
-        // window.open 弹窗跑在扩展进程里，直接调没问题）不注入；window.open 给回来的 configuration 与开窗方共用
-        // 同一个 userContentController，别重复追加
+        // An extension iframe embedded in a web page routes tabs.* and friends through the background
+        // instead; calling them directly gets the page process killed by WebKit. An extension
+        // configuration is not injected (a window.open popup from an extension page runs in the
+        // extension process, where calling them directly is fine), and the configuration handed back by
+        // window.open shares one userContentController with the opener, so do not append twice.
         guard !extensionPage else { return }
-        // externally_connectable：网页侧的 chrome.runtime 别名（内容随已装扩展变，按源码首行标记去重）
+        // externally_connectable: the page-side chrome.runtime alias. Its contents change with the set
+        // of installed extensions, so deduplicate on the marker in the script's first line.
         if let external = manager.externalMessagingUserScript,
            !content.userScripts.contains(where: { $0.source.hasPrefix(BrowserExtensionCompat.externalMessagingMarker) }) {
             content.addUserScript(external)
         }
-        // 网页里嵌的扩展 iframe 跟着网页 WebView 拿到我们给网页的 UA 伪装（Chrome 下扩展的框架报的一直是
-        // 浏览器自己的 UA）：把这种框架里的 navigator.userAgent 换回 WebKit 自己那份，见 userAgentScript
+        // An extension iframe embedded in a web page inherits the web-facing UA disguise from the page's
+        // WebView, whereas in Chrome an extension's frames always report the browser's own UA. So swap
+        // navigator.userAgent inside such a frame back to WebKit's own; see userAgentScript.
         if !content.userScripts.contains(where: { $0.source.hasPrefix(BrowserExtensionCompat.userAgentMarker) }) {
             content.addUserScript(BrowserExtensionCompat.userAgentUserScript(Self.webKitUserAgent))
         }
@@ -490,9 +546,12 @@ final class BrowserPaneView: PaneView {
         content.addUserScript(BrowserExtensionCompat.frameUserScript)
     }
 
-    /// 装 / 卸 / 启停扩展之后重挂各标签的注入脚本：externally_connectable 的地址清单变了，
-    /// 而 WKUserScript 只能整体清空重加。已经打开的页面不受影响（下次导航才生效，与 Chrome 装扩展一样）。
-    /// 扩展自己的页面（配置来自 context.webViewConfiguration）不碰
+    /// Reinstall every tab's injected scripts after an extension is added, removed, enabled or
+    /// disabled: the externally_connectable address list has changed, and WKUserScript can only be
+    /// cleared and re-added wholesale. Pages that are already open are unaffected and only pick it up
+    /// on their next navigation, exactly as installing an extension in Chrome behaves.
+    /// Extensions' own pages, whose configuration comes from context.webViewConfiguration, are left
+    /// alone.
     @objc private func extensionsDidChange() {
         for tab in tabs where tab.extensionContext == nil {
             let configuration = tab.webView.configuration
@@ -501,16 +560,21 @@ final class BrowserPaneView: PaneView {
         }
     }
 
-    // MARK: - 标签管理
+    // MARK: - Tab management
 
-    /// 新标签（url 为 nil = 首页）。webView 参数：window.open 时 WebKit 要求用它给的 configuration 创建；
-    /// 这时"配置属于哪个扩展"只有开窗方知道，由 inheriting 传进来
+    /// A new tab (a nil url means the home page). The webView parameter exists because on window.open
+    /// WebKit demands that the view be created from the configuration it handed us; at that point only
+    /// the opener knows which extension that configuration belongs to, which is what `inheriting`
+    /// carries in.
     @discardableResult
     func addTab(url: URL?, activate: Bool, webView given: BrowserWebView? = nil,
                 inheriting inherited: WKWebExtensionContext? = nil) -> Tab {
-        // 扩展自己的页面（webkit-extension://…，如选项页 / tabs.create(runtime.getURL(…))）必须用
-        // context.webViewConfiguration 建 WebView，普通配置的主帧加载会被 WebKit 拒掉。
-        // 扩展页开的弹窗还在同一个扩展里：绑定要在 install（据它决定套不套网页那份 UA 伪装）之前就位
+        // An extension's own page (webkit-extension://..., such as an options page or
+        // tabs.create(runtime.getURL(...))) must be built from context.webViewConfiguration; WebKit
+        // rejects the main-frame load in an ordinary configuration.
+        // A popup opened from an extension page is still inside the same extension, so the binding has
+        // to be in place before install(), which uses it to decide whether to apply the web-facing UA
+        // disguise.
         let context = given == nil ? url.flatMap(extensionContext(for:)) : inherited
         let webView = given ?? makeWebView(extensionContext: context)
         let tab = Tab(webView: webView)
@@ -525,25 +589,27 @@ final class BrowserPaneView: PaneView {
         }
         if activate { selectTab(at: tabs.count - 1) } else { rebuildTabBar() }
         extensionBar.reload()
-        archiveDidChange.send()   // 标签集合变了：排一次防抖存档
+        archiveDidChange.send()   // the set of tabs changed: schedule one debounced archive write
         return tab
     }
 
-    /// 这个 URL 属于哪个已加载的扩展（普通网址 = nil）
+    /// Which loaded extension this URL belongs to; nil for an ordinary web address.
     private func extensionContext(for url: URL) -> WKWebExtensionContext? {
         BrowserExtensionManager.current.extensionContext(forResourceURL: url)
     }
 
     private func makeWebView(extensionContext context: WKWebExtensionContext?) -> BrowserWebView {
-        // context.webViewConfiguration 是 controller 配置的定制副本（带 requiredWebExtensionBaseURL
-        // 与 controller），不要再往上叠 makeConfiguration 的东西
+        // context.webViewConfiguration is a customized copy of the controller's configuration, already
+        // carrying requiredWebExtensionBaseURL and the controller; do not pile makeConfiguration's
+        // settings on top of it.
         if let config = context?.webViewConfiguration {
             return BrowserWebView(frame: .zero, configuration: config)
         }
         return BrowserWebView(frame: .zero, configuration: makeConfiguration())
     }
 
-    /// 把一个 WebView 接进 pane（代理 / 外观 / 设置 / KVO / 约束）——新建标签与跨界换 WebView 都走这里
+    /// Wire a WebView into the pane: delegates, appearance, settings, KVO and constraints. Both a new
+    /// tab and a cross-boundary WebView swap go through here.
     private func install(_ webView: BrowserWebView, for tab: Tab) {
         webView.pane = self
         webView.navigationDelegate = self
@@ -551,8 +617,10 @@ final class BrowserPaneView: PaneView {
         webView.allowsBackForwardNavigationGestures = true
         webView.translatesAutoresizingMaskIntoConstraints = false
         applySettings(to: webView, extensionPage: tab.extensionContext != nil)
-        // 透明背景：透出 QuickTerm 的壁纸 / 磨砂层（页面自己画背景的地方不受影响）。
-        // drawsBackground 走私有 setter（_setDrawsBackground:）：先探测，避免将来被移除时 KVC 抛异常崩在创建/恢复
+        // Transparent background, so QuickTerm's wallpaper and blur layer show through; wherever the
+        // page paints its own background nothing changes.
+        // drawsBackground goes through a private setter (_setDrawsBackground:), so probe for it first:
+        // if it is ever removed, KVC would throw and crash during pane creation or restore.
         if webView.responds(to: Selector(("_setDrawsBackground:"))) {
             webView.setValue(false, forKey: "drawsBackground")
         }
@@ -568,8 +636,10 @@ final class BrowserPaneView: PaneView {
         webView.isHidden = true
     }
 
-    /// 扩展页 ↔ 普通页跨界：原地把标签的 WebView 换成配置正确的那种（标签身份、下标、扩展看到的
-    /// tabId 都不变）。WebKit 明确要求"在扩展 URL 与普通 URL 之间导航时换掉 tab 的 web view"
+    /// Crossing the extension-page / ordinary-page boundary: swap the tab's WebView in place for one
+    /// with the right configuration, keeping the tab's identity, its index and the tabId the extensions
+    /// see. WebKit explicitly requires replacing a tab's web view when navigating between an extension
+    /// URL and an ordinary one.
     private func rebuildWebView(of tab: Tab, for context: WKWebExtensionContext?) {
         let wasActive = tab === activeTab
         let hadFocus = wasActive && (window.map { holdsFirstResponder(of: $0) } ?? false)
@@ -592,14 +662,17 @@ final class BrowserPaneView: PaneView {
 
     func newTab(url: URL? = nil) { addTab(url: url ?? Self.settings.homeURL, activate: true) }
 
-    /// 切换到第 index 个标签：只显示它、工具条绑定它、焦点（若本 pane 持焦，或调用方要求）交给它
+    /// Switch to the tab at `index`: show only it, bind the toolbar to it, and give it focus if this
+    /// pane already held focus or the caller asked for it.
     func selectTab(at index: Int, forceFocus: Bool = false) {
         selectTab(at: index, forceFocus: forceFocus, previous: activeTab)
     }
 
-    /// previous = 上报给扩展的"之前激活的标签"。关标签那条路径必须在数组变短**之前**把它取出来：
-    /// 删除之后 activeTabIndex 还是旧值，`activeTab` 指到的已经是别的标签（tabs.onActivated 要么不发、
-    /// 要么带着一个从没激活过的 previousTabId）。被关的正是当前标签时传 nil（Chrome 语义：不给 previousTabId）
+    /// `previous` is the "previously active tab" reported to the extensions. The close-tab path has to
+    /// read it out **before** the array shrinks: after the removal activeTabIndex still holds the old
+    /// value and `activeTab` already points at a different tab, so tabs.onActivated either never fires
+    /// or fires carrying a previousTabId that was never active. When the tab being closed is the
+    /// current one, pass nil - Chrome's semantics is to send no previousTabId at all.
     private func selectTab(at index: Int, forceFocus: Bool, previous: Tab?) {
         guard tabs.indices.contains(index) else { return }
         let hadFocus = forceFocus || (window.map { holdsFirstResponder(of: $0) } ?? false)
@@ -619,28 +692,32 @@ final class BrowserPaneView: PaneView {
         extensionBar.reload()
         if hadFocus { window?.makeFirstResponder(webView) }
         objectWillChange.send()
-        archiveDidChange.send()   // 活动标签变了（切换 / 关标签）：排一次防抖存档
+        archiveDidChange.send()   // the active tab changed (switch or close): schedule a debounced write
     }
 
-    /// 相对切换（Ctrl+Tab / Ctrl+Shift+Tab），首尾回绕
+    /// Relative switching (Ctrl+Tab / Ctrl+Shift+Tab), wrapping around at both ends.
     func selectTab(offset: Int) {
         guard tabs.count > 1 else { return }
         selectTab(at: ((activeTabIndex + offset) % tabs.count + tabs.count) % tabs.count)
     }
 
-    /// 关闭第 index 个标签；最后一个标签不在这里关（由控制器关 pane）。返回是否关掉了标签
+    /// Close the tab at `index`. The last tab is not closed here; the controller closes the pane
+    /// instead. Returns whether a tab was actually closed.
     @discardableResult
     func closeTab(at index: Int) -> Bool {
         guard tabs.count > 1, tabs.indices.contains(index) else { return false }
-        // 先记焦点：被关标签的 webView 脱离窗口时 AppKit 会静默把 FR 重置为窗口（不发 resign），
-        // 之后再看 holdsFirstResponder 就是 false，幸存标签拿不到焦点
+        // Record focus first: when the closing tab's webView leaves the window, AppKit silently resets
+        // the FR to the window without sending resign, so a later holdsFirstResponder reads false and
+        // the surviving tab never gets focus.
         let hadFocus = window.map { holdsFirstResponder(of: $0) } ?? false
-        // 删之前取：关的就是当前标签 → previous 传 nil（新的当前标签会被正常上报激活）；
-        // 关的是别的标签 → 当前标签没变，selectTab 里 current === previous，不会误发激活事件
+        // Read it before the removal: closing the current tab means previous = nil, and the new current
+        // tab is reported as activated normally; closing some other tab leaves the current tab
+        // unchanged, so current === previous inside selectTab and no spurious activation is sent.
         let previous: Tab? = index == activeTabIndex ? nil : activeTab
         let tab = tabs.remove(at: index)
-        // 先上报再拆：WebKit 在 didCloseTab 里同步回调 tab.window(for:) 去算 tabs.onRemoved 的
-        // windowId，此刻 tab.pane 必须还在（先 tearDown 的话拿到的是 windowId = -1）
+        // Report before tearing down: inside didCloseTab WebKit synchronously calls tab.window(for:)
+        // back to compute the windowId for tabs.onRemoved, and tab.pane has to still be there at that
+        // moment - tearing down first yields windowId = -1.
         extensionController?.didCloseTab(tab, windowIsClosing: false)
         recordTabEvent("close", tab)
         tearDown(tab)
@@ -669,7 +746,7 @@ final class BrowserPaneView: PaneView {
         tab.pane = nil
     }
 
-    // MARK: - 界面
+    // MARK: - Chrome
 
     private func buildChrome() {
         wantsLayer = true
@@ -679,7 +756,8 @@ final class BrowserPaneView: PaneView {
         }
         tabBar.onSelect = { [weak self] i in self?.selectTab(at: i) }
         tabBar.onNewTab = { [weak self] in self?.newTab() }
-        // 最后一个标签的关闭钮关掉整个 pane（与 Cmd+W / window.close 一致），否则那个 x 是死的
+        // The close button on the last tab closes the whole pane, matching Cmd+W and window.close;
+        // otherwise that x would be dead.
         tabBar.onClose = { [weak self] i in
             guard let self, !self.closeTab(at: i), self.tabs.count == 1 else { return }
             self.requestPaneClose()
@@ -709,8 +787,9 @@ final class BrowserPaneView: PaneView {
         addressField.lineBreakMode = .byTruncatingTail
         addressField.usesSingleLineMode = true
         addressField.cell?.sendsActionOnEndEditing = false
-        // 地址栏的文字宽度不参与"谁被压"的竞争（比扩展条的 .defaultLow 还低一档）：
-        // 否则一条长 URL 会反过来把扩展条挤没。地址栏的下限只由下面 >= 200 的约束保证
+        // The address bar's text width stays out of the "who gets squeezed" contest, one notch below
+        // the extension toolbar's .defaultLow: otherwise a long URL would squeeze the toolbar out of
+        // existence. The address bar's floor comes solely from the >= 200 constraint below.
         addressField.setContentCompressionResistancePriority(
             .init(rawValue: NSLayoutConstraint.Priority.defaultLow.rawValue - 1), for: .horizontal)
         addressField.delegate = self
@@ -726,12 +805,14 @@ final class BrowserPaneView: PaneView {
         toolbar.addSubview(downloadButton)
         downloads.onChange = { [weak self] in self?.downloadsDidChange() }
 
-        // 扩展工具条：手工布局，只对外报 intrinsicContentSize（非必需优先级，撑不动 pane 宽度）
+        // The extension toolbar lays itself out by hand and only publishes an intrinsicContentSize, at
+        // a non-required priority, so it cannot stretch the pane's width.
         extensionBar.pane = self
         extensionBar.translatesAutoresizingMaskIntoConstraints = false
         extensionBar.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        // 压缩阻力比地址栏的保底宽度低：固定的扩展一多，先压扩展条（放不下的按钮藏起来、留在拼图菜单里），
-        // 不能把地址栏挤成一小段
+        // Compression resistance below the address bar's floor: as pinned extensions pile up, the
+        // toolbar is squeezed first (the buttons that no longer fit hide and stay in the puzzle menu)
+        // rather than shrinking the address bar to a stub.
         extensionBar.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         toolbar.addSubview(extensionBar)
 
@@ -742,14 +823,18 @@ final class BrowserPaneView: PaneView {
         progressBar.controlSize = .small
         progressBar.isHidden = true
 
-        // 地址栏保底宽度：优先级高于扩展条的压缩阻力（.defaultLow = 250）——扩展再多也给地址栏留 200pt；
-        // 但必须 **低于 500**：pane 由 SwiftUI 托管，NSHostingView 量 pane 时按 500 的 fitting priority 走，
-        // >= 500 的宽度约束（哪怕非必需）会反过来把窄 pane 撑宽（实测 pane 宽 250 会被撑成 300）
+        // The address bar's floor width: above the extension toolbar's compression resistance
+        // (.defaultLow = 250), so no number of extensions takes the address bar below 200pt. But it has
+        // to stay **below 500**: the pane is hosted by SwiftUI, NSHostingView measures it at a fitting
+        // priority of 500, and a width constraint at >= 500 stretches a narrow pane even when it is not
+        // required (measured: a 250-wide pane came out at 300).
         let addressFieldMinWidth = addressField.widthAnchor.constraint(greaterThanOrEqualToConstant:
                                                                         Self.addressFieldMinimumWidth)
         addressFieldMinWidth.priority = Self.addressFieldMinimumPriority
-        // 扩展条至少留一颗拼图的宽度：比地址栏保底再高一档（同样 < 500）——pane 窄到连 200pt 地址栏都放不下时
-        // 让地址栏继续让（Chrome 同款），拼图按钮永远留在 pane 里、点得到
+        // The extension toolbar keeps at least one puzzle button's width, one notch above the address
+        // bar's floor and still < 500: once the pane is too narrow even for a 200pt address bar, the
+        // address bar keeps giving way (as in Chrome) and the puzzle button stays in the pane, where it
+        // can still be clicked.
         let extensionBarMinWidth = extensionBar.widthAnchor.constraint(greaterThanOrEqualToConstant:
                                                                         BrowserExtensionToolbar.buttonSize)
         extensionBarMinWidth.priority = .init(rawValue: Self.addressFieldMinimumPriority.rawValue + 10)
@@ -777,7 +862,9 @@ final class BrowserPaneView: PaneView {
             reloadButton.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
             reloadButton.widthAnchor.constraint(equalToConstant: 24),
             addressField.leadingAnchor.constraint(equalTo: reloadButton.trailingAnchor, constant: 6),
-            // 地址栏 | 6pt | 下载按钮（无下载时宽 0、右侧间距也 0，还原成原来的"地址栏 | 6pt | 扩展条"） | 扩展条
+            // address bar | 6pt | download button | extension toolbar. With no downloads the button's
+            // width and its trailing gap are both 0, which restores the original
+            // "address bar | 6pt | extension toolbar".
             addressField.trailingAnchor.constraint(equalTo: downloadButton.leadingAnchor, constant: -6),
             downloadButtonWidth,
             downloadTrailingGap,
@@ -801,26 +888,27 @@ final class BrowserPaneView: PaneView {
         ])
     }
 
-    /// 测试用：标签项当前宽度
+    /// For tests: the current width of each tab item.
     var tabItemWidthsForTesting: [CGFloat] {
         tabBar.layoutSubtreeIfNeeded()
         return tabBar.itemViews.map { $0.frame.width }
     }
 
-    /// 测试用：标签条视图
+    /// For tests: the tab bar view.
     var tabBarForTesting: BrowserTabBarView { tabBar }
-    /// 测试用：地址栏
+    /// For tests: the address bar.
     var addressFieldForTesting: NSTextField { addressField }
 
-    /// 标签条是否显示：always 或多于一个标签
+    /// Whether the tab bar is shown: either always, or once there is more than one tab.
     var tabBarVisible: Bool { Self.settings.tabBarAlwaysVisible || tabs.count > 1 }
 
 
-    /// 同步标签条：标题 / 激活态交给 BrowserTabBarView（手工布局，对 pane 零约束）
+    /// Sync the tab bar: titles and active state are handed to BrowserTabBarView, which lays itself out
+    /// by hand and puts zero constraints on the pane.
     private func rebuildTabBar() {
         let visible = tabBarVisible
         tabBar.isHidden = !visible
-        if !visible { tabBar.updateHover(atBarPoint: nil) }   // 隐藏后收不到 mouseExited
+        if !visible { tabBar.updateHover(atBarPoint: nil) }   // no mouseExited arrives once hidden
         tabBarHeight.constant = visible ? BrowserTabBarView.Metrics.barHeight : 0
         tabBar.metrics = .init(maxWidth: CGFloat(Self.settings.tabWidth), minWidth: CGFloat(Self.settings.tabMinWidth))
         tabBar.update(items: tabs.enumerated().map { i, tab in
@@ -835,13 +923,16 @@ final class BrowserPaneView: PaneView {
                 guard let self, let tab else { return }
                 if tab === self.activeTab { self.urlDidChange() }
                 self.extensionController?.didChangeTabProperties(.URL, for: tab)
-                // 扩展动作是按标签算的（图标 / 是否可用都跟着 URL 变）：导航后不重读的话
-                // 工具条按钮会停在上一页的状态上，`isEnabled == false` 的按钮会静默吃掉点击
+                // An extension action is computed per tab, and both its icon and whether it is enabled
+                // follow the URL. Without re-reading after a navigation, the toolbar button is stuck in
+                // the previous page's state, and a button with `isEnabled == false` swallows clicks
+                // silently.
                 if tab === self.activeTab { self.extensionBar.reload() }
             },
             webView.observe(\.title, options: [.new]) { [weak self, weak tab] wv, _ in
                 guard let self, let tab else { return }
-                // KVO 回调是 @Sendable 闭包，而 Tab 已是 MainActor 隔离的：WebKit 的这些通知一律在主线程
+                // The KVO callback is a @Sendable closure while Tab is MainActor-isolated; these
+                // particular WebKit notifications always arrive on the main thread.
                 MainActor.assumeIsolated { tab.title = wv.title ?? "" }
                 self.rebuildTabBar()
                 self.objectWillChange.send()
@@ -868,34 +959,39 @@ final class BrowserPaneView: PaneView {
         ]
     }
 
-    /// 工具条 / 地址栏 / 进度 / 前进后退全部绑到当前标签
+    /// Bind the toolbar, the address bar, the progress bar and back/forward to the current tab.
     private func syncChromeToActiveTab() {
         urlDidChange()
         progressDidChange()
         updateNavigationButtons()
     }
 
-    /// 配置热重载：UA / Inspector / 标签条（config.toml 保存即生效，含已打开的 pane 与标签）
+    /// Live config reload: UA, Inspector and the tab bar. Saving config.toml takes effect immediately,
+    /// including in panes and tabs that are already open.
     func applySettings() {
         for tab in tabs { applySettings(to: tab.webView, extensionPage: tab.extensionContext != nil) }
         rebuildTabBar()
         extensionBar.reload()
     }
 
-    /// 扩展自己的页面（选项页 / `tabs.create(runtime.getURL(…))`）不套网页那份 UA 伪装：
-    /// 扩展的后台与 worker 看到的是 WebKit 自己的 UA，页面这半边要跟它一致——不然同一个扩展的两半
-    /// 看到两个不同的浏览器，库会在其中一半走上另一条分支（见 BrowserExtensionCompat.userAgentScript）
+    /// An extension's own pages (its options page, `tabs.create(runtime.getURL(...))`) do not get the
+    /// web-facing UA disguise: the extension's background and its workers see WebKit's own UA, and the
+    /// page half has to agree with them. Otherwise the two halves of one extension see two different
+    /// browsers and a library takes a different branch in one of them (see
+    /// BrowserExtensionCompat.userAgentScript).
     private func applySettings(to webView: WKWebView, extensionPage: Bool) {
         webView.customUserAgent = extensionPage ? nil : Self.settings.effectiveUserAgent
         webView.isInspectable = Self.settings.inspectable
     }
 
-    /// 外观：工具条 / 标签条随主题（背景 / 前景色由控制器主题热切换时调用）
+    /// Appearance: the toolbar and the tab bar follow the theme. The controller calls this with the
+    /// background and foreground colors when the theme is switched live.
     func applyTheme(background: NSColor, foreground: NSColor) {
         themeBackground = background
         themeForeground = foreground
         toolbar.wantsLayer = true
-        // 工具条用纯背景色：当前标签同色贴上来（标签条基线在它脚下断开），层次才成立
+        // The toolbar takes the pure background color so the current tab, in the same color, joins onto
+        // it (the tab bar's baseline breaks under that tab); that is what makes the layering read.
         toolbar.layer?.backgroundColor = background.cgColor
         tabBar.applyTheme(background: background, foreground: foreground)
         addressField.textColor = foreground
@@ -905,7 +1001,7 @@ final class BrowserPaneView: PaneView {
         rebuildTabBar()
     }
 
-    // MARK: - 导航（作用于当前标签）
+    // MARK: - Navigation (acting on the current tab)
 
     func load(_ url: URL) {
         guard let tab = activeTab else { return }
@@ -918,7 +1014,7 @@ final class BrowserPaneView: PaneView {
         tab.webView.load(URLRequest(url: url))
     }
 
-    /// 地址栏文本（URL 或搜索词）
+    /// Address bar text: either a URL or search terms.
     func navigate(to text: String) {
         guard let url = Self.settings.url(forInput: text) else { return }
         load(url)
@@ -929,14 +1025,16 @@ final class BrowserPaneView: PaneView {
     @objc func reloadOrStop() {
         if webView.isLoading { webView.stopLoading() } else { reload() }
     }
-    /// 错误页状态下重载的是原网址，不是错误页本身
+    /// On an error page, reload the original URL rather than the error page itself.
     func reload() {
         guard let tab = activeTab else { return }
         reload(tab, fromOrigin: false)
     }
 
-    /// 指名重载某一个标签（控制面的 `browser reload` 用它；`fromOrigin` = 绕过缓存）。
-    /// 错误页那条规矩在这里**只写一遍**：重载的是原网址，不是错误页本身
+    /// Reload one named tab; this is what the control plane's `browser reload` uses, and `fromOrigin`
+    /// bypasses the cache.
+    /// The error-page rule is written **exactly once**, here: what gets reloaded is the original URL,
+    /// not the error page itself.
     func reload(_ tab: Tab, fromOrigin: Bool) {
         if tab.showingErrorPage, let url = tab.lastRequestedURL {
             load(url, in: tab)
@@ -945,14 +1043,15 @@ final class BrowserPaneView: PaneView {
         if fromOrigin { tab.webView.reloadFromOrigin() } else { tab.webView.reload() }
     }
 
-    /// 焦点进地址栏并全选（Cmd+Shift+L）
+    /// Move focus into the address bar and select all of it (Cmd+Shift+L).
     func focusAddressBar() {
         window?.makeFirstResponder(addressField)
         addressField.currentEditor()?.selectAll(nil)
         addressField.didFocusProgrammatically()
     }
 
-    /// 当前页面交给系统默认浏览器（Widevine / 通行密钥等 WebKit 嵌入做不到的场景）
+    /// Hand the current page to the system default browser, for what an embedded WebKit cannot do:
+    /// Widevine, passkeys and the like.
     func openExternally() {
         guard let url = effectiveURL else { return }
         NSWorkspace.shared.open(url)
@@ -973,7 +1072,7 @@ final class BrowserPaneView: PaneView {
     private func urlDidChange() {
         if !editingAddress { addressField.stringValue = effectiveURL?.absoluteString ?? "" }
         objectWillChange.send()
-        archiveDidChange.send()   // 「已打开的网页」变了：排一次防抖存档
+        archiveDidChange.send()   // the page that is open changed: schedule a debounced archive write
     }
 
     private func progressDidChange() {
@@ -990,7 +1089,7 @@ final class BrowserPaneView: PaneView {
         forwardButton.isEnabled = webView.canGoForward
     }
 
-    // MARK: - 存档
+    // MARK: - Archiving
 
     private enum CodingKeys: String, CodingKey { case uuid, url, title, tabs, activeTab }
     private struct TabSnapshot: Codable {
@@ -1003,7 +1102,7 @@ final class BrowserPaneView: PaneView {
         let id = try c.decodeIfPresent(String.self, forKey: .uuid).flatMap(UUID.init(uuidString:)) ?? UUID()
         let snapshots = try c.decodeIfPresent([TabSnapshot].self, forKey: .tabs) ?? []
         if snapshots.isEmpty {
-            // 单页存档（多标签之前的格式）
+            // A single-page archive, the format from before tabs existed.
             let url = try c.decodeIfPresent(String.self, forKey: .url).flatMap(URL.init(string:))
             let pane = BrowserPaneView(id: id, url: url ?? settings.homeURL)
             if let title = try c.decodeIfPresent(String.self, forKey: .title) { pane.activeTab?.title = title }
@@ -1024,7 +1123,7 @@ final class BrowserPaneView: PaneView {
     override func encodePayload(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id.uuidString, forKey: .uuid)
-        // 兼容旧格式：url / title 仍写当前标签
+        // Compatibility with the old format: url / title still carry the current tab.
         try c.encodeIfPresent(effectiveURL?.absoluteString, forKey: .url)
         try c.encode(pageTitle, forKey: .title)
         try c.encode(tabs.map { TabSnapshot(url: $0.effectiveURL?.absoluteString, title: $0.title) }, forKey: .tabs)
@@ -1032,9 +1131,10 @@ final class BrowserPaneView: PaneView {
     }
 }
 
-// MARK: - WebExtensions：pane = 窗口
+// MARK: - WebExtensions: a pane is a window
 
-/// 扩展眼里的"窗口"就是一个浏览器 pane（QuickTerm 只有一个真窗口，pane 才是浏览上下文的单位）
+/// What an extension calls a "window" is one browser pane: QuickTerm has a single real window, and the
+/// pane is the unit of browsing context.
 extension BrowserPaneView: WKWebExtensionWindow {
     func tabs(for context: WKWebExtensionContext) -> [any WKWebExtensionTab] { tabs }
 
@@ -1060,32 +1160,37 @@ extension BrowserPaneView: WKWebExtensionWindow {
         completionHandler(nil)
     }
 
-    /// windows.remove：pane 可能在非活动工作区（没挂窗口、controller 为 nil），
-    /// 那时先记下、挂回窗口再关——直接 `controller?.requestClosePane` 会是个静默的空操作
+    /// windows.remove: the pane may be in an inactive workspace, with no window attached and a nil
+    /// controller. In that case record the request and close once it is attached again; calling
+    /// `controller?.requestClosePane` straight away would be a silent no-op.
     func close(for context: WKWebExtensionContext, completionHandler: @escaping ((any Error)?) -> Void) {
         requestPaneClose()
         completionHandler(nil)
     }
 }
 
-// MARK: - 扩展 UI（弹出层 / 菜单 / Web Store 安装）
+// MARK: - Extension UI (popovers / menus / Web Store installs)
 
 extension BrowserPaneView {
-    /// 扩展动作的 popup：锚在它自己的按钮上（没有按钮就锚拼图按钮）。
-    /// 工具条在 pane 顶部、视图未 flipped：弹层要落在按钮**下方** = minY 边
+    /// An extension action's popup, anchored to its own button, or to the puzzle button when it has
+    /// none.
+    /// The toolbar is at the top of the pane and the view is not flipped, so the popover has to land
+    /// **below** the button, which is the minY edge.
     func presentExtensionPopup(_ action: WKWebExtension.Action, of context: WKWebExtensionContext) {
         guard let popover = action.popupPopover else { return }
         let anchor = extensionBar.anchorButton(for: context)
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
     }
 
-    /// WM 动作 web-extensions（⌘⇧E）：弹出拼图菜单
+    /// The web-extensions WM action (Cmd+Shift+E): pop up the puzzle menu.
     func showExtensionsMenu() {
         extensionBar.showMenu()
     }
 
-    /// Web Store 详情页「添加到 QuickTerm」：下载解包 → 权限确认 → 安装。
-    /// 进度写在地址栏的占位文字里（没有别的地方可写，且不打断页面）
+    /// "Add to QuickTerm" on a Web Store detail page: download and unpack, confirm the permissions,
+    /// install.
+    /// Progress is written into the address bar's placeholder text - there is nowhere else to put it,
+    /// and it does not interrupt the page.
     func beginWebStoreInstall(id: String) {
         let manager = BrowserExtensionManager.current
         guard manager.isEnabled else {
@@ -1093,7 +1198,8 @@ extension BrowserPaneView {
                    text: L("browser.install.turned-off.body"))
             return
         }
-        // 一次只装一个：页面若连着发消息，不能堆起 N 个下载 / ditto / 模态弹窗
+        // One install at a time: if the page posts messages back to back, we must not pile up N
+        // downloads, N ditto processes and N modal alerts.
         guard !webStoreInstallInFlight else { return }
         webStoreInstallInFlight = true
         let placeholder = addressField.placeholderString
@@ -1137,20 +1243,22 @@ extension BrowserPaneView {
     }
 }
 
-// MARK: - 地址栏
+// MARK: - Address bar
 
 extension BrowserPaneView: NSTextFieldDelegate {
     func controlTextDidBeginEditing(_ obj: Notification) { editingAddress = true }
     func controlTextDidEndEditing(_ obj: Notification) {
         editingAddress = false
-        // 回车：NSTextField 先发本通知、后发 action，这里若把文本重置成当前网址，action 读到的就是
-        // 当前网址而不是用户输入（"输入什么都回到原页面"）。只有失焦 / 取消才把文本恢复成当前网址
+        // On Return, NSTextField posts this notification first and sends its action afterwards, so
+        // resetting the text to the current URL here would make the action read the current URL instead
+        // of what the user typed - "whatever you type takes you back to the same page". Only losing
+        // focus or cancelling restores the text to the current URL.
         let movement = (obj.userInfo?["NSTextMovement"] as? Int).flatMap(NSTextMovement.init(rawValue:))
         if movement == .return { return }
         addressField.stringValue = effectiveURL?.absoluteString ?? ""
     }
 
-    /// Esc：放弃编辑，焦点回页面
+    /// Esc: abandon the edit and return focus to the page.
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         if selector == #selector(NSResponder.cancelOperation(_:)) {
             addressField.stringValue = effectiveURL?.absoluteString ?? ""
@@ -1161,13 +1269,13 @@ extension BrowserPaneView: NSTextFieldDelegate {
     }
 }
 
-// MARK: - 导航代理
+// MARK: - Navigation delegate
 
 extension BrowserPaneView: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let tab = tab(for: webView) else { decisionHandler(.allow); return }
-        // ⌘+点击链接 → 后台新标签打开（Chrome 习惯），本页不动
+        // Cmd+clicking a link opens it in a new background tab, as Chrome does, leaving this page alone.
         if navigationAction.navigationType == .linkActivated,
            navigationAction.modifierFlags.contains(.command),
            let url = navigationAction.request.url {
@@ -1175,9 +1283,11 @@ extension BrowserPaneView: WKNavigationDelegate {
             decisionHandler(.cancel)
             return
         }
-        // 记住主帧的真实请求（链接点击 / 重定向），错误页不能覆盖它。
-        // targetFrame == nil 是 target=_blank（走 createWebViewWith 开新标签），不算本标签的导航；
-        // 错误页自身的模拟加载也会回调到这里，跳过
+        // Remember the main frame's real request (a link click, a redirect); an error page must not
+        // overwrite it.
+        // targetFrame == nil means target=_blank, which goes through createWebViewWith to open a new
+        // tab and is not a navigation of this tab; the error page's own simulated load also calls back
+        // in here, so skip it.
         if navigationAction.targetFrame?.isMainFrame == true,
            let url = navigationAction.request.url, url.scheme != "about" {
             if url == tab.pendingErrorPageURL {
@@ -1186,8 +1296,10 @@ extension BrowserPaneView: WKNavigationDelegate {
                 tab.lastRequestedURL = url
                 tab.showingErrorPage = false
             }
-            // 扩展页 ↔ 普通页跨界：WebKit 要求换一个配置匹配的 web view，否则这次导航会被它取消
-            // （扩展配置带 requiredWebExtensionBaseURL：只进得去自己的页面；普通配置进不去扩展页）
+            // Crossing the extension-page / ordinary-page boundary: WebKit requires a web view whose
+            // configuration matches, or it cancels the navigation. An extension configuration carries
+            // requiredWebExtensionBaseURL and can only reach that extension's own pages, and an
+            // ordinary configuration cannot reach extension pages at all.
             let target = extensionContext(for: url)
             if target !== tab.extensionContext {
                 decisionHandler(.cancel)
@@ -1201,7 +1313,7 @@ extension BrowserPaneView: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
                  decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
-        // 页面显示不了的内容（附件 / 未知 MIME）→ 下载
+        // Content the page cannot display (an attachment, an unknown MIME type) becomes a download.
         decisionHandler(navigationResponse.canShowMIMEType ? .allow : .download)
     }
 
@@ -1223,7 +1335,8 @@ extension BrowserPaneView: WKNavigationDelegate {
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         guard let tab = tab(for: webView) else { return }
-        // WebContent 进程崩溃：首次自动重载；10s 内再崩就停下来提示，避免"崩溃→重载→再崩"死循环
+        // The WebContent process crashed: reload automatically the first time, but if it crashes again
+        // within 10s, stop and show a message instead of looping crash -> reload -> crash.
         let now = Date()
         if let last = tab.lastProcessTerminationAt, now.timeIntervalSince(last) < 10 {
             showError(NSError(domain: "QuickTerm.Browser", code: 1, userInfo: [
@@ -1236,7 +1349,8 @@ extension BrowserPaneView: WKNavigationDelegate {
 
     private func showError(_ error: Error, in tab: Tab) {
         let ns = error as NSError
-        // 取消 / 被下载策略接管 / 帧加载中断都不是错误
+        // A cancellation, a hand-off to the download policy, and an interrupted frame load are not
+        // errors.
         if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return }
         if ns.domain == "WebKitErrorDomain" && (ns.code == 102 || ns.code == 204) { return }
         let failing = (ns.userInfo[NSURLErrorFailingURLErrorKey] as? URL) ?? tab.lastRequestedURL
@@ -1249,8 +1363,10 @@ extension BrowserPaneView: WKNavigationDelegate {
         </style></head><body><h2>\(Self.escape(title))</h2><p>\(Self.escape(ns.localizedDescription))</p>
         <p><code>\(Self.escape(url))</code></p></body></html>
         """
-        // 以失败的网址"模拟响应"展示错误页：webView.url 保持为它（地址栏 / 存档 / Cmd+R 不变成 about:blank），
-        // 且进历史（后退能回到上一页）；loadHTMLString(baseURL:) 不建历史条目
+        // Present the error page as a simulated response for the failing URL: webView.url stays on it,
+        // so the address bar, the archive and Cmd+R do not turn into about:blank, and it enters the
+        // history so Back returns to the previous page. loadHTMLString(baseURL:) creates no history
+        // entry.
         tab.showingErrorPage = true
         if let failing {
             tab.pendingErrorPageURL = failing
@@ -1266,12 +1382,13 @@ extension BrowserPaneView: WKNavigationDelegate {
     }
 }
 
-// MARK: - 下载（落到 browser-download-dir，默认 ~/Downloads，同名加序号）
+// MARK: - Downloads (into browser-download-dir, ~/Downloads by default, numbering name collisions)
 
 extension BrowserPaneView: WKDownloadDelegate {
-    /// 接管一个下载：挂代理 + 立刻进列表。
-    /// 早于 `decideDestinationUsing` —— 连不上服务器的下载根本走不到定目的地那一步，
-    /// 但它同样要在列表里显示成"失败"
+    /// Take over a download: attach the delegate and put it in the list immediately.
+    /// This happens before `decideDestinationUsing`, because a download that cannot reach the server
+    /// never gets as far as picking a destination - and it still has to show up in the list as
+    /// "failed".
     func beginDownload(_ download: WKDownload) {
         download.delegate = self
         guard downloads.item(for: download) == nil else { return }
@@ -1288,9 +1405,10 @@ extension BrowserPaneView: WKDownloadDelegate {
         var candidate = dir.appendingPathComponent(name)
         var n = 1
         let base = (name as NSString).deletingPathExtension, ext = (name as NSString).pathExtension
-        // 同名判定不能只看磁盘：WebKit 是收到我们的回复之后才建文件的，两条同名下载的
-        // decideDestination 可能都赶在建文件之前，于是拿到同一个路径（后一条 EEXIST 失败甚至卡死）。
-        // 已经交给别的进行中下载的目的地同样算占用
+        // Collision detection cannot look at the disk alone: WebKit only creates the file after we
+        // reply, so two downloads with the same name can both run decideDestination before either file
+        // exists and walk away with the same path (the second one then fails with EEXIST, or hangs).
+        // A destination already handed to another in-flight download counts as taken too.
         let reserved = Set(downloads.items.compactMap {
             $0.isActive ? $0.destination?.standardizedFileURL.path : nil
         })
@@ -1322,7 +1440,7 @@ extension BrowserPaneView: WKDownloadDelegate {
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         guard let item = downloads.item(for: download) else { return }
         let ns = error as NSError
-        // 用户点了取消（列表里已经是 .cancelled，markCancelled 幂等）
+        // The user pressed cancel; the list already reads .cancelled and markCancelled is idempotent.
         if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled {
             downloads.markCancelled(item)
         } else {
@@ -1330,15 +1448,16 @@ extension BrowserPaneView: WKDownloadDelegate {
         }
     }
 
-    // MARK: 工具条上的下载按钮
+    // MARK: The download button in the toolbar
 
-    /// 列表变了：按钮的可见性 / 进度环 + 打开着的弹出层
+    /// The list changed: refresh the button's visibility and progress ring, and the popover if it is
+    /// open.
     func downloadsDidChange() {
         let hasItems = !downloads.items.isEmpty
         downloadButton.update()
         downloadButtonWidth.constant = hasItems ? BrowserDownloadButton.size : 0
         downloadTrailingGap.constant = hasItems ? -6 : 0
-        // 用可选链：没点开过就不去实例化弹出层
+        // Optional chaining on purpose: do not instantiate the popover if it was never opened.
         if downloadPopoverHost?.isShown == true { downloadPopover.rebuild() }
     }
 
@@ -1355,15 +1474,17 @@ extension BrowserPaneView: WKDownloadDelegate {
         host.show(relativeTo: downloadButton.bounds, of: downloadButton, preferredEdge: .maxY)
     }
 
-    /// 测试用：弹出层（不弹出也能查行数）
+    /// For tests: the popover, so rows can be counted without showing it.
     var downloadPopoverForTesting: BrowserDownloadPopover { downloadPopover }
 }
 
-// MARK: - UI 代理（JS 对话框 / 新窗口 → 新标签 / 文件选择）
+// MARK: - UI delegate (JS dialogs / a new window becomes a new tab / file pickers)
 
 extension BrowserPaneView: WKUIDelegate {
-    /// JS 对话框宿主：本 pane 的窗口，否则主窗口；都没有（pane 未挂载且 app 不在前台）时同步 runModal——
-    /// WebKit 的 completionHandler 必须被调用（挂在从未显示的窗口上永远不完成，页面 JS 线程就此卡死）
+    /// Host for a JS dialog: this pane's window, else the main window; and when there is neither (the
+    /// pane is unmounted and the app is not frontmost), runModal synchronously. WebKit's
+    /// completionHandler has to be called: a sheet attached to a window that is never shown never
+    /// completes, and the page's JS thread wedges there forever.
     private func present(_ alert: NSAlert, completion: @escaping (NSApplication.ModalResponse) -> Void) {
         if let host = window ?? NSApp.mainWindow, host.isVisible {
             alert.beginSheetModal(for: host, completionHandler: completion)
@@ -1403,23 +1524,31 @@ extension BrowserPaneView: WKUIDelegate {
         present(alert) { completionHandler($0 == .alertFirstButtonReturn ? field.stringValue : nil) }
     }
 
-    /// target=_blank / window.open → 同 pane 新标签。必须用 WebKit 给的 configuration 创建并返回该 webView：
-    /// 页面拿到真实的 window 对象（window.opener / postMessage 可用，弹窗登录能回传）
+    /// target=_blank and window.open become a new tab in the same pane. The webView has to be created
+    /// from the configuration WebKit handed us, and returned: that is what gives the page a real window
+    /// object, so window.opener and postMessage work and a popup login can post its result back.
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         let source = tab(for: webView)
         prepareForExtensions(configuration, extensionPage: source?.extensionContext != nil)
         let popup = BrowserWebView(frame: .zero, configuration: configuration)
-        // 来源是当前标签才前台打开；后台标签（定时 window.open 等）的弹窗在后台开，不打断用户输入。
-        // WebKit 给的 configuration 继承了开窗方的扩展绑定：新标签的"当前配置属于谁"要跟着记，否则
-        // 第一次跨界导航判断会错、且扩展页开的扩展弹窗会被当成网页套上 UA 伪装（与扩展另一半不一致）
+        // Only open in the foreground when the opener is the current tab; a popup from a background tab
+        // (a timed window.open, say) opens in the background and does not interrupt what the user is
+        // typing.
+        // The configuration WebKit handed us inherited the opener's extension binding, so the new tab
+        // has to record which extension its configuration belongs to. Otherwise the first
+        // cross-boundary navigation check is wrong, and an extension popup opened from an extension
+        // page gets treated as a web page and given the UA disguise, disagreeing with the extension's
+        // other half.
         _ = addTab(url: nil, activate: source === activeTab, webView: popup,
                    inheriting: source?.extensionContext)
         return popup
     }
 
-    /// 页面自己调用 window.close() → 关掉那个标签；最后一个标签 → 请求控制器关 pane。
-    /// pane 在非活动工作区（未挂窗口、controller 为 nil）时先记下，挂回窗口再补发（WebKit 只回调一次）
+    /// The page called window.close() itself: close that tab, or, when it is the last tab, ask the
+    /// controller to close the pane.
+    /// While the pane is in an inactive workspace (no window attached, controller nil) the request is
+    /// recorded and re-sent once it is attached again - WebKit only calls back once.
     func webViewDidClose(_ webView: WKWebView) {
         guard let tab = tab(for: webView) else { return }
         if tabs.count > 1 { closeTab(tab) } else { requestPaneClose() }
@@ -1439,13 +1568,15 @@ extension BrowserPaneView: WKUIDelegate {
     }
 }
 
-/// 地址栏：成为 first responder 时回报给 pane——随后接管的字段编辑器是 pane 的后代，
-/// pane 视为仍持有焦点（边框亮着、Cmd+W 会把焦点交给接班人）
+/// The address bar reports back to the pane when it becomes first responder: the field editor that
+/// takes over afterwards is a descendant of the pane, so the pane still counts as holding focus (its
+/// border stays lit, and Cmd+W hands focus to the successor).
 final class BrowserAddressField: NSTextField {
     weak var pane: BrowserPaneView?
-    /// 成为 first responder 后尚未交互：接下来的第一次 mouseDown 全选。
-    /// AppKit 在把 mouseDown 交给视图之前就先 makeFirstResponder，所以点击进入时这里先置位、
-    /// 随后 mouseDown 消费；键盘 / Cmd+Shift+L 进入的由 focusAddressBar 自己全选并清掉标记
+    /// Became first responder and has not been interacted with yet: the next mouseDown selects all.
+    /// AppKit calls makeFirstResponder before it hands the mouseDown to the view, so clicking in sets
+    /// this flag first and the mouseDown consumes it right after. Entering by keyboard or Cmd+Shift+L
+    /// goes through focusAddressBar, which selects all itself and clears the flag.
     private var selectAllOnFirstClick = false
 
     override func becomeFirstResponder() -> Bool {
@@ -1457,30 +1588,35 @@ final class BrowserAddressField: NSTextField {
         return result
     }
 
-    /// 程序化聚焦（Cmd+Shift+L）后调用：随后的点击按普通编辑处理
+    /// Called after a programmatic focus (Cmd+Shift+L): treat later clicks as ordinary editing.
     func didFocusProgrammatically() { selectAllOnFirstClick = false }
 
-    /// 首次点击全选——⌘C 直接复制网址、直接输入即替换（Safari / Chrome 习惯）；
-    /// 已在编辑中再点击：正常定位光标 / 双击选词 / 拖选
+    /// The first click selects everything, so Cmd+C copies the URL outright and typing replaces it,
+    /// the way Safari and Chrome behave. A click while already editing behaves normally: place the
+    /// caret, double-click to select a word, drag to select.
     override func mouseDown(with event: NSEvent) {
         let firstClick = selectAllOnFirstClick
         selectAllOnFirstClick = false
-        super.mouseDown(with: event)   // 安装 / 使用字段编辑器并同步跟踪到 mouseUp
+        super.mouseDown(with: event)   // installs/uses the field editor and tracks through to mouseUp
         if firstClick, let editor = currentEditor(), editor.selectedRange.length == 0 {
-            editor.selectAll(nil)      // 纯点击 → 全选；拖选 → 保留拖出的选区
+            editor.selectAll(nil)      // a plain click selects all; a drag keeps the dragged selection
         }
     }
 }
 
-/// WKWebView 子类：first responder 变化回报给所属 pane（焦点真相 = FR 是 pane 的后代）。
-/// 悬停即焦点不在这里：WKWebView 的 tracking area 由内部观察者持有，覆写 mouseMoved 收不到事件，
-/// 由 PaneView 容器自己的 tracking area 处理（installsHoverTracking）。
+/// WKWebView subclass: first-responder changes are reported back to the owning pane (the truth about
+/// focus is that the FR is a descendant of the pane).
+/// Hover-to-focus does not live here: WKWebView's tracking area is held by an internal observer and an
+/// override of mouseMoved never receives the events, so the PaneView container's own tracking area
+/// handles it (installsHoverTracking).
 final class BrowserWebView: WKWebView {
     weak var pane: BrowserPaneView?
 
-    // 页面右键菜单里的扩展项不用我们加：WebKit 的 WebContextMenuProxyMac 见到配置上挂着
-    // webExtensionController 就会自己把各扩展的 contextMenus 项（含分隔线）追加进去。
-    // 自己再 append 一遍 = 重复项，而且 context.menuItems(for:) 给的是**标签条**右键的那一套（tab 上下文）
+    // We do not add the extensions' entries to the page context menu ourselves: WebKit's
+    // WebContextMenuProxyMac sees the webExtensionController on the configuration and appends each
+    // extension's contextMenus entries, separators included, on its own.
+    // Appending them again would duplicate every entry, and besides, context.menuItems(for:) returns
+    // the set for the **tab bar's** context menu (the tab context), not this one.
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()

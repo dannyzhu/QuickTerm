@@ -1,12 +1,14 @@
 import XCTest
 @testable import QuickTerm
 
-/// 「dwindle 的 pane 可以调尺寸」这件事在控制面上的两半：
-/// **读得到**（每条状态输出都带尺寸，dwindle 的骨架带上每条分隔条的比例）
-/// 与**调得动**（命令行能做出鼠标能做的每一种调整，夹取规则也一样）。
+/// The two halves of "a dwindle pane can be resized" as seen from the control plane:
+/// **it can be read** (every state output carries sizes, and the dwindle skeleton carries the ratio
+/// of every divider) and **it can be driven** (the command line can make every adjustment the mouse
+/// can, clamped by the same rules).
 ///
-/// 期望值一律在用例里**独立算一遍**（照着模型里的 ratio / widthFactor 手推），
-/// 绝不拿编码器自己的输出当期望——那样只能证明它跟自己一致。
+/// Expected values are always **computed a second time inside the case** (worked out by hand from
+/// the ratio / widthFactor in the model). Never take the encoder's own output as the expectation —
+/// that only proves it agrees with itself.
 @MainActor
 final class ControlSizeTests: XCTestCase {
     private var harness: ControlHarness!
@@ -17,9 +19,9 @@ final class ControlSizeTests: XCTestCase {
         try super.setUpWithError()
         harness = try ControlHarness()
         let controller = try harness.controller
-        try XCTSkipUnless(controller.model.layouts.count >= 3, "本组用例要三个工作区")
+        try XCTSkipUnless(controller.model.layouts.count >= 3, "this group needs three workspaces")
         try XCTSkipUnless(ControlGeometry.contentSize(controller) != nil,
-                          "测试宿主没有可量的窗口内容区")
+                          "the test host has no measurable window content area")
         for index in [1, 2] {
             _ = controller.controlClearWorkspace(index, confirmIfNeeded: false)
             _ = controller.model.setLayout("scrolling", at: index, columnFactor: controller.columnFactor)
@@ -46,7 +48,7 @@ final class ControlSizeTests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: 夹具
+    // MARK: Fixtures
 
     private func makeDirectory(_ name: String) throws -> String {
         let path = NSTemporaryDirectory() + "quickterm-size-\(name)-\(UUID().uuidString)"
@@ -59,22 +61,22 @@ final class ControlSizeTests: XCTestCase {
     private func apply(_ text: String, target: String,
                        file: StaticString = #filePath, line: UInt = #line) throws -> ControlReply {
         let reply = try harness.run("spec.apply", target: target, args: ["spec": .string(text)])
-        XCTAssertTrue(reply.ok, "apply 失败：\(String(describing: reply.error))", file: file, line: line)
+        XCTAssertTrue(reply.ok, "apply failed: \(String(describing: reply.error))", file: file, line: line)
         harness.spin(0.8)
         return reply
     }
 
     private func dump(_ target: String) throws -> String {
         let reply = try harness.run("spec.dump", target: target)
-        XCTAssertTrue(reply.ok, "dump 失败：\(String(describing: reply.error))")
+        XCTAssertTrue(reply.ok, "dump failed: \(String(describing: reply.error))")
         let spec = try XCTUnwrap(reply.data?["spec"])
         return String(decoding: try ControlJSON.encoder.encode(spec), as: UTF8.self)
     }
 
-    /// `:2`（下标 1）那个工作区的 state
+    /// The state of the workspace at `:2` (index 1)
     private func state() throws -> JSONValue {
         let reply = try harness.run("state", target: ":2")
-        XCTAssertTrue(reply.ok, "state 失败：\(String(describing: reply.error))")
+        XCTAssertTrue(reply.ok, "state failed: \(String(describing: reply.error))")
         return try XCTUnwrap(reply.data)
     }
 
@@ -85,7 +87,7 @@ final class ControlSizeTests: XCTestCase {
 
     private func pane(at path: String, in state: JSONValue) throws -> [String: JSONValue] {
         try XCTUnwrap(panes(in: state).first { $0["at"]?["path"]?.stringValue == path },
-                      "state 里没有 at.path = \(path) 的 pane")
+                      "state holds no pane with at.path = \(path)")
     }
 
     private func workspace(in state: JSONValue) throws -> [String: JSONValue] {
@@ -95,7 +97,7 @@ final class ControlSizeTests: XCTestCase {
     }
 
     private func rect(_ pane: [String: JSONValue]) throws -> [Double] {
-        let raw = try XCTUnwrap(pane["size"]?["rect"]?.arrayValue, "pane 记录里没有 size.rect")
+        let raw = try XCTUnwrap(pane["size"]?["rect"]?.arrayValue, "the pane record has no size.rect")
         return raw.compactMap(\.doubleValue)
     }
 
@@ -105,12 +107,12 @@ final class ControlSizeTests: XCTestCase {
         guard got.count == 4 else { return }
         for i in 0..<4 {
             XCTAssertEqual(got[i], want[i], accuracy: 0.0002,
-                           "\(what) 的第 \(i) 个分量：\(got) ≠ \(want)", file: file, line: line)
+                           "component \(i) of \(what): \(got) != \(want)", file: file, line: line)
         }
     }
 
-    /// 三片叶子、两条比例都不是 0.5 的 dwindle 工作区：
-    /// 根是左右 0.3，右子树是上下 0.7
+    /// A dwindle workspace with three leaves and two ratios, neither of them 0.5:
+    /// the root splits left/right at 0.3, the right subtree splits top/bottom at 0.7
     @discardableResult
     private func buildDeepTree(target: String = ":2") throws -> String {
         touched.formUnion([1, 2])
@@ -123,10 +125,11 @@ final class ControlSizeTests: XCTestCase {
         return text
     }
 
-    // MARK: 读得到
+    // MARK: Reading it back
 
-    /// dwindle：每个 pane 的归一化矩形、点尺寸、父分裂比例都要与模型对得上。
-    /// 期望矩形是按 0.3 / 0.7 手推的，不是再调一次编码器
+    /// dwindle: the normalized rect, the size in points and the parent split ratio of every pane
+    /// have to agree with the model. The expected rects are worked out by hand from 0.3 / 0.7, not
+    /// by calling the encoder a second time
     func testDwindlePaneSizesMatchTheModel() throws {
         try buildDeepTree()
         let controller = try harness.controller
@@ -141,29 +144,33 @@ final class ControlSizeTests: XCTestCase {
         assertRect(try rect(ba), [0.3, 0, 0.7, 0.7], "b.a")
         assertRect(try rect(bb), [0.3, 0.7, 0.7, 0.3], "b.b")
 
-        // 父分裂：a 挂在根那条左右分隔条上，b.* 挂在右子树那条上下分隔条上
+        // Parent splits: a hangs off the root's left/right divider, b.* off the right subtree's
+        // top/bottom divider
         XCTAssertEqual(a["size"]?["split"]?.stringValue, "horizontal")
         XCTAssertEqual(a["size"]?["ratio"]?.doubleValue, 0.3)
         XCTAssertEqual(ba["size"]?["split"]?.stringValue, "vertical")
         XCTAssertEqual(ba["size"]?["ratio"]?.doubleValue, 0.7)
         XCTAssertEqual(bb["size"]?["ratio"]?.doubleValue, 0.7)
 
-        // 点尺寸 = 归一化矩形 × 内容区（独立算一遍）
+        // Size in points = normalized rect * content area (computed independently here)
         let points = try XCTUnwrap(ba["size"]?["points"]?.arrayValue).compactMap(\.doubleValue)
         XCTAssertEqual(points[0], 0.7 * Double(content.width), accuracy: 0.2)
         XCTAssertEqual(points[1], 0.7 * Double(content.height), accuracy: 0.2)
 
-        // 终端网格：引擎量过了就要报出来（还没量到就整段没有，不能报个假数）
+        // The terminal grid: report it once the engine has measured it (before that the whole
+        // section is absent — never report a made-up number)
         if let cols = ba["size"]?["cols"]?.intValue {
             XCTAssertGreaterThan(cols, 0)
             XCTAssertGreaterThan(try XCTUnwrap(ba["size"]?["rows"]?.intValue), 0)
         }
     }
 
-    /// **报出来的点数踩的是 pane 真正铺开的那块地。**
-    /// 期望值直接从渲染出来的 NSView 量（`measuredLayoutBox`），与编码器的公式无关。
-    /// 曾经拿的是 `window.contentLayoutRect`：横向永远多算一圈外留白，纵向的误差
-    /// 还会随 `app set bar off` **变号**——所以这里把状态条关掉再量一遍
+    /// **The points that get reported stand on the area the panes really occupy.**
+    /// The expected values are measured straight off the rendered NSViews (`measuredLayoutBox`),
+    /// independent of the encoder's formula. It used to take `window.contentLayoutRect`: that
+    /// always counted one ring of outer padding too many horizontally, and the vertical error even
+    /// **changed sign** with `app set bar off` — which is why this case turns the status bar off
+    /// and measures again
     func testReportedPointsStandOnTheAreaThePanesActuallyOccupy() throws {
         try buildDeepTree()
         let controller = try harness.controller
@@ -172,11 +179,11 @@ final class ControlSizeTests: XCTestCase {
         let measured = try measuredLayoutBox()
         let reported = try XCTUnwrap(ControlGeometry.contentSize(controller))
         XCTAssertEqual(Double(reported.width), Double(measured.width), accuracy: 1.5,
-                       "报的宽度不是分裂树铺开的那块地")
+                       "the reported width is not the area the split tree occupies")
         XCTAssertEqual(Double(reported.height), Double(measured.height), accuracy: 1.5,
-                       "报的高度不是分裂树铺开的那块地")
+                       "the reported height is not the area the split tree occupies")
 
-        // 单个 pane：槽位 = 它的视图各边外扩一个 pane-gap
+        // A single pane: its slot is its view grown by one pane-gap on every side
         let gap = controller.themeManager.gapsEnabled ? controller.themeManager.paneGap : 0
         let content = try XCTUnwrap(controller.window?.contentView)
         let state = try state()
@@ -187,30 +194,32 @@ final class ControlSizeTests: XCTestCase {
         })
         let slot = view.convert(view.bounds, to: content).insetBy(dx: -gap, dy: -gap)
         let points = try XCTUnwrap(ba["size"]?["points"]?.arrayValue).compactMap(\.doubleValue)
-        XCTAssertEqual(points[0], Double(slot.width), accuracy: 1.5, "b.a 的槽位宽")
-        XCTAssertEqual(points[1], Double(slot.height), accuracy: 1.5, "b.a 的槽位高")
+        XCTAssertEqual(points[0], Double(slot.width), accuracy: 1.5, "the slot width of b.a")
+        XCTAssertEqual(points[1], Double(slot.height), accuracy: 1.5, "the slot height of b.a")
 
-        // 关掉状态条：布局区正好长高一条状态条的高度（早先这里是反向的）
+        // Turn the status bar off: the layout area grows by exactly the height of the status bar
+        // (this used to come out with the opposite sign)
         controller.model.barVisible = false
         harness.spin(0.5)
         defer { controller.model.barVisible = true }
         let grown = try XCTUnwrap(ControlGeometry.contentSize(controller))
         XCTAssertEqual(Double(grown.height), Double(measured.height) + Double(StatusBarView.height),
-                       accuracy: 1.5, "关掉状态条应该正好多出 26pt")
+                       accuracy: 1.5, "turning the status bar off should add exactly 26pt")
         XCTAssertEqual(Double(grown.height), Double(try measuredLayoutBox().height), accuracy: 1.5,
-                       "关掉状态条后报的高度还是要等于量到的高度")
+                       "with the status bar off, the reported height still has to equal the measured height")
     }
 
-    /// zoom 的时候屏幕上**只有那一片**：其余平铺 pane 一片都不渲染。
-    /// 被放大的那片报满整块布局区，看不见的那几片不给 `points`、打 `hidden`。
-    /// `rect` / `ratio` 照旧是底下那层平铺——`pane resize` 调的正是它
+    /// While zoomed, **that one pane is all there is on screen**: not one of the other tiled panes
+    /// renders. The zoomed pane reports the whole layout area, and the ones nobody can see get no
+    /// `points` and are flagged `hidden`. `rect` / `ratio` still describe the tiled layer
+    /// underneath — which is exactly what `pane resize` adjusts
     func testZoomedWorkspaceDoesNotHandOutPointsForPanesThatAreNotOnScreen() throws {
         try buildDeepTree()
         let controller = try harness.controller
         let zoomedHandle = try handleOfPane(at: "b.a")
 
         let set = try harness.run("pane.set", target: zoomedHandle, args: ["zoom": .string("on")])
-        XCTAssertTrue(set.ok, "zoom 开不起来：\(String(describing: set.error))")
+        XCTAssertTrue(set.ok, "zoom would not turn on: \(String(describing: set.error))")
         harness.spin(0.5)
 
         let state = try state()
@@ -218,82 +227,88 @@ final class ControlSizeTests: XCTestCase {
         let sibling = try pane(at: "b.b", in: state)
         let far = try pane(at: "a", in: state)
 
-        // 被放大的那片：满屏
+        // The zoomed pane: the full screen
         let content = try XCTUnwrap(ControlGeometry.contentSize(controller))
         let points = try XCTUnwrap(zoomed["size"]?["points"]?.arrayValue).compactMap(\.doubleValue)
-        XCTAssertEqual(points[0], Double(content.width), accuracy: 0.2, "zoom 的那片占满宽")
-        XCTAssertEqual(points[1], Double(content.height), accuracy: 0.2, "zoom 的那片占满高")
-        XCTAssertNil(zoomed["size"]?["hidden"], "被放大的那片不是被遮住的那一类")
+        XCTAssertEqual(points[0], Double(content.width), accuracy: 0.2, "the zoomed pane fills the width")
+        XCTAssertEqual(points[1], Double(content.height), accuracy: 0.2, "the zoomed pane fills the height")
+        XCTAssertNil(zoomed["size"]?["hidden"], "the zoomed pane is not one of the hidden ones")
 
-        // 其余的：屏幕上一点位置都没有，不能给点数
+        // The rest: they occupy nothing on screen, so they get no point sizes
         for (name, record) in [("b.b", sibling), ("a", far)] {
-            XCTAssertEqual(record["size"]?["hidden"]?.boolValue, true, "\(name) 应该标 hidden")
-            XCTAssertNil(record["size"]?["points"], "\(name) 现在 0×0，不该有 points")
+            XCTAssertEqual(record["size"]?["hidden"]?.boolValue, true, "\(name) should be flagged hidden")
+            XCTAssertNil(record["size"]?["points"], "\(name) is 0x0 right now and must not carry points")
         }
 
-        // rect / ratio 仍是底下那层平铺（取消 zoom 就回到它，resize 调的也是它）
-        assertRect(try rect(sibling), [0.3, 0.7, 0.7, 0.3], "b.b 的平铺矩形（按 0.3/0.7 手推）")
-        XCTAssertEqual(sibling["size"]?["ratio"]?.doubleValue, 0.7, "ratio 照旧是树里那条")
-        assertRect(try rect(far), [0, 0, 0.3, 1], "a 的平铺矩形不受 zoom 影响")
+        // rect / ratio still describe the tiled layer underneath (un-zooming returns to it, and
+        // resize adjusts it)
+        assertRect(try rect(sibling), [0.3, 0.7, 0.7, 0.3], "the tiled rect of b.b (worked out by hand from 0.3/0.7)")
+        XCTAssertEqual(sibling["size"]?["ratio"]?.doubleValue, 0.7, "ratio is still the one from the tree")
+        assertRect(try rect(far), [0, 0, 0.3, 1], "the tiled rect of a is unaffected by the zoom")
 
-        // `get` 单独问某个兄弟时（拿不到工作区上下文）也要看得见这个标记
+        // Asking `get` about a sibling on its own (with no workspace context) still has to show
+        // that flag
         let got = try harness.run("get", target: try XCTUnwrap(sibling["handle"]?.stringValue))
         XCTAssertEqual(got.data?["pane"]?["size"]?["hidden"]?.boolValue, true)
         XCTAssertNil(got.data?["pane"]?["size"]?["points"])
     }
 
-    /// 关 pane 的那 0.28 秒里，**树、`at.path` 与每个 pane 的矩形必须是同一个形状**。
-    /// 早先树塌了而矩形没塌：`state` 一边说"t1 就是整个工作区"，
-    /// 一边给 t1 一个半宽的矩形和一条树里根本不存在的分隔条
+    /// During the 0.28s a pane takes to close, **the tree, `at.path` and every pane's rect have to
+    /// describe one and the same shape**. The tree used to collapse while the rects did not:
+    /// `state` said "t1 is the whole workspace" out of one side and handed t1 a half-width rect and
+    /// a divider that did not exist in the tree out of the other
     func testGeometryAgreesWithTheReportedTreeWhileAPaneIsFadingOut() throws {
         let pane = try twoPaneTree()
         let controller = try harness.controller
         let survivor = try XCTUnwrap(controller.model.layouts[1].paneList.first { $0 !== pane })
 
-        // 带动画地关（`action close-pane` / shell 退出 / Cmd+W 走的就是这条），不 flush
+        // Close with the animation (the path `action close-pane` / a shell exit / Cmd+W take),
+        // without flushing
         controller.closePane(pane, confirmIfNeeded: false, animated: true)
-        XCTAssertTrue(controller.model.closingPanes.contains(pane.id), "这时候应该正在淡出")
+        XCTAssertTrue(controller.model.closingPanes.contains(pane.id), "the fade-out should be running at this point")
 
         let state = try state()
         let workspace = try workspace(in: state)
-        // 树塌成幸存者那一片
+        // The tree collapses onto the survivor
         XCTAssertEqual(workspace["tree"]?["pane"]?.stringValue,
                        ControlHandleRegistry.shared.handle(for: survivor),
-                       "树应该只剩幸存者：\(String(describing: workspace["tree"]))")
-        XCTAssertNil(workspace["tree"]?["ratio"], "塌了的树没有分隔条")
+                       "the tree should hold nothing but the survivor: \(String(describing: workspace["tree"]))")
+        XCTAssertNil(workspace["tree"]?["ratio"], "a collapsed tree has no divider")
 
         let record = try XCTUnwrap(panes(in: state).first {
             $0["handle"]?.stringValue == ControlHandleRegistry.shared.handle(for: survivor)
         })
-        XCTAssertEqual(record["at"]?["path"]?.stringValue, "", "只剩一片叶子，路径就是根")
-        assertRect(try rect(record), [0, 0, 1, 1], "只剩一片叶子就该占满工作区")
-        XCTAssertNil(record["size"]?["ratio"], "树里已经没有分隔条了，size 也不该报一条")
+        XCTAssertEqual(record["at"]?["path"]?.stringValue, "", "with one leaf left, the path is the root")
+        assertRect(try rect(record), [0, 0, 1, 1], "the last leaf standing fills the whole workspace")
+        XCTAssertNil(record["size"]?["ratio"], "there is no divider left in the tree, so size must not report one either")
         XCTAssertNil(record["size"]?["split"])
 
         controller.flushPendingCloses()
         harness.spin(0.4)
     }
 
-    /// dwindle 的工作区骨架带着**每一条**分隔条的比例，且用的是与 `spec dump` 一模一样的词
+    /// The dwindle workspace skeleton carries the ratio of **every** divider, in exactly the same
+    /// vocabulary as `spec dump`
     func testStateTreeCarriesEveryRatioInTheSameVocabularyAsSpecDump() throws {
         try buildDeepTree()
         let tree = try XCTUnwrap(try workspace(in: try state())["tree"]?.objectValue,
-                                 "dwindle 工作区要给出 tree")
+                                 "a dwindle workspace has to produce a tree")
         XCTAssertEqual(tree["split"]?.stringValue, "horizontal")
         XCTAssertEqual(tree["ratio"]?.doubleValue, 0.3)
-        XCTAssertEqual(tree["a"]?["pane"]?.stringValue?.isEmpty, false, "叶子装的是句柄")
+        XCTAssertEqual(tree["a"]?["pane"]?.stringValue?.isEmpty, false, "a leaf holds a handle")
         let b = try XCTUnwrap(tree["b"]?.objectValue)
         XCTAssertEqual(b["split"]?.stringValue, "vertical")
         XCTAssertEqual(b["ratio"]?.doubleValue, 0.7)
 
-        // 与 spec dump 同一套词：两边的 tree 用同样的键，比例也一致
+        // The same vocabulary as spec dump: both trees use the same keys, with the same ratios
         let dumped = try dump(":2")
         XCTAssertTrue(dumped.contains("\"split\":\"horizontal\""), dumped)
         XCTAssertTrue(dumped.contains("\"ratio\":0.3"), dumped)
         XCTAssertTrue(dumped.contains("\"ratio\":0.7"), dumped)
     }
 
-    /// scrolling：列宽因子、列内份额、以及横向累加出来的矩形
+    /// scrolling: the column width factor, the share within a column, and the rects that fall out
+    /// of accumulating widths horizontally
     func testScrollingSizesReportColumnWidthAndShareWithinTheColumn() throws {
         touched.formUnion([1, 2])
         let directory = try makeDirectory("cols")
@@ -303,9 +318,10 @@ final class ControlSizeTests: XCTestCase {
                   + "{\"width\":0.45,\"panes\":[\(leaf),\(leaf)]}]}", target: ":2")
         let controller = try harness.controller
         guard case .scrolling(let strip) = controller.model.layouts[1] else {
-            return XCTFail("这个工作区应该是 scrolling")
+            return XCTFail("this workspace should be scrolling")
         }
-        // 有效列宽独立算一遍（装得下时按比例放大填满，与渲染同一套）
+        // Effective column widths, computed independently (when they fit, they are scaled up to
+        // fill, exactly as the renderer does)
         let widths = strip.columnWidths(viewport: 1, gap: 0).map(Double.init)
         XCTAssertEqual(widths.count, 2)
 
@@ -318,24 +334,26 @@ final class ControlSizeTests: XCTestCase {
             $0["at"]?["column"]?.intValue == 1 && $0["at"]?["row"]?.intValue == 1
         })
 
-        assertRect(try rect(first), [0, 0, widths[0], 1], "第一列")
-        assertRect(try rect(stackedTop), [widths[0], 0, widths[1], 0.5], "第二列上")
-        assertRect(try rect(stackedBottom), [widths[0], 0.5, widths[1], 0.5], "第二列下")
+        assertRect(try rect(first), [0, 0, widths[0], 1], "column one")
+        assertRect(try rect(stackedTop), [widths[0], 0, widths[1], 0.5], "column two, top")
+        assertRect(try rect(stackedBottom), [widths[0], 0.5, widths[1], 0.5], "column two, bottom")
 
-        // 列宽因子是**模型持有的那个名义值**；份额是列内等分
+        // The width factor is **the nominal value the model holds**; the share is an even split
+        // within the column
         XCTAssertEqual(first["size"]?["width"]?.doubleValue, 0.3)
         XCTAssertEqual(first["size"]?["share"]?.doubleValue, 1)
         XCTAssertEqual(stackedTop["size"]?["width"]?.doubleValue, 0.45)
         XCTAssertEqual(stackedTop["size"]?["share"]?.doubleValue, 0.5)
         XCTAssertEqual(stackedBottom["size"]?["share"]?.doubleValue, 0.5)
 
-        // 工作区骨架里的列宽照旧
+        // The column widths in the workspace skeleton are unchanged
         let columns = try XCTUnwrap(try workspace(in: state)["columns"]?.arrayValue)
         XCTAssertEqual(columns.first?["width"]?.doubleValue, 0.3)
         XCTAssertEqual(columns.last?["width"]?.doubleValue, 0.45)
     }
 
-    /// `get` 与 `list panes` 与 `state` 报的是同一份尺寸（三条读命令不能各说各的）
+    /// `get`, `list panes` and `state` report one and the same size (three read commands must not
+    /// each tell their own story)
     func testGetAndListReportTheSameSizeAsState() throws {
         try buildDeepTree()
         let state = try state()
@@ -351,32 +369,33 @@ final class ControlSizeTests: XCTestCase {
         XCTAssertEqual(row["size"], target["size"])
     }
 
-    /// `--fields` 投影：写了 size 才有 size，没写就没有（handle 永远保留）
+    /// The `--fields` projection: size appears only when it was asked for, and not otherwise (the
+    /// handle always survives)
     func testFieldsProjectionIncludesAndExcludesSize() throws {
         try buildDeepTree()
         let withSize = try harness.run("state", target: ":2",
                                        args: ["fields": .string("handle,size")])
         let one = try XCTUnwrap((withSize.data?["panes"]?.arrayValue ?? []).first?.objectValue)
-        XCTAssertNotNil(one["size"], "写了 size 就要给出来")
+        XCTAssertNotNil(one["size"], "ask for size and it has to be there")
         XCTAssertNotNil(one["handle"])
         XCTAssertNil(one["title"])
-        XCTAssertNil(one["workspace"], "投影只留写下的那几个字段")
+        XCTAssertNil(one["workspace"], "a projection keeps only the fields that were listed")
 
         let without = try harness.run("state", target: ":2",
                                       args: ["fields": .string("handle,title")])
         let plain = try XCTUnwrap((without.data?["panes"]?.arrayValue ?? []).first?.objectValue)
-        XCTAssertNil(plain["size"], "没写 size 就不该出现")
+        XCTAssertNil(plain["size"], "size must not appear when it was not asked for")
         XCTAssertNotNil(plain["handle"])
     }
 
-    // MARK: 组合的时候写得下
+    // MARK: It survives being composed
 
-    /// 深树 + 各不相同的比例：apply 要一条不落地落到模型上
+    /// A deep tree with distinct ratios: apply has to land every one of them on the model
     func testSpecApplyHonoursADeepTreeOfDistinctRatios() throws {
         try buildDeepTree()
         let controller = try harness.controller
         guard case .dwindle(let tree) = controller.model.layouts[1] else {
-            return XCTFail("这个工作区应该是 dwindle")
+            return XCTFail("this workspace should be dwindle")
         }
         let splits = ControlGeometry.splits(in: tree, size: ControlGeometry.unit)
         XCTAssertEqual(splits.map(\.path), ["", "b"])
@@ -386,32 +405,35 @@ final class ControlSizeTests: XCTestCase {
         XCTAssertEqual(splits[1].ratio, 0.7, accuracy: 0.0001)
     }
 
-    /// 头牌：**非默认**比例的深树 dump → apply → dump 逐字节相同
+    /// The headline: for a deep tree with **non-default** ratios, dump -> apply -> dump is
+    /// byte-for-byte identical
     func testDumpApplyDumpIsAFixedPointWithNonDefaultNestedRatios() throws {
         try buildDeepTree()
         let controller = try harness.controller
-        // 再拖动一条分隔条，让比例带上四位小数（定点规则也一起钉住）
+        // Drag one more divider so a ratio carries four decimal places (which pins the rounding
+        // rule along the way)
         _ = try harness.run("pane.resize", target: try handleOfPane(at: "a"),
                             args: ["ratio": .string("0.2345")])
         harness.spin(0.3)
 
         let before = try dump(":2")
-        XCTAssertTrue(before.contains("0.2345"), "拖出来的比例要原样进 dump：\(before)")
+        XCTAssertTrue(before.contains("0.2345"), "a ratio produced by dragging goes into dump verbatim: \(before)")
         XCTAssertTrue(before.contains("0.7"), before)
 
         touched.insert(2)
         controller.switchWorkspace(2)
         harness.spin(0.3)
         let reply = try harness.run("spec.apply", target: ":3", args: ["spec": .string(before)])
-        XCTAssertTrue(reply.ok, "apply 失败：\(String(describing: reply.error))")
+        XCTAssertTrue(reply.ok, "apply failed: \(String(describing: reply.error))")
         harness.spin(0.9)
-        XCTAssertEqual(try dump(":3"), before, "带尺寸的不动点")
+        XCTAssertEqual(try dump(":3"), before, "a fixed point, sizes included")
     }
 
-    // MARK: 调得动（与鼠标同权）
+    // MARK: Driving it (on equal footing with the mouse)
 
-    /// `--ratio` = 把这条分隔条拖到那个位置：与拖拽手势落在**同一个数**上，
-    /// 越界时也夹在同一处（两侧各留 10pt，不是 0.1–0.9）
+    /// `--ratio` means dragging that divider to that position: it lands on **the same number** a
+    /// drag gesture does, and out of range it clamps in the same place (10pt left on either side,
+    /// not 0.1-0.9)
     func testResizeByRatioLandsWhereTheDividerDragWould() throws {
         let pane = try twoPaneTree()
         let controller = try harness.controller
@@ -420,22 +442,25 @@ final class ControlSizeTests: XCTestCase {
         _ = try harness.run("pane.resize", target: handle(pane), args: ["ratio": .string("0.25")])
         XCTAssertEqual(try rootRatio(), 0.25, accuracy: 0.0005)
 
-        // 同一个位置，改走拖拽那条路（SwiftUI 的分隔条绑定调的就是 handleSplitOperation）
+        // The same position, this time through the drag path (the SwiftUI divider binding calls
+        // handleSplitOperation)
         try drag(dividerAt: 0.4 * span)
         let dragged = try rootRatio()
         _ = try harness.run("pane.resize", target: handle(pane), args: ["ratio": .string("0.4")])
-        XCTAssertEqual(try rootRatio(), dragged, accuracy: 0.0005, "同一个目标位置必须落在同一个比例")
+        XCTAssertEqual(try rootRatio(), dragged, accuracy: 0.0005, "the same target position has to land on the same ratio")
 
-        // 夹取：命令行要一个够不到的比例，落点 = 把分隔条拖出左边界的落点
+        // Clamping: the command line asks for a ratio it cannot reach, and lands where dragging
+        // the divider past the left edge lands
         try drag(dividerAt: -80)
         let clampedByMouse = try rootRatio()
         _ = try harness.run("pane.resize", target: handle(pane), args: ["ratio": .string("0.001")])
         XCTAssertEqual(try rootRatio(), clampedByMouse, accuracy: 0.0005,
-                       "命令行不能把分隔条设到鼠标拖不到的位置")
-        XCTAssertGreaterThan(try rootRatio(), 0, "夹到的是 10pt，不是 0")
+                       "the command line must not put a divider where the mouse cannot drag it")
+        XCTAssertGreaterThan(try rootRatio(), 0, "it clamps at 10pt, not at 0")
     }
 
-    /// `--points` 就是"把分隔条挪这么多点"：+N 与拖到 (当前位置 + N) 等价
+    /// `--points` means "move the divider by this many points": +N is the same as dragging to
+    /// (current position + N)
     func testResizeByPointsIsTheSameDragExpressedInPoints() throws {
         let pane = try twoPaneTree()
         let controller = try harness.controller
@@ -448,14 +473,15 @@ final class ControlSizeTests: XCTestCase {
         XCTAssertEqual(byPoints, start + 120 / Double(span), accuracy: 0.001)
 
         try drag(dividerAt: CGFloat(start) * span + 120)
-        XCTAssertEqual(try rootRatio(), byPoints, accuracy: 0.0005, "点数与拖拽必须同落点")
+        XCTAssertEqual(try rootRatio(), byPoints, accuracy: 0.0005, "points and a drag have to land in the same place")
 
-        // 裸数字 = 把 a 那一侧设成这么多点
+        // A bare number sets the a side to that many points
         _ = try harness.run("pane.resize", target: handle(pane), args: ["points": .string("400")])
         XCTAssertEqual(try rootRatio(), 400 / Double(span), accuracy: 0.001)
     }
 
-    /// `--dir` = 按一次 ⌘⌃方向键 / ⌘右键拖拽：与 `perform(.resize*)` 落在同一个比例
+    /// `--dir` is one press of Cmd+Ctrl+arrow or a Cmd+right-button drag: it lands on the same
+    /// ratio as `perform(.resize*)`
     func testResizeByDirectionMatchesTheKeyboardAndMouseDragPath() throws {
         let pane = try twoPaneTree()
         let controller = try harness.controller
@@ -467,17 +493,17 @@ final class ControlSizeTests: XCTestCase {
         let byCommand = try rootRatio()
         XCTAssertGreaterThan(byCommand, start)
 
-        // 回到起点，改按快捷键（步长同样是 100pt）
+        // Back to the start, this time via the shortcut (the step is 100pt as well)
         _ = try harness.run("pane.resize", target: handle(pane),
                             args: ["ratio": .string(String(start))])
         controller.requestFocus(to: pane)
         harness.spin(0.3)
         controller.perform(.resizeRight)
         XCTAssertEqual(try rootRatio(), byCommand, accuracy: 0.0005,
-                       "命令行的 --dir 与快捷键必须调出同一个比例")
+                       "the --dir of the command line and the shortcut have to produce the same ratio")
     }
 
-    /// `--split` 够得到祖先那条分隔条（鼠标可以直接拖任意一条）
+    /// `--split` reaches an ancestor's divider (the mouse can grab any one of them directly)
     func testSplitPathAddressesAnAncestorDivider() throws {
         try buildDeepTree()
         let deep = try handleOfPane(at: "b.b")
@@ -486,19 +512,20 @@ final class ControlSizeTests: XCTestCase {
         _ = try harness.run("pane.resize", target: deep,
                             args: ["split": .string("root"), "ratio": .string("0.42")])
         let after = try splits()
-        XCTAssertEqual(after[0].ratio, 0.42, accuracy: 0.0005, "调的是根那条")
-        XCTAssertEqual(after[1].ratio, before[1].ratio, accuracy: 0.0001, "自己的父分裂不该被动")
+        XCTAssertEqual(after[0].ratio, 0.42, accuracy: 0.0005, "the root divider is the one that moved")
+        XCTAssertEqual(after[1].ratio, before[1].ratio, accuracy: 0.0001, "its own parent split must not be touched")
 
         let unknown = try harness.run("pane.resize", target: deep,
                                       args: ["split": .string("a.a"), "ratio": .string("0.5")])
         XCTAssertFalse(unknown.ok)
         XCTAssertEqual(unknown.error?.code, ControlErrorCode.notFound.rawValue)
         XCTAssertEqual(Set(unknown.error?.candidates ?? []), ["root", "b"],
-                       "报不出来的时候要把有哪几条列出来")
+                       "when it cannot be found, list the ones that do exist")
     }
 
-    /// `--dir` 与 `--split` 一起给 = 报错，**不是**悄悄按 `--dir` 去调另一条分隔条。
-    /// 悄悄改道是控制面最不能犯的那种错：agent 以为自己调了根那条，实际调的是别的一条
+    /// `--dir` together with `--split` is an error, **not** a quiet retarget of `--dir` onto some
+    /// other divider. Silently changing the target is the worst class of mistake a control plane
+    /// can make: the agent believes it moved the root divider while a different one moved
     func testDirectionAndSplitTogetherIsRejectedInsteadOfRetargeting() throws {
         try buildDeepTree()
         let deep = try handleOfPane(at: "b.b")
@@ -507,12 +534,13 @@ final class ControlSizeTests: XCTestCase {
         let reply = try harness.run("pane.resize", target: deep,
                                     args: ["split": .string("root"), "dir": .string("right"),
                                            "points": .string("100")])
-        XCTAssertFalse(reply.ok, "--split 配 --dir 应该报错")
+        XCTAssertFalse(reply.ok, "--split together with --dir should error out")
         XCTAssertEqual(reply.error?.code, ControlErrorCode.badRequest.rawValue)
-        XCTAssertEqual(try splits().map(\.ratio), before, "报错了就一条分隔条都不许动")
+        XCTAssertEqual(try splits().map(\.ratio), before, "once it errors out, not one divider may have moved")
     }
 
-    /// 绝对形式幂等（第二次是空操作，--fail-if-noop 退 7），`--dry-run` 一个字节都不改
+    /// The absolute form is idempotent (the second call is a no-op and --fail-if-noop exits 7),
+    /// and `--dry-run` does not change a byte
     func testAbsoluteResizeIsIdempotentAndDryRunChangesNothing() throws {
         let pane = try twoPaneTree()
         let controller = try harness.controller
@@ -522,20 +550,21 @@ final class ControlSizeTests: XCTestCase {
         let again = try harness.run("pane.resize", target: handle(pane),
                                     args: ["ratio": .string("0.4"),
                                            ControlCommandTable.Flag.failIfNoop: .bool(true)])
-        XCTAssertEqual(again.error?.code, ControlErrorCode.noop.rawValue, "同样的绝对值再来一次什么都不该改")
+        XCTAssertEqual(again.error?.code, ControlErrorCode.noop.rawValue,
+                       "the same absolute value a second time must change nothing")
 
         let fingerprint = try harness.fingerprint(controller)
         let dry = try harness.run("pane.resize", target: handle(pane),
                                   args: ["ratio": .string("0.8"),
                                          ControlCommandTable.Flag.dryRun: .bool(true)])
         XCTAssertTrue(dry.ok)
-        XCTAssertEqual(dry.data?["changed"]?.boolValue, true, "预演也要如实说它会改什么")
+        XCTAssertEqual(dry.data?["changed"]?.boolValue, true, "a dry run still has to state truthfully what it would change")
         XCTAssertEqual(dry.data?["applied"]?.boolValue, false)
-        XCTAssertEqual(try harness.fingerprint(controller), fingerprint, "--dry-run 不许动一个字节")
+        XCTAssertEqual(try harness.fingerprint(controller), fingerprint, "--dry-run may not move a single byte")
         XCTAssertEqual(try rootRatio(), 0.4, accuracy: 0.0005)
     }
 
-    /// 变更回声里带着新的尺寸（省掉 agent 调完再读一次）
+    /// The mutation echo carries the new size (saving the agent a read after every adjustment)
     func testResizeEchoesTheNewSize() throws {
         let pane = try twoPaneTree()
         let payload = try harness.mutation(try harness.run(
@@ -543,12 +572,12 @@ final class ControlSizeTests: XCTestCase {
         XCTAssertEqual(payload["pane"]?["size"]?["ratio"]?.doubleValue, 0.35)
         let change = try XCTUnwrap(payload["changes"]?.arrayValue?.first)
         XCTAssertEqual(change["path"]?.stringValue, "1:2.tree.ratio",
-                       "diff 的路径要和 state 里的 JSON 同形")
+                       "the diff path has to be shaped like the JSON in state")
         let workspace = try XCTUnwrap(payload["workspace"]?["tree"]?["ratio"]?.doubleValue)
         XCTAssertEqual(workspace, 0.35, accuracy: 0.0005)
     }
 
-    // MARK: 零件
+    // MARK: Parts
 
     private func handle(_ pane: PaneView) -> String { ControlHandleRegistry.shared.handle(for: pane) }
 
@@ -566,7 +595,7 @@ final class ControlSizeTests: XCTestCase {
         try XCTUnwrap(try splits().first(where: { $0.path == "" })?.ratio)
     }
 
-    /// 两片叶子的 dwindle（根上一条左右分隔条），返回其中一片
+    /// A two-leaf dwindle (one left/right divider at the root); returns one of the leaves
     private func twoPaneTree() throws -> PaneView {
         touched.formUnion([1, 2])
         let directory = try makeDirectory("two")
@@ -577,14 +606,16 @@ final class ControlSizeTests: XCTestCase {
         return try XCTUnwrap(controller.model.layouts[1].paneList.first)
     }
 
-    /// 走**真正的**拖分隔条那条路：SwiftUI 的绑定把落点换算成比例（`SplitViewMetrics.ratio`），
-    /// 再交给 `handleSplitOperation(.resize)`。
-    /// 换算的底取自**量出来的**布局区（`measuredLayoutBox`），不是 `ControlGeometry`——
-    /// 拿被测者自己的数当拖拽的底，"命令行与鼠标同落点"就退化成了它跟自己一致
+    /// Go down the **real** divider-drag path: the SwiftUI binding converts the drop position into
+    /// a ratio (`SplitViewMetrics.ratio`) and hands it to `handleSplitOperation(.resize)`.
+    /// The span that conversion divides by comes from the **measured** layout area
+    /// (`measuredLayoutBox`), not from `ControlGeometry` — feed the drag the number the code under
+    /// test produced and "the command line lands where the mouse does" degenerates into it agreeing
+    /// with itself
     private func drag(dividerAt points: CGFloat) throws {
         let controller = try harness.controller
         guard case .dwindle(let tree) = controller.model.layouts[1], let root = tree.root else {
-            return XCTFail("这个工作区应该是 dwindle")
+            return XCTFail("this workspace should be dwindle")
         }
         let span = try measuredLayoutBox().width
         controller.switchWorkspace(1)
@@ -593,10 +624,11 @@ final class ControlSizeTests: XCTestCase {
         harness.spin(0.2)
     }
 
-    /// 直接量**渲染出来的那几个 pane 的 NSView**，反推分裂树真正铺开的那块地：
-    /// 每个 pane 的视图 = 它的槽位各边缩进一个 pane-gap（`PaneChrome` 的 padding），
-    /// 把它们并起来再外扩一个 gap 就是布局区。
-    /// 期望值绝不能再走 `ControlGeometry`——那只是拿编码器和它自己比
+    /// Measure the **rendered NSViews of the panes** directly and work backwards to the area the
+    /// split tree really occupies: each pane's view is its slot inset by one pane-gap on every side
+    /// (`PaneChrome`'s padding), so the union of them grown by one gap is the layout area.
+    /// The expectation must never route through `ControlGeometry` again — that would only compare
+    /// the encoder with itself
     private func measuredLayoutBox(file: StaticString = #filePath,
                                    line: UInt = #line) throws -> CGRect {
         let controller = try harness.controller
@@ -609,7 +641,7 @@ final class ControlSizeTests: XCTestCase {
             guard frame.width > 1, frame.height > 1 else { continue }
             union = union.map { $0.union(frame) } ?? frame
         }
-        let box = try XCTUnwrap(union, "一个 pane 都没挂在窗口上，量不到真实布局",
+        let box = try XCTUnwrap(union, "not one pane is attached to the window, so the real layout cannot be measured",
                                 file: file, line: line)
         return box.insetBy(dx: -gap, dy: -gap)
     }

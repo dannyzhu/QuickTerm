@@ -5,24 +5,25 @@ import SwiftUI
 final class BrowserPaneTests: XCTestCase {
     func testAddressInputResolution() {
         let s = BrowserPaneView.Settings()
-        XCTAssertEqual(s.url(forInput: "https://a.b/c?d=1")?.absoluteString, "https://a.b/c?d=1", "完整 URL 原样")
+        XCTAssertEqual(s.url(forInput: "https://a.b/c?d=1")?.absoluteString, "https://a.b/c?d=1", "a complete URL is left alone")
         XCTAssertEqual(s.url(forInput: "http://localhost:8080/x")?.absoluteString, "http://localhost:8080/x")
-        XCTAssertEqual(s.url(forInput: "example.com")?.absoluteString, "https://example.com", "像域名 → 补 https")
+        XCTAssertEqual(s.url(forInput: "example.com")?.absoluteString, "https://example.com", "looks like a domain -> prepend https")
         XCTAssertEqual(s.url(forInput: "localhost:3000")?.absoluteString, "https://localhost:3000")
         XCTAssertEqual(s.url(forInput: "about:blank")?.absoluteString, "about:blank")
-        XCTAssertEqual(s.url(forInput: "hello world")?.absoluteString, "https://www.google.com/search?q=hello%20world", "非网址 → 搜索")
-        XCTAssertEqual(s.url(forInput: "swift")?.absoluteString, "https://www.google.com/search?q=swift", "单词无点 → 搜索")
+        XCTAssertEqual(s.url(forInput: "hello world")?.absoluteString, "https://www.google.com/search?q=hello%20world",
+                       "not a URL -> search")
+        XCTAssertEqual(s.url(forInput: "swift")?.absoluteString, "https://www.google.com/search?q=swift", "one word, no dot -> search")
         XCTAssertNil(s.url(forInput: "   "))
     }
 
     func testUserAgentModes() {
         var s = BrowserPaneView.Settings()
-        XCTAssertEqual(s.effectiveUserAgent, BrowserPaneView.Settings.safariUserAgent, "默认伪装 Safari")
+        XCTAssertEqual(s.effectiveUserAgent, BrowserPaneView.Settings.safariUserAgent, "by default it poses as Safari")
         s.userAgent = "webkit"
-        XCTAssertNil(s.effectiveUserAgent, "webkit = 不伪装")
+        XCTAssertNil(s.effectiveUserAgent, "webkit means no spoofing")
         s.userAgent = "MyAgent/1.0"
         XCTAssertEqual(s.effectiveUserAgent, "MyAgent/1.0")
-        XCTAssertTrue(BrowserPaneView.Settings.safariUserAgent.contains("Safari/"), "Google 按 UA 判定嵌入式浏览器")
+        XCTAssertTrue(BrowserPaneView.Settings.safariUserAgent.contains("Safari/"), "Google decides a browser is embedded from the UA")
     }
 
     func testHomeFallback() {
@@ -31,8 +32,9 @@ final class BrowserPaneTests: XCTestCase {
         XCTAssertEqual(s.homeURL.host, "www.google.com")
     }
 
-    /// 悬停即焦点靠容器自己的 tracking area（owner = pane，含 .mouseMoved）：WKWebView 的 mouseMoved
-    /// 覆写收不到事件（其 tracking area 由内部观察者持有）
+    /// Focus-follows-mouse rides the container's own tracking area (owner = pane, with .mouseMoved): an
+    /// override of mouseMoved on WKWebView never sees the events, because an internal observer owns its
+    /// tracking area.
     @MainActor
     func testBrowserPaneInstallsHoverTrackingArea() {
         let pane = BrowserPaneView(url: nil)
@@ -42,15 +44,15 @@ final class BrowserPaneTests: XCTestCase {
         window.contentView?.addSubview(pane)
         pane.updateTrackingAreas()
         let area = pane.trackingAreas.first { $0.owner === pane }
-        XCTAssertNotNil(area, "容器必须有自己的 tracking area")
+        XCTAssertNotNil(area, "the container has to own a tracking area")
         XCTAssertTrue(area?.options.contains(.mouseMoved) ?? false)
         XCTAssertTrue(area?.options.contains(.activeAlways) ?? false)
         XCTAssertTrue(pane.installsHoverTracking)
-        XCTAssertFalse(Ghostty.SurfaceView.self == type(of: pane), "终端 pane 自己管 tracking area")
+        XCTAssertFalse(Ghostty.SurfaceView.self == type(of: pane), "a terminal pane manages its own tracking area")
         pane.removeFromSuperview()
     }
 
-    /// 完整事件链：点击地址栏 → 输入 baidu.com → 回车 → 请求 https://baidu.com
+    /// The whole event chain: click the address bar -> type baidu.com -> press Return -> request https://baidu.com.
     @MainActor
     func testTypingInAddressBarNavigates() throws {
         let c = try XCTUnwrap((NSApp.delegate as? AppDelegate)?.controller)
@@ -61,7 +63,8 @@ final class BrowserPaneTests: XCTestCase {
         c.perform(.newBrowser)
         let b = try XCTUnwrap(c.paneList.first { $0 is BrowserPaneView } as? BrowserPaneView)
         defer {
-            // 显式收尾并等 SwiftUI 重挂原工作区：紧随其后的 EngineSmokeTests 同步检查视图链
+            // Tear down explicitly and wait for SwiftUI to remount the original workspace: EngineSmokeTests
+            // runs right after this one and inspects the view chain synchronously.
             c.closePane(b, confirmIfNeeded: false, animated: false)
             BrowserPaneView.settings = prev
             c.model.switchTo(home)
@@ -75,27 +78,31 @@ final class BrowserPaneTests: XCTestCase {
             NSEvent.mouseEvent(with: type, location: center, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
         }
-        // NSCell 的鼠标跟踪会循环取 nextEvent 直到 mouseUp：先把 mouseUp 排进队列再发 mouseDown，否则卡死
+        // NSCell's mouse tracking loops on nextEvent until it sees a mouseUp: queue the mouseUp first and
+        // only then send the mouseDown, otherwise this deadlocks.
         NSApp.postEvent(mouse(.leftMouseUp), atStart: false)
         NSApp.sendEvent(mouse(.leftMouseDown))
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
-        XCTAssertNotNil(field.currentEditor(), "点击后地址栏应进入编辑；FR=\(String(describing: window.firstResponder))")
-        XCTAssertTrue(b.focused, "编辑地址栏时 pane 持焦")
-        // 首次点击默认全选：⌘C 直接复制、直接输入即替换
+        XCTAssertNotNil(field.currentEditor(),
+                        "the address bar should start editing after the click; FR=\(String(describing: window.firstResponder))")
+        XCTAssertTrue(b.focused, "the pane holds focus while the address bar is being edited")
+        // The first click selects everything: Cmd+C copies straight away, and typing replaces the selection.
         XCTAssertEqual(field.currentEditor()?.selectedRange, NSRange(location: 0, length: field.stringValue.count),
-                       "点击地址栏应全选")
-        field.currentEditor()?.insertText("baidu.com")   // 直接输入替换全选内容
+                       "clicking the address bar selects everything")
+        field.currentEditor()?.insertText("baidu.com")   // Typing replaces the whole selection
         let ret = NSEvent.keyEvent(with: .keyDown, location: center, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                    windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
                                    isARepeat: false, keyCode: 36)!
         NSApp.sendEvent(ret)
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
-        // 站点可能立即跳转（baidu.com → www.baidu.com），只断言主机
-        XCTAssertTrue(b.lastRequestedURL?.host?.hasSuffix("baidu.com") ?? false, "回车后应请求 baidu，实际 \(String(describing: b.lastRequestedURL))")
-        XCTAssertTrue(window.firstResponder === b.webView, "回车后焦点回到页面")
+        // The site may redirect immediately (baidu.com -> www.baidu.com), so only assert on the host.
+        XCTAssertTrue(b.lastRequestedURL?.host?.hasSuffix("baidu.com") ?? false,
+                      "Return should request baidu; actual \(String(describing: b.lastRequestedURL))")
+        XCTAssertTrue(window.firstResponder === b.webView, "focus goes back to the page after Return")
     }
 
-    /// 多标签：新建激活、相对切换回绕、关闭后选邻居、最后一个标签不在 pane 内关；标签条 auto/always
+    /// Tabs: a new tab activates, relative switching wraps, closing picks a neighbour, the last tab is never
+    /// closed from inside the pane; tab bar auto/always.
     @MainActor
     func testTabsLifecycle() throws {
         let prev = BrowserPaneView.settings
@@ -104,37 +111,38 @@ final class BrowserPaneTests: XCTestCase {
         BrowserPaneView.settings.tabBar = "auto"
         let pane = BrowserPaneView(url: URL(string: "about:blank"))
         XCTAssertEqual(pane.tabs.count, 1)
-        XCTAssertFalse(pane.tabBarVisible, "单标签 auto 隐藏")
+        XCTAssertFalse(pane.tabBarVisible, "auto hides the bar for a single tab")
         pane.newTab()
         pane.newTab()
         XCTAssertEqual(pane.tabs.count, 3)
-        XCTAssertEqual(pane.activeTabIndex, 2, "新标签激活")
+        XCTAssertEqual(pane.activeTabIndex, 2, "a new tab becomes active")
         XCTAssertTrue(pane.tabBarVisible)
-        XCTAssertTrue(pane.focusTarget === pane.tabs[2].webView, "焦点目标 = 当前标签")
+        XCTAssertTrue(pane.focusTarget === pane.tabs[2].webView, "the focus target is the active tab")
         XCTAssertTrue(pane.tabs[0].webView.isHidden && !pane.tabs[2].webView.isHidden)
         pane.selectTab(offset: 1)
-        XCTAssertEqual(pane.activeTabIndex, 0, "首尾回绕")
+        XCTAssertEqual(pane.activeTabIndex, 0, "it wraps around at the ends")
         pane.selectTab(offset: -1)
         XCTAssertEqual(pane.activeTabIndex, 2)
         pane.selectTab(at: 1)
         XCTAssertTrue(pane.closeActiveTab())
         XCTAssertEqual(pane.tabs.count, 2)
-        XCTAssertEqual(pane.activeTabIndex, 1, "关掉中间标签后选后面那个")
+        XCTAssertEqual(pane.activeTabIndex, 1, "closing a middle tab selects the one after it")
         XCTAssertTrue(pane.closeActiveTab())
-        XCTAssertEqual(pane.activeTabIndex, 0, "关掉末尾标签后选前一个")
-        XCTAssertFalse(pane.closeActiveTab(), "最后一个标签不在 pane 内关")
+        XCTAssertEqual(pane.activeTabIndex, 0, "closing the last tab selects the one before it")
+        XCTAssertFalse(pane.closeActiveTab(), "the final tab is never closed from inside the pane")
         XCTAssertEqual(pane.tabs.count, 1)
         BrowserPaneView.settings.tabBar = "always"
         pane.applySettings()
-        XCTAssertTrue(pane.tabBarVisible, "always（默认）：单标签也显示标签条")
-        // 标签条右端的"+"新建标签
+        XCTAssertTrue(pane.tabBarVisible, "always (the default): the bar shows even with a single tab")
+        // The "+" at the right end of the bar opens a new tab.
         pane.tabBarForTesting.newTabButtonForTesting.performClick(nil)
-        XCTAssertEqual(pane.tabs.count, 2, "+ 新建标签")
-        XCTAssertEqual(pane.activeTabIndex, 1, "新标签激活")
+        XCTAssertEqual(pane.tabs.count, 2, "+ opens a new tab")
+        XCTAssertEqual(pane.activeTabIndex, 1, "the new tab becomes active")
     }
 
-    /// 标签条不能改变 pane 自身宽度（SwiftUI 托管的 pane 没有外部宽度约束，必需的项宽上限会把 pane 挤成 N×200）；
-    /// 标签项 ≤ 200 且彼此等宽
+    /// The tab bar must not change the pane's own width: a SwiftUI-hosted pane has no external width
+    /// constraint, so a required item-width maximum would stretch the pane out to N x 200. Items are
+    /// <= 200 wide and all equal.
     @MainActor
     func testTabBarDoesNotResizePane() throws {
         let prev = BrowserPaneView.settings
@@ -152,11 +160,11 @@ final class BrowserPaneTests: XCTestCase {
         pane.newTab()
         RunLoop.main.run(until: Date().addingTimeInterval(0.3))
         hosting.layoutSubtreeIfNeeded()
-        XCTAssertEqual(pane.frame.width, 900, accuracy: 1, "两个标签后 pane 宽度不能变")
+        XCTAssertEqual(pane.frame.width, 900, accuracy: 1, "the pane's width must not change once two more tabs exist")
         let items = pane.tabItemWidthsForTesting
         XCTAssertEqual(items.count, 3)
         for w in items { XCTAssertLessThanOrEqual(w, 200.5); XCTAssertGreaterThan(w, 40) }
-        XCTAssertEqual(items.max()! - items.min()!, 0, accuracy: 1, "标签等宽")
+        XCTAssertEqual(items.max()! - items.min()!, 0, accuracy: 1, "tabs are equal width")
         pane.closeActiveTab(); pane.closeActiveTab()
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         hosting.layoutSubtreeIfNeeded()
@@ -164,8 +172,10 @@ final class BrowserPaneTests: XCTestCase {
         window.contentView = nil
     }
 
-    /// 标签条几何：[min, max] 内等分；到最小仍放不下 → 横向滚动且当前标签滚入视野；
-    /// 当前标签常显关闭钮，非激活标签悬停才露出；斜边外的角落命中穿透给邻居；当前标签在最上层
+    /// Tab-bar geometry: split evenly within [min, max]; once even the minimum no longer fits, scroll
+    /// horizontally and bring the active tab into view; the active tab always shows its close button while
+    /// inactive ones reveal it on hover; corners outside the slanted edge fall through to the neighbour; the
+    /// active tab is on top.
     @MainActor
     func testTabBarGeometryHoverAndHitTesting() {
         let click = NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
@@ -176,68 +186,68 @@ final class BrowserPaneTests: XCTestCase {
         bar.layoutSubtreeIfNeeded()
         let usable = 400 - 2 * BrowserTabBarView.Metrics.insetX - BrowserTabBarView.Metrics.newTabReserve
         XCTAssertEqual(bar.tabWidth, (usable + BrowserTabBarView.Metrics.overlap) / 2, accuracy: 0.5,
-                       "等分标签区（已扣掉右侧 + 的位置）")
+                       "the tab area is split evenly, with the room for the + on the right already deducted")
         XCTAssertFalse(bar.isOverflowing)
-        // 等宽、相邻叠进 overlap
+        // Equal widths, and neighbours slide into each other by `overlap`.
         let f = bar.itemFrames
         XCTAssertEqual(f[0].width, f[1].width, accuracy: 0.01)
         XCTAssertEqual(f[1].minX - f[0].minX, f[0].width - BrowserTabBarView.Metrics.overlap, accuracy: 0.01)
-        // 当前标签常显关闭钮；非激活的悬停才显
+        // The active tab always shows its close button; an inactive one only on hover.
         let a = bar.itemViews[0], b = bar.itemViews[1]
         XCTAssertTrue(a.closeButtonVisible)
         XCTAssertFalse(b.closeButtonVisible)
         bar.updateHover(atBarPoint: NSPoint(x: f[1].midX, y: f[1].midY))
         bar.layoutSubtreeIfNeeded()
-        XCTAssertTrue(b.closeButtonVisible, "悬停露出关闭钮")
+        XCTAssertTrue(b.closeButtonVisible, "hovering reveals the close button")
         XCTAssertEqual(b.frame.width - b.titleWidthForTesting, a.frame.width - a.titleWidthForTesting, accuracy: 0.01,
-                       "悬停不改变标题宽度（关闭钮的位一直留着）")
-        // 重叠带（两个标签的矩形都覆盖）里只有最上层的梯形算悬停
+                       "hovering does not change the title width; the close button's slot is always reserved")
+        // Inside the overlap strip, where both tabs' rects cover the point, only the topmost trapezoid hovers.
         let overlapX = f[1].minX + 2
         bar.updateHover(atBarPoint: NSPoint(x: overlapX, y: f[1].midY))
-        XCTAssertEqual([a.hovering, b.hovering].filter { $0 }.count, 1, "重叠带里只有一个标签悬停")
+        XCTAssertEqual([a.hovering, b.hovering].filter { $0 }.count, 1, "only one tab hovers inside the overlap strip")
         bar.updateHover(atBarPoint: nil)
         bar.layoutSubtreeIfNeeded()
         XCTAssertFalse(b.closeButtonVisible)
-        // 当前标签在最上层（subviews 末尾）
+        // The active tab is on top, which means last in subviews.
         XCTAssertTrue(bar.subviews.last === a)
-        // 命中：B 左上角（斜边外）穿透给压在下面的 A；B 中心命中 B
-        let cornerInB = NSPoint(x: f[1].minX + 0.5, y: f[1].minY + 2)   // B 的斜边外、A 的梯形内
+        // Hit testing: B's top-left corner, outside the slant, falls through to the A underneath; B's center hits B.
+        let cornerInB = NSPoint(x: f[1].minX + 0.5, y: f[1].minY + 2)   // Outside B's slant, inside A's trapezoid
         XCTAssertTrue(bar.hitTest(cornerInB) === a || bar.hitTest(cornerInB)?.isDescendant(of: a) == true,
-                      "斜边外的角落穿透给邻居")
+                      "a corner outside the slant falls through to the neighbour")
         let centerB = NSPoint(x: f[1].midX, y: f[1].midY)
         XCTAssertTrue(bar.hitTest(centerB)?.isDescendant(of: b) == true)
-        // 8 个标签、最小 80：放不下 → 溢出；选中最后一个滚入视野
+        // 8 tabs at a minimum of 80: they no longer fit, so it overflows; selecting the last scrolls it into view.
         bar.update(items: (0..<8).map { .init(title: "T\($0)", active: $0 == 7) })
         bar.layoutSubtreeIfNeeded()
-        XCTAssertEqual(bar.tabWidth, 80, accuracy: 0.01, "到最小宽度不再缩")
+        XCTAssertEqual(bar.tabWidth, 80, accuracy: 0.01, "it stops shrinking at the minimum width")
         XCTAssertTrue(bar.isOverflowing)
         let last = bar.itemFrames[7]
         let rightEdge = 400 - BrowserTabBarView.Metrics.insetX - BrowserTabBarView.Metrics.newTabReserve
-        XCTAssertLessThanOrEqual(last.maxX, rightEdge + 0.5, "当前标签在视野内、不跑到 + 底下")
+        XCTAssertLessThanOrEqual(last.maxX, rightEdge + 0.5, "the active tab stays in view and never slides under the +")
         XCTAssertGreaterThanOrEqual(bar.newTabButtonForTesting.frame.minX, last.maxX - BrowserTabBarView.Metrics.slant,
-                                    "+ 在标签右侧")
+                                    "the + sits to the right of the tabs")
         XCTAssertGreaterThanOrEqual(last.minX, 0)
         XCTAssertGreaterThan(bar.scrollOffset, 0)
         bar.scroll(by: -10_000)
         bar.layoutSubtreeIfNeeded()
-        XCTAssertEqual(bar.scrollOffset, 0, "滚动钳在 0")
+        XCTAssertEqual(bar.scrollOffset, 0, "scrolling clamps at 0")
         XCTAssertEqual(bar.itemFrames[0].minX, BrowserTabBarView.Metrics.insetX, accuracy: 0.01)
-        // 变窄后当前标签仍在视野内（README 承诺）
+        // After narrowing, the active tab is still in view (a README promise).
         bar.setFrameSize(NSSize(width: 200, height: BrowserTabBarView.Metrics.barHeight))
         bar.layoutSubtreeIfNeeded()
         let lastNarrow = bar.itemFrames[7]
         XCTAssertLessThanOrEqual(lastNarrow.maxX,
                                  200 - BrowserTabBarView.Metrics.insetX - BrowserTabBarView.Metrics.newTabReserve + 0.5,
-                                 "变窄后当前标签仍露出")
+                                 "the active tab is still visible after narrowing")
         XCTAssertGreaterThanOrEqual(lastNarrow.minX, 0)
         bar.setFrameSize(NSSize(width: 400, height: BrowserTabBarView.Metrics.barHeight))
         bar.layoutSubtreeIfNeeded()
-        // min > max 时以 max 为准
+        // When min > max, max wins.
         bar.metrics = .init(maxWidth: 100, minWidth: 300)
         bar.update(items: [.init(title: "x", active: true)])
         bar.layoutSubtreeIfNeeded()
         XCTAssertEqual(bar.tabWidth, 100, accuracy: 0.01)
-        // 点击 / 关闭回调带正确下标
+        // The select / close callbacks carry the right index.
         var selected = -1, closed = -1
         bar.onSelect = { selected = $0 }
         bar.onClose = { closed = $0 }
@@ -249,18 +259,19 @@ final class BrowserPaneTests: XCTestCase {
         var created = 0
         bar.onNewTab = { created += 1 }
         bar.newTabButtonForTesting.performClick(nil)
-        XCTAssertEqual(created, 1, "+ 触发新建标签")
-        // 标签没占满时 + 紧跟最后一个标签；占满时钉在右端
+        XCTAssertEqual(created, 1, "+ fires the new-tab callback")
+        // While the tabs do not fill the bar the + follows the last tab; once they do, it pins to the right edge.
         bar.metrics = .init(maxWidth: 60, minWidth: 40)
         bar.layoutSubtreeIfNeeded()
         let plus = bar.newTabButtonForTesting.frame
         XCTAssertEqual(plus.minX,
                        bar.itemFrames[1].maxX - BrowserTabBarView.Metrics.slant + BrowserTabBarView.Metrics.newTabGap,
-                       accuracy: 0.6, "+ 紧跟最后一个标签")
+                       accuracy: 0.6, "the + follows the last tab")
         XCTAssertLessThanOrEqual(plus.maxX, 400 - BrowserTabBarView.Metrics.insetX + 0.5)
     }
 
-    /// 视觉快照（仅当设置 QUICKTERM_SNAPSHOT_DIR）：把标签条 + 工具条画成 PNG 供人工核对
+    /// Visual snapshot, only when QUICKTERM_SNAPSHOT_DIR is set: renders the tab bar plus toolbar to a PNG
+    /// for a human to check.
     @MainActor
     func testTabBarSnapshot() throws {
         guard let dir = ProcessInfo.processInfo.environment["QUICKTERM_SNAPSHOT_DIR"] else { return }
@@ -279,14 +290,14 @@ final class BrowserPaneTests: XCTestCase {
             .init(title: "Google", active: false),
             .init(title: "QuickTerm – GitHub", active: true),
             .init(title: "YouTube – a very long title that gets truncated", active: false),
-            .init(title: "百度一下，你就知道", active: false),
+            .init(title: "百度一下，你就知道", active: false),   // CJK title: checks glyph rendering in the snapshot
         ])
         container.addSubview(toolbar)
         container.addSubview(bar)
         let window = NSWindow(contentRect: container.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = container
         bar.layoutSubtreeIfNeeded()
-        let hovered = bar.itemViews[2].frame                                // 第三个标签悬停态
+        let hovered = bar.itemViews[2].frame                                // The third tab, hovered
         bar.updateHover(atBarPoint: NSPoint(x: hovered.midX, y: hovered.midY))
         container.layoutSubtreeIfNeeded()
         let rep = try XCTUnwrap(container.bitmapImageRepForCachingDisplay(in: container.bounds))
@@ -296,7 +307,8 @@ final class BrowserPaneTests: XCTestCase {
         window.contentView = nil
     }
 
-    /// ⌘ 纯点击的转交目标：落在网页上 → WKWebView；落在地址栏 / 标签条等 AppKit 控件上 → nil（不能直接调 mouseDown）
+    /// Where a plain Cmd+click is forwarded: on the page it goes to the WKWebView; on the address bar, the tab
+    /// bar or any other AppKit control it is nil, because mouseDown must not be called on those directly.
     @MainActor
     func testClickTargetOnlyForwardsToWebView() throws {
         let prev = BrowserPaneView.settings
@@ -312,15 +324,15 @@ final class BrowserPaneTests: XCTestCase {
         pane.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))
         let webCenter = pane.webView.convert(NSPoint(x: pane.webView.bounds.midX, y: pane.webView.bounds.midY), to: nil)
-        XCTAssertTrue(pane.clickTarget(atWindowPoint: webCenter) === pane.webView, "网页区域 → WKWebView")
+        XCTAssertTrue(pane.clickTarget(atWindowPoint: webCenter) === pane.webView, "the page area goes to the WKWebView")
         let field = pane.addressFieldForTesting
         let fieldCenter = field.convert(NSPoint(x: field.bounds.midX, y: field.bounds.midY), to: nil)
-        XCTAssertNil(pane.clickTarget(atWindowPoint: fieldCenter), "地址栏 → 不转交")
-        XCTAssertNil(pane.clickTarget(atWindowPoint: NSPoint(x: -50, y: -50)), "pane 外 → nil")
+        XCTAssertNil(pane.clickTarget(atWindowPoint: fieldCenter), "the address bar is not forwarded")
+        XCTAssertNil(pane.clickTarget(atWindowPoint: NSPoint(x: -50, y: -50)), "outside the pane it is nil")
         window.contentView = nil
     }
 
-    /// 多标签存档往返（tabs + activeTab），旧单页存档仍可读
+    /// A multi-tab archive round trip (tabs + activeTab); an old single-page archive still reads.
     @MainActor
     func testTabsPersistence() throws {
         let prev = BrowserPaneView.settings
@@ -333,12 +345,12 @@ final class BrowserPaneTests: XCTestCase {
         let data = try JSONEncoder().encode(PaneBox(pane: pane))
         let json = String(decoding: data, as: UTF8.self)
         XCTAssertTrue(json.contains("\"tabs\""), json)
-        XCTAssertTrue(json.contains("example.com\\/b") || json.contains("example.com/b"), "JSONEncoder 会转义斜杠")
+        XCTAssertTrue(json.contains("example.com\\/b") || json.contains("example.com/b"), "JSONEncoder escapes forward slashes")
         let decoded = try XCTUnwrap(try JSONDecoder().decode(PaneBox.self, from: data).pane as? BrowserPaneView)
         XCTAssertEqual(decoded.tabs.count, 3)
         XCTAssertEqual(decoded.activeTabIndex, 1)
         XCTAssertEqual(decoded.tabs[2].lastRequestedURL?.absoluteString, "https://example.com/b")
-        // 旧格式：只有 url
+        // The old format: url only.
         let legacy = Data(#"{"pane":{"kind":"browser","uuid":"6E1F7C0E-1234-4C1D-9C6B-000000000001","url":"https://example.com/x","title":"x"}}"#.utf8)
         let old = try XCTUnwrap(try JSONDecoder().decode(PaneBox.self, from: legacy).pane as? BrowserPaneView)
         XCTAssertEqual(old.tabs.count, 1)
@@ -358,7 +370,7 @@ final class BrowserPaneTests: XCTestCase {
     }
 }
 
-/// 测试用：经 PaneCodable 往返一个 pane
+/// Test helper: round-trip one pane through PaneCodable.
 private struct PaneBox: Codable {
     let pane: PaneView
     init(pane: PaneView) { self.pane = pane }

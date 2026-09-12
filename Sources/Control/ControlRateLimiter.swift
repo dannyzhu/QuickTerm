@@ -1,32 +1,37 @@
 import Foundation
 
-/// 变更命令的限流（令牌桶）。**纯值类型 + 注入时钟**，所以能在没有窗口的用例层把它钉死。
+/// Rate limiting for mutation commands (token bucket). **A pure value type with an injected
+/// clock**, so tests can pin it down without a window.
 ///
-/// 为什么不能只靠 `ControlServer.Connection` 上那只桶：CLI **每条命令开一条新连接**
-/// （`quickterm pane new` 跑完就退出），于是每次都拿到一只满桶——连接级限流对
-/// "for i in {1..200}; do quickterm pane new; done" 这种最典型的失控循环完全无效。
-/// 所以这里按**来源**再限一次，并且再加一只全进程的总桶：
-/// 来源标识优先用调用方自报的 `QUICKTERM_PANE`（同一个 agent 会话就是同一个 pane），
-/// 拿不到就退回内核给的 pid。两者都可以被绕开——限流不是安全边界，
-/// 它防的是"agent 一头撞进重试循环"，那时用户看到的只是应用卡住、存档抖动，毫无线索。
+/// Why the bucket on `ControlServer.Connection` is not enough on its own: the CLI opens **a new
+/// connection per command** (`quickterm pane new` exits the moment it is done), so every command
+/// gets a fresh full bucket — connection-level limiting does nothing about the most typical
+/// runaway loop there is, "for i in {1..200}; do quickterm pane new; done".
+/// So there is a second limit here, keyed by **origin**, plus a process-wide bucket on top of
+/// that: the origin key is the caller's self-reported `QUICKTERM_PANE` when there is one (one
+/// agent session is one pane), falling back to the pid the kernel reports. Both can be worked
+/// around — rate limiting is not a security boundary. What it guards against is an agent
+/// charging head-first into a retry loop, where all the user gets to see is an app that has
+/// seized up and a state file thrashing, with nothing to explain either.
 struct ControlRateLimiter {
     struct Limit: Equatable {
-        /// 突发上限（桶容量）
+        /// Burst ceiling (the bucket's capacity)
         var capacity: Double
-        /// 每秒回填
+        /// Refill per second
         var perSecond: Double
     }
 
-    /// 全进程总量：一次布局变更就是一次重排 + 一次防抖存档，20/s 已经远超人手速度
+    /// Process-wide total: one layout change is one relayout plus one debounced save, and 20/s
+    /// is already far past anything a pair of hands can do
     static let globalLimit = Limit(capacity: 40, perSecond: 20)
-    /// 单一来源（pane 或 pid）
+    /// A single origin (pane or pid)
     static let originLimit = Limit(capacity: 30, perSecond: 10)
-    /// 一个工作区里最多几个 pane（agent 会很开心地建 40 个）
+    /// How many panes one workspace may hold (an agent will happily create 40)
     static let maxPanesPerWorkspace = 32
 
     enum Verdict: Equatable {
         case allowed
-        /// 超了：多久之后再试（ms）
+        /// Over the limit: how long to wait before retrying (ms)
         case limited(retryAfterMs: Int, scope: String)
     }
 
@@ -42,7 +47,8 @@ struct ControlRateLimiter {
         global = Bucket(tokens: Self.globalLimit.capacity, at: now)
     }
 
-    /// 取一个令牌。**只有真的放行才扣**——被拒的请求不该把桶越拒越空
+    /// Take a token. **Only an actual admission spends one** — a refused request must not drain
+    /// the bucket further with every refusal
     mutating func admit(origin: String, now: Date = Date()) -> Verdict {
         var originBucket = origins[origin] ?? Bucket(tokens: Self.originLimit.capacity, at: now)
         Self.refill(&originBucket, Self.originLimit, now: now)
@@ -61,7 +67,7 @@ struct ControlRateLimiter {
         return .allowed
     }
 
-    /// 只给用例 / 配置重载：清空账本
+    /// Tests and config reloads only: wipe the ledger
     mutating func reset(now: Date = Date()) {
         origins.removeAll()
         global = Bucket(tokens: Self.globalLimit.capacity, at: now)

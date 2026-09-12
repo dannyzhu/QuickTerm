@@ -1,16 +1,17 @@
 import XCTest
 @testable import QuickTerm
 
-/// 线材编解码。每一条负载都**再用 JSONSerialization 解析一遍**：
-/// yabai 曾在一个版本里给 `query --windows` 拼出一个尾逗号，打断了所有下游 jq 管道——
-/// 这里的规矩是"一切走 JSONEncoder"，用例负责让它保持为真。
+/// Wire encoding and decoding. Every payload is **parsed a second time with JSONSerialization**:
+/// one yabai release hand-assembled a trailing comma into `query --windows` and broke every jq
+/// pipeline downstream. The rule here is "everything goes through JSONEncoder", and these cases
+/// are what keeps that true.
 final class ControlWireTests: XCTestCase {
     private func reparse(_ data: Data, file: StaticString = #filePath, line: UInt = #line) throws -> [String: Any] {
         let object = try JSONSerialization.jsonObject(with: data)
         return try XCTUnwrap(object as? [String: Any], file: file, line: line)
     }
 
-    // MARK: 请求 / 响应信封
+    // MARK: Request / response envelopes
 
     func testRequestRoundTrip() throws {
         let request = ControlRequest(
@@ -31,7 +32,8 @@ final class ControlWireTests: XCTestCase {
         XCTAssertEqual(decoded.v, ControlProtocol.version)
     }
 
-    /// 服务端写的 `ControlResponse` 与客户端读的 `ControlReply` 必须是同一个线形状
+    /// The `ControlResponse` the server writes and the `ControlReply` the client reads have to be
+    /// the same wire shape
     func testResponseAndReplyAreTheSameShape() throws {
         let payload = ControlActionPayload(action: "new-terminal", cls: .mutate, applied: true,
                                            confirmPending: nil, focusPending: nil, panes: nil)
@@ -53,10 +55,10 @@ final class ControlWireTests: XCTestCase {
     }
 
     func testErrorEnvelopeCarriesItsOwnExitCode() throws {
-        let error = ControlErrorBody(.ambiguousTarget, "3 个 pane 匹配 title:~dev",
-                                     hint: "改用 -t <句柄>", candidates: ["t2", "t7", "b1"])
+        let error = ControlErrorBody(.ambiguousTarget, "3 panes match title:~dev",
+                                     hint: "use -t <handle> instead", candidates: ["t2", "t7", "b1"])
         XCTAssertEqual(error.exit, ControlExit.badTarget.rawValue,
-                       "CLI 直接拿 error.exit 当退出码：两边不许各存一份映射表")
+                       "the CLI uses error.exit directly as its exit code: neither side keeps its own copy of the mapping")
         let data = try ControlJSON.encoder.encode(
             ControlResponse.failure(id: "1", seq: 7, error: error))
         let raw = try reparse(data)
@@ -69,15 +71,16 @@ final class ControlWireTests: XCTestCase {
     func testEveryErrorCodeMapsToADocumentedExit() {
         for code in ControlErrorCode.allCases {
             XCTAssertTrue(ControlExit.allCases.contains(code.exit),
-                          "\(code.rawValue) 映射到了没有文档的退出码")
+                          "\(code.rawValue) maps to an undocumented exit code")
             XCTAssertFalse(code.summary.isEmpty)
         }
     }
 
-    // MARK: NDJSON 分帧
+    // MARK: NDJSON framing
 
     func testEncodedLineHasExactlyOneNewlineAtTheEnd() throws {
-        // 标题里塞换行是 agent 幻觉出来的典型输入；JSONEncoder 会转义它，分帧才不会被撕开
+        // A newline stuffed into a title is the classic agent-hallucinated input; JSONEncoder
+        // escapes it, which is the only reason the framing does not get torn apart
         let pane = ControlStatePayload.PaneInfo(
             handle: "t1", id: UUID().uuidString, kind: "terminal", role: "shell",
             screen: 1, workspace: 1, at: .init(column: 0, row: 0, path: nil),
@@ -85,7 +88,8 @@ final class ControlWireTests: XCTestCase {
             focused: true, busy: false, float: false, zoom: false, redacted: nil)
         let line = try ControlJSON.line(ControlResponse.success(
             id: "1", seq: 1, resolved: nil, data: ControlPanePayload(pane: pane)))
-        XCTAssertEqual(line.filter { $0 == 0x0A }.count, 1, "NDJSON 一行只能有结尾那一个换行")
+        XCTAssertEqual(line.filter { $0 == 0x0A }.count, 1,
+                       "an NDJSON line may contain exactly one newline, the terminating one")
         XCTAssertEqual(line.last, 0x0A)
     }
 
@@ -95,21 +99,21 @@ final class ControlWireTests: XCTestCase {
                                             socket: "/Users/x/Library/Application Support/QuickTerm/control.sock",
                                             running: true)
         let text = try XCTUnwrap(String(data: ControlJSON.encoder.encode(payload), encoding: .utf8))
-        XCTAssertFalse(text.contains("\\/"), "路径不该被转义成 \\/（人和模型都要读它）")
+        XCTAssertFalse(text.contains("\\/"), "a path must not be escaped as \\/ (both humans and models have to read it)")
     }
 
-    // MARK: 帮助里内嵌的输出样例必须是真 JSON
+    // MARK: The output samples embedded in the help must be real JSON
 
     func testEmbeddedHelpSamplesAreValidJSON() throws {
         for spec in ControlCommandTable.commands {
             guard let sample = spec.outputSample else { continue }
             let data = Data(sample.utf8)
             XCTAssertNoThrow(try JSONSerialization.jsonObject(with: data),
-                             "\(spec.name) 的 --help 输出样例不是合法 JSON")
+                             "the --help output sample for \(spec.name) is not valid JSON")
         }
     }
 
-    // MARK: describe --json 符合它自己文档的形状
+    // MARK: describe --json matches the shape it documents for itself
 
     func testDescribeDocumentShape() throws {
         let document = ControlDescribeDocument.make(cliVersion: "1.5.8", appVersion: "1.5.8",
@@ -122,21 +126,22 @@ final class ControlWireTests: XCTestCase {
         XCTAssertEqual(raw["appRunning"] as? Bool, true)
         XCTAssertEqual(raw["phase"] as? Int, 5)
 
-        // 命令：与命令表一一对应，且每条都有 summary / cls / examples
+        // Commands: one-to-one with the command table, each carrying summary / cls / examples
         let commands = try XCTUnwrap(raw["commands"] as? [[String: Any]])
         XCTAssertEqual(commands.count, ControlCommandTable.commands.count)
         for command in commands {
             let name = try XCTUnwrap(command["name"] as? String)
-            XCTAssertNotNil(ControlCommandTable.command(name), "describe 里出现了表外的命令 \(name)")
-            XCTAssertFalse((command["summary"] as? String ?? "").isEmpty, "\(name) 缺 summary")
+            XCTAssertNotNil(ControlCommandTable.command(name), "describe lists command \(name), which is not in the table")
+            XCTAssertFalse((command["summary"] as? String ?? "").isEmpty, "\(name) has no summary")
             XCTAssertTrue(ControlCommandClass.allCases.map(\.rawValue)
-                .contains(try XCTUnwrap(command["cls"] as? String)), "\(name) 的 cls 不在枚举里")
+                .contains(try XCTUnwrap(command["cls"] as? String)), "the cls of \(name) is not one of the enum values")
             XCTAssertFalse((command["examples"] as? [String] ?? []).isEmpty,
-                           "\(name) 没有例子——模型抄例子远比读散文可靠")
-            XCTAssertNotNil(command["args"] as? [[String: Any]], "\(name) 缺 args 数组")
+                           "\(name) has no examples -- a model copying an example is far more "
+                           + "reliable than one reading prose")
+            XCTAssertNotNil(command["args"] as? [[String: Any]], "\(name) has no args array")
         }
 
-        // 目标语法 / 退出码 / 错误码 / 环境变量：三张表都得在
+        // Target grammar / exit codes / error codes / env vars: every one of those tables has to be present
         let grammar = try XCTUnwrap(raw["targetGrammar"] as? [String: Any])
         XCTAssertEqual(grammar["syntax"] as? String, "screen:workspace.pane")
         XCTAssertFalse((grammar["lines"] as? [String] ?? []).isEmpty)
@@ -148,7 +153,7 @@ final class ControlWireTests: XCTestCase {
                         ControlProtocol.Env.screen, ControlProtocol.Env.workspace,
                         ControlProtocol.Env.token, ControlProtocol.Env.paneToken])
 
-        // 动作：67 个一个不少
+        // Actions: all 67 of them, not one missing
         let actions = try XCTUnwrap(raw["actions"] as? [[String: Any]])
         XCTAssertEqual(actions.count, WMAction.allCases.count)
     }
@@ -158,10 +163,11 @@ final class ControlWireTests: XCTestCase {
                                                     socket: nil, mode: nil)
         XCTAssertFalse(document.appRunning)
         XCTAssertEqual(document.commands.count, ControlCommandTable.commands.count,
-                       "应用没跑也要能把 schema 给出来——这是 agent 会话开始时的第一次调用")
+                       "the schema has to come out even with the app not running -- it is the "
+                       + "first call an agent makes in a session")
     }
 
-    // MARK: state 负载
+    // MARK: The state payload
 
     func testStatePayloadReparses() throws {
         let payload = ControlStatePayload(
@@ -187,7 +193,7 @@ final class ControlWireTests: XCTestCase {
         XCTAssertEqual(projected["cwd"]?.stringValue, "/tmp")
         XCTAssertEqual(projected["title"]?.stringValue, "zsh")
         XCTAssertEqual(projected["handle"]?.stringValue, "t1",
-                       "handle 必须永远保留，否则投影出来的结果没法再被寻址")
+                       "handle must always survive, otherwise the projected result cannot be addressed any more")
         XCTAssertNil(projected["kind"])
     }
 }

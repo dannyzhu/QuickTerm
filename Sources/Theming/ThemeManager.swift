@@ -1,8 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// 主题状态的唯一拥有者（spec §4.5）：
-/// 切换 = 重写 engine-overlay（配置链第 3 层）→ 引擎热重载 + SwiftUI 调色板刷新。
+/// The single owner of theme state (spec §4.5): switching a theme means rewriting the
+/// engine-overlay (layer 3 of the config chain), which hot-reloads the engine and refreshes the
+/// SwiftUI palette.
 final class ThemeManager: ObservableObject {
     @Published private(set) var themes: [Theme] = []
     @Published private(set) var current: Theme
@@ -10,40 +11,50 @@ final class ThemeManager: ObservableObject {
     @Published var opacityEnabled = true   // Cmd+Backspace
     @Published var gapsEnabled = true      // Cmd+Shift+Backspace
 
-    /// config: theme = "ghostty" → 不覆盖配色，完全跟随 ~/.config/ghostty/config
+    /// config `theme = "ghostty"`: leave the colors alone and follow ~/.config/ghostty/config
+    /// entirely.
     private(set) var followEngineColors = false
-    /// config [ghostty] 段（配置链第 4 层，追加在 overlay 最末 = 最终覆盖）
+    /// The config's [ghostty] section (layer 4 of the chain; appended at the very end of the
+    /// overlay, so it is the final override).
     private(set) var ghosttyPassthrough = ""
-    /// pane 内终端四边留白（config `pane-padding`，spec v6 默认 14）
+    /// Terminal padding inside a pane (config `pane-padding`; spec v6 default is 14).
     private(set) var panePadding = 14
-    /// pane 背景透明度（config `pane-opacity`，默认 0.92 = 非激活基准，注入引擎 background-opacity）
+    /// Pane background opacity (config `pane-opacity`, default 0.92 = the inactive baseline);
+    /// injected into the engine as background-opacity.
     @Published private(set) var paneOpacity = 0.92
-    /// 激活 pane 背景等效透明度（config `active-opacity`，默认 0.98；
-    /// 引擎仍用 paneOpacity，激活侧以底色垫层合成到该值——零引擎 reload）
+    /// Effective background opacity of the focused pane (config `active-opacity`, default 0.98).
+    /// The engine still runs at paneOpacity; the active side composites a background-colored
+    /// underlay to reach this value, which costs zero engine reloads.
     @Published private(set) var activeOpacity = 0.98
-    /// 非激活 pane 磨砂背景开关（config `inactive-blur` > 0；模糊的是身后壁纸，文字锐利）
+    /// Frosted background for inactive panes (on when config `inactive-blur` > 0). What gets
+    /// blurred is the wallpaper behind the pane; the text stays sharp.
     @Published private(set) var inactiveBlur = 2.5
-    /// 顶部状态条背景透明度（config `bar-opacity`，默认 0.75；纯 UI 层）
+    /// Top status bar background opacity (config `bar-opacity`, default 0.75; pure UI layer).
     @Published private(set) var barOpacity = 0.75
-    /// dwindle 分隔细线不透明度（config `divider-opacity`，默认 0.2；纯 UI 层）
+    /// Opacity of the thin dwindle divider (config `divider-opacity`, default 0.2; pure UI layer).
     @Published private(set) var dividerOpacity = 0.2
-    /// 每 pane 每边留白（config `pane-gap`，默认 5pt；scrolling / dwindle / 浮动一致，相邻合成 2×gap，外圈同值）
+    /// Padding on every side of every pane (config `pane-gap`, default 5pt). Identical for
+    /// scrolling, dwindle and floating panes; adjacent panes add up to 2×gap, and the outer ring
+    /// gets the same value.
     @Published private(set) var paneGap: CGFloat = 5
-    /// 在 pane 上边框上画标题（config `pane-title`，默认开；纯 UI 层，PaneChrome 读）
+    /// Draw the title on a pane's top border (config `pane-title`, on by default; pure UI layer,
+    /// read by PaneChrome).
     @Published private(set) var paneTitleEnabled = true
-    /// 工作区胶囊显示名字（config `workspace-title`，默认开；纯 UI 层，StatusBarView 读）
+    /// Show the name in the workspace pill (config `workspace-title`, on by default; pure UI
+    /// layer, read by StatusBarView).
     @Published private(set) var workspaceTitleEnabled = true
 
     var frostedInactive: Bool { opacityEnabled && inactiveBlur > 0 }
 
-    /// 顶部状态条等 chrome 的背景透明度（bar-opacity 数值，
-    /// 受 Cmd+Backspace 总开关控制；关闭 = 不透明）
+    /// Background opacity for the top status bar and the rest of the chrome (the bar-opacity
+    /// value), governed by the Cmd+Backspace master switch; switched off = fully opaque.
     var effectiveChromeOpacity: Double { opacityEnabled ? barOpacity : 1.0 }
 
-    /// dwindle 分隔细线实际不透明度（总开关关闭 = 不透明实线）
+    /// Effective opacity of the thin dwindle divider (master switch off = a solid opaque line).
     var effectiveDividerOpacity: Double { opacityEnabled ? dividerOpacity : 1.0 }
 
-    /// 激活 pane 垫层 alpha：使 paneOpacity 与垫层合成后 = activeOpacity
+    /// Alpha of the focused pane's underlay: chosen so that compositing it under paneOpacity
+    /// lands exactly on activeOpacity.
     var activeUnderlayAlpha: Double {
         guard opacityEnabled, paneOpacity < 1, activeOpacity > paneOpacity else { return 0 }
         return min((activeOpacity - paneOpacity) / (1 - paneOpacity), 1)
@@ -54,13 +65,13 @@ final class ThemeManager: ObservableObject {
                           activeOpacity: Double = 0.98, barOpacity: Double = 0.75,
                           dividerOpacity: Double = 0.2, paneGap: Int = 5,
                           paneTitle: Bool = true, workspaceTitle: Bool = true) {
-        self.paneGap = CGFloat(paneGap)  // 纯 UI 层
-        paneTitleEnabled = paneTitle  // 纯 UI 层
-        workspaceTitleEnabled = workspaceTitle  // 纯 UI 层
-        self.activeOpacity = activeOpacity  // 纯 UI 层
-        self.inactiveBlur = inactiveBlur  // 纯 UI 层
-        self.barOpacity = barOpacity  // 纯 UI 层
-        self.dividerOpacity = dividerOpacity  // 纯 UI 层
+        self.paneGap = CGFloat(paneGap)  // pure UI layer
+        paneTitleEnabled = paneTitle  // pure UI layer
+        workspaceTitleEnabled = workspaceTitle  // pure UI layer
+        self.activeOpacity = activeOpacity  // pure UI layer
+        self.inactiveBlur = inactiveBlur  // pure UI layer
+        self.barOpacity = barOpacity  // pure UI layer
+        self.dividerOpacity = dividerOpacity  // pure UI layer
         guard passthrough != ghosttyPassthrough
                 || followEngine != followEngineColors
                 || panePadding != self.panePadding
@@ -72,39 +83,44 @@ final class ThemeManager: ObservableObject {
         writeOverlay()
     }
 
-    /// 引擎重载钩子（多屏幕：AppDelegate 注册 app 级重载，每个 MainWindowController 注册自己那份
-    /// per-surface reload + 窗口外观）。单闭包时代只有最后创建的窗口会响应主题热切换。
+    /// Engine reload hooks. With multiple screens, AppDelegate registers the app-level reload and
+    /// every MainWindowController registers its own per-surface reload plus window appearance.
+    /// Back when this was a single closure, only the most recently created window reacted to a
+    /// live theme switch.
     private var overlayListeners: [(token: ObjectIdentifier, action: () -> Void)] = []
 
-    /// 注册 overlay 变更监听；token 为持有方（同一 token 重复注册会替换旧的）
+    /// Register an overlay-change listener. `token` is the owner: registering the same token
+    /// again replaces the previous listener.
     func addOverlayListener(token: AnyObject, _ action: @escaping () -> Void) {
         let id = ObjectIdentifier(token)
         overlayListeners.removeAll { $0.token == id }
         overlayListeners.append((id, action))
     }
 
-    /// 注销监听（窗口关闭时必须调用：闭包留在数组里会吊住控制器）
+    /// Unregister a listener. A window must call this when it closes: a closure left in the array
+    /// keeps its controller alive.
     func removeOverlayListener(token: AnyObject) {
         let id = ObjectIdentifier(token)
         overlayListeners.removeAll { $0.token == id }
     }
 
-    /// 仅测试：当前监听数
+    /// Tests only: how many listeners are registered right now.
     var overlayListenerCount: Int { overlayListeners.count }
 
     private static let defaultsThemeKey = "quickterm.theme"
     private static let defaultsBgKey = "quickterm.backgroundIndex"
 
-    // MARK: 调色板（UI 层唯一取色入口）
+    // MARK: Palette (the UI layer's only source of color)
 
-    /// 用户自选背景目录（全主题共用）：~/.config/quickterm/backgrounds/
+    /// Directory of user-supplied wallpapers, shared by every theme:
+    /// ~/.config/quickterm/backgrounds/
     static var userBackgroundsDir: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/quickterm/backgrounds", isDirectory: true)
     }
     @Published private(set) var userBackgrounds: [URL] = []
 
-    /// 目录内图片（按文件名排序；跳过非图片）
+    /// The images in a directory, sorted by file name; anything that is not an image is skipped.
     static func discoverBackgrounds(in dir: URL) -> [URL] {
         let exts: Set<String> = ["png", "jpg", "jpeg", "webp", "heic", "gif", "tiff"]
         return ((try? FileManager.default.contentsOfDirectory(
@@ -113,10 +129,12 @@ final class ThemeManager: ObservableObject {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
-    /// 可选背景 = 当前主题自带 + 用户自选（面板网格与 Cmd+Ctrl+Space 循环共用此列表）
+    /// The choosable wallpapers: the ones the current theme ships plus the user's own. The
+    /// picker grid and the Cmd+Ctrl+Space cycle share this one list.
     var backgroundChoices: [URL] { current.backgroundURLs + userBackgrounds }
 
-    /// 导入用户背景：拷入用户目录（重名加时间戳）并立即选中
+    /// Import a wallpaper: copy it into the user directory (a name clash gets a timestamp
+    /// appended) and select it straight away.
     func addUserBackground(from source: URL) {
         let dir = Self.userBackgroundsDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -153,10 +171,12 @@ final class ThemeManager: ObservableObject {
         userBackgrounds = Self.discoverBackgrounds(in: Self.userBackgroundsDir)
         let savedBg = UserDefaults.standard.integer(forKey: Self.defaultsBgKey)
         backgroundIndex = backgroundChoices.indices.contains(savedBg) ? savedBg : 0
-        writeOverlay(notify: false)  // 启动时引擎尚未创建，仅落盘供首次加载
+        // At startup the engine does not exist yet, so only write the file for the first load.
+        writeOverlay(notify: false)
     }
 
-    /// 内置 Themes/（app bundle）∪ 用户目录（同名用户优先，spec §4.5）
+    /// The bundled Themes/ directory union the user's own; on a name collision the user's theme
+    /// wins (spec §4.5).
     static func discoverThemes() -> [Theme] {
         var byName: [String: Theme] = [:]
         if let bundleDir = Bundle.main.resourceURL?.appendingPathComponent("Themes") {
@@ -174,7 +194,7 @@ final class ThemeManager: ObservableObject {
             .compactMap { Theme.load(from: $0) }
     }
 
-    // MARK: 切换
+    // MARK: Switching
 
     func apply(_ theme: Theme) {
         current = theme
@@ -184,7 +204,7 @@ final class ThemeManager: ObservableObject {
         writeOverlay()
     }
 
-    /// 下一张背景（回绕，spec §4.3）
+    /// Next wallpaper, wrapping around (spec §4.3).
     func nextBackground() {
         guard backgroundChoices.count > 1 else { return }
         selectBackground((backgroundIndex + 1) % backgroundChoices.count)
@@ -194,7 +214,8 @@ final class ThemeManager: ObservableObject {
         guard backgroundChoices.indices.contains(index) else { return }
         backgroundIndex = index
         UserDefaults.standard.set(index, forKey: Self.defaultsBgKey)
-        // 壁纸在 QuickTerm 自绘层，不进引擎配置，无需 reload
+        // The wallpaper lives in QuickTerm's own drawing layer, never in the engine config, so
+        // there is nothing to reload.
     }
 
     func toggleOpacity() {
@@ -203,17 +224,19 @@ final class ThemeManager: ObservableObject {
     }
 
     func toggleGaps() {
-        gapsEnabled.toggle()  // gaps 纯 UI 层（RootView/PaneChrome 读取）
+        gapsEnabled.toggle()  // gaps are a pure UI layer, read by RootView/PaneChrome
     }
 
-    // MARK: 引擎覆盖层（配置链第 3 层；映射照 omarchy ghostty.conf.tpl）
+    // MARK: Engine overlay (layer 3 of the config chain; the mapping follows omarchy's
+    // ghostty.conf.tpl)
 
     func overlayExtra() -> String {
         var lines: [String] = ["window-padding-x = \(panePadding)",
                                "window-padding-y = \(panePadding)"]
         if followEngineColors {
-            // theme = "ghostty"：配色与透明度完全跟随 ~/.config/ghostty/config
-            // （pane-padding 仍是 QuickTerm 自身特性，照常注入；[ghostty] 段可最终覆盖）
+            // theme = "ghostty": colors and opacity follow ~/.config/ghostty/config entirely.
+            // pane-padding is still a QuickTerm feature and is injected as usual; the [ghostty]
+            // section can override everything at the end.
             var out: [String] = lines
             if !opacityEnabled {
                 out.append("background-opacity = 1.0")
@@ -222,7 +245,8 @@ final class ThemeManager: ObservableObject {
             if !ghosttyPassthrough.isEmpty { out.append(ghosttyPassthrough) }
             return out.joined(separator: "\n")
         }
-        // pane 背景透明度（清玻璃/磨砂玻璃的基础；文字不受影响）
+        // Pane background opacity: the basis for both clear and frosted glass. Text is never
+        // affected.
         lines.append(opacityEnabled
             ? "background-opacity = \(paneOpacity)" : "background-opacity = 1.0")
         lines.append(opacityEnabled ? "unfocused-split-opacity = 0.96" : "unfocused-split-opacity = 1.0")
@@ -234,8 +258,11 @@ final class ThemeManager: ObservableObject {
         emit("background", "background")
         emit("foreground", "foreground")
         emit("cursor-color", "bright_foreground", fallback: "foreground")
-        // 主题文件（如兜底的 Builtin Pastel Dark）可能自带 cursor-text = #ffffff，overlay 不写
-        // 就会穿透：暗色主题块光标下的字变白底白字。重放在主题之后，此行必胜（1.2+ 支持该值）。
+        // A theme file (the fallback Builtin Pastel Dark, for one) may carry its own
+        // cursor-text = #ffffff, which leaks through whenever the overlay does not write the key:
+        // under a block cursor in a dark theme that turns into white text on a white background.
+        // The overlay is replayed after the theme, so this line always wins (1.2+ supports the
+        // `cell-background` value).
         lines.append("cursor-text = cell-background")
         emit("selection-background", "selection")
         emit("selection-foreground", "foreground")
@@ -253,12 +280,12 @@ final class ThemeManager: ObservableObject {
             }
         }
         if !opacityEnabled {
-            // 覆盖 EngineOverlay 基础段（同键后写者胜）
+            // Override EngineOverlay's base section (for the same key, the later line wins).
             lines.append("background-opacity = 1.0")
             lines.append("unfocused-split-opacity = 1.0")
         }
         if !ghosttyPassthrough.isEmpty {
-            lines.append(ghosttyPassthrough)  // 配置链第 4 层：最终覆盖
+            lines.append(ghosttyPassthrough)  // layer 4 of the config chain: the final override
         }
         return lines.joined(separator: "\n")
     }

@@ -1,8 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// 窗口内 backdrop 高斯模糊（磨砂玻璃）：只模糊自己身后的内容（壁纸层），
-/// 盖在其上的终端文字不受影响。用于非激活 pane 背景（spec：磨砂区分焦点）。
+/// Within-window backdrop blur (frosted glass): it blurs only what is behind the view (the
+/// wallpaper layer), so the terminal text drawn on top of it stays sharp. Used for the
+/// background of inactive panes (the spec distinguishes focus by frosting).
 struct VisualEffectBlur: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()

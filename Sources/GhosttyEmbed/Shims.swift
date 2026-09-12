@@ -1,37 +1,44 @@
 import AppKit
 import GhosttyKit
 
-// QuickTerm shim（M0）：GhosttyEmbed 移植层引用的 Ghostty 应用侧类型的最小替身。
-// M1 的 MainWindowController 将继承 BaseTerminalController，接管 SplitTree 与 WM 动作。
-// 记录见 docs/porting-notes.md。
+// QuickTerm shim (M0): minimal stand-ins for the Ghostty app-side types that the GhosttyEmbed
+// porting layer references. In M1 MainWindowController inherits from BaseTerminalController and
+// takes over the SplitTree and the WM actions. Notes in docs/porting-notes.md.
 
 class BaseTerminalController: NSWindowController {
     var surfaceTree: SplitTree<PaneView> = .init()
-    /// 焦点 pane（真相：窗口 first responder 是它或其后代）
+    /// The focused pane. Source of truth: the window's first responder is this pane or one of its
+    /// descendants.
     var focusedPane: PaneView? { nil }
-    /// 焦点 pane 是终端时（引擎侧 goto_split 等只认终端）
+    /// Set only when the focused pane is a terminal: the engine side (`goto_split` and friends)
+    /// only knows about terminals.
     var focusedSurface: Ghostty.SurfaceView? { focusedPane as? Ghostty.SurfaceView }
     var titleOverride: String?
     var commandPaletteIsShowing: Bool { false }
-    /// 悬停即焦点（spec §4.2）：M1 的 MainWindowController 覆写为 true
+    /// Focus follows mouse (spec §4.2). M1's MainWindowController overrides this to true.
     var focusFollowsMouse: Bool { false }
-    /// hover 遮挡判定（spec v7 修订）：pane 在该窗口坐标处是否被浮动层/遮罩盖住。
-    /// MainWindowController 覆写为模型几何判定；默认无遮挡。
+    /// Hover occlusion test (spec v7 revision): at this window coordinate, is the pane covered by a
+    /// floating layer or an overlay? MainWindowController overrides it with a geometry test against
+    /// the model; the default answer is "nothing is occluded".
     func surfaceIsOccluded(_ pane: PaneView,
                            at locationInWindow: NSPoint) -> Bool { false }
-    /// 某 pane（或其托管视图）成为 first responder（单焦点不变量：控制器清掉其他 pane 残留的 focused）
+    /// A pane (or its hosting view) became first responder. Single-focus invariant: the controller
+    /// clears the stale `focused` flag left behind on every other pane.
     func paneDidBecomeFirstResponder(_ pane: PaneView) {}
-    /// 脱离窗口后重挂的 pane 是否可以夺回焦点（控制器有明确的待聚焦目标时不允许别人夺回）
+    /// May a pane that was detached from the window and then re-attached grab focus back? Denied
+    /// while the controller already has an explicit pending focus target of its own.
     func paneMayReclaimFocus(_ pane: PaneView) -> Bool { true }
-    /// 控制器还能接受 pane 操作吗（屏幕已关掉的控制器不能）：pane 脱离窗口时用它兜底解析控制器，
-    /// 见 `PaneView.controller`
+    /// Can this controller still accept pane operations? A controller whose screen is already gone
+    /// cannot. This is the fallback used to resolve the controller for a pane that has left its
+    /// window; see `PaneView.controller`.
     var acceptsPaneOperations: Bool { true }
-    /// 打开一个浏览器 pane（target=_blank / window.open 也走这里）
+    /// Open a browser pane. target=_blank and window.open come through here too.
     @discardableResult
     func openBrowserPane(url: URL, from: PaneView?) -> BrowserPaneView? { nil }
-    /// 终端里 ⌘+点击的链接：true = 已在浏览器 pane 里打开；false = 不接管（交给系统默认应用）
+    /// A link Cmd+clicked inside the terminal. true = we opened it in a browser pane; false = we are
+    /// not taking it, hand it to the system default app.
     func openLink(_ url: URL, from: PaneView?) -> Bool { false }
-    /// pane 自己请求关闭（页面 window.close() 关掉最后一个标签）
+    /// The pane asks to close itself, e.g. the page called window.close() on its last tab.
     func requestClosePane(_ pane: PaneView) {}
     func toggleBackgroundOpacity() {}
     func promptTabTitle() {}
@@ -40,7 +47,8 @@ class BaseTerminalController: NSWindowController {
 
 class TerminalWindow: NSWindow {}
 
-/// 窗口状态恢复错误（源自 Ghostty TerminalRestorable.swift；M0 只需要类型存在）
+/// Window state restoration errors (from Ghostty's TerminalRestorable.swift; M0 only needs the
+/// type to exist).
 enum TerminalRestoreError: Error {
     case identifierUnknown
     case delegateInvalid

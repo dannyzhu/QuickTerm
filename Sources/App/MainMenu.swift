@@ -1,7 +1,9 @@
 import AppKit
 
-/// 程序化主菜单：macOS 惯例条目 + WM 动作的可见快捷键注册表。
-/// 实际按键由 MainWindowController 的局部监视器先行消费；菜单点击走这里的 action。
+/// The main menu, built in code: the conventional macOS items plus a visible registry of the WM
+/// actions and their shortcuts.
+/// Actual key presses are consumed first by MainWindowController's local monitor; clicking a menu
+/// item goes through the actions here.
 enum MainMenu {
     /// Rebuild the whole main menu when the language changes. An NSMenuItem title is a
     /// **value**, not a binding: once installed, a menu keeps showing the old language until
@@ -27,19 +29,22 @@ enum MainMenu {
 
         let main = NSMenu()
 
-        // App 菜单
+        // App menu
         let appItem = main.addItem(withTitle: "QuickTerm", action: nil, keyEquivalent: "")
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: L("menu.app.about"),
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        // VS Code 的 `code` 那一招：把随包的 quickterm 软链进 PATH。绝不弹管理员密码
+        // The trick VS Code's `code` uses: symlink the bundled quickterm into PATH. It never asks
+        // for an admin password.
         let installItem = appMenu.addItem(withTitle: L("menu.app.install-cli"),
                                           action: #selector(AppDelegate.installCLIAction(_:)),
                                           keyEquivalent: "")
         installItem.target = delegate
-        // 控制面是**静默执行**的（读免确认、改不弹框）：静默的前提是事后可查。
-        // 状态栏闪一下负责"刚刚发生了什么"，这里负责"到底发生过哪些"
+        // The control plane runs **silently** (reads need no confirmation, mutations put up no
+        // dialog), and the precondition for that silence is being auditable afterwards.
+        // The flash in the status bar covers "what just happened"; this covers "what has happened
+        // at all".
         let logItem = appMenu.addItem(withTitle: L("menu.app.control-activity"),
                                       action: #selector(AppDelegate.controlActivityAction(_:)),
                                       keyEquivalent: "")
@@ -49,8 +54,9 @@ enum MainMenu {
         appMenu.addItem(withTitle: L("menu.app.quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         main.setSubmenu(appMenu, for: appItem)
 
-        // Edit 菜单：浏览器 pane / 地址栏 / 文件选择器等 AppKit 控件的 Cmd+C/V/X/A/Z 经菜单键等价路由；
-        // 终端 pane 自己在 performKeyEquivalent 里处理绑定键，不受影响
+        // Edit menu: Cmd+C/V/X/A/Z for AppKit controls (browser panes, the address bar, file
+        // pickers) is routed through menu key equivalents; a terminal pane handles its bound keys
+        // itself in performKeyEquivalent and is unaffected.
         let editItem = main.addItem(withTitle: L("menu.edit"), action: nil, keyEquivalent: "")
         let editMenu = NSMenu(title: L("menu.edit"))
         editMenu.addItem(withTitle: L("menu.edit.undo"), action: Selector(("undo:")), keyEquivalent: "z")
@@ -63,7 +69,7 @@ enum MainMenu {
         editMenu.delegate = EditMenuDelegate.shared
         main.setSubmenu(editMenu, for: editItem)
 
-        // Shell 菜单
+        // Shell menu
         let shellItem = main.addItem(withTitle: L("menu.shell"), action: nil, keyEquivalent: "")
         let shellMenu = NSMenu(title: L("menu.shell"))
         shellMenu.addItem(wm(.newTerminal, title: L("menu.shell.new-terminal"), key: "\r", delegate: delegate))
@@ -73,7 +79,7 @@ enum MainMenu {
         shellMenu.addItem(wm(.closePane, title: L("menu.shell.close-pane"), key: "w", delegate: delegate))
         main.setSubmenu(shellMenu, for: shellItem)
 
-        // Pane 菜单
+        // Pane menu
         let paneItem = main.addItem(withTitle: L("menu.pane"), action: nil, keyEquivalent: "")
         let paneMenu = NSMenu(title: L("menu.pane"))
         paneMenu.addItem(wm(.focusLeft, title: L("menu.pane.focus-left"), key: String(UnicodeScalar(NSLeftArrowFunctionKey)!), delegate: delegate))
@@ -86,8 +92,9 @@ enum MainMenu {
         paneMenu.addItem(wm(.equalize, title: L("menu.pane.equalize"), key: "=", modifiers: [.command, .control], delegate: delegate))
         main.setSubmenu(paneMenu, for: paneItem)
 
-        // Window 菜单（系统标准；AppKit 会自动在末尾追加窗口列表）。
-        // 多「屏幕」只从这里驱动：一律不给快捷键（⌘N 已被系统/习惯占用，用户明确要求无键位）
+        // Window menu (the system-standard one; AppKit appends the window list at the end itself).
+        // Multiple "screens" are driven only from here, and none of it gets a shortcut: Cmd+N is
+        // already taken by the system and by habit, and the user explicitly asked for no bindings.
         let windowItem = main.addItem(withTitle: L("menu.window"), action: nil, keyEquivalent: "")
         let windowMenu = NSMenu(title: L("menu.window"))
         windowMenu.addItem(withTitle: L("menu.window.new-screen"),
@@ -118,7 +125,8 @@ enum MainMenu {
         NSApp.mainMenu = main
     }
 
-    /// 两个显示器子菜单的委托：随插拔变化，每次打开都重建（必须被强持有，NSMenu.delegate 是 weak）
+    /// The delegates for the two display submenus: the lists change as monitors come and go and are
+    /// rebuilt on every open. They have to be held strongly, since NSMenu.delegate is weak.
     private static var displayDelegates: [DisplayMenuDelegate] = []
 
     private static func newScreenDisplayDelegate(for delegate: AppDelegate) -> DisplayMenuDelegate {
@@ -148,8 +156,11 @@ extension AppDelegate {
     @objc func performWMAction(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let action = WMAction(rawValue: raw), let controller else { return }
-        // 键等价触发（currentEvent 是 keyDown）时以 [keybinds] 为准：解绑 / 改键，或焦点 pane 不消费该动作
-        // （清屏时焦点在浏览器）就不执行，按键交还焦点终端；鼠标点菜单项始终执行。菜单里的快捷键只是提示
+        // When triggered by a key equivalent (currentEvent is a keyDown), [keybinds] is the
+        // authority: if the binding was removed or remapped, or the focused pane does not consume
+        // this action (clear-screen while focus sits in a browser), do not run it and hand the key
+        // back to the focused terminal. Clicking the item with the mouse always runs it - the
+        // shortcut shown in the menu is only a hint.
         let event = NSApp.currentEvent
         guard MainWindowController.menuShortcutAllowed(action, event: event, keybindings: controller.keybindings,
                                                        focusedPane: controller.focusedPane) else {
@@ -162,9 +173,10 @@ extension AppDelegate {
     }
 }
 
-/// Edit 菜单的键等价只在焦点是 AppKit 文本 / 网页控件时认领；焦点在终端 pane 时不认领——
-/// 否则 Cmd+X / Cmd+Z / Cmd+A 这类引擎没绑定的键会被（禁用的）菜单项吞掉并 beep，到不了终端
-/// （kitty 键盘协议应用如 neovim 是收得到 super+x 的）。
+/// The Edit menu's key equivalents are claimed only when focus is on an AppKit text or web control,
+/// never when it is on a terminal pane - otherwise keys the engine has no binding for, like
+/// Cmd+X / Cmd+Z / Cmd+A, get swallowed by the (disabled) menu item with a beep and never reach the
+/// terminal (apps speaking the kitty keyboard protocol, neovim among them, do receive super+x).
 final class EditMenuDelegate: NSObject, NSMenuDelegate {
     static let shared = EditMenuDelegate()
 
@@ -174,8 +186,10 @@ final class EditMenuDelegate: NSObject, NSMenuDelegate {
         let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let key = (event.charactersIgnoringModifiers ?? "").lowercased()
         guard let item = menu.items.first(where: { Self.matches($0, key: key, flags: flags) }) else { return false }
-        // 返回 false 并不能阻止 AppKit 继续枚举菜单项（探针验证：禁用项照样消费按键并 beep）。
-        // 焦点在终端时明确给出 target/action：把这次按键原样转交给终端的 keyDown
+        // Returning false does not stop AppKit from continuing to enumerate menu items (verified
+        // with a probe: a disabled item still consumes the key and beeps).
+        // So when focus is on a terminal, hand back an explicit target/action that forwards this
+        // key press verbatim to the terminal's keyDown.
         if let surface = (event.window ?? NSApp.keyWindow)?.firstResponder as? Ghostty.SurfaceView {
             target?.pointee = surface
             action?.pointee = #selector(Ghostty.SurfaceView.quicktermForwardMenuKey(_:))
@@ -186,7 +200,8 @@ final class EditMenuDelegate: NSObject, NSMenuDelegate {
         return true
     }
 
-    /// 菜单项键等价匹配：大写 keyEquivalent 隐含 Shift（AppKit 约定）
+    /// Matching a menu item's key equivalent: an uppercase keyEquivalent implies Shift (an AppKit
+    /// convention).
     static func matches(_ item: NSMenuItem, key: String, flags: NSEvent.ModifierFlags) -> Bool {
         guard !item.keyEquivalent.isEmpty else { return false }
         var required = item.keyEquivalentModifierMask
@@ -196,7 +211,9 @@ final class EditMenuDelegate: NSObject, NSMenuDelegate {
 }
 
 extension Ghostty.SurfaceView {
-    /// Edit 菜单键等价在终端聚焦时的落点：把当前按键事件交还给终端（kitty 键盘协议应用能收到 super+x/z）
+    /// Where an Edit menu key equivalent lands while a terminal is focused: hand the current key
+    /// event back to the terminal (apps speaking the kitty keyboard protocol then receive
+    /// super+x/z).
     @objc func quicktermForwardMenuKey(_ sender: Any?) {
         guard let event = NSApp.currentEvent, event.type == .keyDown else { return }
         keyDown(with: event)

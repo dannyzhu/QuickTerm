@@ -1,33 +1,40 @@
 import AppKit
 
-/// 布局的**几何**：每个 pane 有多大、每条分隔条在哪儿。
+/// The **geometry** of a layout: how big every pane is, and where every divider sits.
 ///
-/// 一条规则贯穿始终：**以模型为准**。归一化矩形全部由 dwindle 的 ratio / scrolling 的列宽因子
-/// 算出来（用的正是渲染那两套公式：`SplitTree.spatial` 与 `ScrollingStrip.columnWidths`），
-/// 而不是去读 `NSView.frame`——pane 在 SwiftUI 重建期间会脱离窗口，那一瞬间 frame 是零或过期的，
-/// 而"读一下尺寸"绝不该等一帧、更不该报一个上一帧的数。
-/// 点尺寸是归一化矩形乘上内容区，同样是算出来的；内容区读不到（窗口没挂上）时整段省略。
+/// One rule runs through all of it: **the model is the source of truth**. Every normalized rect
+/// is computed from dwindle's ratio or scrolling's column-width factors (using the very two
+/// formulas the renderer uses: `SplitTree.spatial` and `ScrollingStrip.columnWidths`), never by
+/// reading `NSView.frame` — a pane leaves the window hierarchy while SwiftUI rebuilds it, and
+/// for that instant the frame is zero or stale, while "read me the size" must never wait a
+/// frame, let alone report last frame's number.
+/// Point sizes are the normalized rect times the content area, computed the same way; when the
+/// content area cannot be read (the window is not mounted) the whole section is left out.
 @MainActor
 enum ControlGeometry {
-    /// 归一化用的单位方框（左上角原点，与 `spatial` / SwiftUI 同向）。
-    /// `nonisolated`：它是个常量，还要当默认参数用（默认参数在调用方的隔离域里求值）
+    /// The unit box used for normalization (origin top-left, same orientation as `spatial` and
+    /// SwiftUI).
+    /// `nonisolated` because it is a constant and doubles as a default argument — and default
+    /// arguments are evaluated in the caller's isolation domain
     nonisolated static let unit = CGSize(width: 1, height: 1)
 
-    /// 工作区布局区（pt）= `MainWindowController.workspaceLayoutSize`：
-    /// contentView 去掉顶部状态条、再去掉外圈那一圈 pane-gap 留白——**分裂树 / 条带
-    /// 真正铺开的那块地**，也正是 `SplitView` 的 `GeometryReader` 量到的那块。
+    /// The workspace layout area in points = `MainWindowController.workspaceLayoutSize`: the
+    /// contentView minus the status strip at the top, minus the ring of pane-gap padding around
+    /// the outside — **the ground the split tree / strip actually spreads out over**, and
+    /// exactly what `SplitView`'s `GeometryReader` measures.
     ///
-    /// **与调分隔条那条路径同源**：`controlResizeSplit` / `resizeFocused` / ⌘右键拖拽
-    /// 换算点数用的是同一个 `workspaceLayoutSize`。报出来的尺寸和 `--points` 的换算
-    /// 必须踩在同一块底上，否则 agent 按报出来的点数去调会差一截，
-    /// 夹取也会把分隔条放到鼠标拖不到的地方
+    /// **Same source as the divider-dragging path**: `controlResizeSplit`, `resizeFocused` and
+    /// Cmd+right-drag all convert points through this same `workspaceLayoutSize`. The sizes we
+    /// report and the `--points` conversion have to stand on the same ground, or an agent
+    /// resizing by the numbers we reported lands short, and clamping parks the divider
+    /// somewhere the mouse cannot reach
     static func contentSize(_ controller: MainWindowController) -> CGSize? {
         controller.workspaceLayoutSize
     }
 
     // MARK: dwindle
 
-    /// 树里每个 pane 的矩形（在 `size` 这个方框里）
+    /// The rect of every pane in the tree, within the box `size`
     static func paneRects(in tree: SplitTree<PaneView>, size: CGSize) -> [UUID: CGRect] {
         guard let root = tree.root else { return [:] }
         var out: [UUID: CGRect] = [:]
@@ -37,19 +44,20 @@ enum ControlGeometry {
         return out
     }
 
-    /// 树里的一条分裂（= 一条分隔条）
+    /// One split in the tree (= one divider)
     struct SplitSlot {
-        /// `a`/`b` 点号串（根是空串）——与 `pane.at.path`、`spec` 的 `focus.path` 同一套写法
+        /// Dotted `a`/`b` string, empty at the root — the same spelling as `pane.at.path` and
+        /// `spec`'s `focus.path`
         var path: String
         var node: SplitTree<PaneView>.Node
-        /// `horizontal` = a 左 b 右；`vertical` = a 上 b 下
+        /// `horizontal` = a left, b right; `vertical` = a on top, b below
         var direction: String
         var ratio: Double
-        /// 这条分裂占的矩形（分隔条就在它的 `ratio` 处）
+        /// The rect this split occupies (its divider sits at `ratio` within it)
         var bounds: CGRect
     }
 
-    /// 树里全部分裂节点（前序：根在最前）
+    /// Every split node in the tree (pre-order, so the root comes first)
     static func splits(in tree: SplitTree<PaneView>, size: CGSize) -> [SplitSlot] {
         guard let root = tree.root else { return [] }
         var out: [SplitSlot] = []
@@ -79,15 +87,17 @@ enum ControlGeometry {
         return out
     }
 
-    /// 这条分裂沿分隔方向的长度（pt）：`--points` 与比例之间就是除以它
+    /// This split's length in points along the dividing axis: converting between `--points` and
+    /// a ratio is a division by exactly this
     static func span(of slot: SplitSlot) -> CGFloat {
         slot.direction == "horizontal" ? slot.bounds.width : slot.bounds.height
     }
 
     // MARK: scrolling
 
-    /// 条带里每个 pane 的矩形（列宽走 `columnWidths`，与渲染同一套：
-    /// 装得下时按比例放大填满，溢出时用名义列宽；列内等分纵栈）
+    /// The rect of every pane in the strip (column widths come from `columnWidths`, the same
+    /// code the renderer uses: scaled up proportionally to fill when everything fits, nominal
+    /// column widths once it overflows; panes inside a column split the height evenly)
     static func paneRects(in strip: ScrollingStrip, size: CGSize) -> [UUID: CGRect] {
         let widths = strip.columnWidths(viewport: size.width, gap: 0)
         var out: [UUID: CGRect] = [:]
@@ -104,7 +114,7 @@ enum ControlGeometry {
         return out
     }
 
-    // MARK: 统一入口
+    // MARK: Common entry point
 
     static func paneRects(in layout: WorkspaceLayout, size: CGSize) -> [UUID: CGRect] {
         switch layout {
@@ -113,9 +123,10 @@ enum ControlGeometry {
         }
     }
 
-    /// 数值定点：归一化 4 位、点数 1 位。
-    /// 定点是为了 `dump → apply → dump` 与"读回来的数等于写下去的数"——
-    /// 浮点尾巴会让不动点用例随机地差一个 ULP
+    /// Fixed decimals: 4 for normalized values, 1 for points.
+    /// The rounding is there for `dump → apply → dump` and for "the number you read back equals
+    /// the number you wrote" — a floating-point tail makes the fixed-point tests differ by one
+    /// ULP at random
     static func rounded(_ value: CGFloat, _ digits: Int = 4) -> Double {
         let scale = pow(10.0, Double(digits))
         return (Double(value) * scale).rounded() / scale

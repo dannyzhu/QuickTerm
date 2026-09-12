@@ -2,14 +2,17 @@ import AppKit
 import UniformTypeIdentifiers
 import WebKit
 
-/// 浏览器 pane 的下载：一条下载 = 一个 `BrowserDownloadItem`，pane 持一个 `BrowserDownloadList`，
-/// 地址栏右侧的 `BrowserDownloadButton` 画聚合进度环，点开是 `BrowserDownloadPopover` 的列表
-/// （取消 / 在 Finder 中显示 / 移除 / 清除已完成）。
+/// Downloads for a browser pane: one download = one `BrowserDownloadItem`, the pane owns one
+/// `BrowserDownloadList`, the `BrowserDownloadButton` to the right of the address bar draws the
+/// aggregate progress ring, and clicking it opens the `BrowserDownloadPopover` list (cancel / reveal
+/// in Finder / remove / clear completed).
 ///
-/// 进度来自 `WKDownload.progress`（WKDownload 遵守 `NSProgressReporting`）：KVO 观察
-/// `fractionCompleted`，节流到 ≤ 10 Hz 再回调 `onChange`，免得大文件下载时每收一个包就重画一次界面。
+/// Progress comes from `WKDownload.progress` (WKDownload conforms to `NSProgressReporting`): KVO on
+/// `fractionCompleted`, throttled to <= 10 Hz before `onChange` fires, so a large download does not
+/// repaint the UI once per received packet.
 
-/// 一条下载。测试里可以不带 WKDownload（给个假 Progress + 假取消闭包）。
+/// One download. Tests can build one without a WKDownload by passing a fake Progress and a fake
+/// cancel closure.
 @MainActor
 final class BrowserDownloadItem: NSObject {
     enum State: Equatable {
@@ -20,19 +23,21 @@ final class BrowserDownloadItem: NSObject {
     }
 
     let id = UUID()
-    /// 关联的 WKDownload（假条目为 nil）。强引用：WebKit 只保证下载进行中活着，
-    /// 完成后我们还要靠它做重试 / 取消的兜底
+    /// The associated WKDownload (nil for a fake item). Held strongly: WebKit only guarantees it stays
+    /// alive while the download is in flight, and we still need it afterwards as the fallback for
+    /// retry and cancel.
     let download: WKDownload?
-    /// 文件名：落盘路径定下来前先用请求 URL 猜一个
+    /// File name: guessed from the request URL until the destination path is settled.
     private(set) var filename: String
-    /// 落盘路径。`decideDestinationUsing` 之前是 nil——连接就失败的下载（例如连接被拒）
-    /// 根本走不到那一步，但它同样要在列表里显示成"失败"
+    /// Destination path. nil until `decideDestinationUsing`: a download that fails at connect time
+    /// (connection refused, say) never gets that far, yet it still has to show up in the list as
+    /// "failed".
     private(set) var destination: URL?
     let progress: Progress
     var state: State = .downloading
     private let cancelHandler: () -> Void
 
-    /// 真实下载：进度直接用 WKDownload 自己的 Progress
+    /// A real download: progress is WKDownload's own Progress, used directly.
     init(download: WKDownload, filename: String) {
         self.download = download
         self.filename = filename
@@ -41,7 +46,7 @@ final class BrowserDownloadItem: NSObject {
         super.init()
     }
 
-    /// 测试 / 假条目
+    /// A test or otherwise fake item.
     init(filename: String, progress: Progress, destination: URL? = nil,
          cancel: @escaping () -> Void = {}) {
         self.download = nil
@@ -54,7 +59,7 @@ final class BrowserDownloadItem: NSObject {
 
     var isActive: Bool { state == .downloading }
 
-    /// 已完成 / 失败 / 取消 —— 可以从列表里清掉的
+    /// Completed, failed or cancelled: the ones that can be cleared out of the list.
     var isFinished: Bool { !isActive }
 
     func setDestination(_ url: URL) {
@@ -64,7 +69,7 @@ final class BrowserDownloadItem: NSObject {
 
     func requestCancel() { cancelHandler() }
 
-    // MARK: - 显示
+    // MARK: - Display
 
     private static let byteFormatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
@@ -77,7 +82,8 @@ final class BrowserDownloadItem: NSObject {
         byteFormatter.string(fromByteCount: max(bytes, 0))
     }
 
-    /// 一行状态文字：「1.2 MB / 5 MB · 45%」/「已完成 · 5 MB」/「已取消」/「失败：…」
+    /// The one-line status text: `1.2 MB / 5 MB · 45%` / `Completed · 5 MB` / `Canceled` /
+    /// `Failed: ...`
     var statusText: String {
         switch state {
         case .downloading:
@@ -98,7 +104,7 @@ final class BrowserDownloadItem: NSObject {
         }
     }
 
-    /// 行图标：按扩展名取系统图标
+    /// Row icon: the system icon for the file extension.
     var icon: NSImage {
         let ext = (filename as NSString).pathExtension
         let type = ext.isEmpty ? nil : UTType(filenameExtension: ext)
@@ -106,25 +112,28 @@ final class BrowserDownloadItem: NSObject {
     }
 }
 
-/// 一个 pane 的下载列表：增删、状态流转、聚合进度，以及节流后的 `onChange`
+/// One pane's download list: add and remove, state transitions, aggregate progress, and the throttled
+/// `onChange`.
 @MainActor
 final class BrowserDownloadList: NSObject {
-    /// 进度回调的最小间隔（≤ 10 Hz）
+    /// Minimum interval between progress callbacks (<= 10 Hz).
     static let notifyInterval: TimeInterval = 0.1
 
     private(set) var items: [BrowserDownloadItem] = []
-    /// 界面刷新回调（增删与状态变化立即触发；进度变化节流）
+    /// UI refresh callback. Add/remove and state changes fire it immediately; progress changes are
+    /// throttled.
     var onChange: (() -> Void)?
 
     private var observations: [UUID: NSKeyValueObservation] = [:]
     private var lastNotified = Date.distantPast
     private var notifyScheduled = false
 
-    // MARK: - 增删
+    // MARK: - Add and remove
 
     func add(_ item: BrowserDownloadItem) {
         items.append(item)
-        // Progress 的 fractionCompleted 是 KVO 可观察的；回调可能在任意线程，统一甩回主线程
+        // Progress.fractionCompleted is KVO-observable; the callback can arrive on any thread, so
+        // bounce every one of them back to the main thread.
         observations[item.id] = item.progress.observe(\.fractionCompleted, options: [.new]) { [weak self] _, _ in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.progressDidChange() }
@@ -139,14 +148,15 @@ final class BrowserDownloadList: NSObject {
         notifyNow()
     }
 
-    /// 已完成 / 失败 / 取消的行全部清掉（进行中的留着）
+    /// Drop every completed, failed or cancelled row; the in-flight ones stay.
     func clearFinished() {
         for item in items where item.isFinished { observations[item.id] = nil }
         items.removeAll { $0.isFinished }
         notifyNow()
     }
 
-    /// 取消：调下载自己的 cancel，状态立刻置为已取消（WebKit 之后还会回调一次 didFail，幂等）
+    /// Cancel: call the download's own cancel and move the state to cancelled right away. WebKit still
+    /// calls didFail afterwards, which is why the transitions are idempotent.
     func cancel(_ item: BrowserDownloadItem) {
         guard item.isActive else { return }
         item.requestCancel()
@@ -154,7 +164,7 @@ final class BrowserDownloadList: NSObject {
         notifyNow()
     }
 
-    // MARK: - 状态流转
+    // MARK: - State transitions
 
     func markCompleted(_ item: BrowserDownloadItem) {
         guard item.isActive else { return }
@@ -178,11 +188,12 @@ final class BrowserDownloadList: NSObject {
         items.first { $0.download === download }
     }
 
-    // MARK: - 聚合
+    // MARK: - Aggregation
 
     var activeCount: Int { items.reduce(0) { $0 + ($1.isActive ? 1 : 0) } }
 
-    /// 所有进行中下载的合计进度；没有进行中的、或任一条不知道总大小 → nil（不确定）
+    /// Combined progress over every in-flight download; nil (indeterminate) when nothing is in flight,
+    /// or when any one of them does not know its total size.
     var aggregateFraction: Double? {
         let active = items.filter(\.isActive)
         guard !active.isEmpty else { return nil }
@@ -196,7 +207,7 @@ final class BrowserDownloadList: NSObject {
         return min(max(Double(done) / Double(total), 0), 1)
     }
 
-    // MARK: - 节流
+    // MARK: - Throttling
 
     private func progressDidChange() {
         guard !notifyScheduled else { return }
@@ -221,31 +232,37 @@ final class BrowserDownloadList: NSObject {
     }
 }
 
-/// 地址栏右侧的下载按钮：自绘圆环进度 + 中心符号（进行中 = 向下箭头，全部完成 = 勾，
-/// 有失败 / 取消 = 感叹号）。22×22，列表为空时隐藏（宽度与右侧间距由 BrowserPaneView 一起收成 0）。
+/// The download button to the right of the address bar: a hand-drawn progress ring plus a center
+/// glyph (in flight = a down arrow, all completed = a checkmark, anything failed or cancelled = an
+/// exclamation mark). 22x22, hidden while the list is empty (BrowserPaneView collapses its width and
+/// its trailing gap to 0 at the same time).
 @MainActor
 final class BrowserDownloadButton: NSButton {
     static let size: CGFloat = 22
 
-    /// 中心符号：进行中 = 向下箭头；全部完成 = 勾；只剩失败 / 取消 = 感叹号
+    /// Center glyph: in flight = a down arrow; all completed = a checkmark; nothing left but failed or
+    /// cancelled = an exclamation mark.
     enum Glyph: Equatable { case arrow, check, warning }
 
     weak var list: BrowserDownloadList?
     var tint: NSColor = .white { didSet { needsDisplay = true } }
 
-    /// NSButton 默认 `isFlipped == true`（y 向下）；本类完全自绘（不调 super.draw），
-    /// draw(_:) 里的圆弧 / 箭头 / 勾都按 y 向上的几何写，这里统一回非翻转坐标系。
-    /// 去掉这行会得到：向上的箭头、倒过来的勾、从 6 点开始逆时针的进度环。
+    /// NSButton defaults to `isFlipped == true` (y grows downward). This class draws everything itself
+    /// and never calls super.draw, and the arcs, arrow and checkmark in draw(_:) are all written in
+    /// y-up geometry, so switch back to the unflipped coordinate system here.
+    /// Drop this line and you get an arrow pointing up, an upside-down checkmark, and a progress ring
+    /// that starts at 6 o'clock and runs counterclockwise.
     override var isFlipped: Bool { false }
 
-    /// 当前该画哪个中心符号（画法与提示文字共用，测试也直接断言它）
+    /// Which center glyph to draw right now. The drawing code and the tooltip share it, and tests
+    /// assert on it directly.
     var glyph: Glyph {
         let items = list?.items ?? []
         if (list?.activeCount ?? 0) > 0 || items.isEmpty { return .arrow }
         return items.allSatisfy { $0.state == .completed } ? .check : .warning
     }
 
-    /// 不确定进度时转动的那段弧
+    /// The arc that spins while progress is indeterminate.
     private var spinnerAngle: CGFloat = 0
     private var spinner: Timer?
 
@@ -265,7 +282,8 @@ final class BrowserDownloadButton: NSButton {
 
     override var intrinsicContentSize: NSSize { NSSize(width: Self.size, height: Self.size) }
 
-    /// 按列表现状刷新可见性 / 提示 / 重绘（列表的 onChange 里调）
+    /// Refresh visibility, tooltip and drawing from the list's current state; called from the list's
+    /// onChange.
     func update() {
         let items = list?.items ?? []
         isHidden = items.isEmpty
@@ -278,13 +296,14 @@ final class BrowserDownloadButton: NSButton {
         } else {
             toolTip = Lp("browser.download.button.count", count: items.count, items.count)
         }
-        // 只有"不知道总大小的进行中下载"才需要转圈
+        // Only an in-flight download whose total size is unknown needs the spinner.
         let indeterminate = active > 0 && list?.aggregateFraction == nil
         if indeterminate && !isHidden {
             if spinner == nil {
                 spinner = Timer.scheduledTimer(withTimeInterval: 1.0 / 12, repeats: true) { [weak self] timer in
                     MainActor.assumeIsolated {
-                        // 按钮先没了的话把定时器也停掉（runloop 会一直持有它）
+                        // If the button went away first, kill the timer too: the runloop would hold
+                        // it forever otherwise.
                         guard let self else { return timer.invalidate() }
                         self.spinnerAngle -= 30
                         self.needsDisplay = true
@@ -305,13 +324,13 @@ final class BrowserDownloadButton: NSButton {
         let active = list?.activeCount ?? 0
         let fraction = list?.aggregateFraction
 
-        // 轨道
+        // The track.
         tint.withAlphaComponent(0.25).setStroke()
         let track = NSBezierPath(ovalIn: box)
         track.lineWidth = 1.5
         track.stroke()
 
-        // 进度弧：12 点方向顺时针
+        // Progress arc: clockwise from 12 o'clock.
         tint.setStroke()
         if active > 0 {
             let arc = NSBezierPath()
@@ -326,14 +345,16 @@ final class BrowserDownloadButton: NSButton {
             arc.lineCapStyle = .round
             arc.stroke()
         } else if !(list?.items.isEmpty ?? true) {
-            // 全部结束（完成 / 失败 / 取消都算）：整圈实线，中心符号区分成败
+            // Everything has finished (completed, failed and cancelled all count): a full solid ring,
+            // with the center glyph telling success from failure.
             let full = NSBezierPath(ovalIn: box)
             full.lineWidth = 1.5
             full.stroke()
         }
 
-        // 中心符号（y 向上，见 isFlipped）：进行中 = 向下箭头，全部完成 = 勾，
-        // 有失败 / 取消 = 感叹号（画勾会把"下载失败了"说成"成功了"）
+        // Center glyph (y-up, see isFlipped): in flight = a down arrow, all completed = a checkmark,
+        // anything failed or cancelled = an exclamation mark (a checkmark there would report a failed
+        // download as a successful one).
         let path = NSBezierPath()
         switch glyph {
         case .arrow:
@@ -362,11 +383,14 @@ final class BrowserDownloadButton: NSButton {
     }
 }
 
-/// 下载列表弹出层：每条一行（图标 + 文件名 + 状态 + 细进度条 + 取消 / 在 Finder 中显示 / 移除），
-/// 底部「清除已完成」。行视图复用，列表变动时只改内容不重建，避免闪烁。
+/// The download list popover: one row per download (icon + file name + status + a thin progress bar +
+/// cancel / reveal in Finder / remove), with "Clear Completed" at the bottom. Row views are reused; a
+/// change to the list only rewrites their contents instead of rebuilding them, which avoids flicker.
 ///
-/// **NSPopover 由 pane 持有，本控制器不反向持有它**：`NSPopover.contentViewController` 是强引用，
-/// 控制器再存一个 NSPopover 就成了两个对象互锁的环——pane 关掉后列表、条目、WKDownload 全都释放不掉。
+/// **The pane owns the NSPopover and this controller does not hold it back**:
+/// `NSPopover.contentViewController` is a strong reference, so storing the NSPopover in the controller
+/// as well makes a cycle between two objects that lock each other in place, and closing the pane would
+/// never release the list, the items or the WKDownloads.
 @MainActor
 final class BrowserDownloadPopover: NSViewController {
     static let width: CGFloat = 320
@@ -411,7 +435,7 @@ final class BrowserDownloadPopover: NSViewController {
         rebuild()
     }
 
-    /// 按列表重建行（复用已有行视图）
+    /// Rebuild the rows from the list, reusing the row views that already exist.
     func rebuild() {
         guard isViewLoaded else { return }
         let items = list.items
@@ -429,7 +453,7 @@ final class BrowserDownloadPopover: NSViewController {
             row.widthAnchor.constraint(equalToConstant: Self.width - 20).isActive = true
         }
         for (row, item) in zip(rows, items) { row.configure(item) }
-        // 空态与「清除已完成」的位置永远在行的后面
+        // The empty state and the "Clear Completed" button always sit after the rows.
         for extra in [emptyLabel, clearButton] where extra.superview != nil {
             stack.removeArrangedSubview(extra)
             extra.removeFromSuperview()
@@ -448,12 +472,12 @@ final class BrowserDownloadPopover: NSViewController {
         rebuild()
     }
 
-    /// 测试用
+    /// For tests.
     var rowsForTesting: [NSView] { rows }
     var clearButtonForTesting: NSButton { clearButton }
 }
 
-/// 弹出层里的一行
+/// One row inside the popover.
 @MainActor
 final class BrowserDownloadRow: NSView {
     private let iconView = NSImageView()
@@ -564,7 +588,7 @@ final class BrowserDownloadRow: NSView {
         onRemove?(item)
     }
 
-    /// 测试用
+    /// For tests.
     var nameForTesting: String { nameLabel.stringValue }
     var statusForTesting: String { statusLabel.stringValue }
     var primaryButtonForTesting: NSButton { primaryButton }

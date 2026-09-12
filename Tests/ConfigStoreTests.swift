@@ -5,7 +5,7 @@ import AppKit
 final class ConfigStoreTests: XCTestCase {
     func testParseFullConfig() {
         let toml = """
-        theme = "nord"    # 注释
+        theme = "nord"    # comment
         workspaces = 8
 
         [keybinds]
@@ -44,8 +44,8 @@ final class ConfigStoreTests: XCTestCase {
             overrides: [.newTerminal: KeyCombo(key: "t", .command)],
             unbound: [.closePane])
         XCTAssertEqual(map.action(key: "t", modifiers: .command)?.action, .newTerminal)
-        XCTAssertNil(map.action(key: "return", modifiers: .command), "旧组合应被替换")
-        XCTAssertNil(map.action(key: "w", modifiers: .command), "close-pane 已解绑")
+        XCTAssertNil(map.action(key: "return", modifiers: .command), "the old combo has been replaced")
+        XCTAssertNil(map.action(key: "w", modifiers: .command), "close-pane is unbound")
         XCTAssertEqual(map.action(key: "6", modifiers: .command)?.action, .gotoWorkspace6)
         XCTAssertEqual(map.action(key: "0", modifiers: [.command, .shift])?.action, .moveToWorkspace10)
     }
@@ -60,40 +60,40 @@ final class ConfigStoreTests: XCTestCase {
         let decoded = try JSONDecoder().decode(PersistedState.self, from: data)
         XCTAssertEqual(decoded.version, 5)
         if !c.model.allPanes.isEmpty {
-            XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("\"kind\":\"terminal\""), "v4 叶子带 kind")
+            XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("\"kind\":\"terminal\""), "a v4 leaf carries kind")
         }
         let window = try XCTUnwrap(decoded.windows.first)
         XCTAssertEqual(window.layouts.count, c.model.layouts.count)
         XCTAssertEqual(window.activeIndex, c.model.activeIndex)
         XCTAssertEqual(window.layouts[c.model.activeIndex].paneList.count,
-                       c.paneList.count, "布局（含 pane 数）应完整往返")
+                       c.paneList.count, "the layout, pane count included, round-trips intact")
     }
 }
 
 extension ConfigStoreTests {
     func testPanePaddingParsing() {
-        XCTAssertEqual(ConfigStore.parse("").panePadding, 14, "默认 14（Omarchy 官方终端 padding）")
+        XCTAssertEqual(ConfigStore.parse("").panePadding, 14, "14 by default (Omarchy's own terminal padding)")
         XCTAssertEqual(ConfigStore.parse("pane-padding = 8").panePadding, 8)
-        XCTAssertEqual(ConfigStore.parse("pane-padding = 99").panePadding, 32, "clamp 上限")
-        XCTAssertEqual(ConfigStore.parse("pane-padding = -1").panePadding, 0, "clamp 下限")
+        XCTAssertEqual(ConfigStore.parse("pane-padding = 99").panePadding, 32, "clamped to the upper bound")
+        XCTAssertEqual(ConfigStore.parse("pane-padding = -1").panePadding, 0, "clamped to the lower bound")
     }
 
     @MainActor
     func testPanePaddingReachesOverlay() {
         let manager = ThemeManager()
-        XCTAssertTrue(manager.overlayExtra().contains("window-padding-x = 14"), "默认 14")
+        XCTAssertTrue(manager.overlayExtra().contains("window-padding-x = 14"), "14 by default")
         manager.updateFromConfig(passthrough: "", followEngine: false, panePadding: 6)
         XCTAssertTrue(manager.overlayExtra().contains("window-padding-x = 6"))
         XCTAssertTrue(manager.overlayExtra().contains("window-padding-y = 6"))
         manager.updateFromConfig(passthrough: "", followEngine: true, panePadding: 6)
         XCTAssertTrue(manager.overlayExtra().contains("window-padding-x = 6"),
-                      "theme=ghostty 模式仍注入（QuickTerm 自身特性）")
+                      "theme=ghostty mode still injects it: this is QuickTerm's own feature")
     }
 }
 
 extension ConfigStoreTests {
     func testVisibleColumnsParsing() {
-        XCTAssertNil(ConfigStore.parse("").visibleColumns, "未设置 = nil（走菜单/UserDefaults）")
+        XCTAssertNil(ConfigStore.parse("").visibleColumns, "unset means nil, so the menu / UserDefaults decides")
         XCTAssertEqual(ConfigStore.parse("visible-columns = 3").visibleColumns, 3)
         XCTAssertEqual(ConfigStore.parse("visible-columns = 99").visibleColumns, 6, "clamp")
     }
@@ -101,95 +101,98 @@ extension ConfigStoreTests {
 
 extension ConfigStoreTests {
     func testPaneOpacityAndBlurParsing() {
-        XCTAssertEqual(ConfigStore.parse("").paneOpacity, 0.92, accuracy: 0.001, "默认 0.92")
-        XCTAssertEqual(ConfigStore.parse("").inactiveBlur, 2.5, accuracy: 0.001, "默认磨砂开")
+        XCTAssertEqual(ConfigStore.parse("").paneOpacity, 0.92, accuracy: 0.001, "0.92 by default")
+        XCTAssertEqual(ConfigStore.parse("").inactiveBlur, 2.5, accuracy: 0.001, "frosting is on by default")
         XCTAssertEqual(ConfigStore.parse("inactive-blur = 99").inactiveBlur, 10, accuracy: 0.001, "clamp")
         XCTAssertEqual(ConfigStore.parse("pane-opacity = 0.7").paneOpacity, 0.7, accuracy: 0.001)
-        XCTAssertEqual(ConfigStore.parse("").activeOpacity, 0.98, accuracy: 0.001, "激活默认 0.98")
+        XCTAssertEqual(ConfigStore.parse("").activeOpacity, 0.98, accuracy: 0.001, "0.98 for the active pane by default")
         XCTAssertEqual(ConfigStore.parse("active-opacity = 0.9").activeOpacity, 0.9, accuracy: 0.001)
-        XCTAssertEqual(ConfigStore.parse("pane-opacity = 0.1").paneOpacity, 0.5, accuracy: 0.001, "clamp 下限")
-        XCTAssertEqual(ConfigStore.parse("").barOpacity, 0.75, accuracy: 0.001, "顶栏默认 0.75")
+        XCTAssertEqual(ConfigStore.parse("pane-opacity = 0.1").paneOpacity, 0.5, accuracy: 0.001, "clamped to the lower bound")
+        XCTAssertEqual(ConfigStore.parse("").barOpacity, 0.75, accuracy: 0.001, "the top bar defaults to 0.75")
         XCTAssertEqual(ConfigStore.parse("bar-opacity = 0.3").barOpacity, 0.3, accuracy: 0.001)
-        XCTAssertEqual(ConfigStore.parse("bar-opacity = 1.5").barOpacity, 1.0, accuracy: 0.001, "clamp 上限")
-        XCTAssertEqual(ConfigStore.parse("").dividerOpacity, 0.2, accuracy: 0.001, "dwindle 分隔细线默认 0.2")
+        XCTAssertEqual(ConfigStore.parse("bar-opacity = 1.5").barOpacity, 1.0, accuracy: 0.001, "clamped to the upper bound")
+        XCTAssertEqual(ConfigStore.parse("").dividerOpacity, 0.2, accuracy: 0.001, "the thin dwindle divider defaults to 0.2")
         XCTAssertEqual(ConfigStore.parse("divider-opacity = 0.4").dividerOpacity, 0.4, accuracy: 0.001)
-        XCTAssertEqual(ConfigStore.parse("divider-opacity = -1").dividerOpacity, 0.0, accuracy: 0.001, "clamp 下限")
-        XCTAssertEqual(ConfigStore.parse("").paneGap, 5, "pane 留白默认 5（= 原 scrolling 值，相邻 10pt）")
+        XCTAssertEqual(ConfigStore.parse("divider-opacity = -1").dividerOpacity, 0.0, accuracy: 0.001, "clamped to the lower bound")
+        XCTAssertEqual(ConfigStore.parse("").paneGap, 5, "pane gap defaults to 5 (the old scrolling value, 10pt between neighbours)")
         XCTAssertEqual(ConfigStore.parse("pane-gap = 3").paneGap, 3)
-        XCTAssertEqual(ConfigStore.parse("pane-gap = 99").paneGap, 20, "clamp 上限")
-        XCTAssertEqual(ConfigStore.parse("pane-gap = -4").paneGap, 0, "clamp 下限")
-        XCTAssertEqual(ConfigStore.parse("dwindle-gap = 4").paneGap, 4, "旧键 dwindle-gap 作为别名")
-        XCTAssertEqual(ConfigStore.parse("dwindle-gap = 4\npane-gap = 7").paneGap, 7, "新键优先")
-        XCTAssertEqual(ConfigStore.parse("pane-gap = 7\ndwindle-gap = 4").paneGap, 7, "新键优先（与顺序无关）")
-        XCTAssertEqual(ConfigStore.parse("").fileManagerCommand, "yazi", "文件管理器默认 yazi")
+        XCTAssertEqual(ConfigStore.parse("pane-gap = 99").paneGap, 20, "clamped to the upper bound")
+        XCTAssertEqual(ConfigStore.parse("pane-gap = -4").paneGap, 0, "clamped to the lower bound")
+        XCTAssertEqual(ConfigStore.parse("dwindle-gap = 4").paneGap, 4, "the old dwindle-gap key still works as an alias")
+        XCTAssertEqual(ConfigStore.parse("dwindle-gap = 4\npane-gap = 7").paneGap, 7, "the new key wins")
+        XCTAssertEqual(ConfigStore.parse("pane-gap = 7\ndwindle-gap = 4").paneGap, 7, "the new key wins, order does not matter")
+        XCTAssertEqual(ConfigStore.parse("").fileManagerCommand, "yazi", "the file manager defaults to yazi")
         XCTAssertEqual(ConfigStore.parse("file-manager-command = \"lf\"").fileManagerCommand, "lf")
         XCTAssertEqual(ConfigStore.parse("file-manager-command = /opt/homebrew/bin/yazi").fileManagerCommand, "/opt/homebrew/bin/yazi")
-        XCTAssertEqual(ConfigStore.parse("file-manager-command = \"\"").fileManagerCommand, "yazi", "空值不覆盖默认")
+        XCTAssertEqual(ConfigStore.parse("file-manager-command = \"\"").fileManagerCommand, "yazi",
+                       "an empty value does not override the default")
         let b = ConfigStore.parse("browser-home = \"https://x.y\"\nbrowser-search = \"https://s/?q=%s\"\nbrowser-user-agent = webkit\nbrowser-inspectable = true")
         XCTAssertEqual(b.browserHome, "https://x.y")
         XCTAssertEqual(b.browserSearch, "https://s/?q=%s")
         XCTAssertEqual(b.browserUserAgent, "webkit")
         XCTAssertTrue(b.browserInspectable)
-        XCTAssertEqual(ConfigStore.parse("").browserUserAgent, "safari", "默认伪装 Safari")
+        XCTAssertEqual(ConfigStore.parse("").browserUserAgent, "safari", "it poses as Safari by default")
         XCTAssertFalse(ConfigStore.parse("").browserInspectable)
-        XCTAssertEqual(ConfigStore.parse("").browserTabBar, "always", "默认始终显示标签条")
+        XCTAssertEqual(ConfigStore.parse("").browserTabBar, "always", "the tab bar is always shown by default")
         XCTAssertEqual(ConfigStore.parse("browser-tab-bar = auto").browserTabBar, "auto")
         XCTAssertEqual(ConfigStore.parse("").browserTabWidth, 200)
         XCTAssertEqual(ConfigStore.parse("").browserTabMinWidth, 80)
         let w = ConfigStore.parse("browser-tab-width = 160\nbrowser-tab-min-width = 5")
         XCTAssertEqual(w.browserTabWidth, 160)
-        XCTAssertEqual(w.browserTabMinWidth, 40, "下限 40")
-        XCTAssertEqual(ConfigStore.parse("browser-tab-width = 9999").browserTabWidth, 600, "上限 600")
-        XCTAssertTrue(ConfigStore.parse("").browserExtensions, "扩展默认开启")
+        XCTAssertEqual(w.browserTabMinWidth, 40, "lower bound 40")
+        XCTAssertEqual(ConfigStore.parse("browser-tab-width = 9999").browserTabWidth, 600, "upper bound 600")
+        XCTAssertTrue(ConfigStore.parse("").browserExtensions, "extensions are on by default")
         XCTAssertFalse(ConfigStore.parse("browser-extensions = false").browserExtensions)
         XCTAssertTrue(ConfigStore.parse("browser-extensions = true").browserExtensions)
-        XCTAssertEqual(ConfigStore.parse("").browserDownloadDir, "~/Downloads", "下载目录默认 ~/Downloads")
+        XCTAssertEqual(ConfigStore.parse("").browserDownloadDir, "~/Downloads", "downloads default to ~/Downloads")
         XCTAssertEqual(ConfigStore.parse("browser-download-dir = \"/tmp/dl\"").browserDownloadDir, "/tmp/dl")
-        XCTAssertEqual(ConfigStore.parse("browser-download-dir = \"\"").browserDownloadDir, "~/Downloads", "空值不覆盖默认")
-        XCTAssertEqual(ConfigStore.parse("").linkOpener, "browser-pane", "终端链接默认开在浏览器 pane")
+        XCTAssertEqual(ConfigStore.parse("browser-download-dir = \"\"").browserDownloadDir, "~/Downloads",
+                       "an empty value does not override the default")
+        XCTAssertEqual(ConfigStore.parse("").linkOpener, "browser-pane", "a link from the terminal opens in a browser pane by default")
         XCTAssertEqual(ConfigStore.parse("link-opener = system").linkOpener, "system")
     }
 
-    /// 已有配置文件补全缺失键：注释+默认值插在第一个 section 前；幂等；完整文件不动；活跃设置不被覆盖
+    /// Filling missing keys into an existing config file: the comment plus default goes in before the first
+    /// section, the whole thing is idempotent, a complete file is left alone, and live settings survive.
     func testEnsureTemplateKeysAppendsMissingOnce() throws {
         let fm = FileManager.default
         let url = fm.temporaryDirectory.appendingPathComponent("qt-config-\(UUID().uuidString).toml")
         defer { try? fm.removeItem(at: url) }
         try "theme = \"nord\"\nworkspaces = 8\n\n[keybinds]\nnew-terminal = \"cmd+t\"\n".write(to: url, atomically: true, encoding: .utf8)
-        XCTAssertTrue(ConfigStore.ensureTemplateKeys(at: url), "缺键 → 写入")
-        // 文件不存在 → 写完整模板（含目录）
+        XCTAssertTrue(ConfigStore.ensureTemplateKeys(at: url), "keys missing -> write")
+        // No file at all: write the full template, creating the directory on the way.
         let fresh = fm.temporaryDirectory.appendingPathComponent("qt-cfgdir-\(UUID().uuidString)/config.toml")
         defer { try? fm.removeItem(at: fresh.deletingLastPathComponent()) }
-        XCTAssertTrue(ConfigStore.ensureTemplateKeys(at: fresh), "不存在 → 创建")
+        XCTAssertTrue(ConfigStore.ensureTemplateKeys(at: fresh), "missing -> created")
         XCTAssertEqual(try String(contentsOf: fresh, encoding: .utf8), ConfigStore.template)
         let text = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(text.contains("# divider-opacity = 0.2"), "补全 divider-opacity 默认")
+        XCTAssertTrue(text.contains("# divider-opacity = 0.2"), "divider-opacity's default was filled in")
         XCTAssertTrue(text.contains("# pane-opacity = 0.92"))
-        XCTAssertFalse(text.contains("# theme = "), "已有的 theme 不重复补")
-        XCTAssertFalse(text.contains("# workspaces = "), "已有的 workspaces 不重复补")
+        XCTAssertFalse(text.contains("# theme = "), "an existing theme key is not filled in again")
+        XCTAssertFalse(text.contains("# workspaces = "), "an existing workspaces key is not filled in again")
         let keybindsIdx = try XCTUnwrap(text.range(of: "[keybinds]")).lowerBound
         let dividerIdx = try XCTUnwrap(text.range(of: "# divider-opacity")).lowerBound
-        XCTAssertLessThan(dividerIdx, keybindsIdx, "补全块插在第一个 section 之前")
+        XCTAssertLessThan(dividerIdx, keybindsIdx, "the filled-in block goes before the first section")
         let parsed = ConfigStore.parse(text)
         XCTAssertEqual(parsed.themeName, "nord"); XCTAssertEqual(parsed.workspaces, 8)
-        XCTAssertEqual(parsed.overrides[.newTerminal], KeyCombo(key: "t", .command), "活跃设置原样保留")
-        XCTAssertFalse(ConfigStore.ensureTemplateKeys(at: url), "第二次无缺键 → 不写")
-        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), text, "幂等")
-        // 完整模板本身不需要补全；模板键覆盖所有可解析键
+        XCTAssertEqual(parsed.overrides[.newTerminal], KeyCombo(key: "t", .command), "live settings are kept verbatim")
+        XCTAssertFalse(ConfigStore.ensureTemplateKeys(at: url), "nothing missing the second time -> no write")
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), text, "idempotent")
+        // The full template needs no filling in, and its keys cover every parsable key.
         try ConfigStore.template.write(to: url, atomically: true, encoding: .utf8)
         XCTAssertFalse(ConfigStore.ensureTemplateKeys(at: url))
-        // 模板键 = 注册表的新名（分组之后 `[browser] home` 不再叫 browser-home）
+        // Template keys carry the registry's new names: after the grouping, `[browser] home` is no longer browser-home.
         let keys = Set(ConfigStore.templateKeyBlocks.map(\.spec.key))
-        XCTAssertEqual(keys, Set(ConfigSchema.keys.map(\.key)), "模板必须列全注册表里的每一个键")
+        XCTAssertEqual(keys, Set(ConfigSchema.keys.map(\.key)), "the template has to list every key in the registry")
         for k in ["theme", "workspaces", "pane-padding", "visible-columns", "pane-opacity",
                   "active-opacity", "bar-opacity", "divider-opacity", "pane-gap", "inactive-blur",
                   "file-manager-command", "home", "search", "user-agent", "inspectable",
                   "tab-bar", "tab-width", "tab-min-width", "extensions", "download-dir",
                   "link-opener", "socket", "mcp", "mode", "expose-browser", "send-text"] {
-            XCTAssertTrue(keys.contains(k), "模板缺少 \(k)")
+            XCTAssertTrue(keys.contains(k), "the template is missing \(k)")
         }
         for k in ["new-terminal", "cursor-style", "动作"] {
-            XCTAssertFalse(keys.contains(k), "[keybinds]/[ghostty] 节的示例行不是顶层键：\(k)")
+            XCTAssertFalse(keys.contains(k), "an example row in the [keybinds] / [ghostty] sections is not a top-level key: \(k)")
         }
     }
 
@@ -200,7 +203,7 @@ extension ConfigStoreTests {
         manager.opacityEnabled = true
         XCTAssertEqual(manager.effectiveDividerOpacity, 0.6, accuracy: 0.001)
         manager.opacityEnabled = false
-        XCTAssertEqual(manager.effectiveDividerOpacity, 1.0, accuracy: 0.001, "总开关关闭 = 不透明实线")
+        XCTAssertEqual(manager.effectiveDividerOpacity, 1.0, accuracy: 0.001, "master switch off means an opaque solid line")
     }
 
     @MainActor
@@ -210,16 +213,17 @@ extension ConfigStoreTests {
                                  paneOpacity: 0.8, inactiveBlur: 3)
         manager.opacityEnabled = true
         XCTAssertTrue(manager.frostedInactive)
-        // 合成校验：paneOpacity 0.8 + 垫层 → activeOpacity 0.96
+        // Compositing check: paneOpacity 0.8 plus the underlay -> activeOpacity 0.96.
         let a = manager.activeUnderlayAlpha
-        XCTAssertEqual(1 - (1 - 0.8) * (1 - a), 0.98, accuracy: 0.001, "垫层合成到 active-opacity")
+        XCTAssertEqual(1 - (1 - 0.8) * (1 - a), 0.98, accuracy: 0.001, "the underlay composites up to active-opacity")
         XCTAssertTrue(manager.overlayExtra().contains("background-opacity = 0.8"))
         manager.opacityEnabled = false
-        XCTAssertFalse(manager.frostedInactive, "总开关关闭 = 无磨砂")
+        XCTAssertFalse(manager.frostedInactive, "master switch off means no frosting")
         XCTAssertTrue(manager.overlayExtra().contains("background-opacity = 1.0"))
     }
 
-    /// 引擎兜底配置：仅当四个候选路径都不存在时才启用；XDG_CONFIG_HOME 覆盖生效
+    /// The engine's fallback config: used only when none of the four candidate paths exist, and
+    /// XDG_CONFIG_HOME really does move the location.
     func testGhosttyFallbackOnlyWhenNoUserConfig() throws {
         let fm = FileManager.default
         let home = fm.temporaryDirectory.appendingPathComponent("qt-home-\(UUID().uuidString)")
@@ -230,55 +234,60 @@ extension ConfigStoreTests {
             try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             fm.createFile(atPath: url.path, contents: empty ? Data() : Data("font-size = 12\n".utf8))
         }
-        XCTAssertFalse(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "空 home：启用兜底")
+        XCTAssertFalse(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "empty home: the fallback is used")
 
         let legacy = home.appendingPathComponent(".config/ghostty/config")
         try touch(legacy)
-        XCTAssertTrue(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "旧名 config 存在 → 让位")
+        XCTAssertTrue(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "the old name config exists -> stand aside")
         try fm.removeItem(at: legacy)
 
         try touch(home.appendingPathComponent(".config/ghostty/config.ghostty"))
-        XCTAssertTrue(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "新名 config.ghostty 存在 → 让位")
+        XCTAssertTrue(GhosttyDefaultConfig.userConfigExists(home: home, environment: env),
+                      "the new name config.ghostty exists -> stand aside")
         try fm.removeItem(at: home.appendingPathComponent(".config/ghostty/config.ghostty"))
 
         let xdg = home.appendingPathComponent("xdg")
         try touch(xdg.appendingPathComponent("ghostty/config"))
-        XCTAssertFalse(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "未设 XDG_CONFIG_HOME 不看该目录")
+        XCTAssertFalse(GhosttyDefaultConfig.userConfigExists(home: home, environment: env),
+                       "without XDG_CONFIG_HOME that directory is not consulted")
         XCTAssertTrue(GhosttyDefaultConfig.userConfigExists(home: home, environment: ["XDG_CONFIG_HOME": xdg.path]),
-                      "XDG_CONFIG_HOME 覆盖生效")
+                      "XDG_CONFIG_HOME really does move it")
 
         try touch(home.appendingPathComponent("Library/Application Support/com.mitchellh.ghostty/config"))
-        XCTAssertTrue(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "Application Support 路径也算")
+        XCTAssertTrue(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "the Application Support path counts too")
         try fm.removeItem(at: home.appendingPathComponent("Library/Application Support/com.mitchellh.ghostty/config"))
 
-        // libghostty 1.3.1 自动写出的 0 字节模板：引擎按 FileIsEmpty 不加载 → 不算用户配置
+        // The 0-byte template libghostty 1.3.1 writes out on its own: the engine skips it as FileIsEmpty, so
+        // it does not count as a user config.
         try touch(home.appendingPathComponent("Library/Application Support/com.mitchellh.ghostty/config.ghostty"),
                   empty: true)
-        XCTAssertFalse(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "0 字节文件不算")
+        XCTAssertFalse(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "a 0-byte file does not count")
         try fm.createDirectory(at: home.appendingPathComponent(".config/ghostty/config"),
                                withIntermediateDirectories: true)
-        XCTAssertFalse(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "同名目录不算")
+        XCTAssertFalse(GhosttyDefaultConfig.userConfigExists(home: home, environment: env), "a directory with the same name does not count")
 
-        // 加载顺序同 libghostty：XDG 旧名 → XDG 新名 → App Support
+        // Load order follows libghostty: XDG old name -> XDG new name -> App Support.
         try fm.removeItem(at: home.appendingPathComponent(".config/ghostty/config"))
         try touch(home.appendingPathComponent(".config/ghostty/config.ghostty"))
         try touch(home.appendingPathComponent(".config/ghostty/config"))
         let order = GhosttyDefaultConfig.userConfigFiles(home: home, environment: env).map(\.lastPathComponent)
-        XCTAssertEqual(order, ["config", "config.ghostty"], "旧名先于新名（后者覆盖前者）")
+        XCTAssertEqual(order, ["config", "config.ghostty"], "the old name comes first, and the new one overrides it")
     }
 
-    /// 兜底文件已打入 bundle 且内容为用户指定的缺省值
+    /// The fallback file is bundled, and its contents are the defaults the user asked for.
     func testGhosttyFallbackResourceBundled() throws {
-        let path = try XCTUnwrap(GhosttyDefaultConfig.bundledPath, "bundle 应包含 ghostty-default.conf")
+        let path = try XCTUnwrap(GhosttyDefaultConfig.bundledPath, "the bundle has to contain ghostty-default.conf")
         let text = try String(contentsOfFile: path, encoding: .utf8)
         for key in ["font-family = Monaco", "font-size = 15", "theme = Builtin Pastel Dark",
                     "copy-on-select = clipboard", "scrollback-limit = 100000000"] {
-            XCTAssertTrue(text.contains(key), "缺少 \(key)")
+            XCTAssertTrue(text.contains(key), "missing \(key)")
         }
-        // QuickTerm 语义所需的删减（只看生效行，文件头注释里会提到这些键）：
-        // shell 集成保持 detect；无 tab 键位
+        // Removals QuickTerm's semantics require (only active lines are checked; the header comment does
+        // mention these keys):
+        // shell integration stays on detect, and there are no tab keybindings.
         let active = text.split(separator: "\n").filter { !$0.hasPrefix("#") }.joined(separator: "\n")
-        XCTAssertFalse(active.contains("shell-integration = none"), "会断掉 cwd 继承与免确认关闭")
-        XCTAssertFalse(active.contains("previous_tab"), "QuickTerm 无 tab，且会覆盖引擎行首/行尾")
+        XCTAssertFalse(active.contains("shell-integration = none"), "that would break cwd inheritance and confirmation-free closing")
+        XCTAssertFalse(active.contains("previous_tab"),
+                       "QuickTerm has no tabs, and this would override the engine's start/end-of-line keys")
     }
 }

@@ -1,8 +1,9 @@
 import Foundation
 
-/// 任意 JSON 值（客户端解码响应 / 请求 args 的载体）。
-/// 存在的理由：所有编解码仍然走 `JSONEncoder`/`JSONDecoder`——绝不手拼字符串
-/// （yabai 曾因手拼出的尾逗号打断所有下游 jq 管道）。
+/// An arbitrary JSON value: the carrier for decoded replies on the client side and for request
+/// args. Why it exists: every encode/decode still goes through `JSONEncoder`/`JSONDecoder` — we
+/// never hand-assemble strings (yabai once emitted a hand-built trailing comma that broke every
+/// downstream jq pipeline).
 enum JSONValue: Codable, Equatable {
     case null
     case bool(Bool)

@@ -4,10 +4,10 @@ import CoreAudio
 import IOKit.ps
 import Network
 
-/// 顶栏系统状态（spec §4.4）：CPU / 电池 / 网络 / 音量，2s 刷新。
+/// System stats for the top bar (spec §4.4): CPU / battery / network / volume, sampled every 2s.
 final class SystemStatsService: ObservableObject {
     @Published private(set) var cpuPercent: Int = 0
-    @Published private(set) var batteryPercent: Int? = nil   // nil = 无电池
+    @Published private(set) var batteryPercent: Int? = nil   // nil = no battery
     @Published private(set) var batteryCharging = false
     @Published private(set) var networkUp = true
     @Published private(set) var networkWifi = true
@@ -42,7 +42,7 @@ final class SystemStatsService: ObservableObject {
         sampleMute()
     }
 
-    // MARK: CPU（host_processor_info 差分）
+    // MARK: CPU (differencing host_processor_info)
 
     private func sampleCPU() {
         var count = mach_msg_type_number_t()
@@ -75,7 +75,7 @@ final class SystemStatsService: ObservableObject {
         prevCPUTicks = (idle, total)
     }
 
-    // MARK: 电池（IOKit power sources）
+    // MARK: Battery (IOKit power sources)
 
     private func sampleBattery() {
         guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
@@ -92,7 +92,7 @@ final class SystemStatsService: ObservableObject {
         batteryCharging = (desc[kIOPSIsChargingKey] as? Bool) ?? false
     }
 
-    // MARK: 音量（CoreAudio 默认输出静音位）
+    // MARK: Volume (the mute bit of the CoreAudio default output device)
 
     private var defaultOutputDevice: AudioDeviceID? {
         var deviceID = AudioDeviceID(0)
@@ -119,7 +119,7 @@ final class SystemStatsService: ObservableObject {
         }
     }
 
-    /// 顶栏音量图标点击：静音切换
+    /// Clicking the volume icon in the top bar: toggle mute.
     func toggleMute() {
         guard let device = defaultOutputDevice else { return }
         var addr = AudioObjectPropertyAddress(

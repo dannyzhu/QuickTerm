@@ -5,9 +5,9 @@ final class ThemeTests: XCTestCase {
     func testParseColorsToml() {
         let toml = """
         mode = "dark"
-        accent = "#7aa2f7"   # 行尾注释
+        accent = "#7aa2f7"   # trailing comment
         background = "#1a1b26"
-        # 整行注释
+        # whole-line comment
         bright_red = "#ff7a93"
         """
         let parsed = Theme.parseColors(toml: toml)
@@ -20,23 +20,24 @@ final class ThemeTests: XCTestCase {
 
     func testBundledThemesDiscovered() {
         let themes = ThemeManager.discoverThemes()
-        XCTAssertGreaterThanOrEqual(themes.count, 20, "应发现 20+ 个内置主题（实际 \(themes.count)）")
+        XCTAssertGreaterThanOrEqual(themes.count, 20,
+                                    "should discover 20+ bundled themes (found \(themes.count))")
         let tokyo = themes.first { $0.name == "tokyo-night" }
         XCTAssertNotNil(tokyo)
         XCTAssertEqual(tokyo?.hex("accent"), "#7aa2f7")
         XCTAssertFalse(tokyo?.isLight ?? true)
-        XCTAssertTrue(themes.contains { $0.isLight }, "应含浅色主题（mode = light）")
+        XCTAssertTrue(themes.contains { $0.isLight }, "at least one light theme (mode = light) must ship")
     }
 
     @MainActor
     func testOverlayExtraFollowsTemplateMapping() throws {
         let manager = ThemeManager()
         guard let tokyo = manager.themes.first(where: { $0.name == "tokyo-night" }) else {
-            return XCTFail("缺 tokyo-night")
+            return XCTFail("tokyo-night theme is missing")
         }
         manager.apply(tokyo)
         let overlay = manager.overlayExtra()
-        // omarchy ghostty.conf.tpl 的映射（M3 权威来源）
+        // The mapping comes from omarchy's ghostty.conf.tpl (the authoritative source for M3).
         XCTAssertTrue(overlay.contains("background = #1a1b26"))
         XCTAssertTrue(overlay.contains("foreground = #a9b1d6"))
         XCTAssertTrue(overlay.contains("cursor-color = #c0caf5"))
@@ -54,7 +55,7 @@ final class ThemeTests: XCTestCase {
         XCTAssertFalse(manager.overlayExtra().contains("background-opacity = 1.0"))
     }
 
-    /// 用户背景目录扫描：仅图片、按名排序
+    /// Scanning the user's background directory: images only, sorted by name.
     func testDiscoverBackgroundsFiltersAndSorts() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("qt-bg-test-\(UUID().uuidString)")
@@ -65,8 +66,8 @@ final class ThemeTests: XCTestCase {
                 atPath: dir.appendingPathComponent(name).path, contents: Data([0]))
         }
         let found = ThemeManager.discoverBackgrounds(in: dir).map(\.lastPathComponent)
-        XCTAssertEqual(found, ["a.webp", "b.png", "c.JPG"], "过滤非图片并按名排序")
+        XCTAssertEqual(found, ["a.webp", "b.png", "c.JPG"], "non-images filtered out, rest sorted by name")
         XCTAssertEqual(ThemeManager.discoverBackgrounds(
-            in: dir.appendingPathComponent("missing")), [], "目录不存在返回空")
+            in: dir.appendingPathComponent("missing")), [], "a missing directory returns an empty list")
     }
 }

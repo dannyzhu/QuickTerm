@@ -1,14 +1,14 @@
 import SwiftUI
 
-/// 居中浮动面板类型（Walker 风格，spec §1.4/§4.5/§4.6）
+/// The kinds of centered floating panel (Walker style, spec §1.4/§4.5/§4.6).
 enum OverlayPanel: Equatable {
     case themes
     case backgrounds
-    case keybindings   // Cmd+K 速查
-    case menu          // Cmd+Alt+Space 主菜单
+    case keybindings   // Cmd+K cheat sheet
+    case menu          // Cmd+Alt+Space main menu
 }
 
-/// 主菜单条目（spec §4.6 v1 清单）
+/// Main menu entries (the spec §4.6 v1 list).
 enum MenuEntry: Int, CaseIterable {
     case newTerminal, fileManager, browser, themes, backgrounds, visibleColumns
     case toggleBar, toggleGaps, toggleOpacity
@@ -51,10 +51,13 @@ enum MenuEntry: Int, CaseIterable {
     }
 }
 
-/// Walker 风格通用居中面板：Monaco 18、2px accent 边框、直角、0.95 透明背景。
-/// 键盘导航（↑↓/回车/Esc）由 MainWindowController 的监视器驱动 model.panelSelection。
+/// The generic Walker-style centered panel: Monaco 18, a 2px accent border, square corners, and a
+/// background at 0.95 alpha.
+/// Keyboard navigation (↑↓ / Return / Esc) comes from MainWindowController's monitor driving
+/// model.panelSelection.
 struct OverlayPanelView: View {
-    /// 背景网格固定列数（键盘行导航步长与布局共用）
+    /// Fixed column count for the backgrounds grid (shared by the layout and by the row step of
+    /// keyboard navigation).
     static let backgroundsColumns = 3
 
     @EnvironmentObject var theme: ThemeManager
@@ -83,7 +86,7 @@ struct OverlayPanelView: View {
         model.activePanel == .keybindings ? 560 : 420
     }
 
-    // MARK: 主题选择器（名称 + 8 色色板 + light 标记，spec §4.5）
+    // MARK: Theme picker (name + an 8-color swatch strip + a light marker, spec §4.5)
 
     private var themeList: some View {
         ScrollViewReader { proxy in
@@ -127,7 +130,7 @@ struct OverlayPanelView: View {
         }
     }
 
-    // MARK: 背景选择器（缩略图网格，spec §4.3）
+    // MARK: Background picker (a grid of thumbnails, spec §4.3)
 
     private var backgroundGrid: some View {
         let choices = theme.backgroundChoices
@@ -143,7 +146,8 @@ struct OverlayPanelView: View {
                                 model.panelSelection == index ? theme.accent : .clear, lineWidth: 2))
                             .onTapGesture { onChoose(index) }
                     }
-                    // 自选图片入口（拷入 ~/.config/quickterm/backgrounds，全主题共用）
+                    // Entry point for picking your own image (copied into
+                    // ~/.config/quickterm/backgrounds, shared by every theme)
                     VStack(spacing: 4) {
                         Image(systemName: "plus")
                         Text(i18n("palette.background.choose-image"))
@@ -170,7 +174,7 @@ struct OverlayPanelView: View {
         }
     }
 
-    // MARK: 主菜单（Cmd+Alt+Space，spec §4.6）
+    // MARK: Main menu (Cmd+Alt+Space, spec §4.6)
 
     private var menuList: some View {
         VStack(spacing: 0) {
@@ -198,7 +202,7 @@ struct OverlayPanelView: View {
         .padding(.vertical, 8)
     }
 
-    // MARK: 快捷键速查（数据来自映射表本身）
+    // MARK: Keybinding cheat sheet (the data comes from the binding table itself)
 
     private var keybindingList: some View {
         ScrollView {
@@ -220,7 +224,7 @@ struct OverlayPanelView: View {
     }
 }
 
-/// 本地文件壁纸缩略图/全幅（带简单缓存）
+/// A wallpaper thumbnail or full-size image loaded from a local file (with simple caching).
 struct WallpaperThumb: View {
     let url: URL
     @State private var image: NSImage?

@@ -1,30 +1,33 @@
 import AppKit
 import Combine
 
-/// pane 种类：存档判别与内容视图分发用
+/// Pane kind: used to tell archived panes apart and to dispatch the content view.
 enum PaneKind: String, Codable {
     case terminal
     case browser
 }
 
-/// 布局容器（SplitTree / ScrollingStrip / FloatingPane）编解码叶子用的多态工厂。
-/// 基类的 init(from:) 无法构造子类，所以由基类按存档里的 `kind` 分发到具体类型；
-/// 旧存档（v3 及以前）没有 kind，视为终端。
+/// Polymorphic factory used by the layout containers (SplitTree / ScrollingStrip / FloatingPane)
+/// when they code their leaves. The base class's `init(from:)` cannot construct a subclass, so the
+/// base class dispatches on the `kind` stored in the archive to reach the concrete type; old
+/// archives (v3 and earlier) carry no kind and are treated as terminals.
 protocol PaneCodable {
     static func decodePane(from decoder: Decoder) throws -> Self
     func encodePane(to encoder: Encoder) throws
 }
 
-/// 所有 pane 的基类：终端（Ghostty.SurfaceView）、浏览器（BrowserPaneView）……
-/// 布局树 / 滚动条带 / 浮动层、焦点模型、拖放、存档只认这个类型；终端语义只留在子类
-/// （关闭确认、目录继承、引擎回调、主题热切换）。
+/// Base class for every pane: terminal (Ghostty.SurfaceView), browser (BrowserPaneView), and so on.
+/// The layout tree, the scrolling strip, the floating layer, the focus model, drag and drop and the
+/// archive all speak only this type; terminal semantics stay in the subclass (close confirmation,
+/// working-directory inheritance, engine callbacks, live theme switching).
 ///
-/// 焦点真相 = 窗口 first responder 是本 pane **或其后代**（浏览器 pane 的 FR 是内部的 WKWebView）。
-/// `focused` 标志只由 focusDidChange 驱动（become/resign、托管视图的回调、控制器对账）。
+/// The truth about focus = the window's first responder is this pane **or one of its descendants**
+/// (a browser pane's FR is the WKWebView inside it). The `focused` flag is driven only by
+/// focusDidChange (become/resign, the hosted view's callbacks, the controller's reconciliation).
 class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
     let id: UUID
 
-    /// 子类必须覆写
+    /// Subclasses must override this.
     class var kind: PaneKind { fatalError("PaneView subclass must override kind") }
     var kind: PaneKind { type(of: self).kind }
 
@@ -37,29 +40,34 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
         fatalError("init(coder:) is not supported")
     }
 
-    // MARK: - 子类接口
+    // MARK: - Subclass interface
 
-    /// 状态条 / 速查表用的标题
+    /// Title used by the status bar and the cheat sheet.
     var paneTitle: String { "" }
-    /// 画到 pane 边框上的标题：**只有被显式设过的**才算（右键改标题 / 控制面 `pane set --title`）。
-    /// 基类一律 nil——浏览器 pane 的标题是网页给的，不是谁"起"的，边框上不显示。
-    /// 这个钩子存在的意义是 `PaneChrome` 不必伸手去摸 SurfaceView 的内部状态
+    /// Title drawn onto the pane's border: **only a title that was set explicitly** counts (rename
+    /// from the context menu, or `pane set --title` on the control plane). The base class always
+    /// returns nil: a browser pane's title comes from the web page, nobody named it, so it does not
+    /// go on the border. This hook exists so that `PaneChrome` does not have to reach into
+    /// SurfaceView's internal state.
     var customTitle: String? { nil }
-    /// 新建终端要继承的目录（终端 = OSC 7 的 pwd；浏览器 = nil）
+    /// Directory a newly created terminal inherits (terminal = the pwd from OSC 7; browser = nil).
     var workingDirectory: String? { nil }
-    /// 关闭前是否要确认（终端：仍有子进程在跑）
+    /// Whether closing needs a confirmation (terminal: a child process is still running).
     var wantsConfirmClose: Bool { false }
-    /// 键盘焦点实际落到的视图（终端 = 自己；浏览器 = WKWebView）
+    /// The view keyboard focus actually lands on (terminal = self; browser = the WKWebView).
     var focusTarget: NSView { self }
 
-    /// 「会进存档的内容变了」——浏览器 pane 的网址 / 标签集合。
-    /// 控制器订阅它排一次防抖存档，好让崩溃 / 强制退出后也能复原到最后打开的网页；
-    /// 终端 pane 的 cwd 由控制器直接观察 `SurfaceView.$pwd`（OSC 7），不走这里
+    /// "Something that goes into the archive changed": a browser pane's URL or its set of tabs.
+    /// The controller subscribes to this and schedules one debounced archive write, so that a crash
+    /// or a force quit still restores the last page that was open. A terminal pane's cwd does not
+    /// come through here: the controller observes `SurfaceView.$pwd` (OSC 7) directly.
     let archiveDidChange = PassthroughSubject<Void, Never>()
 
-    /// ⌘ 拖拽源浮层 / 浮动会话把"纯点击"转交给 pane 时的目标：指针下的视图必须是焦点视图或其后代
-    /// （终端 = surface、浏览器 = 网页），否则 nil——落在浏览器工具条等 AppKit 控件上不能直接调
-    /// mouseDown（NSControl 会进入等待抬起的跟踪循环，而真正的抬起已经过去了）
+    /// Target for when the Cmd+drag source overlay or a floating session hands a plain click back to
+    /// the pane: the view under the pointer has to be the focus view or a descendant of it (terminal =
+    /// the surface, browser = the web page), otherwise nil. On an AppKit control such as the browser
+    /// toolbar we must not call mouseDown directly: NSControl enters a tracking loop waiting for the
+    /// mouse-up, and the real mouse-up has already gone by.
     func clickTarget(atWindowPoint point: NSPoint) -> NSView? {
         guard let superview else { return nil }
         let focus = focusTarget
@@ -68,22 +76,24 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
         return focus
     }
 
-    // MARK: - 焦点
+    // MARK: - Focus
 
-    /// 是否持有键盘焦点（PaneChrome 边框等观察）。非 @Published：变化时手动发 objectWillChange
+    /// Whether this pane holds keyboard focus (observed by the PaneChrome border and others). Not
+    /// @Published: objectWillChange is sent by hand when it changes.
     private(set) var focused = false
 
-    /// 焦点变化。子类覆写时先调 super，再做引擎同步等
+    /// Focus changed. A subclass that overrides this calls super first, then does its engine sync.
     func focusDidChange(_ focused: Bool) {
         guard self.focused != focused else { return }
         objectWillChange.send()
         self.focused = focused
-        // 焦点真相只从这一处流出（类注释就是这么写的），所以控制面的 focus.changed
-        // 也只挂在这一处——挂在 requestFocus / reconcileFocus 上会漏掉键盘与鼠标那两条路
+        // The truth about focus flows out of this one place (the class comment says as much), so the
+        // control plane's focus.changed hangs off this one place too: hanging it off requestFocus /
+        // reconcileFocus would miss the keyboard and the mouse paths.
         ControlEventBus.noteChange()
     }
 
-    /// 窗口 first responder 是本 pane 或其后代
+    /// The window's first responder is this pane or one of its descendants.
     func holdsFirstResponder(of window: NSWindow) -> Bool {
         guard let fr = window.firstResponder else { return false }
         if fr === self { return true }
@@ -91,9 +101,11 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
         return false
     }
 
-    /// 最近一次挂进窗口时所属的控制器。SwiftUI 重建层级期间 pane 会短暂脱离窗口（window == nil，
-    /// 见 moveFocus 的重试），此刻引擎回调若因为"找不到控制器"就放弃，⌘+点击的链接会被甩给
-    /// 系统默认浏览器（bug：有时点链接开的是 Safari）
+    /// The controller this pane belonged to the last time it was attached to a window. While SwiftUI
+    /// rebuilds the hierarchy the pane is briefly detached from its window (window == nil; see the
+    /// retry in moveFocus), and if an engine callback gives up at that moment because it "cannot find
+    /// the controller", a Cmd+clicked link is thrown at the system default browser (the bug where
+    /// clicking a link sometimes opened Safari).
     private weak var lastKnownController: BaseTerminalController?
 
     var controller: BaseTerminalController? {
@@ -101,12 +113,13 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
             lastKnownController = live
             return live
         }
-        // 脱离窗口期间的兜底；已经拆掉的屏幕不复活
+        // Fallback while detached from the window; never resurrect a screen that is already torn down.
         guard let last = lastKnownController, last.acceptsPaneOperations else { return nil }
         return last
     }
 
-    /// 本 pane（或其托管视图）成为 first responder：更新标志 + 通知控制器维持单焦点不变量
+    /// This pane (or its hosted view) became first responder: update the flag and notify the
+    /// controller so it can maintain the single-focus invariant.
     func paneDidBecomeFirstResponder() {
         focusDidChange(true)
         controller?.paneDidBecomeFirstResponder(self)
@@ -126,14 +139,16 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
 
     override func resignFirstResponder() -> Bool {
         let result = super.resignFirstResponder()
-        // 有时会手动调用（SplitView / moveFocus）以强制让出焦点
+        // Sometimes called by hand (SplitView / moveFocus) to force focus to be given up.
         if result { paneDidResignFirstResponder() }
         return result
     }
 
-    /// first responder 视图被移出窗口时，AppKit 静默重置 FR 而**不调用** resignFirstResponder
-    /// （已用独立探针验证），`focused` 会残留为 true。SwiftUI 重建层级（Cmd+L / Cmd+T / 切工作区）
-    /// 时必然发生。记下"脱离时正是 FR"，重新挂载后夺回，让标志与真相重新一致。
+    /// When the first-responder view is taken out of the window, AppKit silently resets the FR
+    /// **without calling** resignFirstResponder (verified with a standalone probe), and `focused`
+    /// stays stuck at true. This is guaranteed to happen whenever SwiftUI rebuilds the hierarchy
+    /// (Cmd+L / Cmd+T / switching workspaces). So record "this pane was the FR when it detached",
+    /// reclaim focus after it is remounted, and the flag lines up with the truth again.
     private var reclaimFocusOnAttach = false
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
@@ -150,17 +165,20 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
         reclaimFocusOnAttach = false
         DispatchQueue.main.async { [weak self] in
             guard let self, self.window === window, !self.holdsFirstResponder(of: window) else { return }
-            // 只在"FR 因脱离被静默重置为窗口/nil"时夺回；期间若别的 responder（如刚新建并被
-            // 控制器聚焦的 pane）已取得焦点，绝不抢——否则新建 pane 的焦点会被原 pane 夺走
+            // Only reclaim when the detach silently reset the FR to the window or nil; if some other
+            // responder took focus meanwhile (a pane that was just created and focused by the
+            // controller, say), never steal it, or the new pane loses its focus to the old one.
             if let fr = window.firstResponder, fr !== window { return }
             if let controller = self.controller, !controller.paneMayReclaimFocus(self) { return }
             window.makeFirstResponder(self.focusTarget)
         }
     }
 
-    /// 非终端 pane 的悬停跟踪：容器自己装 tracking area。WKWebView 自己的 tracking area 由内部观察者
-    /// 对象持有，mouseMoved 投给观察者而不是视图，子类覆写收不到；而 tracking area 按矩形投递给 owner，
-    /// 与子视图命中无关。终端 pane（SurfaceView）自己管 tracking area，不开这个。
+    /// Hover tracking for non-terminal panes: the container installs its own tracking area.
+    /// WKWebView's own tracking area is held by an internal observer object, and mouseMoved is
+    /// delivered to that observer rather than to the view, so a subclass override never sees it; a
+    /// tracking area, by contrast, is delivered to its owner by rectangle, no matter which subview is
+    /// hit. The terminal pane (SurfaceView) manages its own tracking area and leaves this off.
     var installsHoverTracking: Bool { false }
     private var hoverTrackingArea: NSTrackingArea?
 
@@ -179,26 +197,29 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
     override func mouseMoved(with event: NSEvent) {
         super.mouseMoved(with: event)
         guard installsHoverTracking else { return }
-        // 被浮动层 / 遮罩盖住时不响应 hover（与 SurfaceView 一致）
+        // No hover response while covered by the floating layer or a mask (same as SurfaceView).
         if let controller, controller.surfaceIsOccluded(self, at: event.locationInWindow) { return }
         hoverFocusIfNeeded()
     }
 
-    /// 悬停即焦点（spec §4.2）：子类在 mouseMoved 里（过了遮挡判定后）调用
+    /// Hover-to-focus (spec §4.2): subclasses call this from mouseMoved, past the occlusion check.
     func hoverFocusIfNeeded() {
         guard let window, let controller,
               !controller.commandPaletteIsShowing,
               window.isKeyWindow,
               controller.focusFollowsMouse,
-              !holdsFirstResponder(of: window),          // 以真 FR 为准，不信残留的 focused
+              !holdsFirstResponder(of: window),          // trust the real FR, not a stale `focused`
               controller.paneMayReclaimFocus(self) else { return }
-        // 最后一条：新 pane 插入会让邻居的 tracking area 重建，AppKit 会合成一次 mouseMoved——
-        // 鼠标恰好停在旧 pane 上时，悬停会把刚交给新 pane 的焦点抢回来；控制器有待聚焦意图时不抢
+        // That last condition: inserting a new pane makes the neighbours rebuild their tracking areas
+        // and AppKit synthesizes one mouseMoved. With the mouse sitting over the old pane, hover would
+        // snatch back the focus just handed to the new pane; so while the controller has a pending
+        // focus intent, do not take it.
         PaneView.moveFocus(to: self)
     }
 
-    /// 移交键盘焦点（移植自 Ghostty.moveFocus）：目标尚未挂进窗口时指数退避重试，最多 0.5s；
-    /// `from` 显式让出（引擎侧的 resign 回调有时不来）。
+    /// Hand keyboard focus over (ported from Ghostty.moveFocus): if the target is not in a window yet,
+    /// retry with exponential backoff for up to 0.5s; `from` gives focus up explicitly, because the
+    /// engine-side resign callback sometimes never arrives.
     static func moveFocus(to: PaneView, from: PaneView? = nil, delay: TimeInterval? = nil) {
         let maxDelay: TimeInterval = 0.5
         guard (delay ?? 0) < maxDelay else { return }
@@ -208,11 +229,13 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
                 moveFocus(to: to, from: from, delay: nextDelay)
                 return
             }
-            // 有意与 Ghostty.moveFocus 不同：from === to（cycle 回绕到自己）时不 resign——否则
-            // makeFirstResponder 被 AppKit 短路不再回调 become，pane 仍是 FR 却 focused=false
-            // 只对"自己就是 FR"的 pane（终端）手动 resign；托管视图（WKWebView）不能在
-            // makeFirstResponder 流程之外调 resignFirstResponder（WebKit 内部断言），交给下面的
-            // makeFirstResponder 正常流程让出
+            // A deliberate difference from Ghostty.moveFocus: do not resign when from === to (a cycle
+            // that wrapped around to itself). Otherwise AppKit short-circuits makeFirstResponder and
+            // never calls become back, leaving the pane as FR with focused=false.
+            // Only resign by hand for a pane that is its own FR (a terminal); a hosted view
+            // (WKWebView) must not be sent resignFirstResponder outside the makeFirstResponder flow
+            // (it trips a WebKit internal assertion), so let the makeFirstResponder below give it up
+            // through the normal path.
             if let from, from !== to, from.focusTarget === from {
                 _ = from.resignFirstResponder()
             }
@@ -225,13 +248,14 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
         }
     }
 
-    // MARK: - 存档（PaneCodable）
+    // MARK: - Archiving (PaneCodable)
 
     private enum KindKey: String, CodingKey { case kind }
 
     static func decodePane(from decoder: Decoder) throws -> Self {
         let kind = try decoder.container(keyedBy: KindKey.self)
-            .decodeIfPresent(PaneKind.self, forKey: .kind) ?? .terminal   // v3 存档无 kind = 终端
+            // a v3 archive carries no kind, which means terminal
+            .decodeIfPresent(PaneKind.self, forKey: .kind) ?? .terminal
         let pane: PaneView
         switch kind {
         case .terminal: pane = try Ghostty.SurfaceView(from: decoder)
@@ -250,12 +274,12 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
         try encodePayload(to: encoder)
     }
 
-    /// 子类把自己的字段编进同一个 encoder（与 kind 同级）
+    /// Subclasses encode their own fields into this same encoder, as siblings of `kind`.
     func encodePayload(to encoder: Encoder) throws {}
 }
 
 extension PaneView {
-    /// pane 的快照图（拖拽预览）
+    /// Snapshot image of the pane, used as the drag preview.
     var asImage: NSImage? {
         guard let bitmapRep = bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
         cacheDisplay(in: bounds, to: bitmapRep)

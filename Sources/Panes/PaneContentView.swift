@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// pane 内容按种类分发：终端 → Ghostty.SurfaceWrapper；浏览器 → BrowserPaneRepresentable（Phase C）
+/// Dispatches pane content by kind: terminal -> Ghostty.SurfaceWrapper; browser ->
+/// BrowserPaneRepresentable (Phase C).
 struct PaneContentView: View {
     let pane: PaneView
     let isSplit: Bool
@@ -14,7 +15,8 @@ struct PaneContentView: View {
     }
 }
 
-/// 把已存在的 PaneView 实例挂进 SwiftUI（实例由模型持有，重挂时不重建——页面状态不丢）
+/// Mounts an already-existing PaneView instance into SwiftUI. The model owns the instance, so a
+/// remount never rebuilds it and the page state is not lost.
 struct PaneHostView: NSViewRepresentable {
     let pane: PaneView
 

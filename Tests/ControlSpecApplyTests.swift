@@ -1,28 +1,33 @@
 import XCTest
 @testable import QuickTerm
 
-/// Phase 3 的**落地**这一半：`spec dump` / `spec apply` 打在活着的屏幕上。
+/// The **landing** half of Phase 3: `spec dump` / `spec apply` against live screens.
 ///
-/// 头牌用例是 `dump → apply → dump` 的**不动点**：一份 dump 出来的 spec 落到另一个工作区，
-/// 再 dump 出来必须逐字节相同。它一条就盖住了投影对的两个方向、默认值展开、
-/// 列宽 / zoom / 焦点的往返，以及"apply 不是照着 spec 猜一个差不多的布局"。
+/// The headline case is the `dump -> apply -> dump` **fixed point**: a dumped spec applied to a
+/// different workspace and dumped again has to come out byte for byte identical. That single case
+/// covers both directions of the projection pair, default expansion, the round trip of column
+/// widths / zoom / focus, and the fact that apply does not guess at some approximation of the
+/// layout the spec describes.
 ///
-/// 用例一律在**空工作区**里搭场景（`:2` / `:3`），不碰 1 号工作区里那个起步 pane——
-/// 否则每条用例的 pane 数都取决于前面哪条用例先跑。
+/// Every case builds its scenario in an **empty workspace** (`:2` / `:3`) and never touches the
+/// starter pane in workspace 1 — otherwise the pane count of each case depends on which case
+/// happened to run first.
 @MainActor
 final class ControlSpecApplyTests: XCTestCase {
     private var harness: ControlHarness!
     private var temporaries: [String] = []
-    /// 用例碰过的工作区：tearDown 一律清空（spec apply 建出来的 pane 不在 harness 的账上）
+    /// Workspaces a case touched: tearDown clears every one of them (panes created by spec apply
+    /// are not on the harness's books)
     private var touched: Set<Int> = []
 
     override func setUpWithError() throws {
         try super.setUpWithError()
         harness = try ControlHarness()
         let controller = try harness.controller
-        try XCTSkipUnless(controller.model.layouts.count >= 3, "本组用例要三个工作区")
-        // 每条用例都从"空的 scrolling 工作区"起步：上一条用例把 :2 设成 dwindle 之后，
-        // 下一条的不动点会莫名其妙地对着一棵树跑（用例之间绝不共享布局状态）
+        try XCTSkipUnless(controller.model.layouts.count >= 3, "this group needs three workspaces")
+        // Every case starts from an empty scrolling workspace: once a previous case has set :2 to
+        // dwindle, the next case's fixed point inexplicably runs against a tree (cases never share
+        // layout state)
         for index in [1, 2] {
             _ = controller.controlClearWorkspace(index, confirmIfNeeded: false)
             _ = controller.model.setLayout("scrolling", at: index, columnFactor: controller.columnFactor)
@@ -49,7 +54,7 @@ final class ControlSpecApplyTests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: 夹具
+    // MARK: Fixtures
 
     private func makeDirectory(_ name: String) throws -> String {
         let path = NSTemporaryDirectory() + "quickterm-spec-\(name)-\(UUID().uuidString)"
@@ -58,12 +63,12 @@ final class ControlSpecApplyTests: XCTestCase {
         return URL(fileURLWithPath: path).resolvingSymlinksInPath().path
     }
 
-    /// `spec dump` 的正文（就是要写进文件、再喂回 apply 的那一份）
+    /// The body of a `spec dump` — exactly what gets written to a file and fed back into apply
     private func dump(_ target: String?, args: [String: JSONValue] = [:],
                       file: StaticString = #filePath, line: UInt = #line) throws -> String {
         let reply = try harness.run("spec.dump", target: target, args: args)
-        XCTAssertTrue(reply.ok, "dump 失败：\(String(describing: reply.error))", file: file, line: line)
-        let spec = try XCTUnwrap(reply.data?["spec"], "dump 没有给出 spec", file: file, line: line)
+        XCTAssertTrue(reply.ok, "dump failed: \(String(describing: reply.error))", file: file, line: line)
+        let spec = try XCTUnwrap(reply.data?["spec"], "dump produced no spec", file: file, line: line)
         return String(decoding: try ControlJSON.encoder.encode(spec), as: UTF8.self)
     }
 
@@ -80,7 +85,7 @@ final class ControlSpecApplyTests: XCTestCase {
     private func newPane(_ args: [String: JSONValue], target: String? = nil) throws -> PaneView {
         let before = Set(harness.app.screens.allPanes.map(\.id))
         let reply = try harness.run("pane.new", target: target, args: args)
-        XCTAssertTrue(reply.ok, "pane new 失败：\(String(describing: reply.error))")
+        XCTAssertTrue(reply.ok, "pane new failed: \(String(describing: reply.error))")
         harness.spin(0.35)
         let pane = try XCTUnwrap(harness.app.screens.allPanes.first { !before.contains($0.id) })
         harness.track(pane)
@@ -95,11 +100,12 @@ final class ControlSpecApplyTests: XCTestCase {
 
     private func handle(_ pane: PaneView) -> String { ControlHandleRegistry.shared.handle(for: pane) }
 
-    // MARK: 头牌：不动点
+    // MARK: The headline: the fixed point
 
-    /// scrolling：一份 dump 落进另一个（空）工作区，再 dump 出来必须逐字节相同。
-    /// **落进另一个工作区**是有意的：落回原处会走"整份一模一样 = 空操作"那条路，
-    /// 而那条路证明不了 apply 真的能把布局从零搭出来
+    /// scrolling: a dump applied to a different (empty) workspace and dumped again has to come out
+    /// byte for byte identical. Applying it **to a different workspace** is deliberate: applying it
+    /// back where it came from takes the "identical spec = no-op" path, and that path proves
+    /// nothing about apply being able to build the layout from nothing
     func testDumpApplyDumpIsAFixedPointForScrolling() throws {
         let controller = try harness.controller
         touched.formUnion([1, 2])
@@ -113,7 +119,7 @@ final class ControlSpecApplyTests: XCTestCase {
 
         let before = try dump(":2")
         XCTAssertTrue(before.contains("\"columns\""), before)
-        XCTAssertTrue(before.contains("0.35"), "列宽要进 spec：\(before)")
+        XCTAssertTrue(before.contains("0.35"), "the column width has to reach the spec: \(before)")
         let sourceCount = try panes(1).count
 
         controller.switchWorkspace(2)
@@ -121,11 +127,12 @@ final class ControlSpecApplyTests: XCTestCase {
         try apply(before, target: ":3").assertOK()
         harness.spin(0.8)
 
-        XCTAssertEqual(try panes(2).count, sourceCount, "落地的 pane 数要对上")
-        XCTAssertEqual(try dump(":3"), before, "dump → apply → dump 必须是不动点")
+        XCTAssertEqual(try panes(2).count, sourceCount, "the number of panes that landed has to match")
+        XCTAssertEqual(try dump(":3"), before, "dump -> apply -> dump has to be a fixed point")
     }
 
-    /// dwindle：同一条不动点，换一种布局引擎（分裂方向与比例都要往返）
+    /// dwindle: the same fixed point through a different layout engine (split directions and
+    /// ratios both have to round-trip)
     func testDumpApplyDumpIsAFixedPointForDwindle() throws {
         let controller = try harness.controller
         touched.formUnion([1, 2])
@@ -146,11 +153,12 @@ final class ControlSpecApplyTests: XCTestCase {
         try apply(before, target: ":3").assertOK()
         harness.spin(0.8)
 
-        XCTAssertEqual(controller.model.layouts[2].name, "dwindle", "apply 要把布局也设过去")
-        XCTAssertEqual(try dump(":3"), before, "dwindle 的不动点")
+        XCTAssertEqual(controller.model.layouts[2].name, "dwindle", "apply has to carry the layout across as well")
+        XCTAssertEqual(try dump(":3"), before, "the dwindle fixed point")
     }
 
-    /// 两行 spec：默认值全部补齐（kind=terminal、宽度按每屏可见列数、cwd 继承锚点）
+    /// A two-line spec: every default is filled in (kind=terminal, the width from the
+    /// visible-columns-per-screen setting, cwd inherited from the anchor)
     func testMinimalSpecAppliesWithEveryDefaultFilledIn() throws {
         let controller = try harness.controller
         touched.insert(1)
@@ -158,19 +166,20 @@ final class ControlSpecApplyTests: XCTestCase {
         harness.spin(0.6)
 
         guard case .scrolling(let strip) = controller.model.layouts[1] else {
-            return XCTFail("默认布局应该是 scrolling")
+            return XCTFail("the default layout should be scrolling")
         }
         XCTAssertEqual(strip.columns.map(\.panes.count), [1, 2])
         for column in strip.columns {
             XCTAssertEqual(column.widthFactor, controller.columnFactor, accuracy: 0.0005,
-                           "不写 width 就用当前的每屏可见列数")
+                           "no width means the current visible-columns-per-screen value")
         }
-        XCTAssertTrue(strip.paneList.allSatisfy { $0 is Ghostty.SurfaceView }, "不写 kind 就是终端")
+        XCTAssertTrue(strip.paneList.allSatisfy { $0 is Ghostty.SurfaceView }, "no kind means a terminal")
     }
 
     // MARK: --dry-run
 
-    /// `--dry-run` **一个字节都不改**：拿存档路径的字节级指纹做基准
+    /// `--dry-run` **does not change a byte**, measured against a byte-level fingerprint taken
+    /// through the persistence path
     func testDryRunMutatesNothing() throws {
         let controller = try harness.controller
         touched.insert(1)
@@ -180,15 +189,16 @@ final class ControlSpecApplyTests: XCTestCase {
         let payload = try harness.mutation(reply)
         XCTAssertEqual(payload["applied"]?.boolValue, false)
         XCTAssertEqual(payload["changed"]?.boolValue, true)
-        XCTAssertFalse((payload["changes"]?.arrayValue ?? []).isEmpty, "预演要给出可读的 diff")
+        XCTAssertFalse((payload["changes"]?.arrayValue ?? []).isEmpty, "a dry run has to produce a readable diff")
         harness.spin(0.3)
-        XCTAssertEqual(try harness.fingerprint(controller), before, "--dry-run 之后模型必须一模一样")
-        XCTAssertTrue(try panes(1).isEmpty, "预演不许建 pane")
+        XCTAssertEqual(try harness.fingerprint(controller), before, "the model has to be identical after a --dry-run")
+        XCTAssertTrue(try panes(1).isEmpty, "a dry run may not create a pane")
     }
 
-    // MARK: 三种模式
+    // MARK: The three modes
 
-    /// `--into-empty` 是默认模式，它**毁不掉任何东西**：非空目标一律拒绝（退出码 4）
+    /// `--into-empty` is the default mode and it **cannot destroy anything**: a non-empty target
+    /// is always refused (exit code 4)
     func testIntoEmptyRefusesANonEmptyWorkspace() throws {
         touched.insert(1)
         _ = try newPane([:])
@@ -198,19 +208,20 @@ final class ControlSpecApplyTests: XCTestCase {
         let error = try XCTUnwrap(reply.error)
         XCTAssertEqual(error.code, ControlErrorCode.confirmationRequired.rawValue)
         XCTAssertEqual(error.exit, ControlExit.confirmationRequired.rawValue)
-        XCTAssertTrue((error.hint ?? "").contains("--replace"), "要告诉调用方去哪儿：\(error.hint ?? "")")
-        XCTAssertEqual(try panes(1).count, 1, "被拒的那一次什么都不许动")
+        XCTAssertTrue((error.hint ?? "").contains("--replace"), "it has to tell the caller where to go: \(error.hint ?? "")")
+        XCTAssertEqual(try panes(1).count, 1, "the call that was refused may not have moved anything")
     }
 
-    /// `--replace` 顶掉的 pane 必须走**真正的关闭路径**。
-    /// 浏览器 pane 是这条规则的试金石：按赋值替换掉它的话 `paneWillClose()` 不会跑，
-    /// 下载不取消、扩展也收不到「窗口关了」——而且没有任何别的用例会红
+    /// Panes displaced by `--replace` have to go through the **real close path**.
+    /// A browser pane is the litmus test for that rule: replace it by assignment and
+    /// `paneWillClose()` never runs, so downloads are not cancelled and extensions never hear that
+    /// the window closed — and no other case would go red
     func testReplaceRoutesDisplacedPanesThroughTheRealClosePath() throws {
         touched.insert(1)
         let browser = try XCTUnwrap(try newPane(["kind": .string("browser"),
                                                  "url": .string("about:blank")]) as? BrowserPaneView)
         harness.spin(0.5)
-        XCTAssertFalse(browser.reportedWindowClose, "前提：还没跑过收尾")
+        XCTAssertFalse(browser.reportedWindowClose, "precondition: cleanup has not run yet")
 
         let directory = try makeDirectory("replace")
         try apply("{\"columns\":[{\"panes\":[{\"cwd\":\"\(directory)\"}]}]}", target: ":2",
@@ -218,12 +229,14 @@ final class ControlSpecApplyTests: XCTestCase {
         harness.spin(0.6)
 
         XCTAssertTrue(browser.reportedWindowClose,
-                      "被顶掉的浏览器 pane 必须跑过 paneWillClose（否则下载与扩展窗口事件就此泄漏）")
-        XCTAssertFalse(try panes(1).contains { $0 === browser }, "它不该还在布局里")
+                      "a displaced browser pane has to have run paneWillClose (otherwise downloads "
+                      + "and extension window events leak)")
+        XCTAssertFalse(try panes(1).contains { $0 === browser }, "it must not still be in the layout")
         XCTAssertEqual(try panes(1).count, 1)
     }
 
-    /// `--reuse` 认得出"还是那个东西"：跑着的 pane 原地留着，不重建
+    /// `--reuse` recognizes "this is still the same thing": a running pane stays where it is
+    /// instead of being rebuilt
     func testReuseKeepsMatchingPanesAndOnlyRebuildsTheRest() throws {
         touched.insert(1)
         let keepDirectory = try makeDirectory("keep")
@@ -239,18 +252,19 @@ final class ControlSpecApplyTests: XCTestCase {
         let payload = try harness.mutation(try apply(text, target: ":2", mode: "reuse"))
         harness.spin(0.6)
 
-        let report = try XCTUnwrap(payload["spec"]?.objectValue, "apply 要给出落地报告")
+        let report = try XCTUnwrap(payload["spec"]?.objectValue, "apply has to produce a landing report")
         XCTAssertEqual(report["mode"]?.stringValue, "reuse")
         let live = try panes(1)
-        XCTAssertTrue(live.contains { $0 === keeper }, "对得上的 pane 必须原地留着，不能被重建")
-        XCTAssertFalse(live.contains { $0 === victim }, "对不上的那个要被关掉")
+        XCTAssertTrue(live.contains { $0 === keeper }, "a pane that matches has to stay put and must not be rebuilt")
+        XCTAssertFalse(live.contains { $0 === victim }, "the one that does not match gets closed")
         XCTAssertEqual((report["reused"]?.arrayValue ?? []).count, 1)
         XCTAssertEqual((report["created"]?.arrayValue ?? []).count, 1)
         XCTAssertEqual((report["closed"]?.arrayValue ?? []).count, 1)
     }
 
-    /// 同一份 spec 落两次，第二次在布局上就是空操作（`--fail-if-noop` 下退 7），
-    /// 而且**一个 pane 都不许重建**——否则 agent 每重试一次就把 dev server 重启一次
+    /// Applying the same spec twice makes the second call a layout no-op (exit 7 under
+    /// `--fail-if-noop`), and **not one pane may be rebuilt** — otherwise every retry an agent
+    /// makes restarts the dev server
     func testApplyingTheSameSpecTwiceIsALayoutNoop() throws {
         touched.insert(1)
         let directory = try makeDirectory("twice")
@@ -262,7 +276,7 @@ final class ControlSpecApplyTests: XCTestCase {
         try apply(text, target: ":2", mode: "replace").assertOK()
         harness.spin(0.5)
         XCTAssertEqual(try panes(1).map(ObjectIdentifier.init), identities,
-                       "整份一模一样时 --replace 不许拆了重建")
+                       "with an identical spec, --replace may not tear things down and rebuild them")
 
         let again = try apply(text, target: ":2", mode: "replace",
                               extra: [ControlCommandTable.Flag.failIfNoop: .bool(true)])
@@ -271,10 +285,10 @@ final class ControlSpecApplyTests: XCTestCase {
         XCTAssertEqual(again.error?.exit, ControlExit.noop.rawValue)
     }
 
-    // MARK: 失败的形状
+    // MARK: The shape of a failure
 
-    /// 校验不过 = **一个 pane 都不建**。第二格的目录不存在，
-    /// 而它是在建任何东西之前就被查出来的
+    /// Validation failing means **no pane is created at all**. The directory in the second slot
+    /// does not exist, and that is caught before anything is built
     func testASpecThatFailsPreflightCreatesNothing() throws {
         touched.insert(1)
         let good = try makeDirectory("good")
@@ -285,54 +299,58 @@ final class ControlSpecApplyTests: XCTestCase {
         XCTAssertEqual(reply.error?.code, ControlErrorCode.badRequest.rawValue)
         XCTAssertTrue((reply.error?.message ?? "").contains("/no/such/dir"), reply.error?.message ?? "")
         harness.spin(0.3)
-        XCTAssertTrue(try panes(1).isEmpty, "预检失败绝不能留下半个工作区")
+        XCTAssertTrue(try panes(1).isEmpty, "a failed preflight must never leave half a workspace behind")
     }
 
-    /// 落刀**之后**才失败：状态是自洽的（布局里没有幽灵 pane），而且如实报 partial_apply。
-    /// 注入点是 `SpecApplier.fault`（生产恒为 nil）——这条路没有别的办法走到
+    /// Failing **after** the knife has gone in: the state is coherent (no ghost panes in the
+    /// layout) and it reports partial_apply honestly. The injection point is `SpecApplier.fault`
+    /// (always nil in production) — there is no other way to reach this path
     func testMidApplyFailureLeavesACoherentStateAndReportsPartial() throws {
         let controller = try harness.controller
         touched.insert(1)
         _ = try newPane([:])
         _ = try newPane([:])
         harness.spin(0.5)
-        XCTAssertEqual(try panes(1).count, 2, "前提：工作区里正好两个 pane")
+        XCTAssertEqual(try panes(1).count, 2, "precondition: the workspace holds exactly two panes")
         let directory = try makeDirectory("partial")
         guard case .workspace(let spec) = try SpecParser.parse(
             "{\"columns\":[{\"panes\":[{\"cwd\":\"\(directory)\"}]}]}") else {
-            return XCTFail("spec 解析失败")
+            return XCTFail("the spec failed to parse")
         }
 
         let applier = SpecApplier(controller: controller, workspace: 1, spec: spec, mode: .replace)
         applier.fault = { stage in
             guard stage == .tearingDown else { return }
-            throw ControlErrorBody(.failed, "注入的失败")
+            throw ControlErrorBody(.failed, "injected failure")
         }
         try applier.preflight()
-        XCTAssertEqual(applier.displaced.count, 2, "前提：两个 pane 都要被顶掉")
+        XCTAssertEqual(applier.displaced.count, 2, "precondition: both panes are going to be displaced")
 
         XCTAssertThrowsError(try applier.apply()) { error in
             let body = error as? ControlErrorBody
             XCTAssertEqual(body?.code, ControlErrorCode.partialApply.rawValue,
-                           "落刀之后失败要有自己的错误码，绝不能报成「什么都没发生」")
+                           "a failure after the knife went in needs its own error code and must "
+                           + "never report as \"nothing happened\"")
             XCTAssertTrue((body?.message ?? "").contains("only half applied"), body?.message ?? "")
         }
         harness.spin(0.5)
 
-        // 自洽：布局里剩下的每一个 pane 都还活着、还能被寻址；建了一半的那个没有混进来
+        // Coherent: every pane left in the layout is alive and addressable, and the half-built one
+        // never made it in
         let live = try panes(1)
-        XCTAssertEqual(live.count, 1, "被关掉的那一个真的走了，剩下的原样还在")
+        XCTAssertEqual(live.count, 1, "the one that was closed really is gone and the rest are untouched")
         XCTAssertTrue(live.allSatisfy { !controller.model.closingPanes.contains($0.id) })
         XCTAssertFalse(live.contains { $0.workingDirectory == directory },
-                       "新建到一半的 pane 已经被收掉，绝不能留在布局里")
+                       "the half-created pane was cleaned up and must never stay in the layout")
         XCTAssertEqual(Set(controller.model.allPanes.map(\.id)).count,
-                       controller.model.allPanes.count, "不能有重复引用")
+                       controller.model.allPanes.count, "no duplicate references")
     }
 
-    // MARK: 结构
+    // MARK: Structure
 
-    /// **一次赋值**：一次 apply 只排一次防抖存档。分五次赋值就是五次重排、五次动画、
-    /// 五遍 Combine sink——用户看到的是新建三个 pane 时布局抖三下
+    /// **One assignment**: one apply schedules the debounced save exactly once. Five separate
+    /// assignments mean five reflows, five animations and five passes through the Combine sink —
+    /// what the user sees is the layout jumping three times while three panes are created
     func testASingleApplyAssignsTheLayoutExactlyOnce() throws {
         let store = try XCTUnwrap(harness.app.session).sessionStore
         touched.insert(1)
@@ -340,12 +358,14 @@ final class ControlSpecApplyTests: XCTestCase {
         let before = store.scheduleCount
         try apply(#"{"columns":[{"panes":[{}]},{"panes":[{}]},{"panes":[{}]}]}"#, target: ":2").assertOK()
         XCTAssertEqual(store.scheduleCount - before, 1,
-                       "三个 pane、一次赋值：先把整个布局值算完再赋给 model.layouts[i]")
+                       "three panes, one assignment: compute the whole layout value first, then "
+                       + "assign it to model.layouts[i]")
         harness.spin(0.6)
     }
 
-    /// 列的身份要沿用：`ScrollingStrip.Column.id` 一变，SwiftUI 会重建整列，
-    /// 列里的 SurfaceView 脱离再重挂（闪一帧、first responder 被静默重置）
+    /// Column identities have to carry over: change `ScrollingStrip.Column.id` and SwiftUI rebuilds
+    /// the whole column, detaching and re-attaching the SurfaceViews inside it (a dropped frame, and
+    /// the first responder silently reset)
     func testColumnIdentitiesSurviveAReapply() throws {
         let controller = try harness.controller
         touched.insert(1)
@@ -353,22 +373,22 @@ final class ControlSpecApplyTests: XCTestCase {
         _ = try newPane(["cwd": .string(directory)])
         harness.spin(0.5)
         guard case .scrolling(let before) = controller.model.layouts[1] else {
-            return XCTFail("前提：scrolling")
+            return XCTFail("precondition: scrolling")
         }
         let text = try dump(":2")
         try apply(text, target: ":2", mode: "reuse").assertOK()
         harness.spin(0.5)
         guard case .scrolling(let after) = controller.model.layouts[1] else {
-            return XCTFail("布局变了")
+            return XCTFail("the layout changed")
         }
         XCTAssertEqual(before.columns.map(\.id), after.columns.map(\.id),
-                       "pane 集合没变的列必须保住原来的 id")
+                       "a column whose pane set did not change has to keep its original id")
     }
 
-    // MARK: 两个信封
+    // MARK: The two envelopes
 
-    /// `quickterm.screen/1` / `quickterm.session/1` 原样复用工作区那一份词汇：
-    /// 两者都要能 dump → apply → dump 回到原样
+    /// `quickterm.screen/1` and `quickterm.session/1` reuse the workspace vocabulary verbatim, and
+    /// both have to come back unchanged through dump -> apply -> dump
     func testScreenAndSessionWrappersRoundTrip() throws {
         touched.insert(1)
         let directory = try makeDirectory("wrap")
@@ -379,16 +399,17 @@ final class ControlSpecApplyTests: XCTestCase {
         XCTAssertTrue(screen.contains(SpecSchema.screen), screen)
         try apply(screen, target: "1", mode: "replace").assertOK()
         harness.spin(0.6)
-        XCTAssertEqual(try dump("1"), screen, "屏幕信封的往返")
+        XCTAssertEqual(try dump("1"), screen, "the screen envelope round trip")
 
         let session = try dump(nil, args: ["all": .bool(true)])
         XCTAssertTrue(session.contains(SpecSchema.session), session)
         try apply(session, target: nil, mode: "replace").assertOK()
         harness.spin(0.6)
-        XCTAssertEqual(try dump(nil, args: ["all": .bool(true)]), session, "会话信封的往返")
+        XCTAssertEqual(try dump(nil, args: ["all": .bool(true)]), session, "the session envelope round trip")
     }
 
-    /// `spec validate` 什么都不改，而且认得出"这台机器上没有那么多工作区"
+    /// `spec validate` changes nothing, and it notices that this machine does not have that many
+    /// workspaces
     func testValidateChecksWorkspaceCountsAndChangesNothing() throws {
         let controller = try harness.controller
         let before = try harness.fingerprint(controller)
@@ -401,12 +422,13 @@ final class ControlSpecApplyTests: XCTestCase {
             "{\"schema\":\"quickterm.screen/1\",\"workspaces\":[{\"index\":\(count + 3)}]}")])
         XCTAssertFalse(tooMany.ok)
         XCTAssertTrue((tooMany.error?.message ?? "").contains("\(count)"),
-                      "越界要说出这台机器上到底有几个：\(tooMany.error?.message ?? "")")
-        XCTAssertEqual(try harness.fingerprint(controller), before, "validate 什么都不许改")
+                      "out of range has to say how many there really are here: \(tooMany.error?.message ?? "")")
+        XCTAssertEqual(try harness.fingerprint(controller), before, "validate may not change a thing")
     }
 
-    /// `cmd` / `env` / `hold` 是只进不出的：dump 回吐不了一个正在跑的命令，
-    /// validate 要把这件事明说，免得 agent 以为自己 dump 到了一份能重跑的东西
+    /// `cmd` / `env` / `hold` are input-only: a dump cannot give back a command that is already
+    /// running, and validate has to say so, or an agent will believe it dumped something it can
+    /// replay
     func testValidateNotesThatCommandsAreInputOnly() throws {
         let reply = try harness.run("spec.validate", args: ["spec": .string(
             #"{"columns":[{"panes":[{"cmd":"npm run dev"}]}]}"#)])
@@ -415,11 +437,12 @@ final class ControlSpecApplyTests: XCTestCase {
         XCTAssertTrue(notes.contains { $0.contains("cmd") }, "\(notes)")
     }
 
-    // MARK: 回归：这一批都曾经是"报成功、其实什么都没做"
+    // MARK: Regressions: every one of these used to report success while doing nothing
 
-    /// 不动点在**每一个可见列数**上都要成立。`setVisibleColumns` 把所有列等分成
-    /// (1−2×peek)/N：N=4 是 0.2425、N=1 是 0.97，两个都在手动调宽的 0.25–0.90 之外——
-    /// 公开 schema 照抄那一份的话，QuickTerm 会拒读 QuickTerm 刚 dump 出来的文件
+    /// The fixed point has to hold at **every visible-column count**. `setVisibleColumns` divides
+    /// the columns evenly into (1-2*peek)/N: 0.2425 at N=4 and 0.97 at N=1, both outside the
+    /// 0.25-0.90 of manual resizing — copy that range into the public schema and QuickTerm refuses
+    /// to read a file QuickTerm just dumped
     func testFixedPointHoldsAtEveryVisibleColumnCount() throws {
         let controller = try harness.controller
         touched.formUnion([1, 2])
@@ -431,29 +454,32 @@ final class ControlSpecApplyTests: XCTestCase {
         harness.spin(0.5)
 
         for count in [4, 1] {
-            // 焦点只有**活动**工作区才进 spec：两次 dump 要在各自活动的时候取，
-            // 否则差的是"谁拿焦点"，与列宽无关
+            // Focus only reaches the spec for the **active** workspace, so both dumps have to be
+            // taken while their workspace is active — otherwise the difference is about who holds
+            // the focus and has nothing to do with column widths
             controller.switchWorkspace(1)
             controller.setVisibleColumns(count, persist: false)
             harness.spin(0.4)
             let text = try dump(":2")
-            // 自己 dump 出来的东西，自己必须收得下
+            // Whatever we dump, we have to be able to take back
             let check = try harness.run("spec.validate", args: ["spec": .string(text)])
             XCTAssertTrue(check.ok,
-                          "每屏 \(count) 列的 dump 被自己的校验拒了：\(String(describing: check.error))")
+                          "the dump at \(count) columns per screen was refused by our own "
+                          + "validator: \(String(describing: check.error))")
 
             _ = try harness.run("workspace.clear", target: ":3")
             controller.switchWorkspace(2)
             harness.spin(0.4)
             try apply(text, target: ":3").assertOK()
             harness.spin(0.8)
-            XCTAssertEqual(try dump(":3"), text, "每屏 \(count) 列时的不动点")
+            XCTAssertEqual(try dump(":3"), text, "the fixed point at \(count) columns per screen")
         }
     }
 
-    /// **只动排布**的 spec（pane 一个不多一个不少，只是重新分组）必须真的落下去。
-    /// diff 空掉的话 `commit()` 根本不会调 apply：工作区原样不动，回给调用方的却是
-    /// "已经是这个样子了"——agent 手里那份"我摆好了"的认知从此是错的
+    /// A spec that **only rearranges** (not one pane more or fewer, just regrouped) still has to
+    /// land. With an empty diff `commit()` never calls apply at all: the workspace stays exactly as
+    /// it was while the caller is told "it already looks like this" — and the agent's belief that
+    /// it arranged the layout is wrong from then on
     func testRearrangingTheSamePanesIsNotANoop() throws {
         let controller = try harness.controller
         touched.insert(1)
@@ -463,32 +489,32 @@ final class ControlSpecApplyTests: XCTestCase {
         _ = try newPane(["cwd": .string(b)])
         harness.spin(0.5)
         guard case .scrolling(let before) = controller.model.layouts[1] else {
-            return XCTFail("前提：两列各一个 pane")
+            return XCTFail("precondition: two columns with one pane each")
         }
         XCTAssertEqual(before.columns.map(\.panes.count), [1, 1])
         let identities = Set(try panes(1).map(ObjectIdentifier.init))
 
-        // 两列并成一列：pane 集合一模一样，只是分组变了
+        // Merge two columns into one: the pane set is identical, only the grouping changed
         let text = "{\"columns\":[{\"panes\":[{\"cwd\":\"\(a)\"},{\"cwd\":\"\(b)\"}]}]}"
         let payload = try harness.mutation(try apply(text, target: ":2", mode: "reuse"))
-        XCTAssertEqual(payload["changed"]?.boolValue, true, "排布变了就是变了")
+        XCTAssertEqual(payload["changed"]?.boolValue, true, "a changed arrangement is a change")
         harness.spin(0.6)
 
-        guard case .scrolling(let after) = controller.model.layouts[1] else { return XCTFail("布局没了") }
-        XCTAssertEqual(after.columns.map(\.panes.count), [2], "两列真的并成了一列")
+        guard case .scrolling(let after) = controller.model.layouts[1] else { return XCTFail("the layout is gone") }
+        XCTAssertEqual(after.columns.map(\.panes.count), [2], "the two columns really did merge into one")
         XCTAssertEqual(Set(try panes(1).map(ObjectIdentifier.init)), identities,
-                       "并列不许重建 pane（跑着的进程要原地留着）")
+                       "merging columns may not rebuild panes (running processes stay where they are)")
 
-        // 再落一次才是真的空操作
+        // Applying it once more is the real no-op
         let again = try apply(text, target: ":2", mode: "reuse",
                               extra: [ControlCommandTable.Flag.failIfNoop: .bool(true)])
         XCTAssertFalse(again.ok)
         XCTAssertEqual(again.error?.code, ControlErrorCode.noop.rawValue)
     }
 
-    /// `dump --include-ids` → 改一个 cwd → `apply --replace`：id 是"就要这一个 pane"的
-    /// 指名道姓，只有 `--reuse` 认它。别的模式下认 id 的后果是每一格都靠 id 对上、
-    /// 改动被整份丢掉，还报成"已经是这个样子了"
+    /// `dump --include-ids` -> edit a cwd -> `apply --replace`: an id says "this exact pane, by
+    /// name" and only `--reuse` honors it. Honoring ids in the other modes means every slot matches
+    /// by id, the edit is discarded wholesale, and the call reports "it already looks like this"
     func testEditingADumpWithIDsIsNotSwallowedByIDMatching() throws {
         touched.insert(1)
         let from = try makeDirectory("ids-from")
@@ -496,22 +522,23 @@ final class ControlSpecApplyTests: XCTestCase {
         let original = try newPane(["cwd": .string(from)])
         harness.spin(0.5)
         let text = try dump(":2", args: ["include-ids": .bool(true)])
-        XCTAssertTrue(text.contains(original.id.uuidString), "前提：dump 里带着 id")
+        XCTAssertTrue(text.contains(original.id.uuidString), "precondition: the dump carries ids")
         let edited = text.replacingOccurrences(of: from, with: to)
 
         let payload = try harness.mutation(try apply(edited, target: ":2", mode: "replace"))
-        XCTAssertEqual(payload["changed"]?.boolValue, true, "改过的 spec 不是空操作")
+        XCTAssertEqual(payload["changed"]?.boolValue, true, "an edited spec is not a no-op")
         harness.spin(0.8)
         let live = try panes(1)
         XCTAssertEqual(live.count, 1)
-        XCTAssertFalse(live.contains { $0 === original }, "旧 pane 该被顶掉")
-        XCTAssertEqual(live.first?.workingDirectory, to, "新 pane 落在改过的目录里")
+        XCTAssertFalse(live.contains { $0 === original }, "the old pane should be displaced")
+        XCTAssertEqual(live.first?.workingDirectory, to, "the new pane lands in the edited directory")
         for pane in live { harness.track(pane) }
     }
 
-    /// 同一个工作区在一份 spec 里写两次：**在建任何东西之前**就拒掉。
-    /// 放行的话第二份的 `model.layouts[i] = …` 会按赋值盖掉第一份，
-    /// 第一份建出来的 pane 既不在任何布局里、也没走过关闭路径（下载、扩展、文件管理器会话全泄漏）
+    /// The same workspace written twice in one spec is refused **before anything is created**.
+    /// Let it through and the second `model.layouts[i] = ...` overwrites the first by assignment,
+    /// leaving the panes the first one created in no layout at all and never run through the close
+    /// path (downloads, extensions and file-manager sessions all leak)
     func testDuplicateWorkspaceIndicesAreRefusedBeforeAnythingIsCreated() throws {
         touched.insert(1)
         let directory = try makeDirectory("dup")
@@ -525,11 +552,12 @@ final class ControlSpecApplyTests: XCTestCase {
         XCTAssertEqual(reply.error?.code, ControlErrorCode.badRequest.rawValue)
         XCTAssertTrue((reply.error?.message ?? "").contains("only appear once"), reply.error?.message ?? "")
         harness.spin(0.4)
-        XCTAssertTrue(try panes(1).isEmpty, "被拒的那一次一个 pane 都不许建")
+        XCTAssertTrue(try panes(1).isEmpty, "the call that was refused may not have created a single pane")
     }
 
-    /// 破坏性确认框上写的必须是**这一刀真的会动到的东西**。一份屏幕 spec 覆盖整块屏幕的
-    /// 每一个工作区，确认框却只说 `-t` 指的那一个的话，用户批准的是一件小得多的事
+    /// The destructive alert has to state **what this stroke is really going to touch**. A screen
+    /// spec overwrites every workspace on that screen, and an alert that names only the one `-t`
+    /// points at gets the user to approve something far smaller
     func testConsentNamesEveryWorkspaceAScreenSpecWillOverwrite() throws {
         pinUILanguage(.en)
         let controller = try harness.controller
@@ -544,50 +572,54 @@ final class ControlSpecApplyTests: XCTestCase {
         let screen = try dump("1")
         try apply(screen, target: "1", mode: "replace").assertOK()
         harness.spin(0.6)
-        let summary = try XCTUnwrap(summaries.first, "破坏性命令没有走确认闸门")
+        let summary = try XCTUnwrap(summaries.first, "the destructive command never went through the consent gate")
         XCTAssertTrue(summary.contains("\(controller.model.layouts.count) workspaces"),
-                      "确认框要说清这一刀横跨几个工作区：\(summary)")
+                      "the alert has to say how many workspaces this stroke spans: \(summary)")
     }
 
-    /// 拖出来的极端分裂比例要**如实**进 spec：夹进 0.1–0.9 的话这份 dump 描述的
-    /// 就不是这个工作区，apply 回去分隔条还会自己跳一下（而 diff 看不见）
+    /// An extreme split ratio produced by dragging goes into the spec **faithfully**: clamp it into
+    /// 0.1-0.9 and the dump no longer describes this workspace, and applying it back makes the
+    /// divider jump on its own (with nothing visible in the diff)
     func testExtremeSplitRatiosRoundTripWithoutClamping() throws {
         let controller = try harness.controller
         touched.formUnion([1, 2])
         _ = try harness.run("workspace.set-layout", target: ":2", args: ["layout": .string("dwindle")])
-        // 两片叶子都写死 cwd：不写的话新 pane 继承的是**锚点**目录，而两个工作区的锚点不是同一个
+        // Both leaves pin a cwd: without one, a new pane inherits the **anchor's** directory, and
+        // the two workspaces do not share an anchor
         let directory = try makeDirectory("ratio")
         let leaf = "{\"pane\":{\"cwd\":\"\(directory)\"}}"
         try apply("{\"layout\":\"dwindle\",\"tree\":{\"split\":\"horizontal\",\"ratio\":0.05,"
                   + "\"a\":\(leaf),\"b\":\(leaf)}}", target: ":2").assertOK()
         harness.spin(0.7)
         let text = try dump(":2")
-        XCTAssertTrue(text.contains("0.05"), "0.05 要原样写出来：\(text)")
+        XCTAssertTrue(text.contains("0.05"), "0.05 has to be written out verbatim: \(text)")
         controller.switchWorkspace(2)
         harness.spin(0.3)
         try apply(text, target: ":3").assertOK()
         harness.spin(0.8)
-        XCTAssertEqual(try dump(":3"), text, "极端比例的不动点")
+        XCTAssertEqual(try dump(":3"), text, "the fixed point of an extreme ratio")
     }
 
-    /// 扩展页面（`webkit-extension://`）是 1.5.7 起的一等状态：地址栏那套启发式认不得它，
-    /// 交给它的话 dump → apply 会把一个开着的扩展面板换成一次网页搜索
+    /// An extension page (`webkit-extension://`) has been first-class state since 1.5.7: the
+    /// address-bar heuristics do not recognize it, and handing it over to them turns dump -> apply
+    /// on an open extension panel into a web search
     func testExtensionURLsAreNotReinterpretedAsSearchTerms() {
         let raw = "webkit-extension://abcdef12-3456/options.html"
         XCTAssertEqual(ControlPaneFactory.resolveURL(raw)?.absoluteString, raw)
         XCTAssertEqual(ControlPaneFactory.resolveURL("webkit-extension://abcdef12-3456/popup")?
             .absoluteString, "webkit-extension://abcdef12-3456/popup")
-        // 人手打进地址栏的那条路一个字都没变
+        // The path for what a person types into the address bar is untouched
         XCTAssertEqual(ControlPaneFactory.resolveURL("https://example.com")?.absoluteString,
                        "https://example.com")
         XCTAssertTrue(ControlPaneFactory.resolveURL("quickterm 是什么")?.absoluteString
-            .contains("google") ?? false, "没有 scheme 的词还是该去搜索")
+            .contains("google") ?? false, "a bare word with no scheme still goes to search")
     }
 
-    /// **省略形式与 WebKit 落地之后的形式是同一个网址。**
-    /// 人（和 agent）写的是 `http://localhost:3000`，WebView 报回来的是 `http://localhost:3000/`。
-    /// 照字面比的话，手写 spec 里的浏览器 pane 永远匹配不上活着的那个——
-    /// 于是每 apply 一次就把一个正停在目标页上的 pane 拆了重建（页面、登录态、滚动位置全没）
+    /// **The abbreviated form and the form WebKit settles on are the same URL.**
+    /// People (and agents) write `http://localhost:3000`; the WebView reports
+    /// `http://localhost:3000/` back. Compare literally and a browser pane in a hand-written spec
+    /// never matches the live one — so every apply tears down and rebuilds a pane that was already
+    /// sitting on the target page (losing the page, the login session and the scroll position)
     func testAnOmittedTrailingSlashIsTheSameURL() {
         func url(_ raw: String) -> URL? { URL(string: raw) }
         XCTAssertTrue(ControlPaneFactory.sameURL(url("http://localhost:3000"),
@@ -596,7 +628,8 @@ final class ControlSpecApplyTests: XCTestCase {
                                                  url("https://example.com/a")))
         XCTAssertTrue(ControlPaneFactory.sameURL(url("https://example.com:443/"),
                                                  url("https://example.com/")))
-        // 规范化到此为止：下面这些是**不同的页面**，不能被"整理"到一起
+        // Normalisation stops here: the pairs below are **different pages** and must not be
+        // "tidied" into one
         XCTAssertFalse(ControlPaneFactory.sameURL(url("https://example.com/a"),
                                                   url("https://example.com/a/")))
         XCTAssertFalse(ControlPaneFactory.sameURL(url("https://example.com/?a=1&b=2"),
@@ -606,18 +639,20 @@ final class ControlSpecApplyTests: XCTestCase {
         XCTAssertFalse(ControlPaneFactory.sameURL(url("https://example.com/"), nil))
     }
 
-    /// 上面那条规矩落到 `spec apply --reuse` 上：spec 里写省略形式，
-    /// 活着的 pane 停在带斜杠的那一个——必须**原地留着**
+    /// That rule as it lands on `spec apply --reuse`: the spec spells the abbreviated form while
+    /// the live pane sits on the one with the slash — and it has to **stay put**
     func testABrowserPaneIsReusedAcrossTheTrailingSlash() throws {
         touched.insert(1)
         let keeper = try XCTUnwrap(try newPane(["kind": .string("browser"),
                                                 "url": .string("http://127.0.0.1:1/")])
                                    as? BrowserPaneView)
         harness.spin(0.5)
-        XCTAssertEqual(keeper.currentURL?.absoluteString, "http://127.0.0.1:1/", "前提：活的那个带斜杠")
+        XCTAssertEqual(keeper.currentURL?.absoluteString, "http://127.0.0.1:1/",
+                       "precondition: the live one carries the slash")
 
-        // **带 token 发**：读不到网址的调用方本来就一律不匹配（那条规矩在 `identityMatches`
-        // 里，为的是不让"匹配上了没有"变成一个猜网址的探测通道），那样就验不到斜杠这件事
+        // **Send it with a token**: a caller that cannot read the URL never matches anything to
+        // begin with (that rule lives in `identityMatches`, so that "did it match" cannot become a
+        // probe for guessing URLs), and then the slash is never exercised at all
         _ = try harness.mutation(try harness.run(
             "spec.apply", target: ":2",
             args: ["spec": .string("""
@@ -626,11 +661,12 @@ final class ControlSpecApplyTests: XCTestCase {
             token: ControlEnvironment.token))
         harness.spin(0.6)
         XCTAssertTrue(try panes(1).contains { $0 === keeper },
-                      "省略斜杠不该让 spec apply 把同一个页面重建一遍")
+                      "leaving the slash off must not make spec apply rebuild the very same page")
     }
 
-    /// 带命令的 pane 走的是 Phase 2 那一份 `pane new` 机制（引擎对带 command 的 surface
-    /// 强制 wait-after-command，不接管 `closesOnChildExit` 的话命令跑完 pane 就永远僵着）
+    /// Panes with a command go through the same `pane new` machinery as Phase 2 (the engine forces
+    /// wait-after-command on a surface that carries a command, so without taking `closesOnChildExit`
+    /// over, the pane sits frozen forever once the command finishes)
     func testSpecPanesWithCommandsReuseThePaneNewMachinery() throws {
         touched.insert(1)
         let directory = try makeDirectory("cmd")
@@ -641,13 +677,13 @@ final class ControlSpecApplyTests: XCTestCase {
         harness.spin(0.6)
         let live = try panes(1).compactMap { $0 as? Ghostty.SurfaceView }
         XCTAssertEqual(live.count, 2)
-        XCTAssertTrue(live[0].closesOnChildExit, "--cmd 建出来的 pane 要在子进程退出时自己关掉")
-        XCTAssertFalse(live[1].closesOnChildExit, "hold 明确要求命令退出后留着 pane")
+        XCTAssertTrue(live[0].closesOnChildExit, "a pane created by --cmd closes itself when the child process exits")
+        XCTAssertFalse(live[1].closesOnChildExit, "hold explicitly asks for the pane to stay after the command exits")
     }
 }
 
 private extension ControlReply {
     func assertOK(file: StaticString = #filePath, line: UInt = #line) {
-        XCTAssertTrue(ok, "命令失败：\(String(describing: error))", file: file, line: line)
+        XCTAssertTrue(ok, "command failed: \(String(describing: error))", file: file, line: line)
     }
 }

@@ -12,8 +12,9 @@ struct SplitView<L: View, R: View>: View {
     /// Divider color
     let dividerColor: Color
 
-    /// QuickTerm：分隔条视觉填充在可视线宽之外额外覆盖的宽度（盖住两侧 pane 的 gap 内边距，
-    /// 让间隙透出的壁纸只剩"一点点"）；不影响布局与命中区。
+    /// QuickTerm: how far the divider's visual fill extends past the visible line width. It paints
+    /// over the gap padding of the panes on either side so that only a sliver of wallpaper still
+    /// shows through the gap. It affects neither layout nor the hit area.
     let dividerFillExtra: CGFloat
 
     /// Minimum increment (in points) that this split can be resized by, in
@@ -29,8 +30,9 @@ struct SplitView<L: View, R: View>: View {
     let onEqualize: () -> Void
 
     /// The minimum size (in points) of a split
-    /// QuickTerm：搬到 `SplitViewMetrics.minSize`——控制面的 `pane resize` 要夹的是同一条线，
-    /// 各写一份的话命令行能把分隔条设到鼠标拖不到的位置
+    /// QuickTerm: moved to `SplitViewMetrics.minSize` — the control plane's `pane resize` has to
+    /// clamp against the same limit. Keep two copies of the number and the command line can put the
+    /// divider somewhere the mouse can never drag it to.
     var minSize: CGFloat { SplitViewMetrics.minSize }
 
     /// The current fractional width of the split view. 0.5 means L/R are equally sized, for example.
@@ -38,9 +40,11 @@ struct SplitView<L: View, R: View>: View {
 
     /// The visible size of the splitter, in points. The invisible size is a transparent hitbox that can still
     /// be used for getting a resize handle. The total width/height of the splitter is the sum of both.
-    /// QuickTerm：分隔线**不占布局**（SplitViewMetrics.splitterLayoutSize = 0）——两侧 pane 的 gap 内边距
-    /// 相邻合成的 2×pane-gap 就是全部间距，与 scrolling 完全一致；1pt 细线画在边界上（跨两侧留白各 0.5pt），
-    /// 命中区仍为 6pt。
+    /// QuickTerm: the divider line **takes up no layout space**
+    /// (SplitViewMetrics.splitterLayoutSize = 0) — the gap padding of the two adjacent panes adds up
+    /// to 2x pane-gap and that is the whole spacing, identical to scrolling. The 1pt hairline is
+    /// drawn on the boundary itself (0.5pt into the padding on each side); the hit area is still
+    /// 6pt.
     private let splitterVisibleSize: CGFloat
     private let splitterLineSize: CGFloat = 1
     private let splitterInvisibleSize: CGFloat = 6
@@ -105,8 +109,10 @@ struct SplitView<L: View, R: View>: View {
     private func dragGesture(_ size: CGSize, splitterPoint: CGPoint) -> some Gesture {
         return DragGesture()
             .onChanged { gesture in
-                // QuickTerm：换算 + 最小尺寸夹取收进 SplitViewMetrics.ratio，
-                // 控制面的 `pane resize --ratio` 调的是同一个函数（拖到底与设到底必须落在同一个数上）
+                // QuickTerm: the conversion and the minimum-size clamp both live in
+                // SplitViewMetrics.ratio, and the control plane's `pane resize --ratio` calls that
+                // same function — dragging all the way and setting it all the way have to land on
+                // the same number.
                 switch direction {
                 case .horizontal:
                     split = SplitViewMetrics.ratio(dividerAt: gesture.location.x, in: size.width)
@@ -201,23 +207,28 @@ enum SplitViewDirection: Codable {
     case horizontal, vertical
 }
 
-/// QuickTerm：SplitView 布局常量（SplitBranchView 的钉住尺寸计算与之共用同一算法）
+/// QuickTerm: SplitView layout constants. SplitBranchView's pinned-size calculation runs off the
+/// same algorithm.
 enum SplitViewMetrics {
-    /// 一侧最小尺寸（pt）：拖分隔条最多把一侧压到这么窄
+    /// Minimum size of one side, in points: dragging the divider can squeeze a side down to this
+    /// and no further.
     static let minSize: CGFloat = 10
 
-    /// 分隔条落在 `points` 处 → 比例，并施加与拖拽手势同一条最小尺寸规则。
-    /// **鼠标与命令行共用**：`pane resize --ratio / --points` 拿它夹值，
-    /// 于是"拖到最左"与"--ratio 0"落在同一个比例上。
-    /// 槽位窄到连两条最小尺寸都放不下时无从夹起，退回对半分
+    /// Divider at `points` -> a ratio, applying the same minimum-size rule the drag gesture uses.
+    /// **Shared by mouse and command line**: `pane resize --ratio / --points` clamps through this,
+    /// so "dragged all the way left" and "--ratio 0" come out as the same ratio.
+    /// When the slot is too narrow to hold even two minimum sizes there is nothing to clamp
+    /// against, so fall back to an even split.
     static func ratio(dividerAt points: CGFloat, in size: CGFloat) -> CGFloat {
         guard size > 2 * minSize else { return 0.5 }
         return min(max(minSize, points), size - minSize) / size
     }
 
-    /// 分隔线在布局里占用的尺寸（gaps 开启时）：0 = 不占，间距全部来自两侧 pane 留白
+    /// Size the divider line occupies in layout while gaps are on: 0 = none, the whole spacing
+    /// comes from the padding of the panes on either side.
     static let splitterLayoutSize: CGFloat = 0
-    /// gaps 关闭（Cmd+Shift+Backspace）时恢复 1pt 占位：否则细线压在两侧贴边的边框上
+    /// With gaps off (Cmd+Shift+Backspace) it goes back to occupying 1pt, otherwise the hairline
+    /// sits right on top of the borders of the panes now flush against it.
     static let splitterLayoutSizeWithoutGaps: CGFloat = 1
 
     static func splitterLayoutSize(gapsEnabled: Bool) -> CGFloat {

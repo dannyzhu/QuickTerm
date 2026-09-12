@@ -1,13 +1,16 @@
 import Foundation
 
-/// WM 级动作全集（spec §5.1）。速查表与 config `[keybinds]`（M4）都以此为动作清单。
+/// Every WM-level action (spec §5.1). Both the cheat sheet and config `[keybinds]` (M4) take
+/// their action list from here.
 enum WMAction: String, CaseIterable {
     case newTerminal = "new-terminal"
     case fileManager = "file-manager"
     case newBrowser = "new-browser"
-    // 终端 pane 专属（焦点不在终端时放行）：Cmd+K 归速查表，清屏挪到 Cmd+Shift+K
+    // Terminal panes only (passed through when a terminal is not focused): Cmd+K belongs to the
+    // cheat sheet, so clear-screen moved to Cmd+Shift+K
     case clearTerminal = "clear-terminal"
-    // 浏览器 pane 专属（焦点不在浏览器 pane 时放行给终端，见 MainWindowController 键盘监视器）
+    // Browser panes only (passed through to the terminal when a browser pane is not focused;
+    // see MainWindowController's key monitor)
     case webBack = "web-back", webForward = "web-forward", webReload = "web-reload"
     case webFocusAddress = "web-focus-address", webOpenExternal = "web-open-external"
     case webZoomIn = "web-zoom-in", webZoomOut = "web-zoom-out", webZoomReset = "web-zoom-reset"
@@ -50,7 +53,7 @@ enum WMAction: String, CaseIterable {
     case exitFullscreen = "exit-fullscreen"
     case toggleFloat = "toggle-float"
 
-    /// goto/move 系列的工作区序号（0-based），非工作区动作为 nil
+    /// The workspace index (0-based) for the goto/move family; nil for every other action.
     var workspaceIndex: Int? {
         switch self {
         case .gotoWorkspace1, .moveToWorkspace1: 0
@@ -67,9 +70,11 @@ enum WMAction: String, CaseIterable {
         }
     }
 
-    /// 只对焦点浏览器 pane 生效的动作：焦点在终端时不消费按键（Cmd+R / Cmd+= 等仍归终端）
+    /// Actions that only apply to a focused browser pane: with a terminal focused the key is not
+    /// consumed (Cmd+R, Cmd+= and the rest still belong to the terminal).
     var browserOnly: Bool { rawValue.hasPrefix("web-") }
-    /// 只对焦点终端 pane 生效的动作：焦点在浏览器等其它 pane 时不消费按键
+    /// Actions that only apply to a focused terminal pane: the key is not consumed while a
+    /// browser or any other kind of pane has focus.
     var terminalOnly: Bool { self == .clearTerminal }
 
     var isGotoWorkspace: Bool { rawValue.hasPrefix("goto-workspace-") }
@@ -90,7 +95,7 @@ enum WMAction: String, CaseIterable {
         ConfigSchema.templateLanguage == .zh ? help : helpEN
     }
 
-    /// 速查表（Cmd+K）展示用中文说明
+    /// The Chinese description shown in the Cmd+K cheat sheet.
     var help: String {
         switch self {
         case .newTerminal: "新建终端（scrolling 右插新列 / dwindle 分裂，继承当前目录）"
@@ -163,8 +168,9 @@ enum WMAction: String, CaseIterable {
         }
     }
 
-    /// 英文说明（`describe --json` 与 MCP 工具表同时给出中英两份：
-    /// describe 的输出会被原样粘进中英混排的 agent 提示里，只有中文的那一份会被模型猜着读）
+    /// The English description. `describe --json` and the MCP tool table hand out both wordings
+    /// at once: describe's output gets pasted verbatim into bilingual agent prompts, and with
+    /// only the Chinese half in there the model is left guessing at what an action does.
     var helpEN: String {
         switch self {
         case .newTerminal: "New terminal pane (scrolling: insert a column to the right; dwindle: split), inheriting the current directory"

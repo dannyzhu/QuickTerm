@@ -1,20 +1,27 @@
 import AppKit
 import OSLog
 
-/// 破坏性 / 敏感命令的确认闸门。
+/// The confirmation gate for destructive / sensitive commands.
 ///
-/// 三个刻意的设计选择：
-/// 1. **按 (对端 pid, 命令类) 缓存一次**（kitty 的做法）：agent 是成批发命令的，每条都问等于没问；
-/// 2. **用 sheet，不用 `runModal()`**：`runModal` 会跑嵌套 run loop，把主线程连同整个控制服务一起卡住，
-///    而 QuickTerm 自己已经有好几处 `runModal`（退出确认、关屏幕确认、浏览器的 JS 对话框）。
-///    嵌套 run loop 期间用 `DispatchQueue.main.async` 排的块**会在用户的对话框背后执行**——
-///    所以这里既不制造新的嵌套 run loop，也在别的模态挂着时直接拒（busy）；
-/// 3. **对话框锚在应用自己的窗口上，不是请求方的 pane**（Zellij 有个已记录的洞：
-///    后台插件没有 pane，永远拿不到授权）。所以从 Terminal.app / 后台任务发起的调用一样能被批准。
+/// Three deliberate design choices:
+/// 1. **Cached once per (peer pid, command class)** (kitty's approach): agents send commands in
+///    batches, so asking about every single one amounts to asking about none;
+/// 2. **A sheet, never `runModal()`**: `runModal` spins a nested run loop that wedges the main
+///    thread and the whole control server along with it, and QuickTerm already has several
+///    `runModal` sites of its own (the quit confirmation, the close-screen confirmation, the
+///    browser's JS dialogs). Blocks queued with `DispatchQueue.main.async` during a nested run
+///    loop **execute behind the user's dialog** — so this code neither creates a new nested run
+///    loop nor proceeds while another modal is up; it refuses outright (busy);
+/// 3. **The alert is anchored on one of the app's own windows, not on the requesting pane**
+///    (Zellij has a documented hole here: a background plugin has no pane, so it can never be
+///    granted anything). A call made from Terminal.app or from a background job can therefore
+///    be approved just the same.
 ///
-/// ⚠️ 这里没有、也绝不能有"带了正确 QUICKTERM_TOKEN 就跳过确认"的分支：
-/// token 是来源证明，不是权限边界（见 ControlEnvironment）。确认框里显示的进程名来自内核
-/// （LOCAL_PEERPID），所以就算 token 被抄走，用户看到的仍然是真实的 `node (pid 4821)`。
+/// ⚠️ There is no branch here that skips the confirmation because the caller carried the right
+/// QUICKTERM_TOKEN, and there must never be one: the token is proof of origin, not a permission
+/// boundary (see ControlEnvironment). The process name shown in the alert comes from the kernel
+/// (LOCAL_PEERPID), so even if the token has been copied, what the user reads is still the real
+/// `node (pid 4821)`.
 @MainActor
 final class ControlConsent {
     enum Decision: String {
@@ -24,50 +31,63 @@ final class ControlConsent {
     struct Request {
         var peerName: String
         var peerPID: pid_t
-        /// 命令类（destructive / sensitive）
+        /// Command class (destructive / sensitive)
         var cls: ControlCommandClass
-        /// 人话描述这条命令要干什么
+        /// What this command is about to do, in plain language
         var summary: String
-        /// 来源 pane 的句柄（有的话）。**这是调用方自报的**，服务端验不了——
-        /// 所以文案里写"自称来自"，而且只有带着本次启动 token 的调用方才会有值
-        /// （见 `ControlCommandRunner.originHandle(for:)`）。
-        /// 内核给的 `peerName` / `peerPID` 才是这个框里唯一可信的身份
+        /// The origin pane's handle, when there is one. **The caller reports this itself** and
+        /// the server cannot verify a word of it — hence the wording "claims to come from", and
+        /// hence it is only ever set for a caller that carried this launch's token (see
+        /// `ControlCommandRunner.originHandle(for:)`).
+        /// The kernel-supplied `peerName` / `peerPID` are the only trustworthy identity in this
+        /// alert
         var originPane: String?
-        /// 来源 pane **被证明了**（`QUICKTERM_PANE_TOKEN` 与自报的 `origin.pane` 对得上）。
-        /// 只影响措辞：证明了就直说"来自 pane t3"，没证明就仍然写"自称来自"
+        /// The origin pane has been **proven** (`QUICKTERM_PANE_TOKEN` matches the
+        /// self-reported `origin.pane`). Wording only: proven says "from pane t3" outright,
+        /// unproven still says "claims to come from"
         var originVerified: Bool = false
-        /// 请求带了本次启动生成的 token（只影响文案，不影响是否弹）
+        /// The request carried the token generated for this launch (wording only; it never
+        /// decides whether to prompt)
         var tokenPresent: Bool
-        /// 这次批准能不能按 (pid, 类) 缓存起来。**`input send-text` 一律 false**：
-        /// 关一个 pane 是用户看得见的一件事，缓存一次说得过去；而往别人的 tty 里注入文本
-        /// 每一次的内容都可以完全不同，"批准过一次"根本不构成对下一次的同意
+        /// Whether this approval may be cached under (pid, class). **Always false for
+        /// `input send-text`**: closing a pane is something the user watches happen, so caching
+        /// one approval is defensible, whereas text injected into somebody else's tty can be
+        /// completely different content every single time — "approved once" is no consent at
+        /// all for the next one
         var cacheable: Bool = true
-        /// 这次批准缓存在**哪个**键上。nil = 按命令类（破坏性命令彼此等价：
-        /// 用户批准的是"这个进程可以关东西"）。敏感命令一条命令一个键——
-        /// 批准"读 t7 的屏幕"绝不等于顺手批准"往 t7 里打字"，那是两件不同的授权
+        /// **Which** key this approval is cached under. nil = by command class (destructive
+        /// commands are equivalent to one another: what the user approved is "this process may
+        /// close things"). Sensitive commands get one key per command — approving "read t7's
+        /// screen" is emphatically not approving "type into t7" along with it; those are two
+        /// different grants
         var scope: String?
-        /// **只画给用户看**的正文预览（`input send-text` 才有；已净化并截断）。
+        /// A preview of the payload, **drawn for the user and for nobody else** (only
+        /// `input send-text` has one; already sanitized and truncated).
         ///
-        /// 它必须在框里，因为它是这一次确认与上一次唯一的区别：命令名与目标 pane 完全相同的两次调用，
-        /// 一次是 `echo hi`，一次可以是 `curl … | sh`。没有它，用户读到的两句话一模一样，
-        /// 那就不是一次知情的同意。
+        /// It has to be in the alert, because it is the only thing separating this confirmation
+        /// from the last one: two calls with an identical command name and target pane can be
+        /// `echo hi` one time and `curl … | sh` the next. Without it the user reads the same two
+        /// sentences both times, and that is not informed consent.
         ///
-        /// ⚠️ 它**绝不进 `summary`**：`summary` 会以 `privacy: .public` 写进统一日志，
-        /// 而"正文不进任何长期留存的记录"正是活动日志那边守着的同一条线
+        /// ⚠️ It **never goes into `summary`**: `summary` is written to the unified log with
+        /// `privacy: .public`, and "the payload enters no record that is kept" is the same line
+        /// the activity log holds on its own side
         var payload: String?
-        /// 正文的**完整**字符数（预览是截断过的，用户得知道后面还有多少）
+        /// The **full** character count of the payload (the preview is truncated, and the user
+        /// needs to know how much more there is)
         var payloadLength: Int?
-        /// 正文后面还跟一个回车——也就是那个 shell **真的会执行**它
+        /// A Return follows the payload — which is to say the shell **will actually run** it
         var payloadEnter: Bool = false
     }
 
-    /// 未答复的等待上限：到点返回退出码 4，agent 可以告诉用户"去 QuickTerm 里确认"，而不是干等
+    /// How long an unanswered prompt waits: on expiry it returns exit code 4, so the agent can
+    /// tell the user to go and confirm in QuickTerm instead of sitting there waiting
     static let timeout: TimeInterval = 10
 
     private struct GrantKey: Hashable {
         var pid: pid_t
         var cls: ControlCommandClass
-        /// 见 `Request.scope`
+        /// See `Request.scope`
         var scope: String?
     }
 
@@ -75,12 +95,15 @@ final class ControlConsent {
                                category: "ControlConsent")
 
     private var grants: Set<GrantKey> = []
-    /// 同一时刻只允许一个确认框：第二条一律 busy（堆起 N 个 sheet 是 agent 循环时的真实后果）
+    /// Only one confirmation alert at a time: a second one is always busy (stacking up N sheets
+    /// is what actually happens once an agent starts looping)
     private(set) var isPrompting = false
 
-    /// 用例注入的决策桩：测试宿主里绝不真的弹 sheet。
-    /// **异步形状**（把答复交回给用例）而不是直接返回：真 sheet 就是异步的，
-    /// 用例得能把"确认框正挂着"这个状态**保持住**，才能验证挂着期间别的命令会被挡下来
+    /// The decision stub tests inject: the test host never puts up a real sheet.
+    /// **Asynchronous in shape** (the answer is handed back to the test) rather than a plain
+    /// return, because a real sheet is asynchronous: a test has to be able to **hold** the state
+    /// "a confirmation is currently up" in order to verify that other commands are blocked while
+    /// it is
     var decisionStub: ((Request, @escaping (Decision) -> Void) -> Void)?
 
     weak var screens: ScreenRegistry?
@@ -94,22 +117,24 @@ final class ControlConsent {
         isPrompting = false
     }
 
-    /// 已授权？**pid 拿不到（<= 0）时永远返回 false**：
-    /// 否则所有身份不明的对端会共用同一个 GrantKey(0, …)，第一个被批准之后
-    /// 后面每一个都白拿授权——一次同意变成永久后门
+    /// Already granted? **Always false when the pid could not be obtained (<= 0)**: otherwise
+    /// every peer of unknown identity shares one GrantKey(0, …), and once the first of them is
+    /// approved every one after it gets the grant for free — a single consent becomes a
+    /// permanent back door
     func hasGrant(pid: pid_t, cls: ControlCommandClass, scope: String? = nil) -> Bool {
         guard pid > 0 else { return false }
         return grants.contains(GrantKey(pid: pid, cls: cls, scope: scope))
     }
 
-    /// 同上：只有拿得到真实 pid 才缓存
+    /// Same rule: cache only when there is a real pid
     private func grant(pid: pid_t, cls: ControlCommandClass, scope: String?) {
         guard pid > 0 else { return }
         grants.insert(GrantKey(pid: pid, cls: cls, scope: scope))
     }
 
-    /// 主线程上是否有别的模态在挂（sheet 或 NSAlert.runModal 的嵌套 run loop）。
-    /// 有的话破坏性命令一律拒——绝不能让 agent 在用户盯着另一个对话框时把 pane 关掉
+    /// Is another modal up on the main thread (a sheet, or `NSAlert.runModal`'s nested run
+    /// loop)? If so, destructive commands are refused outright — an agent must never get to
+    /// close a pane while the user is staring at some other dialog
     var isModalBusy: Bool {
         if NSApp.modalWindow != nil { return true }
         if let screens {
@@ -118,12 +143,15 @@ final class ControlConsent {
         return isPrompting
     }
 
-    /// 确认框本体。**"拒绝"是第一个按钮**，所以它是默认按钮、回车落在它上面。
+    /// The alert itself. **"Deny" is the first button**, which makes it the default button, so
+    /// Return lands on it.
     ///
-    /// 这不是排版偏好，是一次实测事故的修正：默认按钮原本是"允许"，
-    /// 冒烟时一次落在窗口上的回车（谁都可能顺手按到）直接把一条破坏性命令批准了，
-    /// 日志里留下的是 `控制面确认结果：allow` —— 用户根本没读那个框。
-    /// 安全闸门的默认答案必须是"不"：允许要**点**，拒绝可以按回车 / Esc。
+    /// That is not a layout preference, it is the fix for an accident we measured: the default
+    /// button used to be "Allow", and during a smoke test one Return that happened to land on
+    /// the window (anyone can hit that by reflex) approved a destructive command outright. What
+    /// the log was left with was `Control consent result: allow` — the user had not read the
+    /// alert at all. A safety gate's default answer has to be no: allowing takes a **click**,
+    /// denying can be Return or Esc.
     static func makeAlert(_ request: Request) -> NSAlert {
         let alert = NSAlert()
         alert.messageText = L(request.cls == .destructive
@@ -140,8 +168,9 @@ final class ControlConsent {
         } ?? L("consent.alert.request.plain", request.peerName, pid, request.summary)
 
         var paragraphs = [who]
-        // 正文单独一段，并且明写"回车 = 它会被执行"——`--enter` 是"送文本"与"让它跑"
-        // 之间唯一的分界，用户批准的到底是哪一件，必须在框里说出来
+        // The payload gets a paragraph of its own, and it spells out "Return = it will be
+        // executed": `--enter` is the only line between "deliver the text" and "make it run",
+        // and which of those two the user is approving has to be said in the alert
         if let text = request.payload {
             paragraphs.append(L("consent.alert.payload.header",
                                 request.payloadLength ?? text.count, text))
@@ -153,20 +182,22 @@ final class ControlConsent {
         paragraphs.append(L(request.tokenPresent ? "consent.alert.token.present"
                                                  : "consent.alert.token.absent"))
         alert.informativeText = paragraphs.joined(separator: "\n\n")
-        alert.addButton(withTitle: L("consent.alert.button.deny"))    // 第一个 = 默认按钮 = 回车
+        alert.addButton(withTitle: L("consent.alert.button.deny"))    // first = default = Return
         alert.addButton(withTitle: L("consent.alert.button.allow"))
-        // NSAlert 默认把第一个按钮的键等价设成回车；这里显式写死，免得将来改按钮顺序时悄悄漂移。
-        // Esc 由 NSAlert 自己映射到最后一个按钮，所以"允许"还要再收回一次
+        // NSAlert makes the first button's key equivalent Return by default; pinned explicitly
+        // here so that reordering the buttons later cannot make it drift silently. Esc is mapped
+        // by NSAlert itself onto the last button, so "Allow" has to have its key equivalent
+        // taken away again
         alert.buttons.first?.keyEquivalent = "\r"
         alert.buttons.last?.keyEquivalent = ""
         alert.alertStyle = .warning
         return alert
     }
 
-    /// "允许"是第二个按钮（第一个是默认的"拒绝"）
+    /// "Allow" is the second button (the first one is the default, "Deny")
     static let allowResponse = NSApplication.ModalResponse.alertSecondButtonReturn
 
-    /// 决策。`completion` 一定在主线程上被调用一次
+    /// The decision. `completion` is always called exactly once, on the main thread
     func evaluate(_ request: Request, completion: @escaping (Decision) -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
         if request.cacheable, hasGrant(pid: request.peerPID, cls: request.cls, scope: request.scope) {
@@ -174,8 +205,9 @@ final class ControlConsent {
             return
         }
         if let stub = decisionStub {
-            // 与真 sheet 同一条生命周期：问出去的那一刻起 isPrompting 就是 true，
-            // 答复回来才落下——用例才能验证"确认框挂着时变更命令一律 busy"
+            // Same lifecycle as a real sheet: isPrompting is true from the moment the question
+            // goes out and only drops when the answer comes back — that is what lets a test
+            // verify that mutation commands are all busy while a confirmation is up
             isPrompting = true
             var answered = false
             stub(request) { [weak self] decision in
@@ -189,13 +221,13 @@ final class ControlConsent {
             }
             return
         }
-        // 测试宿主里没有桩就一律拒绝：绝不在跑用例的机器上弹窗
+        // No stub in the test host means deny: never put a dialog up on a machine running tests
         guard !AppDelegate.isRunningTests else {
             completion(.deny)
             return
         }
         guard !isModalBusy else {
-            completion(.timeout)   // 调用方会翻译成 busy / 需确认
+            completion(.timeout)   // the caller turns this into busy / confirmation-required
             return
         }
         guard let window = (screens?.key ?? screens?.primary)?.window else {
@@ -204,7 +236,7 @@ final class ControlConsent {
         }
 
         isPrompting = true
-        Self.logger.notice("控制面确认：\(request.peerName, privacy: .public)(pid \(request.peerPID)) 请求 \(request.cls.rawValue, privacy: .public) —— \(request.summary, privacy: .public)")
+        Self.logger.notice("Control consent: \(request.peerName, privacy: .public)(pid \(request.peerPID)) requests \(request.cls.rawValue, privacy: .public) — \(request.summary, privacy: .public)")
         let alert = Self.makeAlert(request)
 
         var answered = false
@@ -215,7 +247,7 @@ final class ControlConsent {
             if decision == .allow, request.cacheable {
                 self?.grant(pid: request.peerPID, cls: request.cls, scope: request.scope)
             }
-            Self.logger.notice("控制面确认结果：\(decision.rawValue, privacy: .public)（pid \(request.peerPID)）")
+            Self.logger.notice("Control consent result: \(decision.rawValue, privacy: .public) (pid \(request.peerPID))")
             completion(decision)
         }
 
@@ -224,11 +256,13 @@ final class ControlConsent {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.timeout) { [weak window, weak alert] in
             guard !answered else { return }
-            // **先落定"超时"，再收 sheet**：`endSheet` 会同步回调上面那个 completion，
-            // 于是 finish(.deny) 抢先跑掉，agent 收到的是"用户拒绝了这条命令"（退出码 5）——
-            // 而用户其实一个字都没说。那是对 agent 谎报了一个不存在的拒绝，
-            // 也和 describe / 文档里写死的"超时 → 退出码 4"直接对不上。
-            // finish 里的 answered 置位保证随后那次 .deny 回调是空转
+            // **Settle on "timeout" first, then take the sheet down**: `endSheet` invokes the
+            // completion above synchronously, so finish(.deny) would win the race and the agent
+            // would be told the user denied this command (exit code 5) — when the user had in
+            // fact said nothing at all. That reports to the agent a denial that never happened,
+            // and it contradicts the "timeout → exit code 4" that describe and the docs both
+            // nail down. The answered flag that finish sets makes the .deny callback right
+            // after it a no-op
             finish(.timeout)
             if let window, let alert { window.endSheet(alert.window, returnCode: .cancel) }
         }
