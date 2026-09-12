@@ -56,11 +56,11 @@ struct ControlTarget: Equatable {
 
         var description: String {
             switch self {
-            case .empty: "目标为空"
-            case .badScreen(let s): "屏幕引用非法：\(s)（用 1 起序号、#uuid、@current、@primary）"
-            case .badWorkspace(let s): "工作区引用非法：\(s)（用 1 起序号、@active、@next、@prev）"
-            case .badPane(let s): "pane 引用非法：\(s)（用 t7/b3 句柄、#uuid、@focused/@self/@left…、title:~re、cwd:/p、kind:、role:）"
-            case .badPredicate(let s): "谓词非法：\(s)"
+            case .empty: "target is empty"
+            case .badScreen(let s): "bad screen reference: \(s) (use a 1-based index, #uuid, @current, @primary)"
+            case .badWorkspace(let s): "bad workspace reference: \(s) (use a 1-based index, @active, @next, @prev)"
+            case .badPane(let s): "bad pane reference: \(s) (use a t7/b3 handle, #uuid, @focused/@self/@left…, title:~re, cwd:/p, kind:, role:)"
+            case .badPredicate(let s): "bad predicate: \(s)"
             }
         }
     }
@@ -259,12 +259,12 @@ struct ControlTarget: Equatable {
 
     /// `--help` / `describe` 里那六行语法说明的唯一出处
     static let grammarLines: [String] = [
-        "-t screen:workspace.pane   每段可省，向右默认取上下文",
-        "screen     1 起序号（= 窗口标题）· #uuid: · @current · @primary",
-        "workspace  1 起序号（= Cmd+1..0）· @active · @next · @prev",
-        "pane       t7 / b3 句柄 · #uuid（≥4 位前缀）· @focused（默认）· @self",
+        "-t screen:workspace.pane   every part optional, defaults to the current context",
+        "screen     1-based index (= the window title) · #uuid: · @current · @primary",
+        "workspace  1-based index (= Cmd+1..0) · @active · @next · @prev",
+        "pane       t7 / b3 handle · #uuid (prefix of ≥4) · @focused (default) · @self",
         "           @left @right @up @down · @next @prev",
-        "谓词       title:~<regex> · cwd:<prefix> · kind:terminal|browser · role:file-manager",
-        "歧义       匹配到多个一律报错并列出候选，绝不取第一个（退出码 3）",
+        "predicate  title:~<regex> · cwd:<prefix> · kind:terminal|browser · role:file-manager",
+        "ambiguity  multiple matches: an error that lists them all, never the first (exit code 3)",
     ]
 }

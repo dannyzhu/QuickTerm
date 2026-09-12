@@ -41,15 +41,15 @@ enum ControlExit: Int32, Codable, CaseIterable {
 
     var summary: String {
         switch self {
-        case .ok: "成功 / success"
-        case .failure: "一般失败 / generic failure"
-        case .notRunning: "QuickTerm 没在运行 / QuickTerm is not running"
-        case .badTarget: "目标非法或有歧义（响应体列出候选）/ bad or ambiguous target"
-        case .confirmationRequired: "需要用户确认 / confirmation required"
-        case .denied: "被策略拒绝 / denied by policy"
-        case .busy: "忙 / 限流（带 retryAfterMs）/ busy or rate-limited"
-        case .noop: "什么都没改（仅 --fail-if-noop）/ no-op"
-        case .protocolMismatch: "协议版本不匹配 / protocol version mismatch"
+        case .ok: "success"
+        case .failure: "generic failure"
+        case .notRunning: "QuickTerm is not running"
+        case .badTarget: "bad or ambiguous target (the response body lists the candidates)"
+        case .confirmationRequired: "confirmation required"
+        case .denied: "denied by policy"
+        case .busy: "busy or rate-limited (carries retryAfterMs)"
+        case .noop: "nothing changed, a no-op (only with --fail-if-noop)"
+        case .protocolMismatch: "protocol version mismatch"
         }
     }
 }
@@ -95,24 +95,24 @@ enum ControlErrorCode: String, Codable, CaseIterable {
 
     var summary: String {
         switch self {
-        case .failed: "命令失败"
-        case .badRequest: "请求格式错误"
-        case .protocolMismatch: "协议版本不匹配"
-        case .unknownCommand: "未知命令"
-        case .unknownAction: "未知动作（quickterm action --list）"
-        case .badTarget: "目标语法非法"
-        case .ambiguousTarget: "目标匹配到多个（candidates 列出全部）"
-        case .notFound: "目标不存在"
-        case .interactiveAction: "该动作会打开需要键盘交互的面板，不能经 socket 执行"
-        case .wrongPaneKind: "目标 pane 的种类不支持该动作"
-        case .confirmationRequired: "需要在 QuickTerm 里确认"
-        case .denied: "被 [control] 配置或用户拒绝"
-        case .busy: "主线程忙（模态对话框 / 另一条命令在执行）"
-        case .rateLimited: "超出速率上限"
-        case .notRunning: "QuickTerm 没在运行"
-        case .internalError: "内部错误"
-        case .noop: "已经是目标状态，什么都没改（仅 --fail-if-noop 时报错）"
-        case .partialApply: "spec 只落了一半：工作区已经被改过，需要重新读一次状态"
+        case .failed: "the command failed"
+        case .badRequest: "malformed request"
+        case .protocolMismatch: "protocol version mismatch"
+        case .unknownCommand: "unknown command"
+        case .unknownAction: "unknown action (quickterm action --list)"
+        case .badTarget: "bad target syntax"
+        case .ambiguousTarget: "the target matched more than one (candidates lists them all)"
+        case .notFound: "the target does not exist"
+        case .interactiveAction: "this action opens a panel that needs keyboard interaction, so it cannot run over the socket"
+        case .wrongPaneKind: "the target pane's kind does not support this action"
+        case .confirmationRequired: "needs confirmation inside QuickTerm"
+        case .denied: "refused by the [control] config or by the user"
+        case .busy: "the main thread is busy (a modal dialog, or another command is running)"
+        case .rateLimited: "over the rate limit"
+        case .notRunning: "QuickTerm is not running"
+        case .internalError: "internal error"
+        case .noop: "already in the target state, nothing changed (an error only with --fail-if-noop)"
+        case .partialApply: "spec was only half applied: the workspace has already changed, read the state again"
         }
     }
 }

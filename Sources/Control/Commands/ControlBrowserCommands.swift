@@ -22,7 +22,7 @@ extension ControlCommandRunner {
         case "reload": return try browserReload(ctx)
         case "close": return try browserClose(ctx)
         default:
-            throw ControlErrorBody(.unknownCommand, "browser 没有 \(ctx.spec.verb) 这个动词",
+            throw ControlErrorBody(.unknownCommand, "browser has no verb \(ctx.spec.verb)",
                                    candidates: ControlCommandTable.commands(inGroup: "browser").map(\.verb))
         }
     }
@@ -35,9 +35,9 @@ extension ControlCommandRunner {
         guard let browser = hit.pane as? BrowserPaneView else {
             throw ControlErrorBody(
                 .wrongPaneKind,
-                "\(handleName(hit.pane)) 是 \(hit.pane.kind.rawValue) pane，没有标签可言",
-                hint: "浏览器 pane 的句柄以 b 开头（quickterm list panes）；"
-                    + "新开一个：quickterm pane new --kind browser --url <网址>")
+                "\(handleName(hit.pane)) is a \(hit.pane.kind.rawValue) pane, so it has no tabs",
+                hint: "Browser pane handles start with b (quickterm list panes); "
+                    + "to open a new one: quickterm pane new --kind browser --url <url>")
         }
         return (hit, browser)
     }
@@ -46,7 +46,7 @@ extension ControlCommandRunner {
     func resolveTab(_ ref: ControlTabRef, in pane: BrowserPaneView, handle: String) throws -> Int {
         let count = pane.tabs.count
         guard count > 0 else {
-            throw ControlErrorBody(.notFound, "\(handle) 里一个标签都没有", retryAfterMs: 200)
+            throw ControlErrorBody(.notFound, "\(handle) has no tabs at all", retryAfterMs: 200)
         }
         switch ref {
         case .active:
@@ -56,7 +56,7 @@ extension ControlCommandRunner {
         case .index(let number):
             guard number <= count else {
                 throw ControlErrorBody(
-                    .notFound, "\(handle) 只有 \(count) 个标签，--tab \(number) 越界",
+                    .notFound, "\(handle) has \(count) tab\(count == 1 ? "" : "s"), so --tab \(number) is out of range",
                     hint: "quickterm get -t \(handle) --json | jq '.data.pane.tabList'")
             }
             return number - 1
@@ -67,13 +67,13 @@ extension ControlCommandRunner {
             }
             guard !matches.isEmpty else {
                 throw ControlErrorBody(
-                    .notFound, "\(handle) 里没有 id 以 \(prefix) 开头的标签",
+                    .notFound, "\(handle) has no tab whose id starts with \(prefix)",
                     hint: "quickterm get -t \(handle) --json | jq '.data.pane.tabList'")
             }
             guard matches.count == 1 else {
                 throw ControlErrorBody(
-                    .ambiguousTarget, "--tab #\(prefix) 在 \(handle) 里匹配到 \(matches.count) 个标签",
-                    hint: "多写几位 id",
+                    .ambiguousTarget, "--tab #\(prefix) matches \(matches.count) tabs in \(handle)",
+                    hint: "Write out a few more digits of the id.",
                     candidates: matches.map { "#\(pane.tabs[$0].id.uuidString.prefix(8))" })
             }
             return matches[0]
@@ -98,20 +98,21 @@ extension ControlCommandRunner {
         let (hit, browser) = try requireBrowser(ctx)
         let raw = ctx.string("url") ?? BrowserPaneView.settings.home
         guard let url = ControlPaneFactory.resolveURL(raw) else {
-            throw ControlErrorBody(.badRequest, "解析不出一个网址：\(raw)")
+            throw ControlErrorBody(.badRequest, "Could not resolve \(raw) to a URL")
         }
         let activate = try ctx.onOff("activate") ?? true
         let before = browser.tabs.count
         guard before < ControlBrowserLimits.maxTabs else {
             throw ControlErrorBody(
-                .denied, "\(handleName(hit.pane)) 已经有 \(before) 个标签（上限 \(ControlBrowserLimits.maxTabs)）",
-                hint: "先关掉一些：quickterm browser close -t \(handleName(hit.pane)) --others")
+                .denied, "\(handleName(hit.pane)) already holds \(before) tabs (limit \(ControlBrowserLimits.maxTabs))",
+                hint: "Close a few first: quickterm browser close -t \(handleName(hit.pane)) --others")
         }
         let base = path(hit.controller, hit.workspace, hit.pane)
 
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer,
-            changes: [ControlChange("\(base).tabs", from: "\(before) 个", to: "\(before + 1) 个")],
+            changes: [ControlChange("\(base).tabs", from: ControlChange.count(before, "tab"),
+                                    to: ControlChange.count(before + 1, "tab"))],
             controllers: [hit.controller],
             // 布局没动，撤销栈里放一条"关掉那个标签"的假动作只会更乱
             undoName: nil, target: base)
@@ -127,10 +128,10 @@ extension ControlCommandRunner {
     private func browserGoto(_ ctx: ControlContext) throws -> (ResolvedTarget?, any Encodable) {
         let (hit, browser) = try requireBrowser(ctx)
         guard let raw = ctx.string("url") else {
-            throw ControlErrorBody(.badRequest, "browser goto 需要 --url")
+            throw ControlErrorBody(.badRequest, "browser goto needs --url")
         }
         guard let url = ControlPaneFactory.resolveURL(raw) else {
-            throw ControlErrorBody(.badRequest, "解析不出一个网址：\(raw)")
+            throw ControlErrorBody(.badRequest, "Could not resolve \(raw) to a URL")
         }
         let handle = handleName(hit.pane)
         let index = try resolveTab(try tabRef(ctx), in: browser, handle: handle)
@@ -186,7 +187,7 @@ extension ControlCommandRunner {
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer,
             changes: [ControlChange("\(base).load",
                                     from: browserVisible(ctx, tab.effectiveURL?.absoluteString),
-                                    to: hard ? "重新加载（绕过缓存）" : "重新加载",
+                                    to: hard ? "reload (bypassing the cache)" : "reload",
                                     sensitive: true)],
             controllers: [hit.controller], undoName: nil, target: base)
         var payload = try commit(mutation) {
@@ -222,7 +223,7 @@ extension ControlCommandRunner {
             changes.append(ControlChange(
                 closesPane ? panePath : "\(panePath).tab\(index + 1)",
                 from: browserVisible(ctx, browser.tabs[index].displayTitle),
-                to: closesPane ? "closed（最后一个标签：整个 pane 一起关）" : "closed",
+                to: closesPane ? "closed (last tab: the whole pane goes with it)" : "closed",
                 sensitive: true))
         }
 
@@ -255,10 +256,10 @@ extension ControlCommandRunner {
         if payload.applied, closesPane, stillOpen {
             payload.confirmPending = true
             payload.applied = false
-            payload.note = "QuickTerm 弹了一句确认，pane 还没关；--force 可跳过"
+            payload.note = "QuickTerm put up a confirmation prompt, so the pane is not closed yet; --force skips it."
         }
         if payload.applied, closesPane, !stillOpen {
-            payload.note = "这是最后一个标签，整个 pane 一起关掉了（与 ⌘W 一致）"
+            payload.note = "That was the last tab, so the whole pane closed with it (same as ⌘W)."
         }
         // pane 还在（没关它、只关了标签，或者是一次预演）才回它的记录：
         // 关掉之后再编码一次等于回报一个已经不存在的东西

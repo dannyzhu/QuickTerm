@@ -24,8 +24,9 @@ extension ControlCommandRunner {
         // 一堆它根本没参与过的历史事件
         let since = ctx.int("since") ?? bus.seq
         guard since >= 0 else {
-            throw ControlErrorBody(.badRequest, "--since 不能是负数（给了 \(since)）",
-                                   hint: "第一次调用不写 --since 即可，或用 state 回的 seq")
+            throw ControlErrorBody(.badRequest, "--since cannot be negative (got \(since))",
+                                   hint: "Leave --since out on the first call, or pass the seq "
+                                       + "that state returned.")
         }
 
         let id = ctx.request.id
@@ -50,13 +51,15 @@ extension ControlCommandRunner {
             }
             guard ok else {
                 throw ControlErrorBody(
-                    .busy, "同时最多 \(ControlEventLimits.maxFollowers) 条 events follow（每条占住一条连接）",
-                    hint: "改用 quickterm events poll --since <seq>：它是给 agent 的主形式",
+                    .busy, "At most \(ControlEventLimits.maxFollowers) events follow streams "
+                        + "at once (each one holds a connection open)",
+                    hint: "Use quickterm events poll --since <seq> instead: that is the primary "
+                        + "form for agents.",
                     retryAfterMs: 1000)
             }
 
         default:
-            throw ControlErrorBody(.unknownCommand, "events 没有 \(ctx.spec.verb) 这个动词",
+            throw ControlErrorBody(.unknownCommand, "events has no verb \(ctx.spec.verb)",
                                    candidates: ControlCommandTable.commands(inGroup: "events").map(\.verb))
         }
     }

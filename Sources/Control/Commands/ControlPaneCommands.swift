@@ -17,7 +17,7 @@ extension ControlCommandRunner {
         case "set": return try paneSet(ctx)
         case "resize": return try paneResize(ctx)
         case "capture-text": return try paneCaptureText(ctx)
-        default: throw ControlErrorBody(.unknownCommand, "pane 没有 \(ctx.spec.verb) 这个动词")
+        default: throw ControlErrorBody(.unknownCommand, "pane has no verb \(ctx.spec.verb)")
         }
     }
 
@@ -38,8 +38,8 @@ extension ControlCommandRunner {
                 guard wanted.controller === controller, wanted.workspace == workspace else {
                     throw ControlErrorBody(
                         .badTarget,
-                        "--at \(handleName(hit.pane)) 在 \(path(controller, workspace))，与 -t 给的 \(path(wanted.controller, wanted.workspace)) 不符",
-                        hint: "去掉 -t，或换一个锚点")
+                        "--at \(handleName(hit.pane)) is in \(path(controller, workspace)), not in the \(path(wanted.controller, wanted.workspace)) that -t names",
+                        hint: "Drop -t, or pick another anchor.")
                 }
             }
         } else {
@@ -56,15 +56,15 @@ extension ControlCommandRunner {
         guard live < ControlRateLimiter.maxPanesPerWorkspace else {
             throw ControlErrorBody(
                 .denied,
-                "工作区 \(path(controller, workspace)) 已经有 \(live) 个 pane（上限 \(ControlRateLimiter.maxPanesPerWorkspace)）",
-                hint: "先关掉一些，或换一个工作区")
+                "Workspace \(path(controller, workspace)) already holds \(live) panes (limit \(ControlRateLimiter.maxPanesPerWorkspace))",
+                hint: "Close a few first, or use another workspace.")
         }
 
         let kind = ctx.string("kind") ?? "terminal"
         let zone = try ctx.zone()
         let cwd = ctx.string("cwd").map { ($0 as NSString).expandingTildeInPath }
         if let cwd, cwd.hasPrefix("~") || cwd.contains("\0") {
-            throw ControlErrorBody(.badRequest, "--cwd 不是一个可用的路径：\(cwd)")
+            throw ControlErrorBody(.badRequest, "--cwd is not a usable path: \(cwd)")
         }
         // **在动手之前**问一次隐私守卫：这个目录交给引擎会不会被挡下来。
         // 判定按根目录缓存（`WorkingDirectoryGate`），所以这一问是免费的，
@@ -80,10 +80,12 @@ extension ControlCommandRunner {
         if let cwdDenied, ctx.flag("require-cwd") {
             throw ControlErrorBody(
                 .denied,
-                "--cwd \(cwdDenied) 用不上：macOS 把它划成受保护目录，而 QuickTerm 没有拿到"
-                    + "「文件与文件夹」授权。--require-cwd 要求宁可失败也不落在别处，所以这次一个 pane 都没建",
-                hint: "在系统设置 ▸ 隐私与安全性 ▸ 文件与文件夹里给 QuickTerm 勾上对应的项并重启它；"
-                    + "或者去掉 --require-cwd（照常开 pane，响应里带一条 cwd_denied 告警）")
+                "--cwd \(cwdDenied) cannot be used: macOS counts it as a protected directory and QuickTerm has not "
+                    + "been granted Files and Folders access. --require-cwd asks to fail rather than land somewhere "
+                    + "else, so not a single pane was created",
+                hint: "Tick QuickTerm's entry under System Settings ▸ Privacy & Security ▸ Files and Folders and "
+                    + "restart it, or drop --require-cwd (the pane opens as usual and the response carries a "
+                    + "cwd_denied warning).")
         }
         // 造 pane 的那一份实现是共用的（`spec apply` 走同一条）：参数互斥与网址解析都在它那儿
         let recipe = ControlPaneFactory.Request(
@@ -95,7 +97,8 @@ extension ControlCommandRunner {
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer,
             changes: [ControlChange(path(controller, workspace),
-                                    from: "\(live) panes", to: "\(live + 1) panes")],
+                                    from: ControlChange.count(live, "pane"),
+                                    to: ControlChange.count(live + 1, "pane"))],
             controllers: [controller], undoName: "控制面：\(ctx.spec.cli)",
             target: path(controller, workspace, anchor))
 
@@ -105,7 +108,7 @@ extension ControlCommandRunner {
             guard controller.controlInsert(made.pane, workspace: workspace, anchor: anchor,
                                            zone: zone, focus: true) else {
                 ControlPaneFactory.discard(made, controller: controller)
-                throw ControlErrorBody(.failed, "没能把新 pane 插进 \(path(controller, workspace))")
+                throw ControlErrorBody(.failed, "Could not insert the new pane into \(path(controller, workspace))")
             }
             ControlPaneFactory.register(made, controller: controller)
             created = made.pane
@@ -144,12 +147,12 @@ extension ControlCommandRunner {
         var out: [String: String] = [:]
         for entry in raw {
             guard let eq = entry.firstIndex(of: "="), eq != entry.startIndex else {
-                throw ControlErrorBody(.badRequest, "--env 要写成 KEY=VALUE，收到 \(entry)")
+                throw ControlErrorBody(.badRequest, "--env must be written as KEY=VALUE, got \(entry)")
             }
             let key = String(entry[entry.startIndex..<eq])
             let value = String(entry[entry.index(after: eq)...])
             guard !key.contains(" "), (key + value).unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F }) else {
-                throw ControlErrorBody(.badRequest, "--env \(key) 含有非法字符")
+                throw ControlErrorBody(.badRequest, "--env \(key) contains illegal characters")
             }
             out[key] = value
         }
@@ -171,7 +174,7 @@ extension ControlCommandRunner {
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer,
             changes: [ControlChange(path(hit.controller, hit.workspace, hit.pane),
                                     // 标题是网页的标题 / 终端的标题：面板里写全，OSLog 里只留 path
-                                    from: "open「\(title)」", to: "closed", sensitive: true)],
+                                    from: "open \"\(title)\"", to: "closed", sensitive: true)],
             controllers: [hit.controller],
             // **不登记撤销**：进程已经被结束了，把布局放回去只会造出一个"好像还在"的假象
             undoName: nil,
@@ -193,7 +196,7 @@ extension ControlCommandRunner {
         if payload.applied, stillOpen {
             payload.confirmPending = true
             payload.applied = false
-            payload.note = "QuickTerm 弹了一句「仍有进程在运行」的确认，pane 还没关；--force 可跳过"
+            payload.note = "QuickTerm put up a \"processes are still running\" confirmation prompt, so the pane is not closed yet; --force skips it."
         }
         payload.workspace = ctx.encoder.workspaceInfo(hit.controller, index: hit.workspace)
         return (ResolvedTarget(screen: hit.controller.screenIndex + 1,
@@ -216,7 +219,7 @@ extension ControlCommandRunner {
             case "down": .direction(.down)
             case "next": .cycle(next: true)
             case "prev": .cycle(next: false)
-            default: throw ControlErrorBody(.badRequest, "pane focus 的方向只接受 left/right/up/down/next/prev")
+            default: throw ControlErrorBody(.badRequest, "pane focus takes a direction of left/right/up/down/next/prev")
             }
             target = relative
         }
@@ -247,13 +250,13 @@ extension ControlCommandRunner {
     private func paneMove(_ ctx: ControlContext) throws -> (ResolvedTarget?, any Encodable) {
         let hit = try requirePane(ctx, ctx.target)
         guard let toRaw = ctx.string("to") else {
-            throw ControlErrorBody(.badRequest, "pane move 需要 --to <screen:workspace>")
+            throw ControlErrorBody(.badRequest, "pane move needs --to <screen:workspace>")
         }
         guard let to = try ctx.parseTarget("to") else {
-            throw ControlErrorBody(.badRequest, "--to \(toRaw) 解析失败")
+            throw ControlErrorBody(.badRequest, "--to \(toRaw) does not parse")
         }
         guard to.pane == nil else {
-            throw ControlErrorBody(.badRequest, "--to 只接受 screen:workspace（落点用 --at / --where）")
+            throw ControlErrorBody(.badRequest, "--to takes screen:workspace only (use --at / --where for the drop point)")
         }
         let destination = try requireScope(ctx, to)
         let follow = ctx.flag("follow") && !ctx.flag("no-follow")
@@ -265,7 +268,7 @@ extension ControlCommandRunner {
                   anchorHit.workspace == destination.workspace else {
                 throw ControlErrorBody(
                     .badTarget,
-                    "--at \(handleName(anchorHit.pane)) 不在目标 \(path(destination.controller, destination.workspace)) 里")
+                    "--at \(handleName(anchorHit.pane)) is not in the target \(path(destination.controller, destination.workspace))")
             }
             anchor = anchorHit.pane
         }
@@ -285,7 +288,7 @@ extension ControlCommandRunner {
             let mutation = ControlMutationRequest(
                 command: ctx.spec.name, request: ctx.request, peer: ctx.peer,
                 changes: [ControlChange(path(hit.controller, hit.workspace, hit.pane),
-                                        from: "原位", to: "\(handleName(anchor)) 的 \(ctx.string("where") ?? "right")")],
+                                        from: "in place", to: "\(ctx.string("where") ?? "right") of \(handleName(anchor))")],
                 controllers: [hit.controller], undoName: "控制面：\(ctx.spec.cli)",
                 target: path(hit.controller, hit.workspace, hit.pane))
             var payload = try commit(mutation) {
@@ -313,7 +316,7 @@ extension ControlCommandRunner {
             guard source.controlHandOff(hit.pane, to: target, workspace: destination.workspace,
                                         anchor: anchor, zone: zone, follow: follow) else {
                 // controlHandOff 放不进去时已经把 pane 放回原处了：抛出 = 什么都没变
-                throw ControlErrorBody(.failed, "没能把 \(handleName(hit.pane)) 放进 \(path(target, destination.workspace))")
+                throw ControlErrorBody(.failed, "Could not put \(handleName(hit.pane)) into \(path(target, destination.workspace))")
             }
             moved = true
         }
@@ -324,7 +327,7 @@ extension ControlCommandRunner {
         payload.workspace = ctx.encoder.workspaceInfo(landedController, index: landedWorkspace)
         payload.focusPending = follow && landedController.focusedPane !== hit.pane ? true : nil
         if moved, !follow {
-            payload.note = "pane 已经在 \(path(landedController, landedWorkspace))，但没有跟随切过去（--follow 才切）"
+            payload.note = "The pane is now in \(path(landedController, landedWorkspace)), but the view did not follow it there (only --follow switches along)."
         }
         return (ResolvedTarget(screen: landedController.screenIndex + 1,
                                screenID: landedController.windowID.uuidString,
@@ -337,17 +340,17 @@ extension ControlCommandRunner {
     private func paneSwap(_ ctx: ControlContext) throws -> (ResolvedTarget?, any Encodable) {
         let hit = try requirePane(ctx, ctx.target)
         guard let withTarget = try ctx.parseTarget("with") else {
-            throw ControlErrorBody(.badRequest, "pane swap 需要 --with <pane>")
+            throw ControlErrorBody(.badRequest, "pane swap needs --with <pane>")
         }
         let other = try requirePane(ctx, withTarget)
         guard hit.pane !== other.pane else {
-            throw ControlErrorBody(.badRequest, "不能和自己交换（\(handleName(hit.pane))）")
+            throw ControlErrorBody(.badRequest, "A pane cannot be swapped with itself (\(handleName(hit.pane)))")
         }
         guard hit.controller === other.controller, hit.workspace == other.workspace else {
             throw ControlErrorBody(
                 .badTarget,
-                "两个 pane 不在同一个工作区（\(path(hit.controller, hit.workspace)) ↔ \(path(other.controller, other.workspace))）",
-                hint: "跨工作区请用 quickterm pane move")
+                "The two panes are not in the same workspace (\(path(hit.controller, hit.workspace)) ↔ \(path(other.controller, other.workspace)))",
+                hint: "To go across workspaces use quickterm pane move")
         }
         let controller = hit.controller
         let mutation = ControlMutationRequest(
@@ -359,8 +362,8 @@ extension ControlCommandRunner {
             target: path(controller, hit.workspace, hit.pane))
         var payload = try commit(mutation) {
             guard controller.controlSwap(hit.pane, other.pane, workspace: hit.workspace) else {
-                throw ControlErrorBody(.failed, "交换失败（两个 pane 必须都在平铺层里）",
-                                       hint: "浮动 pane 先 quickterm pane set --float off")
+                throw ControlErrorBody(.failed, "Swap failed: both panes have to be in the tiled layer",
+                                       hint: "For a floating pane, run quickterm pane set --float off first.")
             }
         }
         payload.pane = paneInfo(hit, encoder: ctx.encoder)
@@ -382,23 +385,23 @@ extension ControlCommandRunner {
         let title = ctx.rawString("title")
         guard zoom != nil || float != nil || width != nil || ratio != nil || title != nil else {
             throw ControlErrorBody(.badRequest,
-                                   "pane set 至少要给一个设值（--zoom / --float / --width / --ratio / --title）",
+                                   "pane set needs at least one value to set (--zoom / --float / --width / --ratio / --title)",
                                    hint: "quickterm pane set --help")
         }
         let layoutName = controller.model.layouts[hit.workspace].name
         if width != nil, layoutName != "scrolling" {
-            throw ControlErrorBody(.badRequest, "--width 只对 scrolling 工作区有意义（当前是 \(layoutName)）",
-                                   hint: "dwindle 用 --ratio")
+            throw ControlErrorBody(.badRequest, "--width only means anything in a scrolling workspace (this one is \(layoutName))",
+                                   hint: "In dwindle, use --ratio")
         }
         if ratio != nil, layoutName != "dwindle" {
-            throw ControlErrorBody(.badRequest, "--ratio 只对 dwindle 工作区有意义（当前是 \(layoutName)）",
-                                   hint: "scrolling 用 --width")
+            throw ControlErrorBody(.badRequest, "--ratio only means anything in a dwindle workspace (this one is \(layoutName))",
+                                   hint: "In scrolling, use --width")
         }
         if let width, !ScrollingStrip.widthRange.contains(width) {
             throw ControlErrorBody(
                 .badRequest,
-                "--width 必须在 \(ScrollingStrip.widthRange.lowerBound)–\(ScrollingStrip.widthRange.upperBound) 之间，收到 \(width)",
-                hint: "越界不会被静默夹紧：那样 agent 读回来的值和写下去的对不上")
+                "--width has to be between \(ScrollingStrip.widthRange.lowerBound) and \(ScrollingStrip.widthRange.upperBound), got \(width)",
+                hint: "An out-of-range value is not silently clamped: that would leave the value an agent reads back different from the one it wrote.")
         }
         // 收的是**引擎真的能持有的**那一段（= spec 的 ratioRange），不是手打舒服的 0.1–0.9：
         // 鼠标拖分隔条只夹到 10pt，一块 1600pt 宽的 pane 拖到底就是 0.006，
@@ -407,8 +410,8 @@ extension ControlCommandRunner {
         if let ratio, !SpecLimits.ratioRange.contains(ratio) {
             throw ControlErrorBody(
                 .badRequest,
-                "--ratio 必须在 \(SpecLimits.ratioRange.lowerBound)–\(SpecLimits.ratioRange.upperBound) 之间，收到 \(ratio)",
-                hint: "想按鼠标那条最小尺寸规则夹一下就用 pane resize --ratio")
+                "--ratio has to be between \(SpecLimits.ratioRange.lowerBound) and \(SpecLimits.ratioRange.upperBound), got \(ratio)",
+                hint: "To have it clamped by the same minimum-size rule the mouse follows, use pane resize --ratio")
         }
 
         let base = path(controller, hit.workspace, hit.pane)
@@ -417,8 +420,8 @@ extension ControlCommandRunner {
         if let float, float != floatingNow {
             guard hit.workspace == controller.model.activeIndex else {
                 throw ControlErrorBody(
-                    .badTarget, "--float 只能作用于活动工作区里的 pane（浮动层的几何要按当前窗口算）",
-                    hint: "先 quickterm workspace goto \(hit.workspace + 1)")
+                    .badTarget, "--float only works on a pane in the active workspace (floating geometry is measured against the current window)",
+                    hint: "Run quickterm workspace goto \(hit.workspace + 1) first.")
             }
             changes.append(ControlChange("\(base).float", from: floatingNow ? "on" : "off", to: float ? "on" : "off"))
         }
@@ -429,8 +432,9 @@ extension ControlCommandRunner {
         if willFloat, zoom == true || width != nil || ratio != nil {
             throw ControlErrorBody(
                 .badRequest,
-                "\(handleName(hit.pane)) 设完仍在浮动层，而 --zoom / --width / --ratio 都是平铺层内的属性",
-                hint: "同一条命令里加 --float off，就会先落回平铺层再设这些值")
+                "\(handleName(hit.pane)) will still be floating afterwards, and --zoom / --width / --ratio are all properties of the tiled layer",
+                hint: "Add --float off to the same command and the pane drops back into the tiled layer "
+                    + "before these values are set.")
         }
 
         let zoomedNow = controller.controlIsZoomed(hit.pane, workspace: hit.workspace)
@@ -446,7 +450,7 @@ extension ControlCommandRunner {
             } else {
                 // 正要从浮动层落回平铺列（--float off）：此刻还没有列宽，
                 // 不记的话 --dry-run 会漏报一个真会发生的改动，而且这一条会被当成空操作退 7
-                changes.append(ControlChange("\(base).width", from: "浮动（无列宽）", to: Self.number(width)))
+                changes.append(ControlChange("\(base).width", from: "floating (no column width)", to: Self.number(width)))
             }
         }
         let ratioNow = controller.controlSplitRatio(of: hit.pane, workspace: hit.workspace)
@@ -457,9 +461,9 @@ extension ControlCommandRunner {
                 }
             } else if floatingNow, !controller.model.layouts[hit.workspace].paneList.isEmpty {
                 // 正要落回平铺层，而树里已经有别的 pane：插进去之后一定有父 split
-                changes.append(ControlChange("\(base).ratio", from: "浮动（无父 split）", to: Self.number(ratio)))
+                changes.append(ControlChange("\(base).ratio", from: "floating (no parent split)", to: Self.number(ratio)))
             } else {
-                throw ControlErrorBody(.badRequest, "\(handleName(hit.pane)) 没有父 split（树里只有它一个），--ratio 无从设起")
+                throw ControlErrorBody(.badRequest, "\(handleName(hit.pane)) has no parent split (it is the only pane in the tree), so --ratio has nothing to set")
             }
         }
 
@@ -470,25 +474,25 @@ extension ControlCommandRunner {
             guard let surface = hit.pane as? Ghostty.SurfaceView else {
                 throw ControlErrorBody(
                     .wrongPaneKind,
-                    "\(handleName(hit.pane)) 是 \(hit.pane.kind.rawValue) pane，标题不是它自己的"
-                        + "（浏览器 pane 的标题来自网页）",
-                    hint: "只有 kind=terminal 的 pane 能设标题")
+                    "\(handleName(hit.pane)) is a \(hit.pane.kind.rawValue) pane, and its title is not its own to set "
+                        + "(a browser pane's title comes from the web page)",
+                    hint: "Only a kind=terminal pane can have its title set.")
             }
             guard title.count <= Self.maxTitleLength else {
                 throw ControlErrorBody(.badRequest,
-                                       "--title 太长了（\(title.count) 个字符，上限 \(Self.maxTitleLength)）")
+                                       "--title is too long (\(title.count) characters, limit \(Self.maxTitleLength))")
             }
             guard title.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F
                                                     && !(0x80...0x9F).contains($0.value) }) else {
-                throw ControlErrorBody(.badRequest, "--title 里有控制字符",
-                                       hint: "标题会原样画进 pane 的标题栏与 state 的 title 字段")
+                throw ControlErrorBody(.badRequest, "--title contains control characters",
+                                       hint: "The title is drawn verbatim onto the pane's title bar and echoed in the title field of state.")
             }
             surfaceForTitle = surface
             let now = surface.paneTitle
             if title.isEmpty {
                 // 还原：只有真的被接管过才算一次改动（跑第二次就是空操作，退 7 靠的就是这一条）
                 if surface.hasControlTitle {
-                    changes.append(ControlChange("\(base).title", from: now, to: "（交还给 shell）",
+                    changes.append(ControlChange("\(base).title", from: now, to: "(handed back to the shell)",
                                                  sensitive: true))
                 }
             } else if !(surface.hasControlTitle && now == title) {
@@ -498,7 +502,7 @@ extension ControlCommandRunner {
                 // 会把它换掉——而调用方收到的是一句 success。绝对设值要的是"跑完之后它就是这个"
                 changes.append(ControlChange(
                     "\(base).title",
-                    from: surface.hasControlTitle ? now : "「\(now)」（shell 报的，未接管）",
+                    from: surface.hasControlTitle ? now : "\"\(now)\" (reported by the shell, not taken over)",
                     to: title, sensitive: true))
             }
         }
@@ -543,18 +547,18 @@ extension ControlCommandRunner {
 
         let given = [widthRaw, ratioRaw, pointsRaw].compactMap { $0 }
         guard given.count <= 1 else {
-            throw ControlErrorBody(.badRequest, "--width / --ratio / --points 一次只能给一个",
-                                   hint: "点数用 --points，比例用 --ratio，列宽因子用 --width")
+            throw ControlErrorBody(.badRequest, "--width / --ratio / --points: only one of them per call",
+                                   hint: "Points go in --points, a ratio in --ratio, a column width factor in --width")
         }
         guard !given.isEmpty || dirRaw != nil else {
             throw ControlErrorBody(
                 .badRequest,
-                "pane resize 需要 --width / --ratio / --points（可以是 +0.05 这样的增量），或者 --dir",
-                hint: "quickterm pane resize -t t7 --dir right 就等于按一次 ⌘⌃→")
+                "pane resize needs --width / --ratio / --points (a delta such as +0.05 is fine), or --dir",
+                hint: "quickterm pane resize -t t7 --dir right does exactly what pressing ⌘⌃→ once does.")
         }
         if splitPath != nil, !dwindle {
-            throw ControlErrorBody(.badRequest, "--split 只对 dwindle 工作区有意义（当前是 scrolling）",
-                                   hint: "scrolling 调的是列宽：--width / --points")
+            throw ControlErrorBody(.badRequest, "--split only means anything in a dwindle workspace (this one is scrolling)",
+                                   hint: "In scrolling what you resize is the column width: --width / --points")
         }
 
         var changes: [ControlChange] = []
@@ -563,19 +567,19 @@ extension ControlCommandRunner {
         if let dirRaw {
             // ② 快捷键 / ⌘右键拖拽那条：方向决定符号，点数是位移量
             guard widthRaw == nil, ratioRaw == nil else {
-                throw ControlErrorBody(.badRequest, "--dir 是按点数调的那一条，配 --points 用",
-                                       hint: "要直接设比例就别给 --dir：--ratio 0.62 [--split a]")
+                throw ControlErrorBody(.badRequest, "--dir is the resize-by-points path, so pair it with --points",
+                                       hint: "To set a ratio outright, leave out --dir: --ratio 0.62 [--split a]")
             }
             // `--dir` 调的是**就近的同向**分隔条（哪一条由方向和树形决定），
             // 指名道姓的 `--split` 在这条路上无处安放。悄悄丢掉它就成了"agent 以为
             // 调了根那条、实际调了别的一条"——这正是控制面最不能犯的那种错
             guard splitPath == nil else {
                 throw ControlErrorBody(
-                    .badRequest, "--dir 走的是就近同向分隔条那条路，不能同时用 --split 指名哪一条",
-                    hint: "指名就别给 --dir：--split root --points +100，或 --split a.b --ratio 0.62")
+                    .badRequest, "--dir takes the nearest divider running the same way, so it cannot also name one with --split",
+                    hint: "To name one, leave out --dir: --split root --points +100, or --split a.b --ratio 0.62")
             }
             guard let direction = Self.direction(dirRaw) else {
-                throw ControlErrorBody(.badRequest, "--dir 只接受 left / right / up / down",
+                throw ControlErrorBody(.badRequest, "--dir takes left / right / up / down only",
                                        candidates: ["left", "right", "up", "down"])
             }
             let points = try Self.magnitude(pointsRaw ?? "100", flag: "--points")
@@ -612,16 +616,16 @@ extension ControlCommandRunner {
         case .dwindle(let tree):
             guard let node = tree.root?.node(view: hit.pane),
                   let size = ControlGeometry.contentSize(controller) else {
-                throw ControlErrorBody(.failed, "这个工作区现在算不出几何（窗口还没挂上）",
-                                       hint: "稍后重试，或改用 --ratio")
+                throw ControlErrorBody(.failed, "Geometry cannot be measured for this workspace right now (the window is not laid out yet)",
+                                       hint: "Retry shortly, or use --ratio instead.")
             }
             let bounds = CGRect(origin: .zero, size: size)
             guard let next = try? tree.resizing(node: node, by: UInt16(min(max(points, 1), 30000)),
                                                 in: direction.spatial, with: bounds) else {
                 throw ControlErrorBody(
                     .badRequest,
-                    "\(handleName(hit.pane)) 往 \(Self.name(direction)) 这边没有可调的分隔条",
-                    hint: "换一个方向，或用 --split 指名一条")
+                    "--dir \(Self.name(direction)): \(handleName(hit.pane)) has no divider on that side to resize",
+                    hint: "Try another direction, or name a divider with --split")
             }
             return (Self.splitChanges(before: tree, after: next, workspacePath: workspacePath),
                     { controller.controlResizeSplit(hit.pane, workspace: hit.workspace,
@@ -629,8 +633,8 @@ extension ControlCommandRunner {
         case .scrolling(let strip):
             guard direction == .left || direction == .right else {
                 throw ControlErrorBody(.badRequest,
-                                       "scrolling 的列宽只有左右可调（↑/↓ 与快捷键一样没有效果）",
-                                       hint: "要调列内高度请换 dwindle 布局")
+                                       "In scrolling only the column width is adjustable, so only left / right do anything (up / down are no-ops here, exactly as the keybindings are)",
+                                       hint: "To resize heights inside a column, switch the workspace to the dwindle layout.")
             }
             let delta = (direction == .left ? -points : points)
             return previewColumnDelta(hit: hit, strip: strip, deltaPoints: delta, base: base)
@@ -643,8 +647,8 @@ extension ControlCommandRunner {
         widthRaw: String?, workspacePath: String) throws -> ([ControlChange], () -> Void) {
         let controller = hit.controller
         if widthRaw != nil {
-            throw ControlErrorBody(.badRequest, "--width 只对 scrolling 工作区有意义",
-                                   hint: "dwindle 用 --ratio / --points")
+            throw ControlErrorBody(.badRequest, "--width only means anything in a scrolling workspace",
+                                   hint: "In dwindle, use --ratio / --points")
         }
         // 根那条分隔条的路径是空串，而空串在命令行上传不过来（`--split ""` = 没给）：
         // 给它一个名字 `root`
@@ -652,12 +656,12 @@ extension ControlCommandRunner {
             ?? controller.controlParentSplitPath(of: hit.pane, workspace: hit.workspace)
         guard let wanted else {
             throw ControlErrorBody(.badRequest,
-                                   "\(handleName(hit.pane)) 没有父 split（树里只有它一个），没有分隔条可调")
+                                   "\(handleName(hit.pane)) has no parent split (it is the only pane in the tree), so there is no divider to resize")
         }
         guard let slot = controller.controlSplitSlot(workspace: hit.workspace, path: wanted) else {
             let available = Self.splitPaths(of: controller, workspace: hit.workspace)
-            throw ControlErrorBody(.notFound, "这个工作区里没有 \(Self.quoted(wanted)) 这条分裂",
-                                   hint: "`a` = 左 / 上，`b` = 右 / 下，点号连接；根那条写 `root`",
+            throw ControlErrorBody(.notFound, "This workspace has no split at \(Self.quoted(wanted))",
+                                   hint: "`a` = left / top, `b` = right / bottom, joined with dots; the root one is written `root`",
                                    candidates: available.map(Self.quoted))
         }
         // 这条分裂在分隔方向上的长度（pt）：点数与比例之间就是除以它。
@@ -671,15 +675,15 @@ extension ControlCommandRunner {
             target = try Self.applyDelta(ratioRaw, to: now, flag: "--ratio")
         } else if let pointsRaw {
             guard let span, span > 0 else {
-                throw ControlErrorBody(.failed, "窗口还没挂上，点数换算不了",
-                                       hint: "改用 --ratio，或稍后重试")
+                throw ControlErrorBody(.failed, "The window is not laid out yet, so points cannot be converted",
+                                       hint: "Use --ratio instead, or retry shortly.")
             }
             let text = pointsRaw.trimmingCharacters(in: .whitespaces)
             let value = try Self.number(text, flag: "--points")
             // 带符号 = 把这条分隔条**挪** N 点（正 = 往右 / 往下），裸数字 = 把 a 那一侧设成 N 点
             target = (text.hasPrefix("+") || text.hasPrefix("-")) ? now + value / span : value / span
         } else {
-            throw ControlErrorBody(.badRequest, "dwindle 的 resize 要给 --ratio 或 --points")
+            throw ControlErrorBody(.badRequest, "resize in a dwindle workspace needs --ratio or --points")
         }
         // 夹取：**和拖拽手势同一个函数**（两侧各留 10pt）；量不出长度时退回 0.1–0.9
         let clamped: Double
@@ -705,12 +709,12 @@ extension ControlCommandRunner {
         base: String) throws -> ([ControlChange], () -> Void) {
         let controller = hit.controller
         if ratioRaw != nil {
-            throw ControlErrorBody(.badRequest, "--ratio 只对 dwindle 工作区有意义",
-                                   hint: "scrolling 用 --width / --points")
+            throw ControlErrorBody(.badRequest, "--ratio only means anything in a dwindle workspace",
+                                   hint: "In scrolling, use --width / --points")
         }
         guard let now = controller.controlColumnWidth(of: hit.pane, workspace: hit.workspace) else {
             throw ControlErrorBody(.badRequest,
-                                   "\(handleName(hit.pane)) 不在任何一列里（浮动 pane 没有列宽）")
+                                   "\(handleName(hit.pane)) is not in any column (a floating pane has no column width)")
         }
         let viewport = ControlGeometry.contentSize(controller)?.width
         var target: Double
@@ -718,14 +722,14 @@ extension ControlCommandRunner {
             target = try Self.applyDelta(widthRaw, to: now, flag: "--width")
         } else if let pointsRaw {
             guard let viewport, viewport > 0 else {
-                throw ControlErrorBody(.failed, "窗口还没挂上，点数换算不了", hint: "改用 --width")
+                throw ControlErrorBody(.failed, "The window is not laid out yet, so points cannot be converted", hint: "Use --width instead.")
             }
             let text = pointsRaw.trimmingCharacters(in: .whitespaces)
             let value = try Self.number(text, flag: "--points")
             target = (text.hasPrefix("+") || text.hasPrefix("-"))
                 ? now + value / Double(viewport) : value / Double(viewport)
         } else {
-            throw ControlErrorBody(.badRequest, "scrolling 的 resize 要给 --width 或 --points")
+            throw ControlErrorBody(.badRequest, "resize in a scrolling workspace needs --width or --points")
         }
         let clamped = min(max(target, ScrollingStrip.widthRange.lowerBound),
                           ScrollingStrip.widthRange.upperBound)
@@ -801,10 +805,10 @@ extension ControlCommandRunner {
 
     static func name(_ direction: ScrollingStrip.Direction) -> String {
         switch direction {
-        case .left: "左"
-        case .right: "右"
-        case .up: "上"
-        case .down: "下"
+        case .left: "left"
+        case .right: "right"
+        case .up: "up"
+        case .down: "down"
         }
     }
 
@@ -812,14 +816,14 @@ extension ControlCommandRunner {
     static func magnitude(_ raw: String, flag: String) throws -> Double {
         let value = try number(raw, flag: flag)
         guard value > 0 else {
-            throw ControlErrorBody(.badRequest, "\(flag) 要是一个正数（方向由 --dir 决定），收到 \(raw)")
+            throw ControlErrorBody(.badRequest, "\(flag) has to be a positive number (the direction comes from --dir), got \(raw)")
         }
         return value
     }
 
     static func number(_ raw: String, flag: String) throws -> Double {
         guard let value = Double(raw.trimmingCharacters(in: .whitespaces)) else {
-            throw ControlErrorBody(.badRequest, "\(flag) 不是一个数字：\(raw)")
+            throw ControlErrorBody(.badRequest, "\(flag) is not a number: \(raw)")
         }
         return value
     }
@@ -830,12 +834,12 @@ extension ControlCommandRunner {
         let text = raw.trimmingCharacters(in: .whitespaces)
         if text.hasPrefix("+") || text.hasPrefix("-") {
             guard let delta = Double(text) else {
-                throw ControlErrorBody(.badRequest, "\(flag) 不是一个数字：\(raw)")
+                throw ControlErrorBody(.badRequest, "\(flag) is not a number: \(raw)")
             }
             return current + delta
         }
         guard let absolute = Double(text) else {
-            throw ControlErrorBody(.badRequest, "\(flag) 不是一个数字：\(raw)")
+            throw ControlErrorBody(.badRequest, "\(flag) is not a number: \(raw)")
         }
         return absolute
     }

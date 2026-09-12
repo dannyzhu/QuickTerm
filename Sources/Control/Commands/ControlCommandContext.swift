@@ -42,7 +42,7 @@ struct ControlContext {
         case "on", "true", "yes", "1": return true
         case "off", "false", "no", "0": return false
         default:
-            throw ControlErrorBody(.badRequest, "--\(name) 只接受 on / off，收到 \(raw)",
+            throw ControlErrorBody(.badRequest, "--\(name) takes on / off only, got \(raw)",
                                    candidates: ["on", "off"])
         }
     }
@@ -57,7 +57,7 @@ struct ControlContext {
         case "down": return .bottom
         case "stack": return .bottom   // 併入锚点所在的纵栈（scrolling 的"栈"就是列内往下加一层）
         default:
-            throw ControlErrorBody(.badRequest, "--\(name) 只接受 right / left / up / down / stack",
+            throw ControlErrorBody(.badRequest, "--\(name) takes right / left / up / down / stack only",
                                    candidates: ["right", "left", "up", "down", "stack"])
         }
     }
@@ -68,7 +68,7 @@ struct ControlContext {
         do {
             return try ControlTarget.parse(raw)
         } catch {
-            throw ControlErrorBody(.badTarget, "--\(name) \(raw)：\(error)",
+            throw ControlErrorBody(.badTarget, "--\(name) \(raw): \(error)",
                                    hint: ControlTarget.grammarLines.joined(separator: " / "))
         }
     }
@@ -89,14 +89,14 @@ extension ControlCommandRunner {
         if effective.pane == nil { effective.pane = .focused }
         let resolution = try ctx.resolver.resolve(effective)
         guard let pane = resolution.pane else {
-            throw ControlErrorBody(.notFound, "没有可寻址的 pane",
-                                   hint: "quickterm list panes 看现有句柄")
+            throw ControlErrorBody(.notFound, "No pane to address",
+                                   hint: "quickterm list panes shows the handles that exist.")
         }
         resolution.controller.flushPendingCloses()
         // flush 之后再核一次：淡出中的 pane 到点会被真正移除，落刀前它可能已经不在布局里了
         guard resolution.controller.model.allPanes.contains(where: { $0 === pane }) else {
-            throw ControlErrorBody(.notFound, "目标 pane 已经不在布局里了（可能刚被关掉）",
-                                   hint: "重新读一次 quickterm state")
+            throw ControlErrorBody(.notFound, "The target pane is no longer in the layout (it may have just been closed)",
+                                   hint: "Read quickterm state again.")
         }
         return PaneHit(controller: resolution.controller, workspace: resolution.workspace,
                        pane: pane, echo: resolution.echo)
@@ -152,8 +152,9 @@ extension ControlCommandRunner {
         }
         guard !drifted else {
             throw ControlErrorBody(
-                .busy, "确认期间目标变了（当时确认的是 \(pinned.description)）：本次什么都没做",
-                hint: "重新发一次，或用 -t 精确指定", retryAfterMs: 200)
+                .busy, "The target changed while the confirmation prompt was up "
+                    + "(what was confirmed: \(pinned.description)): nothing was done",
+                hint: "Send it again, or name the target exactly with -t.", retryAfterMs: 200)
         }
     }
 
@@ -176,8 +177,9 @@ extension ControlCommandRunner {
         }
         guard !drifted else {
             throw ControlErrorBody(
-                .busy, "确认期间目标变了（当时确认的是 \(pinned.description)）：本次什么都没做",
-                hint: "重新发一次，或用 -t 精确指定", retryAfterMs: 200)
+                .busy, "The target changed while the confirmation prompt was up "
+                    + "(what was confirmed: \(pinned.description)): nothing was done",
+                hint: "Send it again, or name the target exactly with -t.", retryAfterMs: 200)
         }
     }
 }

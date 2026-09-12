@@ -12,7 +12,7 @@ extension ControlCommandRunner {
         case "dump": return try specDump(ctx)
         case "validate": return try specValidate(ctx)
         case "apply": return try specApply(ctx)
-        default: throw ControlErrorBody(.unknownCommand, "spec 没有 \(ctx.spec.verb) 这个动词")
+        default: throw ControlErrorBody(.unknownCommand, "spec has no verb \(ctx.spec.verb)")
         }
     }
 
@@ -67,7 +67,8 @@ extension ControlCommandRunner {
         case .screen(let screen):
             try Self.checkWorkspaceIndices(screen, controller: scope.controller)
             if screen.frame != nil || screen.display != nil {
-                notes.append("display / frame 只在 dump 里回显：spec apply 不搬窗口（用 quickterm screen move）")
+                notes.append("display / frame is echoed back by dump only: spec apply never "
+                             + "moves windows (use quickterm screen move)")
             }
         case .session(let session):
             for (controller, screen) in try Self.screenPlan(session, screens: screens) {
@@ -75,9 +76,11 @@ extension ControlCommandRunner {
             }
         }
         if Self.mentionsCommands(document) {
-            notes.append("cmd / env / hold 只进不出：spec dump 回吐不了一个正在跑的命令。"
-                         + "--reuse 会把对得上的 pane 原地留着（不重跑），"
-                         + "--replace 则是拆了重建（那条命令会重新跑起来）")
+            notes.append("cmd / env / hold go in but never come back out: spec dump cannot "
+                         + "reproduce a command that is already running. --reuse leaves a "
+                         + "matching pane exactly where it is (its command is not re-run); "
+                         + "--replace tears the pane down and rebuilds it (its command "
+                         + "starts over)")
         }
         let payload = ControlSpecValidatePayload(
             valid: true, scope: document.kind.rawValue, schema: Self.schema(of: document),
@@ -90,8 +93,10 @@ extension ControlCommandRunner {
         let count = controller.model.layouts.count
         if let active = screen.activeWorkspace, active < 1 || active > count {
             throw ControlErrorBody(
-                .badRequest, "activeWorkspace \(active) 越界：屏幕 \(controller.screenIndex + 1) 有 \(count) 个工作区（1–\(count)）",
-                hint: "quickterm workspace count N 可以改（1–10）")
+                .badRequest,
+                "activeWorkspace \(active) is out of range: screen \(controller.screenIndex + 1) "
+                    + "has \(ControlChange.count(count, "workspace")) (1–\(count))",
+                hint: "Change the count with quickterm workspace count N (1–10).")
         }
         var seen = Set<Int>()
         for (i, workspace) in (screen.workspaces ?? []).enumerated() {
@@ -99,8 +104,9 @@ extension ControlCommandRunner {
             guard index >= 1, index <= count else {
                 throw ControlErrorBody(
                     .badRequest,
-                    "workspaces[\(i)] 落到工作区 \(index)，而屏幕 \(controller.screenIndex + 1) 只有 \(count) 个（1–\(count)）",
-                    hint: "quickterm workspace count N 可以改（1–10）")
+                    "workspaces[\(i)] lands on workspace \(index), but screen "
+                        + "\(controller.screenIndex + 1) only has \(count) (1–\(count))",
+                    hint: "Change the count with quickterm workspace count N (1–10).")
             }
             // 同一个工作区在一份 spec 里只能出现一次。两份都落下去的话，后一份的
             // `model.layouts[i] = …` 会把前一份**按赋值**盖掉：前一份建出来的 pane
@@ -109,8 +115,10 @@ extension ControlCommandRunner {
             guard seen.insert(index).inserted else {
                 throw ControlErrorBody(
                     .badRequest,
-                    "workspaces[\(i)] 又落到工作区 \(index)：同一个工作区在一份 spec 里只能写一次",
-                    hint: "不写 index 就是按数组下标算的——显式 index 与位置默认值混着写最容易撞车")
+                    "workspaces[\(i)] lands on workspace \(index) again: one workspace may "
+                        + "only appear once in a spec",
+                    hint: "Leaving index out means the array position decides. Mixing explicit "
+                        + "index values with positional defaults is the easiest way to collide.")
             }
         }
     }
@@ -123,8 +131,10 @@ extension ControlCommandRunner {
         let wanted = (session.screens ?? []).count
         guard wanted <= live.count else {
             throw ControlErrorBody(
-                .badRequest, "这份会话写了 \(wanted) 块屏幕，现在只有 \(live.count) 块",
-                hint: "先 quickterm screen new 把屏幕开够——spec apply 不会替你开窗口")
+                .badRequest, "This session spec describes \(wanted) screens, and only "
+                    + "\(live.count) exist right now",
+                hint: "Open enough screens first with quickterm screen new: spec apply does not "
+                    + "open windows for you.")
         }
         var out: [(controller: MainWindowController, spec: ScreenSpec)] = []
         var seen = Set<Int>()
@@ -132,17 +142,19 @@ extension ControlCommandRunner {
             let index = (screen.index ?? (i + 1)) - 1
             guard live.indices.contains(index) else {
                 throw ControlErrorBody(.badRequest,
-                                       "screens[\(i)] 指向屏幕 \(index + 1)，现在只有 \(live.count) 块")
+                                       "screens[\(i)] points at screen \(index + 1), and only "
+                                           + "\(live.count) exist right now")
             }
             guard seen.insert(index).inserted else {
                 throw ControlErrorBody(
-                    .badRequest, "screens[\(i)] 又落到屏幕 \(index + 1)：同一块屏幕只能写一次",
-                    hint: "不写 index 就是按数组下标算的")
+                    .badRequest, "screens[\(i)] lands on screen \(index + 1) again: one screen "
+                        + "may only appear once",
+                    hint: "Leaving index out means the array position decides.")
             }
             out.append((live[index], screen))
         }
         if let key = session.keyScreen, !live.indices.contains(key - 1) {
-            throw ControlErrorBody(.badRequest, "keyScreen \(key) 指向一块不存在的屏幕")
+            throw ControlErrorBody(.badRequest, "keyScreen \(key) points at a screen that does not exist")
         }
         return out
     }
@@ -205,7 +217,8 @@ extension ControlCommandRunner {
             if !controllers.contains(where: { $0 === controller }) { controllers.append(controller) }
             screenSettings.append((controller, spec))
             if spec.frame != nil || spec.display != nil {
-                skipped.append("屏幕 \(controller.screenIndex + 1) 的 display / frame（spec apply 不搬窗口）")
+                skipped.append("display / frame on screen \(controller.screenIndex + 1) "
+                               + "(spec apply does not move windows)")
             }
             for (i, workspace) in (spec.workspaces ?? []).enumerated() {
                 let index = (workspace.index ?? (i + 1)) - 1
@@ -241,9 +254,11 @@ extension ControlCommandRunner {
             if mode == .intoEmpty, !applier.existingPanes.isEmpty {
                 throw ControlErrorBody(
                     .confirmationRequired,
-                    "\(path(applier.controller, applier.workspace)) 里已经有 \(applier.existingPanes.count) 个 pane，"
-                        + "--into-empty 不动非空工作区",
-                    hint: "--replace 覆盖（会先确认，其中的进程会被结束）；--reuse 保留能对上的 pane")
+                    "\(path(applier.controller, applier.workspace)) already holds "
+                        + ControlChange.count(applier.existingPanes.count, "pane")
+                        + ", and --into-empty leaves a non-empty workspace alone",
+                    hint: "--replace overwrites it (it confirms first, and the processes inside "
+                        + "are killed); --reuse keeps the panes that match.")
             }
             changes += applier.changes(at: path(applier.controller, applier.workspace))
         }
@@ -256,11 +271,14 @@ extension ControlCommandRunner {
         if !deniedDirectories.isEmpty, ctx.flag("require-cwd") {
             throw ControlErrorBody(
                 .denied,
-                "这份 spec 里有 \(deniedDirectories.count) 个目录用不上（macOS 受保护目录，缺少「文件与文件夹」授权）："
-                    + deniedDirectories.joined(separator: "、")
-                    + "。--require-cwd 要求宁可失败也不落在别处，所以这次什么都没动",
-                hint: "在系统设置 ▸ 隐私与安全性 ▸ 文件与文件夹里给 QuickTerm 授权并重启它；"
-                    + "或者去掉 --require-cwd（照常铺，响应里带 cwd_denied 告警）")
+                "\(deniedDirectories.count) directories in this spec are unusable (macOS "
+                    + "protected directories, and the Files and Folders permission is missing): "
+                    + deniedDirectories.joined(separator: ", ")
+                    + ". --require-cwd asks to fail rather than land somewhere else, so nothing "
+                    + "was touched this time",
+                hint: "Tick QuickTerm's entry under System Settings ▸ Privacy & Security ▸ Files "
+                    + "and Folders and restart it, or drop --require-cwd (the layout is applied "
+                    + "anyway and the response carries a cwd_denied warning).")
         }
         for (controller, spec) in screenSettings {
             changes += Self.screenChanges(spec, controller: controller, path: path(controller))
@@ -385,8 +403,9 @@ extension ControlCommandRunner {
     /// 两个进程的 cwd 与权限本来就不一样，而"服务端替你 open 一个路径"是个能被滥用的原语）
     static func parseSpecArgument(_ ctx: ControlContext) throws -> SpecDocument {
         guard let text = ctx.string("spec"), !text.isEmpty else {
-            throw ControlErrorBody(.badRequest, "没有拿到 spec 内容",
-                                   hint: "quickterm spec \(ctx.spec.verb) -f <文件>，或从标准输入喂进来")
+            throw ControlErrorBody(.badRequest, "No spec content was provided",
+                                   hint: "quickterm spec \(ctx.spec.verb) -f <file>, or pipe the "
+                                       + "spec in on stdin")
         }
         return try SpecParser.parse(text)
     }
@@ -395,7 +414,8 @@ extension ControlCommandRunner {
         let flags = SpecApplier.Mode.allCases.filter { ctx.flag($0.rawValue) }
         guard flags.count <= 1 else {
             throw ControlErrorBody(.badRequest,
-                                   "--into-empty / --replace / --reuse 只能选一个，收到 "
+                                   "--into-empty / --replace / --reuse are mutually exclusive, "
+                                       + "got "
                                        + flags.map { "--\($0.rawValue)" }.joined(separator: " "),
                                    candidates: SpecApplier.Mode.allCases.map(\.rawValue))
         }

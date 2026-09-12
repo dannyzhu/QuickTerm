@@ -108,14 +108,14 @@ final class ControlServer {
         } catch {
             // id 都读不出来：用 "0" 应答，让客户端至少能报出一条结构化错误
             connection.send(.failure(id: "0", seq: nil,
-                                     error: ControlErrorBody(.badRequest, "请求不是合法的 NDJSON 对象：\(error)")))
+                                     error: ControlErrorBody(.badRequest, "The request is not a valid NDJSON object: \(error)")))
             return
         }
         if Self.isMutation(request), !connection.consumeMutationToken() {
             connection.send(.failure(id: request.id, seq: nil,
                                      error: ControlErrorBody(.rateLimited,
-                                                             "变更速率超过 \(Int(Self.mutationsPerSecond))/s",
-                                                             hint: "把批量操作合并，或放慢重试",
+                                                             "Mutation rate above \(Int(Self.mutationsPerSecond))/s",
+                                                             hint: "Batch the operations, or retry more slowly.",
                                                              retryAfterMs: 250)))
             return
         }
@@ -189,8 +189,8 @@ final class ControlServer {
                         // 对端只看到 EOF —— 成了一个没有 code 的"连接被断了"，
                         // 而不是我们承诺的结构化 bad_request
                         sendNow(.failure(id: "0", seq: nil,
-                                         error: ControlErrorBody(.badRequest, "单条请求超过 1 MiB",
-                                                                 hint: "把参数拆小；单行上限 1 MiB")))
+                                         error: ControlErrorBody(.badRequest, "A single request went over 1 MiB",
+                                                                 hint: "Split the arguments up; the per-line limit is 1 MiB.")))
                         close()
                         return
                     }
@@ -235,7 +235,7 @@ final class ControlServer {
             } catch {
                 let fallback = ControlResponse.failure(
                     id: response.id, seq: nil,
-                    error: ControlErrorBody(.internalError, "响应编码失败"))
+                    error: ControlErrorBody(.internalError, "Failed to encode the response"))
                 return (try? ControlJSON.line(fallback)) ?? Data("{\"ok\":false}\n".utf8)
             }
         }

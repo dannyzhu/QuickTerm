@@ -28,9 +28,9 @@ enum ControlTabRef: Equatable {
     static let minIDPrefix = 4
 
     /// 命令表里 `--tab` 的帮助（**只有这一处**：help / describe / MCP 共用它）
-    static let help = "哪一个标签：1 起的序号 | #<id 或 ≥\(minIDPrefix) 位前缀> | @active | @last"
+    static let help = "which tab: 1-based index | #<id, or a prefix of ≥\(minIDPrefix)> | @active | @last"
 
-    static let candidates = ["@active", "@last", "1", "#<id 前缀>"]
+    static let candidates = ["@active", "@last", "1", "#<id prefix>"]
 
     static func parse(_ raw: String) throws -> ControlTabRef {
         let text = raw.trimmingCharacters(in: .whitespaces)
@@ -45,23 +45,23 @@ enum ControlTabRef: Equatable {
             guard needle.count >= minIDPrefix else {
                 throw ControlErrorBody(
                     .badRequest,
-                    "--tab #\(needle)：id 前缀至少 \(minIDPrefix) 位（再短会同时命中好几个标签）",
+                    "--tab #\(needle): an id prefix needs at least \(minIDPrefix) characters (anything shorter can match several tabs at once)",
                     hint: "quickterm get -t <pane> --json | jq '.data.pane.tabList'")
             }
             guard needle.allSatisfy({ $0.isHexDigit }) else {
-                throw ControlErrorBody(.badRequest, "--tab #\(needle) 不是一个 id（只接受十六进制）",
+                throw ControlErrorBody(.badRequest, "--tab #\(needle) is not an id (hexadecimal only)",
                                        candidates: candidates)
             }
             return .id(needle)
         }
         if let number = Int(text) {
             guard number >= 1 else {
-                throw ControlErrorBody(.badRequest, "--tab 的序号从 1 起（收到 \(number)）",
+                throw ControlErrorBody(.badRequest, "--tab indexes start at 1 (got \(number))",
                                        hint: help)
             }
             return .index(number)
         }
-        throw ControlErrorBody(.badRequest, "认不得的 --tab \(text)", hint: help,
+        throw ControlErrorBody(.badRequest, "Unrecognized --tab \(text)", hint: help,
                                candidates: candidates)
     }
 

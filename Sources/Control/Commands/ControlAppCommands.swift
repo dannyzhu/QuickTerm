@@ -15,7 +15,7 @@ extension ControlCommandRunner {
         switch ctx.spec.verb {
         case "get": return try appGet(ctx)
         case "set": return try appSet(ctx)
-        default: throw ControlErrorBody(.unknownCommand, "app 没有 \(ctx.spec.verb) 这个动词")
+        default: throw ControlErrorBody(.unknownCommand, "app has no verb \(ctx.spec.verb)")
         }
     }
 
@@ -28,7 +28,7 @@ extension ControlCommandRunner {
         var wanted = ControlAppSetting.allCases
         if let key = ctx.string("key") {
             guard let only = ControlAppSetting(rawValue: key) else {
-                throw ControlErrorBody(.badRequest, "没有 \(key) 这项设置",
+                throw ControlErrorBody(.badRequest, "There is no setting named \(key)",
                                        candidates: ControlAppSetting.allCases.map(\.rawValue))
             }
             wanted = [only]
@@ -52,11 +52,11 @@ extension ControlCommandRunner {
         let scope = try requireScope(ctx, ctx.target)
         let controller = scope.controller
         guard let rawKey = ctx.string("key"), let setting = ControlAppSetting(rawValue: rawKey) else {
-            throw ControlErrorBody(.badRequest, "app set 需要一个设置项",
+            throw ControlErrorBody(.badRequest, "app set needs a setting key",
                                    candidates: ControlAppSetting.allCases.map(\.rawValue))
         }
         guard let raw = ctx.string("value") else {
-            throw ControlErrorBody(.badRequest, "app set \(setting.rawValue) 需要一个值",
+            throw ControlErrorBody(.badRequest, "app set \(setting.rawValue) needs a value",
                                    candidates: choices(of: setting))
         }
         let current = try value(of: setting, controller: controller)
@@ -82,8 +82,8 @@ extension ControlCommandRunner {
             choices: choices(of: setting),
             scope: setting.isPerScreen ? "screen" : "app",
             help: setting.help)]
-        payload.note = (payload.note.map { $0 + "；" } ?? "")
-            + "当前值：" + (settings.first?.value ?? "?")
+        payload.note = (payload.note.map { $0 + "; " } ?? "")
+            + "current value: " + (settings.first?.value ?? "?")
         if setting.isPerScreen {
             payload.screen = ctx.encoder.screenInfo(controller, isKey: controller === screens.controlCurrent)
         }
@@ -96,7 +96,7 @@ extension ControlCommandRunner {
     // MARK: 读 / 写 / 校验（三者共用同一张表，绝不各写各的）
 
     private func value(of setting: ControlAppSetting, controller: MainWindowController) throws -> String {
-        guard let theme = themeManager else { throw ControlErrorBody(.internalError, "没有 ThemeManager") }
+        guard let theme = themeManager else { throw ControlErrorBody(.internalError, "No ThemeManager") }
         switch setting {
         case .theme: return theme.current.name
         case .background:
@@ -127,18 +127,19 @@ extension ControlCommandRunner {
             switch raw.lowercased() {
             case "on", "true", "yes", "1": return "on"
             case "off", "false", "no", "0": return "off"
-            default: throw ControlErrorBody(.badRequest, "\(setting.rawValue) 只接受 on / off，收到 \(raw)",
+            default: throw ControlErrorBody(.badRequest,
+                                            "\(setting.rawValue) only accepts on / off, got \(raw)",
                                             candidates: ["on", "off"])
             }
         case .visibleColumns:
             guard let n = Int(raw), (1...6).contains(n) else {
-                throw ControlErrorBody(.badRequest, "visible-columns 只能是 1–6，收到 \(raw)")
+                throw ControlErrorBody(.badRequest, "visible-columns must be 1–6, got \(raw)")
             }
             return String(n)
         case .theme:
             guard let theme = themeManager?.themes.first(where: { $0.name == raw }) else {
-                throw ControlErrorBody(.notFound, "没有名为 \(raw) 的主题",
-                                       hint: "quickterm app get theme 里有全部可选值",
+                throw ControlErrorBody(.notFound, "There is no theme named \(raw)",
+                                       hint: "quickterm app get theme lists every valid value.",
                                        candidates: themeManager?.themes.map(\.name))
             }
             return theme.name
@@ -146,14 +147,15 @@ extension ControlCommandRunner {
             let names = themeManager?.backgroundChoices.map { $0.deletingPathExtension().lastPathComponent } ?? []
             if let index = Int(raw) {
                 guard index >= 1, index <= names.count else {
-                    throw ControlErrorBody(.notFound, "背景序号 \(index) 越界（1–\(names.count)）",
+                    throw ControlErrorBody(.notFound, "Background index \(index) is out of "
+                                               + "range (1–\(names.count))",
                                            candidates: names)
                 }
                 return names[index - 1]
             }
             guard names.contains(raw) else {
-                throw ControlErrorBody(.notFound, "没有名为 \(raw) 的背景",
-                                       hint: "quickterm app get background 里有全部可选值",
+                throw ControlErrorBody(.notFound, "There is no background named \(raw)",
+                                       hint: "quickterm app get background lists every valid value.",
                                        candidates: names)
             }
             return raw
@@ -162,17 +164,17 @@ extension ControlCommandRunner {
 
     private func apply(_ setting: ControlAppSetting, value: String,
                        controller: MainWindowController) throws {
-        guard let theme = themeManager else { throw ControlErrorBody(.internalError, "没有 ThemeManager") }
+        guard let theme = themeManager else { throw ControlErrorBody(.internalError, "No ThemeManager") }
         switch setting {
         case .theme:
             guard let picked = theme.themes.first(where: { $0.name == value }) else {
-                throw ControlErrorBody(.notFound, "没有名为 \(value) 的主题")
+                throw ControlErrorBody(.notFound, "There is no theme named \(value)")
             }
             theme.apply(picked)
         case .background:
             let names = theme.backgroundChoices.map { $0.deletingPathExtension().lastPathComponent }
             guard let index = names.firstIndex(of: value) else {
-                throw ControlErrorBody(.notFound, "没有名为 \(value) 的背景")
+                throw ControlErrorBody(.notFound, "There is no background named \(value)")
             }
             theme.selectBackground(index)
         case .gaps:

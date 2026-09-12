@@ -41,11 +41,11 @@ enum Render {
         if let cols = object["cols"]?.intValue, let rows = object["rows"]?.intValue {
             head += "  \(cols)×\(rows)"
         }
-        head += "  \(object["lines"]?.intValue ?? 0) 行"
+        head += "  \(object["lines"]?.intValue ?? 0) lines"
         if let scrollback = object["scrollback"]?.intValue, scrollback > 0 {
-            head += "（含 \(scrollback) 行历史）"
+            head += " (incl. \(scrollback) from scrollback)"
         }
-        if object["truncated"]?.boolValue == true { head += "  ⚠️ 超长，已从头部截断" }
+        if object["truncated"]?.boolValue == true { head += "  ⚠️ too long, truncated from the top" }
         return head + "\n" + String(repeating: "─", count: 12) + "\n" + text
     }
 
@@ -54,15 +54,17 @@ enum Render {
         var out = eventLines(reply)
         if out.isEmpty {
             out.append(object["timedOut"]?.boolValue == true
-                ? "（等到点了，没有新事件）" : "（没有新事件）")
+                ? "(timed out, no new events)" : "(no new events)")
         }
         if object["missed"]?.boolValue == true {
-            out.append("⚠️ 有事件已经被挤出缓冲（oldest=\(object["oldest"]?.intValue ?? 0)）：重新读一次 state")
+            out.append("⚠️ Some events were pushed out of the buffer "
+                + "(oldest=\(object["oldest"]?.intValue ?? 0)): read state again")
         }
         if object["truncated"]?.boolValue == true {
-            out.append("⚠️ 这一批被 --limit 截断了，缓冲里还压着更多：拿下面这个 --since 立刻再轮一次")
+            out.append("⚠️ This batch was truncated by --limit and more is still queued: "
+                + "poll again right away with the --since below")
         }
-        out.append("下一次： --since \(object["seq"]?.intValue ?? reply.seq ?? 0)")
+        out.append("Next: --since \(object["seq"]?.intValue ?? reply.seq ?? 0)")
         return out.joined(separator: "\n")
     }
 
@@ -79,7 +81,7 @@ enum Render {
             }
             if let pane = e["pane"]?.stringValue { line += ".\(pane)" }
             if let layout = e["layout"]?.stringValue { line += "  layout=\(layout)" }
-            if let title = e["title"]?.stringValue { line += "  「\(title)」" }
+            if let title = e["title"]?.stringValue { line += "  \"\(title)\"" }
             if let cwd = e["cwd"]?.stringValue { line += "  \(cwd)" }
             return line
         }
@@ -102,26 +104,27 @@ enum Render {
         var out: [String] = []
         if let app = object["app"]?.objectValue {
             out.append("QuickTerm \(app["version"]?.stringValue ?? "?")"
-                       + "  协议 v\(app["protocolVersion"]?.intValue ?? 0)"
-                       + "  模式 \(app["mode"]?.stringValue ?? "?")"
-                       + "  工作区 \(app["workspaceCount"]?.intValue ?? 0)"
-                       + (app["trusted"]?.boolValue == true ? "  [来源已标记]" : "  [无来源标记：浏览器网址已打码]"))
+                       + "  protocol v\(app["protocolVersion"]?.intValue ?? 0)"
+                       + "  mode \(app["mode"]?.stringValue ?? "?")"
+                       + "  workspaces \(app["workspaceCount"]?.intValue ?? 0)"
+                       + (app["trusted"]?.boolValue == true
+                          ? "  [origin token present]" : "  [no origin token: browser URLs redacted]"))
         }
         for screen in object["screens"]?.arrayValue ?? [] {
             guard let s = screen.objectValue else { continue }
             out.append("")
-            out.append("屏幕 \(s["index"]?.intValue ?? 0)  \(s["title"]?.stringValue ?? "")"
+            out.append("Screen \(s["index"]?.intValue ?? 0)  \(s["title"]?.stringValue ?? "")"
                        + (s["key"]?.boolValue == true ? "  (key)" : "")
-                       + "  活动工作区 \(s["activeWorkspace"]?.intValue ?? 0)"
-                       + "  可见列 \(s["visibleColumns"]?.intValue ?? 0)")
+                       + "  active workspace \(s["activeWorkspace"]?.intValue ?? 0)"
+                       + "  visible columns \(s["visibleColumns"]?.intValue ?? 0)")
             for workspace in s["workspaces"]?.arrayValue ?? [] {
                 guard let w = workspace.objectValue else { continue }
                 let handles = (w["panes"]?.arrayValue ?? []).compactMap { $0.stringValue }
                 out.append("  \(w["active"]?.boolValue == true ? "*" : " ") "
                            + "\(w["index"]?.intValue ?? 0)"
-                           + (w["title"]?.stringValue.map { "「\($0)」" } ?? "")
+                           + (w["title"]?.stringValue.map { "\"\($0)\"" } ?? "")
                            + "  \(w["layout"]?.stringValue ?? "")"
-                           + "  \(handles.isEmpty ? "(空)" : handles.joined(separator: " "))"
+                           + "  \(handles.isEmpty ? "(empty)" : handles.joined(separator: " "))"
                            + (w["zoom"]?.stringValue.map { "  zoom=\($0)" } ?? ""))
             }
         }
@@ -134,7 +137,7 @@ enum Render {
 
     static func paneTable(_ panes: [JSONValue]) -> String {
         let rows = panes.compactMap(\.objectValue)
-        guard !rows.isEmpty else { return "（没有 pane）" }
+        guard !rows.isEmpty else { return "(no panes)" }
         var keys = ["handle", "kind", "screen", "workspace", "title", "cwd"]
         // 投影过的输出只有用户点名的字段
         let present = Set(rows.flatMap { $0.keys })
@@ -170,9 +173,9 @@ enum Render {
         workspaces.compactMap(\.objectValue).map { w in
             let handles = (w["panes"]?.arrayValue ?? []).compactMap { $0.stringValue }
             return "\(w["active"]?.boolValue == true ? "*" : " ") \(w["index"]?.intValue ?? 0)"
-                + (w["title"]?.stringValue.map { "「\($0)」" } ?? "")
+                + (w["title"]?.stringValue.map { "\"\($0)\"" } ?? "")
                 + "  \(w["layout"]?.stringValue ?? "")"
-                + "  \(handles.isEmpty ? "(空)" : handles.joined(separator: " "))"
+                + "  \(handles.isEmpty ? "(empty)" : handles.joined(separator: " "))"
         }.joined(separator: "\n")
     }
 
@@ -191,18 +194,21 @@ enum Render {
         return out.joined(separator: "\n")
     }
 
+    /// `action --list` 的人读版。取 `helpEN`：`ActionDoc` 里中英两份并列，
+    /// 而命令行这一侧全是英文（`--json` 照旧把两份都给出去）
     static func actionTable(_ actions: [JSONValue]) -> String {
         actions.compactMap(\.objectValue).map { a in
-            "\(pad(a["name"]?.stringValue ?? "", 22))\(pad(a["cls"]?.stringValue ?? "", 12))\(a["helpZH"]?.stringValue ?? "")"
+            let help = a["helpEN"]?.stringValue ?? a["helpZH"]?.stringValue ?? ""
+            return "\(pad(a["name"]?.stringValue ?? "", 22))\(pad(a["cls"]?.stringValue ?? "", 12))\(help)"
         }.joined(separator: "\n")
     }
 
     static func actionResult(_ object: [String: JSONValue], reply: ControlReply) -> String {
-        var out = ["\(object["action"]?.stringValue ?? "")："
-                   + (object["applied"]?.boolValue == true ? "已执行" : "等待用户确认")
+        var out = ["\(object["action"]?.stringValue ?? ""): "
+                   + (object["applied"]?.boolValue == true ? "applied" : "awaiting confirmation")
                    + "  " + summaryLine(reply)]
         if let panes = object["panes"]?.arrayValue, !panes.isEmpty {
-            out.append("新建：")
+            out.append("created:")
             out.append(paneTable(panes))
         }
         return out.joined(separator: "\n")
@@ -213,33 +219,34 @@ enum Render {
         let dry = object["dryRun"]?.boolValue == true
         let changed = object["changed"]?.boolValue == true
         let applied = object["applied"]?.boolValue == true
-        let head = "\(object["command"]?.stringValue ?? "")："
-            + (dry ? "预演（什么都没改）" : applied ? "已执行" : changed ? "未执行" : "无需改动（已经是目标状态）")
+        let head = "\(object["command"]?.stringValue ?? ""): "
+            + (dry ? "dry run (nothing changed)" : applied ? "applied"
+               : changed ? "not applied" : "no-op (already in the target state)")
             + "  " + summaryLine(reply)
         var out = [head]
         for change in object["changes"]?.arrayValue ?? [] {
             guard let c = change.objectValue else { continue }
-            out.append("  \(c["path"]?.stringValue ?? "")：\(display(c["from"])) → \(display(c["to"]))")
+            out.append("  \(c["path"]?.stringValue ?? ""): \(display(c["from"])) → \(display(c["to"]))")
         }
         if let report = object["spec"]?.objectValue {
             func list(_ key: String) -> String {
                 let items = (report[key]?.arrayValue ?? []).compactMap(\.stringValue)
                 return items.isEmpty ? "—" : items.joined(separator: " ")
             }
-            out.append("  spec（\(report["mode"]?.stringValue ?? "")，\(report["scope"]?.stringValue ?? "")）："
-                       + "新建 \(list("created"))  留用 \(list("reused"))  关掉 \(list("closed"))")
+            out.append("  spec (\(report["mode"]?.stringValue ?? ""), \(report["scope"]?.stringValue ?? "")): "
+                       + "created \(list("created"))  reused \(list("reused"))  closed \(list("closed"))")
             for skipped in (report["skipped"]?.arrayValue ?? []).compactMap(\.stringValue) {
-                out.append("  跳过：\(skipped)")
+                out.append("  skipped: \(skipped)")
             }
         }
         for warning in object["warnings"]?.arrayValue ?? [] {
             guard let w = warning.objectValue else { continue }
             // 告警要**显眼**：这条命令成功了，而用户以为的和实际发生的不是一回事
-            out.append("  ⚠️ \(w["message"]?.stringValue ?? "")（\(w["code"]?.stringValue ?? "")）")
+            out.append("  ⚠️ \(w["message"]?.stringValue ?? "") (\(w["code"]?.stringValue ?? ""))")
             if let hint = w["hint"]?.stringValue { out.append("     → \(hint)") }
         }
-        if let note = object["note"]?.stringValue { out.append("  注：\(note)") }
-        if let undo = object["undo"]?.stringValue { out.append("  可撤销：Edit ▸ 撤销「\(undo)」") }
+        if let note = object["note"]?.stringValue { out.append("  note: \(note)") }
+        if let undo = object["undo"]?.stringValue { out.append("  undoable: Edit ▸ Undo \"\(undo)\"") }
         if let pane = object["pane"]?.objectValue {
             out.append(paneTable([.object(pane)]))
         }
@@ -258,22 +265,22 @@ enum Render {
     /// `spec dump`：人看的时候在正文前加一行说明；JSON 模式下 main.swift 只打印 spec 本体
     static func specDump(_ object: [String: JSONValue], _ spec: JSONValue) -> String {
         var out = ["\(object["schema"]?.stringValue ?? "")"
-                   + "  作用域 \(object["scope"]?.stringValue ?? "")"
-                   + "  \(object["panes"]?.intValue ?? 0) 个 pane"]
+                   + "  scope \(object["scope"]?.stringValue ?? "")"
+                   + "  \(object["panes"]?.intValue ?? 0) panes"]
         if let data = try? ControlJSON.prettyEncoder.encode(spec),
            let text = String(data: data, encoding: .utf8) {
             out.append(text)
         }
-        out.append("（重定向到文件即可再 apply 回去：quickterm spec dump > w.json）")
+        out.append("(Redirect it to a file and you can apply it back: quickterm spec dump > w.json)")
         return out.joined(separator: "\n")
     }
 
     static func specValidate(_ object: [String: JSONValue]) -> String {
-        var out = ["spec 合法：\(object["schema"]?.stringValue ?? "")"
-                   + "  作用域 \(object["scope"]?.stringValue ?? "")"
-                   + "  \(object["panes"]?.intValue ?? 0) 个 pane"]
+        var out = ["spec is valid: \(object["schema"]?.stringValue ?? "")"
+                   + "  scope \(object["scope"]?.stringValue ?? "")"
+                   + "  \(object["panes"]?.intValue ?? 0) panes"]
         for note in (object["notes"]?.arrayValue ?? []).compactMap(\.stringValue) {
-            out.append("  注：\(note)")
+            out.append("  note: \(note)")
         }
         return out.joined(separator: "\n")
     }
@@ -290,18 +297,18 @@ enum Render {
 
     static func version(_ object: [String: JSONValue]) -> String {
         "quickterm \(object["cli"]?.stringValue ?? "?")"
-            + "（协议 v\(object["protocolVersion"]?.intValue ?? 0)）"
+            + " (protocol v\(object["protocolVersion"]?.intValue ?? 0))"
             + (object["running"]?.boolValue == true
-               ? "；QuickTerm \(object["app"]?.stringValue ?? "?") 正在运行，socket \(object["socket"]?.stringValue ?? "?")"
-               : "；QuickTerm 没在运行")
+               ? "; QuickTerm \(object["app"]?.stringValue ?? "?") is running, socket \(object["socket"]?.stringValue ?? "?")"
+               : "; QuickTerm is not running")
     }
 
     static func describe(_ object: [String: JSONValue]) -> String {
         let commands = (object["commands"]?.arrayValue ?? []).compactMap(\.objectValue)
-        var out = ["quickterm.describe/1  协议 v\(object["protocolVersion"]?.intValue ?? 0)"
-                   + "  命令 \(commands.count) 条"
-                   + "  动作 \((object["actions"]?.arrayValue ?? []).count) 个"]
-        out.append("完整 schema 请用 --json（这是给模型看的那一份）。")
+        var out = ["quickterm.describe/1  protocol v\(object["protocolVersion"]?.intValue ?? 0)"
+                   + "  \(commands.count) commands"
+                   + "  \((object["actions"]?.arrayValue ?? []).count) actions"]
+        out.append("Use --json for the full schema: that is the one written for models.")
         return out.joined(separator: "\n")
     }
 

@@ -26,7 +26,7 @@ func fail(_ error: ControlErrorBody, plain: Bool) -> Never {
        let text = String(data: data, encoding: .utf8) {
         writeErr(text)
     }
-    if plain { writeErr("错误：\(error.message)" + (error.hint.map { "\n提示：\($0)" } ?? "")) }
+    if plain { writeErr("Error: \(error.message)" + (error.hint.map { "\nHint: \($0)" } ?? "")) }
     exit(error.exit)
 }
 
@@ -160,15 +160,15 @@ func run(_ parsed: ParsedCommand) -> Never {
                 cli: cliVersion, app: nil, protocolVersion: ControlProtocol.version,
                 appProtocolVersion: nil, socket: nil, running: false)
             if plainMode {
-                writeOut("quickterm \(cliVersion)（协议 v\(ControlProtocol.version)）；QuickTerm 没在运行")
+                writeOut("quickterm \(cliVersion) (protocol v\(ControlProtocol.version)); QuickTerm is not running")
             } else if let data = try? ControlJSON.prettyEncoder.encode(payload),
                       let text = String(data: data, encoding: .utf8) {
                 writeOut(text)
             }
             exit(0)
         }
-        fail(ControlErrorBody(.notRunning, "QuickTerm 没在运行（试过 \(tried.joined(separator: "、"))）",
-                              hint: "open -a QuickTerm，或加 --start 让本命令自己拉起它"),
+        fail(ControlErrorBody(.notRunning, "QuickTerm is not running (tried \(tried.joined(separator: ", ")))",
+                              hint: "Run open -a QuickTerm, or pass --start to let this command launch it."),
              plain: plainMode)
     } catch {
         fail(ControlErrorBody(.internalError, "\(error)"), plain: plainMode)
@@ -217,8 +217,9 @@ func send(_ parsed: ParsedCommand, over client: ControlClient) -> Never {
         client.close()
         guard reply.v == ControlProtocol.version else {
             fail(ControlErrorBody(.protocolMismatch,
-                                  "协议版本不匹配：quickterm \(cliVersion) 说 v\(ControlProtocol.version)，QuickTerm 说 v\(reply.v)",
-                                  hint: "用 QuickTerm.app/Contents/MacOS/quickterm 重新 install-cli"),
+                                  "Protocol version mismatch: quickterm \(cliVersion) speaks "
+                                      + "v\(ControlProtocol.version), QuickTerm speaks v\(reply.v)",
+                                  hint: "Re-run install-cli from QuickTerm.app/Contents/MacOS/quickterm."),
                  plain: plainMode)
         }
         emit(reply, plain: plainMode, spec: parsed.spec)
@@ -236,13 +237,13 @@ func readSpecInput(_ parsed: ParsedCommand) -> String {
     if let path, path != "-" {
         let expanded = (path as NSString).expandingTildeInPath
         guard let contents = FileManager.default.contents(atPath: expanded) else {
-            fail(ControlErrorBody(.badRequest, "读不到 \(path)",
-                                  hint: "quickterm spec dump > \(path) 先生成一份"), plain: plainMode)
+            fail(ControlErrorBody(.badRequest, "Cannot read \(path)",
+                                  hint: "Generate one first: quickterm spec dump > \(path)"), plain: plainMode)
         }
         data = contents
     } else {
         if isatty(STDIN_FILENO) == 1 {
-            fail(ControlErrorBody(.badRequest, "没有给 spec：-f <文件>，或从标准输入喂进来",
+            fail(ControlErrorBody(.badRequest, "No spec given: pass -f <file>, or feed one in on stdin",
                                   hint: "quickterm spec dump | quickterm spec validate"),
                  plain: plainMode)
         }
@@ -250,11 +251,11 @@ func readSpecInput(_ parsed: ParsedCommand) -> String {
     }
     guard data.count <= SpecLimits.maxBytes else {
         fail(ControlErrorBody(.badRequest,
-                              "spec 太大了（\(data.count) 字节，上限 \(SpecLimits.maxBytes)）"),
+                              "spec is too large (\(data.count) bytes, limit \(SpecLimits.maxBytes))"),
              plain: plainMode)
     }
     guard let text = String(data: data, encoding: .utf8) else {
-        fail(ControlErrorBody(.badRequest, "spec 不是 UTF-8 文本"), plain: plainMode)
+        fail(ControlErrorBody(.badRequest, "spec is not UTF-8 text"), plain: plainMode)
     }
     return text
 }
@@ -266,8 +267,8 @@ func runLocal(_ parsed: ParsedCommand) -> Never {
             let result = try InstallCLI.run(alias: parsed.args["alias"]?.stringValue,
                                             directory: parsed.args["dir"]?.stringValue)
             if plainMode {
-                writeOut("已安装：\(result.installed.joined(separator: "、"))")
-                writeOut("来源：\(result.source)")
+                writeOut("Installed: \(result.installed.joined(separator: ", "))")
+                writeOut("Source: \(result.source)")
                 if let hint = result.pathHint { writeOut(hint) }
                 if let note = result.note { writeOut(note) }
             } else if let data = try? ControlJSON.prettyEncoder.encode(result),
@@ -281,7 +282,7 @@ func runLocal(_ parsed: ParsedCommand) -> Never {
     case "mcp":
         runMCP(parsed)
     default:
-        fail(ControlErrorBody(.internalError, "命令 \(parsed.spec.name) 声明为本地命令但没有实现"),
+        fail(ControlErrorBody(.internalError, "Command \(parsed.spec.name) is declared local but has no implementation"),
              plain: plainMode)
     }
 }
@@ -311,16 +312,16 @@ func runMCP(_ parsed: ParsedCommand) -> Never {
             client = try ControlClient.connect(candidates: candidates)
         } catch ControlClient.ClientError.notRunning(let tried) {
             throw ControlErrorBody(.notRunning,
-                                   "QuickTerm 没在运行（试过 \(tried.joined(separator: "、"))）",
-                                   hint: "open -a QuickTerm 之后重试这次调用")
+                                   "QuickTerm is not running (tried \(tried.joined(separator: ", ")))",
+                                   hint: "Run open -a QuickTerm, then retry this call.")
         }
         defer { client.close() }
         let reply = try client.send(request)
         guard reply.v == ControlProtocol.version else {
             throw ControlErrorBody(.protocolMismatch,
-                                   "协议版本不匹配：quickterm \(cliVersion) 说 v\(ControlProtocol.version)，"
-                                       + "QuickTerm 说 v\(reply.v)",
-                                   hint: "用 QuickTerm.app/Contents/SharedSupport/quickterm 重新 install-cli")
+                                   "Protocol version mismatch: quickterm \(cliVersion) speaks v\(ControlProtocol.version), "
+                                       + "QuickTerm speaks v\(reply.v)",
+                                   hint: "Re-run install-cli from QuickTerm.app/Contents/SharedSupport/quickterm.")
         }
         return reply
     }

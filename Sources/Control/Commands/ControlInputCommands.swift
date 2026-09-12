@@ -26,7 +26,7 @@ extension ControlCommandRunner {
         switch ctx.spec.verb {
         case "send-text": return try inputSendText(ctx)
         default:
-            throw ControlErrorBody(.unknownCommand, "input 没有 \(ctx.spec.verb) 这个动词",
+            throw ControlErrorBody(.unknownCommand, "input has no verb \(ctx.spec.verb)",
                                    candidates: ControlCommandTable.commands(inGroup: "input").map(\.verb))
         }
     }
@@ -37,8 +37,9 @@ extension ControlCommandRunner {
         // 那种谁也查不出来的事故。要写焦点 pane 就明确地写 `-t @focused`
         guard ctx.target?.pane != nil else {
             throw ControlErrorBody(
-                .badTarget, "input send-text 必须显式指定目标 pane（-t）",
-                hint: "写自己这个 pane 是 -t @self；别的 pane 用 -t <句柄>，每次都会要求确认")
+                .badTarget, "input send-text needs an explicit target pane (-t)",
+                hint: "Your own pane is -t @self; any other pane is -t <handle>, and that asks "
+                    + "for confirmation every time.")
         }
         let raw = ctx.request.args["text"]?.stringValue ?? ""
         let text = try Self.validateSendText(raw)
@@ -49,19 +50,23 @@ extension ControlCommandRunner {
         guard let surface = hit.pane as? Ghostty.SurfaceView else {
             throw ControlErrorBody(
                 .wrongPaneKind,
-                "\(handleName(hit.pane)) 是 \(hit.pane.kind.rawValue) pane，没有可以打字的终端",
-                hint: "只有 kind=terminal 的 pane 能接收 send-text（quickterm list panes）")
+                "\(handleName(hit.pane)) is a \(hit.pane.kind.rawValue) pane, so there is no "
+                    + "terminal to type into",
+                hint: "Only panes with kind=terminal can receive send-text (quickterm list panes)")
         }
         guard let model = surface.surfaceModel else {
-            throw ControlErrorBody(.busy, "终端还没准备好（引擎 surface 尚未创建）",
-                                   hint: "稍后重试；本次什么都没做", retryAfterMs: 200)
+            throw ControlErrorBody(.busy, "The terminal is not ready yet (the engine surface "
+                                       + "has not been created)",
+                                   hint: "Retry shortly; nothing was done this time.",
+                                   retryAfterMs: 200)
         }
 
         // diff 里**绝不写出正文**：活动日志与状态栏闪烁是给用户看的，
         // 而送进去的往往是命令行——把它原样记进一份长期留存的日志，本身就是一个新的外泄面
         let changes = [ControlChange(path(hit.controller, hit.workspace, hit.pane),
-                                     from: "(键盘输入)",
-                                     to: "\(text.count) 个字符" + (enter ? " + 回车" : "（无回车）"))]
+                                     from: "(keyboard input)",
+                                     to: "\(text.count) characters"
+                                         + (enter ? " + Return" : " (no Return)"))]
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
             controllers: [hit.controller],
@@ -83,8 +88,10 @@ extension ControlCommandRunner {
     static func validateSendText(_ raw: String) throws -> String {
         guard raw.utf16.count <= maxSendTextLength else {
             throw ControlErrorBody(
-                .badRequest, "文本太长了（\(raw.utf16.count) 个字符，上限 \(maxSendTextLength)）",
-                hint: "分几次送，或者用 pane new --cmd 直接起一条命令")
+                .badRequest, "The text is too long (\(raw.utf16.count) characters, limit "
+                    + "\(maxSendTextLength))",
+                hint: "Send it in a few pieces, or start the command directly with "
+                    + "pane new --cmd.")
         }
         for scalar in raw.unicodeScalars {
             let value = scalar.value
@@ -94,18 +101,21 @@ extension ControlCommandRunner {
             guard isC0 || isDelete || isC1 else { continue }
             let name: String
             switch value {
-            case 0x0A: name = "换行（\\n）"
-            case 0x0D: name = "回车（\\r）"
-            case 0x09: name = "制表符（\\t）"
+            case 0x0A: name = "newline (\\n)"
+            case 0x0D: name = "carriage return (\\r)"
+            case 0x09: name = "tab (\\t)"
             case 0x1B: name = "Esc"
             case 0x03: name = "Ctrl-C"
             default: name = String(format: "U+%04X", value)
             }
             throw ControlErrorBody(
-                .badRequest, "文本里有控制字符：\(name)。send-text 只送可见文本",
+                .badRequest, "The text contains a control character: \(name). send-text only "
+                    + "sends visible text",
                 hint: value == 0x0A || value == 0x0D
-                    ? "换行只能用 --enter 显式给出——那是让 shell 真的执行它的唯一方式"
-                    : "控制字符（含 Esc / Ctrl-x / 制表符）一律拒绝：它们会被终端里的程序当成指令")
+                    ? "A newline can only be given explicitly with --enter, which is the one way "
+                        + "to make the shell actually run what you sent."
+                    : "Control characters (Esc, Ctrl-x and tab included) are always refused: "
+                        + "whatever runs in that terminal reads them as instructions.")
         }
         return raw
     }

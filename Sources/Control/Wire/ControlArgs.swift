@@ -26,21 +26,21 @@ enum ArgsError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .unknownCommand(let name):
-            "未知命令 \(name)（quickterm --help 有完整清单）"
+            "Unknown command \(name) (quickterm --help has the full list)"
         case .missingVerb(let group, let verbs):
-            "quickterm \(group) 后面要跟一个动词：\(verbs.joined(separator: " | "))"
+            "quickterm \(group) needs a verb after it: \(verbs.joined(separator: " | "))"
         case .unknownVerb(let group, let verb, let verbs):
-            "quickterm \(group) 没有 \(verb) 这个动词；可用：\(verbs.joined(separator: " | "))"
+            "quickterm \(group) has no \(verb) verb; available: \(verbs.joined(separator: " | "))"
         case .unknownFlag(let flag, let command):
-            "未知选项 \(flag)\(command.map { "（quickterm \($0) --help）" } ?? "")"
+            "Unknown option \(flag)\(command.map { " (quickterm \($0) --help)" } ?? "")"
         case .missingValue(let flag):
-            "\(flag) 需要一个值"
+            "\(flag) needs a value"
         case .missingPositional(let name, let command):
-            "quickterm \(command) 缺少参数 <\(name)>"
+            "quickterm \(command) is missing the argument <\(name)>"
         case .tooManyPositionals(let value):
-            "多余的参数：\(value)"
+            "Unexpected extra argument: \(value)"
         case .badEnum(let flag, let value, let allowed):
-            "\(flag) 不接受 \(value)；可用值：\(allowed.joined(separator: " | "))"
+            "\(flag) does not accept \(value); allowed values: \(allowed.joined(separator: " | "))"
         }
     }
 }

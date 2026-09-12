@@ -42,8 +42,8 @@ extension ControlCommandRunner {
         guard changed else {
             log(mutation, outcome: failsIfNoop ? "noop(exit 7)" : "noop")
             if failsIfNoop {
-                throw ControlErrorBody(.noop, "已经是请求的状态，什么都没改",
-                                       hint: "去掉 --fail-if-noop 就是静默成功（绝对设值本来就该这样）")
+                throw ControlErrorBody(.noop, "Already in the requested state, nothing changed",
+                                       hint: "Without --fail-if-noop this is a silent success, which is how an absolute setter is meant to behave.")
             }
             return ControlMutationPayload(command: mutation.command, applied: false,
                                           changed: false, dryRun: dryRun)

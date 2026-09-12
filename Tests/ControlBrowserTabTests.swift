@@ -296,7 +296,7 @@ final class ControlBrowserTabTests: XCTestCase {
         XCTAssertEqual(last["applied"]?.boolValue, true)
         XCTAssertFalse(controller.model.allPanes.contains { $0 === viaCLI },
                        "最后一个标签：命令行也必须把整个 pane 关掉")
-        XCTAssertTrue(last["note"]?.stringValue?.contains("最后一个标签") ?? false,
+        XCTAssertTrue(last["note"]?.stringValue?.contains("last tab") ?? false,
                       "要明说 pane 一起关了：\(String(describing: last["note"]))")
     }
 

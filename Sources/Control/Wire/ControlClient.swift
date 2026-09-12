@@ -56,7 +56,7 @@ struct ControlClient {
                 let n = Darwin.write(fd, base.advanced(by: offset), raw.count - offset)
                 if n > 0 { offset += n; continue }
                 if errno == EINTR { continue }
-                throw ClientError.system("写入 socket 失败：\(String(cString: strerror(errno)))")
+                throw ClientError.system("socket write failed: \(String(cString: strerror(errno)))")
             }
         }
     }
@@ -84,7 +84,7 @@ struct ControlClient {
             }
             if n == 0 { return }                  // 对端关闭：流结束
             if errno == EINTR { continue }
-            throw ClientError.system("读取 socket 失败：\(String(cString: strerror(errno)))")
+            throw ClientError.system("socket read failed: \(String(cString: strerror(errno)))")
         }
     }
 
@@ -101,14 +101,14 @@ struct ControlClient {
                     do {
                         return try ControlJSON.decoder.decode(ControlReply.self, from: lineData)
                     } catch {
-                        throw ClientError.badResponse(String(data: lineData, encoding: .utf8) ?? "<非 UTF-8>")
+                        throw ClientError.badResponse(String(data: lineData, encoding: .utf8) ?? "<not UTF-8>")
                     }
                 }
                 continue
             }
-            if n == 0 { throw ClientError.badResponse("QuickTerm 在应答之前关闭了连接") }
+            if n == 0 { throw ClientError.badResponse("QuickTerm closed the connection before replying") }
             if errno == EINTR { continue }
-            throw ClientError.system("读取 socket 失败：\(String(cString: strerror(errno)))")
+            throw ClientError.system("socket read failed: \(String(cString: strerror(errno)))")
         }
     }
 

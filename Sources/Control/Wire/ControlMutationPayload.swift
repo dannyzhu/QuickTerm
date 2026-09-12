@@ -101,10 +101,11 @@ struct ControlWarning: Codable, Equatable {
     static func cwdDenied(_ path: String, used: String?) -> ControlWarning {
         ControlWarning(
             code: cwdDenied,
-            message: "工作目录 \(path) 没能用上：macOS 把它划成受保护目录，而 QuickTerm 没有拿到"
-                + "「文件与文件夹」授权，shell 起在了默认目录",
-            hint: "在系统设置 ▸ 隐私与安全性 ▸ 文件与文件夹里给 QuickTerm 勾上对应的项，"
-                + "然后重启 QuickTerm；要让这种情况直接失败就加 --require-cwd",
+            message: "Working directory \(path) could not be used: macOS counts it as a protected directory and "
+                + "QuickTerm has not been granted Files and Folders access, so the shell started in the "
+                + "default directory",
+            hint: "Tick QuickTerm's entry under System Settings ▸ Privacy & Security ▸ Files and Folders and "
+                + "restart it. Add --require-cwd to make this case fail outright instead.",
             path: path, used: used)
     }
 }
@@ -175,6 +176,10 @@ struct ControlChange: Codable, Equatable {
         self.to = to
         self.sensitive = sensitive
     }
+
+    /// diff 里"数量 + 单位"的统一写法：`1 pane` / `3 panes`。
+    /// 中文原文没有单复数，直译过去每个计数都会写出 "1 panes"
+    static func count(_ n: Int, _ noun: String) -> String { "\(n) \(noun)\(n == 1 ? "" : "s")" }
 
     private enum CodingKeys: String, CodingKey { case path, from, to }
 }

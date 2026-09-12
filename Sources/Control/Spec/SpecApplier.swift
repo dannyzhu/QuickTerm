@@ -136,11 +136,11 @@ final class SpecApplier {
             } catch {
                 let body = (error as? ControlErrorBody) ?? ControlErrorBody(.badRequest, "\(error)")
                 throw ControlErrorBody(ControlErrorCode(rawValue: body.code) ?? .badRequest,
-                                       "spec \(item.key)：\(body.message)", hint: body.hint)
+                                       "spec \(item.key): \(body.message)", hint: body.hint)
             }
             if let problem = ControlPaneFactory.directoryProblem(request.cwd) {
-                throw ControlErrorBody(.badRequest, "spec \(item.key)：\(problem)",
-                                       hint: "先建好目录，或改掉这份 spec 里的 cwd")
+                throw ControlErrorBody(.badRequest, "spec \(item.key): \(problem)",
+                                       hint: "Create the directory first, or change the cwd in this spec.")
             }
             // 目录存在，却因为缺少 macOS 的隐私授权而交不给引擎（受保护目录）：
             // **不是错误**（这份 spec 照样铺得出来），但调用方必须被告知——
@@ -157,22 +157,22 @@ final class SpecApplier {
         guard built.count <= ControlRateLimiter.maxPanesPerWorkspace else {
             throw ControlErrorBody(
                 .denied,
-                "这份 spec 要 \(built.count) 个 pane，超过一个工作区的上限 \(ControlRateLimiter.maxPanesPerWorkspace)")
+                "This spec asks for \(built.count) panes, over the per-workspace limit of \(ControlRateLimiter.maxPanesPerWorkspace)")
         }
         if let columns = spec.visibleColumns, !SpecLimits.visibleColumns.contains(columns) {
             throw ControlErrorBody(.badRequest,
-                                   "visibleColumns 必须在 \(SpecLimits.visibleColumns.lowerBound)–"
-                                       + "\(SpecLimits.visibleColumns.upperBound) 之间，收到 \(columns)")
+                                   "visibleColumns must be between \(SpecLimits.visibleColumns.lowerBound) and "
+                                       + "\(SpecLimits.visibleColumns.upperBound), got \(columns)")
         }
         // 名字：与 `workspace set --title` 同一条尺子（`SpecParser` 已经拦过一遍，
         // 但 applier 也会被直接喂一份 `WorkspaceSpec`——两处都拦才叫"落不下去就不动手"）
         if let title = spec.title {
             guard title.count <= SpecLimits.maxTitleCharacters else {
                 throw ControlErrorBody(.badRequest,
-                                       "title 太长了（\(title.count) 个字符，上限 \(SpecLimits.maxTitleCharacters)）")
+                                       "title is too long (\(title.count) characters, limit \(SpecLimits.maxTitleCharacters))")
             }
             guard title.unicodeScalars.allSatisfy(WorkspaceModel.isTitleScalar) else {
-                throw ControlErrorBody(.badRequest, "title 里有控制字符")
+                throw ControlErrorBody(.badRequest, "title contains control characters")
             }
         }
 
@@ -183,8 +183,8 @@ final class SpecApplier {
             guard let ref, let key = Self.key(for: ref) else { continue }
             guard keys.contains(key) else {
                 throw ControlErrorBody(
-                    .badRequest, "\(name) 指向的位置在这份 spec 里不存在（\(key)）",
-                    hint: "位置引用：scrolling 用 {column,row}，dwindle 用 {path}，浮动层用 {floating}",
+                    .badRequest, "\(name) points at a position this spec does not contain (\(key))",
+                    hint: "Position references: {column,row} for scrolling, {path} for dwindle, {floating} for the floating layer.",
                     candidates: built.map(\.key))
             }
         }
@@ -222,14 +222,15 @@ final class SpecApplier {
         // 否则一份不提名字的 spec 会把 `--fail-if-noop` 的判断搅成"总是有变化"
         if let wanted = Self.wantedTitle(spec), wanted != controller.model.title(at: workspace) {
             out.append(ControlChange("\(path).title",
-                                     from: controller.model.title(at: workspace) ?? "（没起过名）",
-                                     to: wanted ?? "（清掉）", sensitive: true))
+                                     from: controller.model.title(at: workspace) ?? "(never named)",
+                                     to: wanted ?? "(cleared)", sensitive: true))
         }
         let creating = slots.filter { $0.existing == nil }.count
         if creating > 0 || !displaced.isEmpty {
             out.append(ControlChange(
-                "\(path).panes", from: "\(existingPanes.count) 个",
-                to: "\(slots.count) 个（新建 \(creating)，关掉 \(displaced.count)，留用 \(slots.count - creating)）"))
+                "\(path).panes", from: ControlChange.count(existingPanes.count, "pane"),
+                to: ControlChange.count(slots.count, "pane") + " (created \(creating), "
+                    + "closed \(displaced.count), reused \(slots.count - creating))"))
         }
         // 一个 pane 都不用建、不用关：**剩下的全是"谁在哪一格"与几何**。
         // 这两样都要真的比一遍——`commit()` 见到空 diff 就直接不落刀了，
@@ -442,7 +443,7 @@ final class SpecApplier {
         switch node {
         case .leaf:
             guard cursor < panes.count else {
-                throw ControlErrorBody(.internalError, "组装 dwindle 树时叶子数对不上")
+                throw ControlErrorBody(.internalError, "Leaf count does not line up while assembling the dwindle tree")
             }
             defer { cursor += 1 }
             return .leaf(view: panes[cursor])
@@ -537,7 +538,7 @@ final class SpecApplier {
     }
 
     private static func arrangement(of node: SplitTree<PaneView>.Node?, closing: Set<UUID>) -> String {
-        guard let node else { return "空" }
+        guard let node else { return "empty" }
         switch node {
         case .leaf(let view):
             // 淡出中的那一片叶子当作已经不在（与 `SpecCodec.node` 同一条塌缩规则）
@@ -563,12 +564,12 @@ final class SpecApplier {
 
     /// 树的**几何**签名（形状 + 方向 + 比例，不含 pane 内容）：diff 用它判断"只是比例变了"
     nonisolated static func geometry(of node: NodeSpec?) -> String {
-        guard let node else { return "空" }
+        guard let node else { return "empty" }
         switch node {
         case .leaf: return "·"
         case .split(let split):
-            let direction = split.direction == "vertical" ? "上下" : "左右"
-            return "\(direction)\(number(split.ratio ?? 0.5))(\(geometry(of: split.a)),\(geometry(of: split.b)))"
+            let direction = split.direction == "vertical" ? "vertical" : "horizontal"
+            return "\(direction) \(number(split.ratio ?? 0.5))(\(geometry(of: split.a)),\(geometry(of: split.b)))"
         }
     }
 
@@ -679,7 +680,7 @@ final class SpecApplier {
     }
 
     nonisolated static func describe(_ ref: PaneRef?) -> String {
-        guard let ref, let key = key(for: ref) else { return "无" }
+        guard let ref, let key = key(for: ref) else { return "none" }
         return key
     }
 
@@ -692,8 +693,8 @@ final class SpecApplier {
         // 里层已经报过 partial 了就原样往外传：套两层前缀只会让文案更难读，码是一样的
         guard partial, base.code != ControlErrorCode.partialApply.rawValue else { return base }
         return ControlErrorBody(
-            .partialApply, "spec 只落了一半：\(base.message)",
-            hint: "工作区已经被改过了（旧 pane 已关，新布局没落下去）——"
-                + "先 quickterm spec dump 看看现状，再决定重发还是收拾")
+            .partialApply, "spec was only half applied: \(base.message)",
+            hint: "The workspace has already been changed: the old panes are closed and the new layout never landed. "
+                + "Run quickterm spec dump to see where things stand, then decide whether to resend or clean up.")
     }
 }

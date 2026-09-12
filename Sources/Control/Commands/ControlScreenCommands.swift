@@ -14,7 +14,7 @@ extension ControlCommandRunner {
         case "move": return try screenMove(ctx)
         case "focus": return try screenFocus(ctx)
         case "set": return try screenSet(ctx)
-        default: throw ControlErrorBody(.unknownCommand, "screen 没有 \(ctx.spec.verb) 这个动词")
+        default: throw ControlErrorBody(.unknownCommand, "screen has no verb \(ctx.spec.verb)")
         }
     }
 
@@ -24,15 +24,15 @@ extension ControlCommandRunner {
         let screens = NSScreen.screens
         func fail(_ why: String) -> ControlErrorBody {
             ControlErrorBody(.notFound, why,
-                             hint: "现有显示器：" + screens.enumerated()
+                             hint: "Displays right now: " + screens.enumerated()
                                 .map { "\($0.offset + 1)=\($0.element.localizedName)" }
-                                .joined(separator: "、"),
+                                .joined(separator: ", "),
                              candidates: screens.map(\.localizedName))
         }
         if raw.hasPrefix("uuid:") {
             let id = String(raw.dropFirst(5)).lowercased()
             guard let screen = screens.first(where: { $0.displayUUID?.uuidString.lowercased() == id }) else {
-                throw fail("没有 uuid 为 \(id) 的显示器")
+                throw fail("There is no display with uuid \(id)")
             }
             return screen
         }
@@ -40,20 +40,21 @@ extension ControlCommandRunner {
             let name = String(raw.dropFirst(5))
             let matches = screens.filter { $0.localizedName == name }
             if matches.count > 1 {
-                throw ControlErrorBody(.ambiguousTarget, "\(matches.count) 台显示器都叫「\(name)」",
-                                       hint: "改用 uuid: 或序号",
+                throw ControlErrorBody(.ambiguousTarget,
+                                       "\(matches.count) displays are all named `\(name)`",
+                                       hint: "Use uuid: or an index instead.",
                                        candidates: matches.compactMap { $0.displayUUID?.uuidString })
             }
-            guard let screen = matches.first else { throw fail("没有叫「\(name)」的显示器") }
+            guard let screen = matches.first else { throw fail("There is no display named `\(name)`") }
             return screen
         }
         if let index = Int(raw), index >= 1, index <= screens.count { return screens[index - 1] }
-        throw fail("解析不出显示器：\(raw)")
+        throw fail("Cannot resolve \(raw) to a display")
     }
 
     private func screenNew(_ ctx: ControlContext) throws -> (ResolvedTarget?, any Encodable) {
         guard let app = NSApp.delegate as? AppDelegate else {
-            throw ControlErrorBody(.internalError, "没有 AppDelegate")
+            throw ControlErrorBody(.internalError, "No AppDelegate")
         }
         let display = try ctx.string("display").map { try Self.resolveDisplay($0) }
         var inherit: PaneView?
@@ -85,20 +86,21 @@ extension ControlCommandRunner {
 
     private func screenClose(_ ctx: ControlContext) throws -> (ResolvedTarget?, any Encodable) {
         guard let app = NSApp.delegate as? AppDelegate else {
-            throw ControlErrorBody(.internalError, "没有 AppDelegate")
+            throw ControlErrorBody(.internalError, "No AppDelegate")
         }
         let scope = try requireScope(ctx, ctx.target)
         let controller = scope.controller
         try verifyPinned(ctx, controller: controller)
         guard screens.controllers.count > 1 else {
             throw ControlErrorBody(
-                .denied, "这是最后一块屏幕：关掉它等于退出 QuickTerm，控制面不做这件事",
-                hint: "要退出请用 QuickTerm 菜单里的「退出」（那条路径会问用户）")
+                .denied, "This is the last screen: closing it would quit QuickTerm, and the "
+                    + "control surface does not do that",
+                hint: "Quit from QuickTerm's own menu instead: that path asks the user first.")
         }
         let panes = controller.model.allPanes.count
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer,
-            changes: [ControlChange(path(controller), from: "open（\(panes) panes）", to: "closed")],
+            changes: [ControlChange(path(controller), from: "open (\(panes) panes)", to: "closed")],
             controllers: [], undoName: nil,
             target: path(controller))
         var payload = try commit(mutation) {
@@ -107,18 +109,18 @@ extension ControlCommandRunner {
             // 主线程被自己卡住，socket 也就停了。`--force` 与"已经确认过"都走 confirmed: true
             app.closeScreen(controller, confirmed: true)
         }
-        payload.note = "屏幕已关闭；其中的 \(panes) 个 pane 与进程都结束了"
+        payload.note = "Screen closed; the \(panes) panes inside it and their processes are gone"
         return (nil, payload)
     }
 
     private func screenMove(_ ctx: ControlContext) throws -> (ResolvedTarget?, any Encodable) {
         guard let app = NSApp.delegate as? AppDelegate else {
-            throw ControlErrorBody(.internalError, "没有 AppDelegate")
+            throw ControlErrorBody(.internalError, "No AppDelegate")
         }
         let scope = try requireScope(ctx, ctx.target)
         let controller = scope.controller
         guard let raw = ctx.string("display") else {
-            throw ControlErrorBody(.badRequest, "screen move 需要 --display")
+            throw ControlErrorBody(.badRequest, "screen move needs --display")
         }
         let display = try Self.resolveDisplay(raw)
         let now = controller.window?.screen
@@ -169,10 +171,11 @@ extension ControlCommandRunner {
         let columns = ctx.int("visible-columns")
         guard fullscreen != nil || joinAll != nil || columns != nil else {
             throw ControlErrorBody(.badRequest,
-                                   "screen set 至少要给一个设值（--fullscreen / --join-all-spaces / --visible-columns）")
+                                   "screen set needs at least one value to set "
+                                       + "(--fullscreen / --join-all-spaces / --visible-columns)")
         }
         if let columns, !(1...6).contains(columns) {
-            throw ControlErrorBody(.badRequest, "--visible-columns 只能是 1–6，收到 \(columns)")
+            throw ControlErrorBody(.badRequest, "--visible-columns must be 1–6, got \(columns)")
         }
         let base = path(controller)
         var changes: [ControlChange] = []

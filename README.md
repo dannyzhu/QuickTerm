@@ -225,6 +225,8 @@ The Shell and Pane menus in the macOS menu bar show the default shortcuts for a 
 
 ## Control plane (CLI and AI agents)
 
+**The command line speaks English** — `--help`, `describe --json`, errors, hints and the generated MCP tool descriptions — because agents read it and English is their lingua franca. The app's own UI (menus, confirmation prompts, the activity log) is Chinese.
+
 QuickTerm listens on a Unix-domain socket in `~/Library/Application Support/QuickTerm/` and ships a `quickterm` command line that speaks to it. Everything a keybinding can do, a command can do — plus a curated noun-verb layer whose defining rule is **absolute setters, never toggles**, because an agent cannot observe state cheaply and a retried toggle silently undoes itself.
 
 ```sh

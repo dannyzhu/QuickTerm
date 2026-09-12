@@ -102,7 +102,7 @@ struct ControlResolver {
     private func contextController() throws -> MainWindowController {
         if let (_, controller, _) = originPane() { return controller }
         guard let controller = screens.controlCurrent else {
-            throw ControlErrorBody(.notFound, "没有任何屏幕", hint: "QuickTerm 至少要有一个窗口")
+            throw ControlErrorBody(.notFound, "No screens at all", hint: "QuickTerm needs at least one window.")
         }
         return controller
     }
@@ -129,8 +129,8 @@ struct ControlResolver {
             if let existing = controller, existing !== found.controller {
                 throw ControlErrorBody(
                     .badTarget,
-                    "pane \(handle(found.pane)) 在屏幕 \(found.controller.screenIndex + 1)，与目标里的屏幕 \(existing.screenIndex + 1) 不符",
-                    hint: "去掉屏幕前缀，或改用 \(found.controller.screenIndex + 1):…")
+                    "pane \(handle(found.pane)) is on screen \(found.controller.screenIndex + 1), which does not match screen \(existing.screenIndex + 1) in the target",
+                    hint: "Drop the screen prefix, or address it as \(found.controller.screenIndex + 1):…")
             }
             controller = found.controller
         }
@@ -144,8 +144,8 @@ struct ControlResolver {
             if let paneWorkspace, paneWorkspace != workspaceIndex {
                 throw ControlErrorBody(
                     .badTarget,
-                    "pane \(pane.map { handle($0) } ?? "?") 在工作区 \(paneWorkspace + 1)，与目标里的工作区 \(workspaceIndex + 1) 不符",
-                    hint: "去掉工作区前缀")
+                    "pane \(pane.map { handle($0) } ?? "?") is in workspace \(paneWorkspace + 1), which does not match workspace \(workspaceIndex + 1) in the target",
+                    hint: "Drop the workspace prefix.")
             }
         } else if let paneWorkspace {
             workspaceIndex = paneWorkspace
@@ -186,8 +186,8 @@ struct ControlResolver {
         case .index(let n):
             guard let controller = screens.controller(screenNumber: n) else {
                 let available = screens.controllers.map { String($0.screenIndex + 1) }.sorted()
-                throw ControlErrorBody(.notFound, "没有序号为 \(n) 的屏幕",
-                                       hint: "现有屏幕：\(available.joined(separator: ", "))",
+                throw ControlErrorBody(.notFound, "No screen numbered \(n)",
+                                       hint: "Screens available: \(available.joined(separator: ", "))",
                                        candidates: available)
             }
             return controller
@@ -196,22 +196,22 @@ struct ControlResolver {
                 $0.windowID.uuidString.lowercased().hasPrefix(raw.lowercased())
             }
             if matches.count > 1 {
-                throw ControlErrorBody(.ambiguousTarget, "#\(raw) 匹配到 \(matches.count) 块屏幕",
-                                       hint: "补全 uuid",
+                throw ControlErrorBody(.ambiguousTarget, "#\(raw) matches \(matches.count) screens",
+                                       hint: "Give more of the uuid.",
                                        candidates: matches.map { $0.windowID.uuidString })
             }
             guard let controller = matches.first else {
-                throw ControlErrorBody(.notFound, "没有 id 以 \(raw) 开头的屏幕")
+                throw ControlErrorBody(.notFound, "No screen whose id starts with \(raw)")
             }
             return controller
         case .current:
             guard let controller = screens.controlCurrent else {
-                throw ControlErrorBody(.notFound, "没有任何屏幕")
+                throw ControlErrorBody(.notFound, "No screens at all")
             }
             return controller
         case .primary:
             guard let controller = screens.primary else {
-                throw ControlErrorBody(.notFound, "没有任何屏幕")
+                throw ControlErrorBody(.notFound, "No screens at all")
             }
             return controller
         }
@@ -223,8 +223,9 @@ struct ControlResolver {
         case .index(let n):
             guard n >= 1, n <= count else {
                 throw ControlErrorBody(
-                    .notFound, "工作区 \(n) 不存在：屏幕 \(controller.screenIndex + 1) 当前有 \(count) 个（1–\(count)）",
-                    hint: "改 ~/.config/quickterm/config.toml 的 workspaces（1–10）可以增加")
+                    .notFound, "Workspace \(n) does not exist: screen \(controller.screenIndex + 1) "
+                        + "currently has \(count) (1–\(count))",
+                    hint: "Raise workspaces (1–10) in ~/.config/quickterm/config.toml to get more")
             }
             return n - 1
         case .active:
@@ -247,8 +248,8 @@ struct ControlResolver {
         }
 
         func fail(_ description: String) -> ControlErrorBody {
-            ControlErrorBody(.notFound, "没有匹配 \(description) 的 pane",
-                             hint: "quickterm list panes 看现有句柄")
+            ControlErrorBody(.notFound, "No pane matches \(description)",
+                             hint: "quickterm list panes shows the handles that exist.")
         }
 
         switch ref {
@@ -261,8 +262,8 @@ struct ControlResolver {
             let needle = raw.lowercased()
             let matches = pool.filter { $0.pane.id.uuidString.lowercased().hasPrefix(needle) }
             if matches.count > 1 {
-                throw ControlErrorBody(.ambiguousTarget, "#\(raw) 匹配到 \(matches.count) 个 pane",
-                                       hint: "补全 uuid，或改用短句柄",
+                throw ControlErrorBody(.ambiguousTarget, "#\(raw) matches \(matches.count) panes",
+                                       hint: "Give more of the uuid, or use the short handle instead.",
                                        candidates: matches.map { handle($0.pane) })
             }
             guard let entry = matches.first else { throw fail("#\(raw)") }
@@ -271,11 +272,11 @@ struct ControlResolver {
         case .title(let pattern):
             guard pattern.utf16.count <= Self.maxTitlePatternLength else {
                 throw ControlErrorBody(.badTarget,
-                                       "title:~ 的正则太长（上限 \(Self.maxTitlePatternLength) 字符）",
-                                       hint: "改用 -t <句柄>")
+                                       "The title:~ pattern is too long (limit \(Self.maxTitlePatternLength) characters)",
+                                       hint: "Use -t <handle> instead.")
             }
             guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-                throw ControlErrorBody(.badTarget, "title:~\(pattern) 不是合法的正则")
+                throw ControlErrorBody(.badTarget, "title:~\(pattern) is not a valid regular expression")
             }
             // 打码生效时把浏览器 pane 整体挪出候选池——匹配数与 not_found 都要在安全池上算，
             // 否则光看"匹配到几个"就能把打掉的标题一位一位问出来
@@ -287,8 +288,8 @@ struct ControlResolver {
                 // 超时后**整条命令失败**：拿一个只跑完一半的池子去算歧义 / not_found，
                 // 正是这份设计明令禁止的"静默给错答案"
                 guard let hit = Self.titleMatches(entry.pane.paneTitle, regex: regex, deadline: deadline) else {
-                    throw ControlErrorBody(.badTarget, "title:~\(pattern) 匹配超时（正则回溯爆炸）",
-                                           hint: "去掉嵌套量词（如 (a|aa)+、(.|.)+），或直接用 -t <句柄>")
+                    throw ControlErrorBody(.badTarget, "title:~\(pattern) timed out while matching (runaway regex backtracking)",
+                                           hint: "Drop the nested quantifiers such as (a|aa)+ or (.|.)+, or just use -t <handle>")
                 }
                 if hit { matches.append(entry) }
             }
@@ -307,7 +308,7 @@ struct ControlResolver {
                               description: "role:\(role)")
 
         case .focused, .selfPane, .direction, .cycle:
-            throw ControlErrorBody(.internalError, "关系式目标不该走全局解析")
+            throw ControlErrorBody(.internalError, "A relational target must not go through global resolution")
         }
     }
 
@@ -315,13 +316,13 @@ struct ControlResolver {
                         description: String)
         throws -> (pane: PaneView, controller: MainWindowController, workspace: Int) {
         if matches.count > 1 {
-            throw ControlErrorBody(.ambiguousTarget, "\(matches.count) 个 pane 匹配 \(description)",
-                                   hint: "改用 -t <句柄> 精确指定",
+            throw ControlErrorBody(.ambiguousTarget, "\(matches.count) panes match \(description)",
+                                   hint: "Name one exactly with -t <handle>",
                                    candidates: matches.map { handle($0.pane) })
         }
         guard let only = matches.first else {
-            throw ControlErrorBody(.notFound, "没有匹配 \(description) 的 pane",
-                                   hint: "quickterm list panes 看现有句柄")
+            throw ControlErrorBody(.notFound, "No pane matches \(description)",
+                                   hint: "quickterm list panes shows the handles that exist.")
         }
         return only
     }
@@ -332,39 +333,39 @@ struct ControlResolver {
         switch ref {
         case .selfPane:
             guard let (pane, _, _) = originPane() else {
-                throw ControlErrorBody(.notFound, "@self 解析失败：没有可用的 QUICKTERM_PANE",
-                                       hint: "在 QuickTerm 的 pane 里运行，或改用 -t <句柄>")
+                throw ControlErrorBody(.notFound, "@self could not be resolved: no usable QUICKTERM_PANE",
+                                       hint: "Run this inside a QuickTerm pane, or use -t <handle> instead.")
             }
             return pane
 
         case .focused:
             guard let pane = focusedAddressablePane(in: controller, workspace: workspace) else {
-                throw ControlErrorBody(.notFound, "工作区 \(workspace + 1) 里没有可寻址的 pane")
+                throw ControlErrorBody(.notFound, "Workspace \(workspace + 1) has no addressable pane")
             }
             return pane
 
         case .direction(let direction):
             guard let from = focusedAddressablePane(in: controller, workspace: workspace) else {
-                throw ControlErrorBody(.notFound, "没有焦点 pane，无法计算 @\(direction.rawValue)")
+                throw ControlErrorBody(.notFound, "No focused pane, so @\(direction.rawValue) cannot be resolved")
             }
             guard let target = Self.neighbour(of: from, direction: direction,
                                               layout: controller.model.layouts[workspace]) else {
-                throw ControlErrorBody(.notFound, "\(handle(from)) 的 @\(direction.rawValue) 方向没有 pane")
+                throw ControlErrorBody(.notFound, "There is no pane @\(direction.rawValue) of \(handle(from))")
             }
             return target
 
         case .cycle(let next):
             guard let from = focusedAddressablePane(in: controller, workspace: workspace) else {
-                throw ControlErrorBody(.notFound, "没有焦点 pane，无法计算 @\(next ? "next" : "prev")")
+                throw ControlErrorBody(.notFound, "No focused pane, so @\(next ? "next" : "prev") cannot be resolved")
             }
             guard let target = Self.cycled(from: from, next: next,
                                            layout: controller.model.layouts[workspace]) else {
-                throw ControlErrorBody(.notFound, "工作区里只有一个 pane，无法循环")
+                throw ControlErrorBody(.notFound, "The workspace has only one pane, so there is nothing to cycle to")
             }
             return target
 
         default:
-            throw ControlErrorBody(.internalError, "全局引用不该走上下文解析")
+            throw ControlErrorBody(.internalError, "A global reference must not go through contextual resolution")
         }
     }
 

@@ -288,7 +288,7 @@ struct SpecIssue: Codable, Equatable {
     var path: String
     var message: String
 
-    var text: String { path.isEmpty ? message : "\(path)：\(message)" }
+    var text: String { path.isEmpty ? message : "\(path): \(message)" }
 }
 
 /// 解析 + 校验。**先在原始 JSON 上走一遍**（认得的键、类型、取值范围），再做类型化解码——
@@ -298,23 +298,23 @@ enum SpecParser {
     static func parse(_ text: String) throws -> SpecDocument {
         guard text.utf8.count <= SpecLimits.maxBytes else {
             throw ControlErrorBody(.badRequest,
-                                   "spec 太大了（\(text.utf8.count) 字节，上限 \(SpecLimits.maxBytes)）")
+                                   "spec is too large (\(text.utf8.count) bytes, limit \(SpecLimits.maxBytes))")
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            throw ControlErrorBody(.badRequest, "spec 是空的",
-                                   hint: "quickterm spec dump > w.json 先拿一份样板")
+            throw ControlErrorBody(.badRequest, "spec is empty",
+                                   hint: "Run quickterm spec dump > w.json to get a starting point.")
         }
         guard let data = trimmed.data(using: .utf8),
               let value = try? ControlJSON.decoder.decode(JSONValue.self, from: data) else {
-            throw ControlErrorBody(.badRequest, "spec 不是合法的 JSON",
-                                   hint: "quickterm spec validate 会逐条指出问题所在")
+            throw ControlErrorBody(.badRequest, "spec is not valid JSON",
+                                   hint: "quickterm spec validate points at every problem one by one.")
         }
         // 信封形态也认：`quickterm spec dump --json` 的输出被整份存进文件时（{v,ok,data:{spec:…}}），
         // 直接喂回来也能用——否则用户要先 jq 一遍才能 apply，而那正是最容易出错的一步
         let body = value["data"]?["spec"] ?? value
         guard let object = body.objectValue else {
-            throw ControlErrorBody(.badRequest, "spec 的最外层必须是一个 JSON 对象")
+            throw ControlErrorBody(.badRequest, "The outermost value of a spec must be a JSON object")
         }
         let kind = try kind(of: object)
         var issues: [SpecIssue] = []
@@ -333,7 +333,7 @@ enum SpecParser {
             case .session: return .session(try ControlJSON.decoder.decode(SessionSpec.self, from: encoded))
             }
         } catch {
-            throw ControlErrorBody(.badRequest, "spec 解码失败：\(error)")
+            throw ControlErrorBody(.badRequest, "spec failed to decode: \(error)")
         }
     }
 
@@ -345,8 +345,8 @@ enum SpecParser {
             case SpecSchema.screen: return .screen
             case SpecSchema.session: return .session
             default:
-                throw ControlErrorBody(.badRequest, "未知的 schema「\(schema)」",
-                                       hint: "本版认得：\(SpecSchema.all.joined(separator: " / "))",
+                throw ControlErrorBody(.badRequest, "Unknown schema `\(schema)`",
+                                       hint: "This version knows: \(SpecSchema.all.joined(separator: " / ")).",
                                        candidates: SpecSchema.all)
             }
         }
@@ -356,10 +356,10 @@ enum SpecParser {
     }
 
     static func error(_ issues: [SpecIssue]) -> ControlErrorBody {
-        let head = issues.prefix(8).map(\.text).joined(separator: "；")
-        let more = issues.count > 8 ? "（还有 \(issues.count - 8) 条）" : ""
-        return ControlErrorBody(.badRequest, "spec 不合法：\(head)\(more)",
-                                hint: "quickterm spec validate -f <文件> 会一次列全")
+        let head = issues.prefix(8).map(\.text).joined(separator: "; ")
+        let more = issues.count > 8 ? " (and \(issues.count - 8) more)" : ""
+        return ControlErrorBody(.badRequest, "spec is not valid: \(head)\(more)",
+                                hint: "quickterm spec validate -f <file> lists them all at once.")
     }
 }
 
@@ -392,13 +392,13 @@ enum SpecValidator {
         if let key = object["keyScreen"] { positiveInt(key, at: join(path, "keyScreen"), into: &issues) }
         guard let screens = object["screens"] else { return }
         guard let list = screens.arrayValue else {
-            issues.append(.init(path: join(path, "screens"), message: "必须是数组"))
+            issues.append(.init(path: join(path, "screens"), message: "must be an array"))
             return
         }
         for (i, item) in list.enumerated() {
             let p = "\(join(path, "screens"))[\(i)]"
             guard let child = item.objectValue else {
-                issues.append(.init(path: p, message: "必须是对象"))
+                issues.append(.init(path: p, message: "must be an object"))
                 continue
             }
             screen(child, at: p, into: &issues, nested: true)
@@ -423,24 +423,24 @@ enum SpecValidator {
             if let child = display.objectValue {
                 unknownKeys(child, allowed: displayKeys, at: join(path, "display"), into: &issues)
             } else if display != .null {
-                issues.append(.init(path: join(path, "display"), message: "必须是对象 {uuid,name}"))
+                issues.append(.init(path: join(path, "display"), message: "must be an object {uuid,name}"))
             }
         }
         if let frame = object["frame"], frame != .null {
             guard let list = frame.arrayValue, list.count == 4, list.allSatisfy({ $0.doubleValue != nil }) else {
-                issues.append(.init(path: join(path, "frame"), message: "必须是 4 个数字 [x,y,w,h]"))
+                issues.append(.init(path: join(path, "frame"), message: "must be 4 numbers [x,y,w,h]"))
                 return
             }
         }
         guard let workspaces = object["workspaces"] else { return }
         guard let list = workspaces.arrayValue else {
-            issues.append(.init(path: join(path, "workspaces"), message: "必须是数组"))
+            issues.append(.init(path: join(path, "workspaces"), message: "must be an array"))
             return
         }
         for (i, item) in list.enumerated() {
             let p = "\(join(path, "workspaces"))[\(i)]"
             guard let child = item.objectValue else {
-                issues.append(.init(path: p, message: "必须是对象"))
+                issues.append(.init(path: p, message: "must be an object"))
                 continue
             }
             workspace(child, at: p, into: &issues, nested: true)
@@ -456,7 +456,7 @@ enum SpecValidator {
         if let layout = object["layout"], layout != .null {
             guard let name = layout.stringValue, layouts.contains(name) else {
                 issues.append(.init(path: join(path, "layout"),
-                                    message: "只接受 \(layouts.joined(separator: " / "))"))
+                                    message: "must be one of \(layouts.joined(separator: " / "))"))
                 return
             }
             layoutName = name
@@ -470,34 +470,34 @@ enum SpecValidator {
             // 校验与 `workspace set --title` 逐条对齐：长度、控制字符。
             // spec 这一侧宽了的后果是"validate 过了、apply 却被命令层拒掉"
             guard let text = title.stringValue else {
-                issues.append(.init(path: join(path, "title"), message: "必须是字符串（空串 = 清掉名字）"))
+                issues.append(.init(path: join(path, "title"), message: "must be a string (an empty string clears the name)"))
                 return
             }
             if text.count > SpecLimits.maxTitleCharacters {
                 issues.append(.init(path: join(path, "title"),
-                                    message: "最长 \(SpecLimits.maxTitleCharacters) 个字符，这份写了 \(text.count)"))
+                                    message: "at most \(SpecLimits.maxTitleCharacters) characters, this one has \(text.count)"))
             }
             if text.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F
                                                      || (0x80...0x9F).contains($0.value) }) {
-                issues.append(.init(path: join(path, "title"), message: "不能有控制字符"))
+                issues.append(.init(path: join(path, "title"), message: "must not contain control characters"))
             }
         }
         if layoutName == "scrolling", object["tree"] != nil, object["tree"] != .null {
-            issues.append(.init(path: join(path, "tree"), message: "只对 layout=dwindle 有意义"))
+            issues.append(.init(path: join(path, "tree"), message: "only meaningful with layout=dwindle"))
         }
         if layoutName == "dwindle", object["columns"] != nil, object["columns"] != .null {
-            issues.append(.init(path: join(path, "columns"), message: "只对 layout=scrolling 有意义"))
+            issues.append(.init(path: join(path, "columns"), message: "only meaningful with layout=scrolling"))
         }
         var paneCount = 0
         if let columns = object["columns"], columns != .null {
             guard let list = columns.arrayValue else {
-                issues.append(.init(path: join(path, "columns"), message: "必须是数组"))
+                issues.append(.init(path: join(path, "columns"), message: "must be an array"))
                 return
             }
             for (i, item) in list.enumerated() {
                 let p = "\(join(path, "columns"))[\(i)]"
                 guard let child = item.objectValue else {
-                    issues.append(.init(path: p, message: "必须是对象 {width,panes}"))
+                    issues.append(.init(path: p, message: "must be an object {width,panes}"))
                     continue
                 }
                 paneCount += column(child, at: p, into: &issues)
@@ -508,14 +508,14 @@ enum SpecValidator {
         }
         if let floating = object["floating"], floating != .null {
             guard let list = floating.arrayValue else {
-                issues.append(.init(path: join(path, "floating"), message: "必须是数组"))
+                issues.append(.init(path: join(path, "floating"), message: "must be an array"))
                 return
             }
             paneCount += list.count
             for (i, item) in list.enumerated() {
                 let p = "\(join(path, "floating"))[\(i)]"
                 guard let child = item.objectValue else {
-                    issues.append(.init(path: p, message: "必须是对象 {rect,pane}"))
+                    issues.append(.init(path: p, message: "must be an object {rect,pane}"))
                     continue
                 }
                 unknownKeys(child, allowed: floatingKeys, at: p, into: &issues)
@@ -523,7 +523,7 @@ enum SpecValidator {
                     guard let numbers = rect.arrayValue, numbers.count == 4,
                           numbers.allSatisfy({ $0.doubleValue != nil }) else {
                         issues.append(.init(path: join(p, "rect"),
-                                            message: "必须是 4 个 0–1 的数字 [x,y,w,h]（内容区比例）"))
+                                            message: "must be 4 numbers in 0–1 [x,y,w,h] (fractions of the content area)"))
                         continue
                     }
                 }
@@ -534,7 +534,7 @@ enum SpecValidator {
             guard let value = object[key], value != .null else { continue }
             guard let child = value.objectValue else {
                 issues.append(.init(path: join(path, key),
-                                    message: "必须是位置引用：{column,row} / {path} / {floating}"))
+                                    message: "must be a position reference: {column,row} / {path} / {floating}"))
                 continue
             }
             unknownKeys(child, allowed: refKeys, at: join(path, key), into: &issues)
@@ -545,14 +545,14 @@ enum SpecValidator {
                 guard let text = p.stringValue,
                       text.isEmpty || text.split(separator: ".").allSatisfy({ $0 == "a" || $0 == "b" }) else {
                     issues.append(.init(path: join(join(path, key), "path"),
-                                        message: "树路径只能由 a / b 用点号连接（根是空串）"))
+                                        message: "a tree path is a / b joined by dots (the root is the empty string)"))
                     continue
                 }
             }
         }
         if paneCount > SpecLimits.maxPanes {
             issues.append(.init(path: path,
-                                message: "一个工作区最多 \(SpecLimits.maxPanes) 个 pane，这份写了 \(paneCount)"))
+                                message: "a workspace holds at most \(SpecLimits.maxPanes) panes, this one has \(paneCount)"))
         }
     }
 
@@ -565,16 +565,16 @@ enum SpecValidator {
         }
         guard let panes = object["panes"], panes != .null else { return 1 }
         guard let list = panes.arrayValue else {
-            issues.append(.init(path: join(path, "panes"), message: "必须是数组"))
+            issues.append(.init(path: join(path, "panes"), message: "must be an array"))
             return 0
         }
         if list.isEmpty {
-            issues.append(.init(path: join(path, "panes"), message: "列里至少要有一个 pane（空列没有意义）"))
+            issues.append(.init(path: join(path, "panes"), message: "a column needs at least one pane (an empty column means nothing)"))
         }
         for (i, item) in list.enumerated() {
             let p = "\(join(path, "panes"))[\(i)]"
             guard let child = item.objectValue else {
-                issues.append(.init(path: p, message: "必须是对象"))
+                issues.append(.init(path: p, message: "must be an object"))
                 continue
             }
             pane(child, at: p, into: &issues)
@@ -585,7 +585,7 @@ enum SpecValidator {
     /// 返回这棵子树的叶子数
     private static func node(_ value: JSONValue, at path: String, into issues: inout [SpecIssue]) -> Int {
         guard let object = value.objectValue else {
-            issues.append(.init(path: path, message: "树节点必须是对象：{pane:…} 或 {split,ratio,a,b}"))
+            issues.append(.init(path: path, message: "a tree node must be an object: {pane:…} or {split,ratio,a,b}"))
             return 0
         }
         unknownKeys(object, allowed: nodeKeys, at: path, into: &issues)
@@ -594,7 +594,7 @@ enum SpecValidator {
             if let direction = object["split"], direction != .null {
                 guard let name = direction.stringValue, directions.contains(name) else {
                     issues.append(.init(path: join(path, "split"),
-                                        message: "只接受 horizontal（a 左 b 右）/ vertical（a 上 b 下）"))
+                                        message: "must be horizontal (a left, b right) or vertical (a top, b bottom)"))
                     return 0
                 }
             }
@@ -602,12 +602,12 @@ enum SpecValidator {
                 doubleInRange(ratio, SpecLimits.ratioRange, at: join(path, "ratio"), into: &issues)
             }
             if object["pane"] != nil {
-                issues.append(.init(path: path, message: "一个节点不能既是分裂（a/b）又是叶子（pane）"))
+                issues.append(.init(path: path, message: "a node cannot be both a split (a/b) and a leaf (pane)"))
             }
             var count = 0
             for key in ["a", "b"] {
                 guard let child = object[key] else {
-                    issues.append(.init(path: join(path, key), message: "分裂节点的两侧都要写（缺的那侧不会被脑补）"))
+                    issues.append(.init(path: join(path, key), message: "both sides of a split must be spelled out (a missing side is never filled in for you)"))
                     continue
                 }
                 count += node(child, at: join(path, key), into: &issues)
@@ -616,7 +616,7 @@ enum SpecValidator {
         }
         if let leaf = object["pane"] {
             guard let child = leaf.objectValue else {
-                issues.append(.init(path: join(path, "pane"), message: "必须是对象"))
+                issues.append(.init(path: join(path, "pane"), message: "must be an object"))
                 return 1
             }
             pane(child, at: join(path, "pane"), into: &issues)
@@ -630,14 +630,14 @@ enum SpecValidator {
         if let value = object["kind"], value != .null {
             guard let name = value.stringValue, paneKinds.contains(name) else {
                 issues.append(.init(path: join(path, "kind"),
-                                    message: "只接受 \(paneKinds.joined(separator: " / "))"))
+                                    message: "must be one of \(paneKinds.joined(separator: " / "))"))
                 return
             }
             kind = name
         }
         if let cwd = object["cwd"], cwd != .null {
             guard let text = cwd.stringValue else {
-                issues.append(.init(path: join(path, "cwd"), message: "必须是字符串"))
+                issues.append(.init(path: join(path, "cwd"), message: "must be a string"))
                 return
             }
             if let bad = pathProblem(text) {
@@ -646,16 +646,16 @@ enum SpecValidator {
         }
         if let cmd = object["cmd"], cmd != .null {
             guard let text = cmd.stringValue else {
-                issues.append(.init(path: join(path, "cmd"), message: "必须是字符串"))
+                issues.append(.init(path: join(path, "cmd"), message: "must be a string"))
                 return
             }
             if text.isEmpty {
-                issues.append(.init(path: join(path, "cmd"), message: "不能是空串（不写就是不跑命令）"))
+                issues.append(.init(path: join(path, "cmd"), message: "must not be an empty string (omit it to run no command)"))
             } else if hasControlCharacters(text) {
-                issues.append(.init(path: join(path, "cmd"), message: "不能含控制字符"))
+                issues.append(.init(path: join(path, "cmd"), message: "must not contain control characters"))
             }
             if kind == "browser" {
-                issues.append(.init(path: join(path, "cmd"), message: "对浏览器 pane 没有意义"))
+                issues.append(.init(path: join(path, "cmd"), message: "means nothing for a browser pane"))
             }
         }
         if let hold = object["hold"], hold != .null {
@@ -666,43 +666,43 @@ enum SpecValidator {
                 for (key, value) in map {
                     let p = join(join(path, "env"), key)
                     guard let text = value.stringValue else {
-                        issues.append(.init(path: p, message: "环境变量的值必须是字符串"))
+                        issues.append(.init(path: p, message: "an environment variable value must be a string"))
                         continue
                     }
                     if key.isEmpty || key.contains("=") || key.contains(" ") || hasControlCharacters(key) {
-                        issues.append(.init(path: p, message: "环境变量名不合法"))
+                        issues.append(.init(path: p, message: "invalid environment variable name"))
                     }
                     if hasControlCharacters(text) {
-                        issues.append(.init(path: p, message: "环境变量的值不能含控制字符"))
+                        issues.append(.init(path: p, message: "an environment variable value must not contain control characters"))
                     }
                 }
             } else {
-                issues.append(.init(path: join(path, "env"), message: "必须是对象 {KEY: VALUE}"))
+                issues.append(.init(path: join(path, "env"), message: "must be an object {KEY: VALUE}"))
             }
         }
         for key in ["url", "id", "handle", "title"] {
             guard let value = object[key], value != .null else { continue }
             guard let text = value.stringValue else {
-                issues.append(.init(path: join(path, key), message: "必须是字符串"))
+                issues.append(.init(path: join(path, key), message: "must be a string"))
                 continue
             }
             if hasControlCharacters(text) {
-                issues.append(.init(path: join(path, key), message: "不能含控制字符"))
+                issues.append(.init(path: join(path, key), message: "must not contain control characters"))
             }
         }
         if object["url"] != nil, kind != "browser" {
-            issues.append(.init(path: join(path, "url"), message: "只对 kind=browser 有意义"))
+            issues.append(.init(path: join(path, "url"), message: "only meaningful with kind=browser"))
         }
         if let tabs = object["tabs"], tabs != .null {
             if kind != "browser" {
-                issues.append(.init(path: join(path, "tabs"), message: "只对 kind=browser 有意义"))
+                issues.append(.init(path: join(path, "tabs"), message: "only meaningful with kind=browser"))
             }
             guard let list = tabs.arrayValue else {
-                issues.append(.init(path: join(path, "tabs"), message: "必须是字符串数组"))
+                issues.append(.init(path: join(path, "tabs"), message: "must be an array of strings"))
                 return
             }
             for (i, item) in list.enumerated() where item.stringValue == nil || hasControlCharacters(item.stringValue ?? "") {
-                issues.append(.init(path: "\(join(path, "tabs"))[\(i)]", message: "必须是不含控制字符的网址"))
+                issues.append(.init(path: "\(join(path, "tabs"))[\(i)]", message: "must be a URL with no control characters"))
             }
         }
     }
@@ -717,7 +717,7 @@ enum SpecValidator {
                             into issues: inout [SpecIssue]) {
         for key in object.keys.sorted() where !allowed.contains(key) {
             issues.append(.init(path: join(path, key),
-                                message: "认不得这个键（可用：\(allowed.sorted().joined(separator: " "))）"))
+                                message: "unknown key (allowed: \(allowed.sorted().joined(separator: " ")))"))
         }
     }
 
@@ -725,7 +725,7 @@ enum SpecValidator {
                        into issues: inout [SpecIssue]) {
         guard let schema = object["schema"] else { return }   // 不写就按形状认
         guard schema.stringValue == expected else {
-            issues.append(.init(path: join(path, "schema"), message: "这一层的 schema 应该是 \(expected)"))
+            issues.append(.init(path: join(path, "schema"), message: "the schema at this level should be \(expected)"))
             return
         }
     }
@@ -733,13 +733,13 @@ enum SpecValidator {
     static func boolean(_ value: JSONValue, at path: String, into issues: inout [SpecIssue]) {
         if case .bool = value { return }
         if value == .null { return }
-        issues.append(.init(path: path, message: "必须是 true / false"))
+        issues.append(.init(path: path, message: "must be true or false"))
     }
 
     static func positiveInt(_ value: JSONValue, at path: String, into issues: inout [SpecIssue]) {
         guard value != .null else { return }
         guard let int = strictInt(value), int >= 1 else {
-            issues.append(.init(path: path, message: "必须是 ≥1 的整数（序号一律 1 起）"))
+            issues.append(.init(path: path, message: "must be an integer ≥1 (indexes always start at 1)"))
             return
         }
     }
@@ -747,7 +747,7 @@ enum SpecValidator {
     static func nonNegativeInt(_ value: JSONValue, at path: String, into issues: inout [SpecIssue]) {
         guard value != .null else { return }
         guard let int = strictInt(value), int >= 0 else {
-            issues.append(.init(path: path, message: "必须是 ≥0 的整数"))
+            issues.append(.init(path: path, message: "must be an integer ≥0"))
             return
         }
     }
@@ -757,7 +757,7 @@ enum SpecValidator {
         guard value != .null else { return }
         guard let int = strictInt(value), range.contains(int) else {
             issues.append(.init(path: path,
-                                message: "必须是 \(range.lowerBound)–\(range.upperBound) 之间的整数"))
+                                message: "must be an integer in \(range.lowerBound)–\(range.upperBound)"))
             return
         }
     }
@@ -766,13 +766,13 @@ enum SpecValidator {
                               into issues: inout [SpecIssue]) {
         guard value != .null else { return }
         guard let number = strictDouble(value) else {
-            issues.append(.init(path: path, message: "必须是数字"))
+            issues.append(.init(path: path, message: "must be a number"))
             return
         }
         guard range.contains(number) else {
             // **绝不静默夹紧**：夹紧之后 agent 读回来的值和它写下去的对不上，却没有任何提示
             issues.append(.init(path: path,
-                                message: "必须在 \(range.lowerBound)–\(range.upperBound) 之间，收到 \(number)"))
+                                message: "must be in \(range.lowerBound)–\(range.upperBound), got \(number)"))
             return
         }
     }
@@ -798,11 +798,11 @@ enum SpecValidator {
 
     /// 路径本身合不合法（存不存在留给 apply 前的预检：validate 要能离线校验一份写给别的机器的 spec）
     static func pathProblem(_ raw: String) -> String? {
-        if raw.isEmpty { return "不能是空串" }
-        if hasControlCharacters(raw) { return "不能含控制字符（包括 NUL）" }
+        if raw.isEmpty { return "must not be an empty string" }
+        if hasControlCharacters(raw) { return "must not contain control characters (NUL included)" }
         let expanded = (raw as NSString).expandingTildeInPath
-        if expanded.hasPrefix("~") { return "认不出这个 ~ 开头的路径：\(raw)" }
-        guard expanded.hasPrefix("/") else { return "必须是绝对路径或 ~ 开头（收到 \(raw)）" }
+        if expanded.hasPrefix("~") { return "cannot resolve this ~ path: \(raw)" }
+        guard expanded.hasPrefix("/") else { return "must be an absolute path or start with ~ (got \(raw))" }
         return nil
     }
 

@@ -48,9 +48,9 @@ final class ControlCommandRunner {
         /// 该命令没被打开时，告诉用户去哪儿开
         func sensitiveHint(_ command: String) -> String {
             switch command {
-            case "input.send-text": "在 ~/.config/quickterm/config.toml 的 [control] 里写 send-text = true"
-            case "pane.capture-text": "在 ~/.config/quickterm/config.toml 的 [control] 里写 capture-text = true"
-            default: "这条命令在 [control] 里没有对应的开关"
+            case "input.send-text": "Set send-text = true under [control] in ~/.config/quickterm/config.toml"
+            case "pane.capture-text": "Set capture-text = true under [control] in ~/.config/quickterm/config.toml"
+            default: "This command has no switch of its own under [control]"
             }
         }
 
@@ -82,8 +82,12 @@ final class ControlCommandRunner {
         /// 一份 `quickterm.screen/1` 会覆盖整块屏幕的每一个工作区、`quickterm.session/1`
         /// 是每一块屏幕——只钉住 `-t` 指的那一个，用户批准的就不是即将发生的那件事
         var scopes: [PinnedScope] = []
-        /// 确认框里那句话的简短版（漂移时回给调用方，让它知道当时确认的是什么）
+        /// 确认框里那句话的简短版（漂移时回给调用方，让它知道当时确认的是什么）。
+        /// **写英文**：它会原样进 `busy` 的错误正文，而命令行那一侧全是英文
         var description: String
+        /// 同一个主体的中文版，**只给确认框用**：那段文字只在 QuickTerm 自己的窗口里出现，
+        /// 从不回到 socket 上去，所以它跟着应用界面走中文，不跟着命令行走英文
+        var consentText: String
     }
 
     /// 被钉住的一个工作区（`PinnedSubject.scopes` 的元素）
@@ -147,18 +151,18 @@ final class ControlCommandRunner {
 
         guard request.v == ControlProtocol.version else {
             fail(ControlErrorBody(.protocolMismatch,
-                                  "协议版本不匹配：调用方 v\(request.v)，QuickTerm \(appVersion) 说 v\(ControlProtocol.version)",
-                                  hint: "更新 quickterm 命令行（QuickTerm.app/Contents/MacOS/quickterm），或重新 install-cli"))
+                                  "Protocol version mismatch: the caller speaks v\(request.v), QuickTerm \(appVersion) speaks v\(ControlProtocol.version)",
+                                  hint: "Update the quickterm CLI (QuickTerm.app/Contents/MacOS/quickterm), or run install-cli again."))
             return
         }
         guard let spec = ControlCommandTable.command(request.cmd) else {
-            fail(ControlErrorBody(.unknownCommand, "未知命令 \(request.cmd)",
-                                  hint: "quickterm describe --json 里有全部命令",
+            fail(ControlErrorBody(.unknownCommand, "Unknown command \(request.cmd)",
+                                  hint: "quickterm describe --json lists every command.",
                                   candidates: ControlCommandTable.commands.map(\.name)))
             return
         }
         guard config.isListening else {
-            fail(ControlErrorBody(.denied, "控制面已关闭（[control] mode = \(config.mode)）"))
+            fail(ControlErrorBody(.denied, "The control plane is off ([control] mode = \(config.mode))"))
             return
         }
 
@@ -178,12 +182,12 @@ final class ControlCommandRunner {
         var action: WMAction?
         if spec.name == "action", request.args["list"]?.boolValue != true {
             guard let raw = request.args["name"]?.stringValue, !raw.isEmpty else {
-                fail(ControlErrorBody(.badRequest, "action 需要一个动作名",
+                fail(ControlErrorBody(.badRequest, "action needs an action name",
                                       hint: "quickterm action --list"))
                 return
             }
             guard let parsed = WMAction(rawValue: raw) else {
-                fail(ControlErrorBody(.unknownAction, "未知动作 \(raw)",
+                fail(ControlErrorBody(.unknownAction, "Unknown action \(raw)",
                                       hint: "quickterm action --list",
                                       candidates: Self.suggestions(for: raw)))
                 return
@@ -205,12 +209,12 @@ final class ControlCommandRunner {
 
         if cls == .interactive, let action {
             fail(ControlErrorBody(.interactiveAction,
-                                  "\(action.rawValue) 会打开需要键盘交互的面板 / 弹出菜单，不能经 socket 执行",
+                                  "\(action.rawValue) opens a panel or pop-up menu that needs keyboard interaction, so it cannot run over the socket",
                                   hint: ControlCommandTable.interactiveHint(action)))
             return
         }
         if cls == .sensitive, !config.allowsSensitive(spec.name) {
-            fail(ControlErrorBody(.denied, "敏感命令默认关闭（\(spec.cli)）",
+            fail(ControlErrorBody(.denied, "Sensitive commands are off by default (\(spec.cli))",
                                   hint: config.sensitiveHint(spec.name)))
             return
         }
@@ -221,14 +225,14 @@ final class ControlCommandRunner {
         if spec.name == "pane.capture-text", request.token != ControlEnvironment.token {
             logRefusal(request.cmd, peer: peer, request: request, code: .denied, message: "无 token")
             fail(ControlErrorBody(
-                .denied, "capture-text 要求调用方带着本次启动的来源标记（QUICKTERM_TOKEN）",
-                hint: "在 QuickTerm 的 pane 里跑这条命令（环境变量是自动注入的）；"
-                    + "外部进程请从一个 pane 里继承 QUICKTERM_TOKEN"))
+                .denied, "capture-text requires the caller to carry this launch's origin token (QUICKTERM_TOKEN)",
+                hint: "Run this command inside a QuickTerm pane, where the environment variable is injected for you; "
+                    + "an external process has to inherit QUICKTERM_TOKEN from a pane."))
             return
         }
         if cls.isMutation, !config.allowsMutation {
-            fail(ControlErrorBody(.denied, "控制面是只读模式（[control] mode = \(config.mode)）",
-                                  hint: "改成 mode = \"ask\" 才能执行变更"))
+            fail(ControlErrorBody(.denied, "The control plane is read-only ([control] mode = \(config.mode))",
+                                  hint: "Set mode = \"ask\" to allow mutations."))
             return
         }
 
@@ -240,9 +244,10 @@ final class ControlCommandRunner {
                || request.args[ControlCommandTable.Flag.failIfNoop]?.boolValue == true {
             fail(ControlErrorBody(
                 .badRequest,
-                "--dry-run / --fail-if-noop 只对名词-动词层的变更命令有意义（\(spec.cli) 没有可预演的 diff）",
+                "--dry-run / --fail-if-noop only mean something for the noun-verb mutation commands (\(spec.cli) has no diff to preview)",
                 hint: spec.name == "action"
-                    ? "action 是快捷键直通车；要预演请用 quickterm pane close / workspace clear 这类命令"
+                    ? "action is a direct line to the keybindings. To dry-run a change, use a command "
+                        + "like quickterm pane close or workspace clear."
                     : nil))
             return
         }
@@ -257,8 +262,8 @@ final class ControlCommandRunner {
         // 刻意**不用** `consent.isModalBusy`：它含任意窗口的 attachedSheet，
         // 网页里一个不关的 JS `confirm()` 就能把整个控制面永久顶成 busy（网页内容 DoS 掉 agent）
         if cls.isMutation, modalBusyProbe() || consent.isPrompting {
-            fail(ControlErrorBody(.busy, "QuickTerm 正有一个对话框挂着，变更命令暂不执行",
-                                  hint: "先处理掉 QuickTerm 里的对话框", retryAfterMs: 2000))
+            fail(ControlErrorBody(.busy, "A dialog is open in QuickTerm, so mutation commands are held back",
+                                  hint: "Dismiss the dialog in QuickTerm first.", retryAfterMs: 2000))
             return
         }
 
@@ -269,8 +274,8 @@ final class ControlCommandRunner {
             if case .limited(let retry, let scope) = rateLimiter.admit(origin: origin) {
                 logRefusal(request.cmd, peer: peer, request: request, code: .rateLimited,
                            message: "限流（\(scope)）")
-                fail(ControlErrorBody(.rateLimited, "变更太密集了（\(scope) 限流）",
-                                      hint: "把批量操作合并，或放慢重试", retryAfterMs: retry))
+                fail(ControlErrorBody(.rateLimited, "Mutations are coming in too fast (\(scope) rate limit)",
+                                      hint: "Batch the operations, or retry more slowly.", retryAfterMs: retry))
                 return
             }
         }
@@ -348,8 +353,8 @@ final class ControlCommandRunner {
         // 敏感命令一条一个授权键：批准过"读屏幕"不等于批准"往 shell 里打字"
         let grantScope: String? = cls == .sensitive ? spec.name : nil
         if consent.isModalBusy, !consent.hasGrant(pid: peer.pid, cls: cls, scope: grantScope) {
-            fail(ControlErrorBody(.busy, "QuickTerm 正有一个对话框挂着，破坏性命令暂不执行",
-                                  hint: "先处理掉 QuickTerm 里的对话框", retryAfterMs: 2000))
+            fail(ControlErrorBody(.busy, "A dialog is open in QuickTerm, so destructive commands are held back",
+                                  hint: "Dismiss the dialog in QuickTerm first.", retryAfterMs: 2000))
             return
         }
         consent.evaluate(.init(peerName: peer.processName, peerPID: peer.pid, cls: cls,
@@ -373,11 +378,11 @@ final class ControlCommandRunner {
             case .allow:
                 execute()
             case .deny:
-                fail(ControlErrorBody(.denied, "用户拒绝了这条命令"))
+                fail(ControlErrorBody(.denied, "The user denied this command"))
             case .timeout:
                 fail(ControlErrorBody(.confirmationRequired,
-                                      "需要在 QuickTerm 里确认（\(Int(ControlConsent.timeout)) 秒内没有回应）",
-                                      hint: "切到 QuickTerm 批准，然后重试"))
+                                      "This needs confirming in QuickTerm (no answer within \(Int(ControlConsent.timeout)) seconds)",
+                                      hint: "Switch to QuickTerm, approve it, then retry."))
             }
         }
     }
@@ -462,7 +467,9 @@ final class ControlCommandRunner {
             return PinnedSubject(
                 controller: controller, workspace: resolution.workspace, pane: nil, handle: nil,
                 paneIDs: Set(panes.map(\.id)),
-                description: "屏幕 \(controller.screenIndex + 1) 工作区 \(resolution.workspace + 1)"
+                description: "screen \(controller.screenIndex + 1) workspace \(resolution.workspace + 1)"
+                    + " (\(panes.count) pane\(panes.count == 1 ? "" : "s"): \(handles.joined(separator: " ")))",
+                consentText: "屏幕 \(controller.screenIndex + 1) 工作区 \(resolution.workspace + 1)"
                     + "（\(panes.count) 个 pane：\(handles.joined(separator: " "))）")
         case "spec.apply":
             // 钉住的是"这一批工作区里的这些 pane"：**作用域由 spec 正文说了算**，不是 `-t`。
@@ -470,8 +477,8 @@ final class ControlCommandRunner {
             // 确认框里只写 `-t` 指的那一个的话，用户批准的是一件比实际小得多的事
             let resolution = try resolver.resolve(target)
             guard let text = request.args["spec"]?.stringValue, !text.isEmpty else {
-                throw ControlErrorBody(.badRequest, "没有拿到 spec 内容",
-                                       hint: "quickterm spec apply -f <文件>，或从标准输入喂进来")
+                throw ControlErrorBody(.badRequest, "No spec content was provided",
+                                       hint: "quickterm spec apply -f <file>, or pipe the spec in on stdin")
             }
             // 解析不了 / 落不下去的 spec 在这里就失败：不必先把用户叫起来确认一件做不成的事
             let document = try SpecParser.parse(text)
@@ -480,6 +487,7 @@ final class ControlCommandRunner {
             var scopes: [PinnedScope] = []
             var handles: [String] = []
             var places: [String] = []
+            var placesZH: [String] = []
             for target in targets {
                 let closing = target.controller.model.closingPanes
                 let panes = (target.controller.model.layouts[target.workspace].paneList
@@ -487,28 +495,38 @@ final class ControlCommandRunner {
                     .filter { !closing.contains($0.id) }
                 handles += panes.map { ControlHandleRegistry.shared.handle(for: $0) }
                 if places.count < 6 {
-                    places.append("屏幕 \(target.controller.screenIndex + 1) 工作区 \(target.workspace + 1)")
+                    places.append("screen \(target.controller.screenIndex + 1) workspace \(target.workspace + 1)")
+                    placesZH.append("屏幕 \(target.controller.screenIndex + 1) 工作区 \(target.workspace + 1)")
                 }
                 scopes.append(PinnedScope(controller: target.controller, workspace: target.workspace,
                                           paneIDs: Set(panes.map(\.id))))
             }
             let listed = handles.prefix(12).joined(separator: " ")
                 + (handles.count > 12 ? " …" : "")
-            let where_ = places.joined(separator: "、") + (targets.count > places.count ? " …" : "")
+            let where_ = places.joined(separator: ", ") + (targets.count > places.count ? " …" : "")
+            let whereZH = placesZH.joined(separator: "、") + (targets.count > placesZH.count ? " …" : "")
             let description = targets.count == 1
-                ? "\(where_)（\(handles.count) 个 pane：\(listed)）"
-                : "\(targets.count) 个工作区（\(where_)），共 \(handles.count) 个 pane：\(listed)"
+                ? "\(where_) (\(handles.count) pane\(handles.count == 1 ? "" : "s"): \(listed))"
+                : "\(targets.count) workspaces (\(where_)), "
+                    + "\(ControlChange.count(handles.count, "pane")) in all: \(listed)"
+            let consentText = targets.count == 1
+                ? "\(whereZH)（\(handles.count) 个 pane：\(listed)）"
+                : "\(targets.count) 个工作区（\(whereZH)），共 \(handles.count) 个 pane：\(listed)"
             return PinnedSubject(
                 controller: resolution.controller, workspace: resolution.workspace,
-                pane: nil, handle: nil, paneIDs: nil, scopes: scopes, description: description)
+                pane: nil, handle: nil, paneIDs: nil, scopes: scopes, description: description,
+                consentText: consentText)
         case "screen.close":
             let resolution = try resolver.resolve(target)
             let controller = resolution.controller
+            let count = controller.model.allPanes.count
             return PinnedSubject(
                 controller: controller, workspace: resolution.workspace, pane: nil, handle: nil,
                 paneIDs: nil,
-                description: "屏幕 \(controller.screenIndex + 1)「\(controller.window?.title ?? "")」"
-                    + "（\(controller.model.allPanes.count) 个 pane）")
+                description: "screen \(controller.screenIndex + 1) \"\(controller.window?.title ?? "")\""
+                    + " (\(count) pane\(count == 1 ? "" : "s"))",
+                consentText: "屏幕 \(controller.screenIndex + 1)「\(controller.window?.title ?? "")」"
+                    + "（\(count) 个 pane）")
         default:
             var effective = target ?? ControlTarget()
             if effective.pane == nil { effective.pane = .focused }
@@ -518,7 +536,8 @@ final class ControlCommandRunner {
             return PinnedSubject(
                 controller: resolution.controller, workspace: resolution.workspace,
                 pane: subject, handle: handle, paneIDs: nil,
-                description: "\(handle)「\(subject.paneTitle)」")
+                description: "\(handle) \"\(subject.paneTitle)\"",
+                consentText: "\(handle)「\(subject.paneTitle)」")
         }
     }
 
@@ -534,32 +553,32 @@ final class ControlCommandRunner {
             let controller = subject.controller
             switch spec.name {
             case "workspace.clear":
-                text += "\n清空 \(subject.description) —— 其中的进程会被结束"
+                text += "\n清空 \(subject.consentText) —— 其中的进程会被结束"
             case "screen.close":
-                text += "\n关闭 \(subject.description) —— 其中的进程会被结束"
+                text += "\n关闭 \(subject.consentText) —— 其中的进程会被结束"
             case "spec.apply":
-                text += "\n用一份 spec 覆盖 \(subject.description) —— 对不上的那些 pane 会被关掉，其中的进程会被结束"
+                text += "\n用一份 spec 覆盖 \(subject.consentText) —— 对不上的那些 pane 会被关掉，其中的进程会被结束"
             case "browser.close":
                 let tabs = (subject.pane as? BrowserPaneView)?.tabs.count ?? 0
                 let which = request.args["tab"]?.stringValue ?? "@active"
                 if request.args["others"]?.boolValue == true {
-                    text += "\n关掉 \(subject.description) 里除 \(which) 之外的 \(max(tabs - 1, 0)) 个标签"
+                    text += "\n关掉 \(subject.consentText) 里除 \(which) 之外的 \(max(tabs - 1, 0)) 个标签"
                 } else if tabs <= 1 {
-                    text += "\n关掉 \(subject.description) 的最后一个标签 —— **整个 pane 会一起关掉**"
+                    text += "\n关掉 \(subject.consentText) 的最后一个标签 —— **整个 pane 会一起关掉**"
                 } else {
-                    text += "\n关掉 \(subject.description) 的标签 \(which)（还剩 \(tabs - 1) 个）"
+                    text += "\n关掉 \(subject.consentText) 的标签 \(which)（还剩 \(tabs - 1) 个）"
                 }
                 text += "· 屏幕 \(controller.screenIndex + 1) · 工作区 \(subject.workspace + 1)"
             case "pane.capture-text":
                 // 读屏幕这件事必须在框里说成"读"：用户批准的是"把那个 pane 屏幕上的字交出去"，
                 // 而不是一句抽象的"执行敏感操作"
-                text += "\n**读取 \(subject.description) 屏幕上的全部文字**并交给这个调用方"
+                text += "\n**读取 \(subject.consentText) 屏幕上的全部文字**并交给这个调用方"
                     + "（其中可能有密码、token、私有代码）"
                     + "· 屏幕 \(controller.screenIndex + 1) · 工作区 \(subject.workspace + 1)"
             default:
                 // 浏览器 pane 还有别的标签时，close-pane 关的是当前标签而不是整个 pane（Chrome 语义）
                 let tabOnly = (subject.pane as? BrowserPaneView).map { $0.tabs.count > 1 } ?? false
-                text += "\n作用于 \(subject.description)"
+                text += "\n作用于 \(subject.consentText)"
                     + "· 屏幕 \(controller.screenIndex + 1) · 工作区 \(subject.workspace + 1)"
                 if action == .closePane || spec.name == "pane.close", tabOnly { text += "（只关当前标签）" }
             }
@@ -601,7 +620,7 @@ final class ControlCommandRunner {
         dispatchPrecondition(condition: .onQueue(.main))
         guard !isExecuting else {
             completion(.failure(id: request.id, seq: seq,
-                                error: ControlErrorBody(.busy, "已经有一条控制命令在执行",
+                                error: ControlErrorBody(.busy, "Another control command is already running",
                                                         retryAfterMs: 50)))
             return
         }
@@ -618,7 +637,7 @@ final class ControlCommandRunner {
             completion(.failure(id: request.id, seq: seq,
                                 error: ControlErrorBody(
                                     .badRequest,
-                                    "--dry-run / --fail-if-noop 只对名词-动词层的变更命令有意义（\(spec.cli) 没有可预演的 diff）")))
+                                    "--dry-run / --fail-if-noop only mean something for the noun-verb mutation commands (\(spec.cli) has no diff to preview)")))
             return
         }
 
@@ -629,8 +648,8 @@ final class ControlCommandRunner {
             completion(.failure(id: request.id, seq: seq,
                                 error: ControlErrorBody(
                                     .unknownCommand,
-                                    "\(spec.cli) 是 quickterm 自己这一侧的命令，不经 socket 执行",
-                                    hint: "直接在终端里跑 quickterm \(spec.cli)")))
+                                    "\(spec.cli) runs entirely on the quickterm side and never goes over the socket",
+                                    hint: "Run quickterm \(spec.cli) directly in a terminal.")))
             return
         }
 
@@ -668,7 +687,7 @@ final class ControlCommandRunner {
                     }
                     out.panes = try panes.map { try projectPane($0, fields: fields) }
                 default:
-                    throw ControlErrorBody(.badRequest, "list 只接受 screens / workspaces / panes",
+                    throw ControlErrorBody(.badRequest, "list only accepts screens / workspaces / panes",
                                            candidates: ["screens", "workspaces", "panes"])
                 }
                 completion(.success(id: request.id, seq: seq, resolved: resolution.echo, data: out))
@@ -678,7 +697,7 @@ final class ControlCommandRunner {
                 if effective.pane == nil { effective.pane = .focused }
                 let resolution = try resolver.resolve(effective)
                 guard let pane = resolution.pane else {
-                    throw ControlErrorBody(.notFound, "没有可寻址的 pane")
+                    throw ControlErrorBody(.notFound, "No addressable pane")
                 }
                 let positions = ControlStateEncoder.positions(
                     in: resolution.controller.model.layouts[resolution.workspace],
@@ -699,7 +718,7 @@ final class ControlCommandRunner {
                                         data: ControlActionListPayload(actions: ControlCommandTable.actionDocs)))
                     return
                 }
-                guard let action else { throw ControlErrorBody(.badRequest, "action 需要一个动作名") }
+                guard let action else { throw ControlErrorBody(.badRequest, "action needs an action name") }
                 let payload = try runAction(action, target: target, resolver: resolver,
                                             precise: request.args["precise"]?.boolValue ?? false,
                                             encoder: encoder, pinned: pinned)
@@ -735,7 +754,7 @@ final class ControlCommandRunner {
             default:
                 // Phase 2 的名词-动词层：统一的 (echo, 变更信封) 形状
                 guard let group = spec.group else {
-                    throw ControlErrorBody(.unknownCommand, "命令 \(spec.name) 在本阶段还没有实现")
+                    throw ControlErrorBody(.unknownCommand, "Command \(spec.name) is not implemented in this phase")
                 }
                 let ctx = ControlContext(spec: spec, request: request, peer: peer, target: target,
                                          resolver: resolver, encoder: encoder, pinned: pinned)
@@ -749,7 +768,7 @@ final class ControlCommandRunner {
                 case "input": result = try runInput(ctx)
                 case "browser": result = try runBrowser(ctx)
                 default:
-                    throw ControlErrorBody(.unknownCommand, "未知命令组 \(group)",
+                    throw ControlErrorBody(.unknownCommand, "Unknown command group \(group)",
                                            candidates: ControlCommandTable.groups)
                 }
                 completion(.success(id: request.id, seq: seq, resolved: result.echo, data: result.data))
@@ -776,8 +795,8 @@ final class ControlCommandRunner {
             guard index < count else {
                 throw ControlErrorBody(
                     .notFound,
-                    "\(action.rawValue) 指向工作区 \(index + 1)，但屏幕 \(controller.screenIndex + 1) 只有 \(count) 个",
-                    hint: "改 ~/.config/quickterm/config.toml 的 workspaces（1–10）")
+                    "\(action.rawValue) points at workspace \(index + 1), but screen \(controller.screenIndex + 1) only has \(count)",
+                    hint: "Raise workspaces (1–10) in ~/.config/quickterm/config.toml")
             }
         }
 
@@ -787,8 +806,8 @@ final class ControlCommandRunner {
            action.workspaceIndex == nil {
             throw ControlErrorBody(
                 .badTarget,
-                "action 作用于活动工作区（当前是 \(controller.model.activeIndex + 1)），目标却是 \(resolution.workspace + 1)",
-                hint: "先 quickterm action goto-workspace-\(resolution.workspace + 1)")
+                "action applies to the active workspace (currently \(controller.model.activeIndex + 1)), but the target is \(resolution.workspace + 1)",
+                hint: "Run quickterm action goto-workspace-\(resolution.workspace + 1) first.")
         }
 
         // 目标显式指了 pane：先把焦点交过去，**并且校验交成功了**才执行。
@@ -797,29 +816,29 @@ final class ControlCommandRunner {
             guard resolution.workspace == controller.model.activeIndex else {
                 throw ControlErrorBody(
                     .badTarget,
-                    "pane \(ControlHandleRegistry.shared.handle(for: pane)) 在工作区 \(resolution.workspace + 1)，不是活动工作区",
-                    hint: "先 quickterm action goto-workspace-\(resolution.workspace + 1)")
+                    "pane \(ControlHandleRegistry.shared.handle(for: pane)) is in workspace \(resolution.workspace + 1), which is not the active workspace",
+                    hint: "Run quickterm action goto-workspace-\(resolution.workspace + 1) first.")
             }
             if controller.focusedPane !== pane {
                 controller.requestFocus(to: pane)
                 guard controller.focusedPane === pane else {
                     throw ControlErrorBody(
                         .busy,
-                        "焦点没能在同一轮里交给 \(ControlHandleRegistry.shared.handle(for: pane))（SwiftUI 还没挂载它）",
-                        hint: "稍后重试；本次什么都没做", retryAfterMs: 200)
+                        "Focus could not be handed to \(ControlHandleRegistry.shared.handle(for: pane)) in the same turn (SwiftUI has not mounted it yet)",
+                        hint: "Retry shortly; nothing was done this time.", retryAfterMs: 200)
                 }
             }
         }
 
         if action.browserOnly, !(controller.focusedPane is BrowserPaneView) {
             throw ControlErrorBody(
-                .wrongPaneKind, "\(action.rawValue) 只对浏览器 pane 生效，当前焦点不是浏览器 pane",
-                hint: "用 -t <浏览器 pane 句柄>（quickterm list panes 里 kind=browser 的那些）")
+                .wrongPaneKind, "\(action.rawValue) only works on a browser pane, and the focused pane is not one",
+                hint: "Pass -t <browser pane handle> (the ones with kind=browser in quickterm list panes)")
         }
         if action.terminalOnly, !(controller.focusedPane is Ghostty.SurfaceView) {
             throw ControlErrorBody(
-                .wrongPaneKind, "\(action.rawValue) 只对终端 pane 生效，当前焦点不是终端 pane",
-                hint: "用 -t <终端 pane 句柄>")
+                .wrongPaneKind, "\(action.rawValue) only works on a terminal pane, and the focused pane is not one",
+                hint: "Pass -t <terminal pane handle>")
         }
 
         // 确认闸门批准的是**这一个** pane：落刀前再核一次身份。
@@ -830,8 +849,10 @@ final class ControlCommandRunner {
                   !controller.model.closingPanes.contains(pinnedPane.id) else {
                 throw ControlErrorBody(
                     .busy,
-                    "确认期间目标变了（当时确认的是 \(pinned.handle ?? pinned.description)，现在的焦点已不是它）：本次什么都没做",
-                    hint: "重新发一次，或用 -t \(pinned.handle ?? "<句柄>") 精确指定", retryAfterMs: 200)
+                    "The target changed while the confirmation prompt was up (what was confirmed: "
+                        + "\(pinned.handle ?? pinned.description), which is no longer focused): nothing was done",
+                    hint: "Send it again, or name the target exactly with -t \(pinned.handle ?? "<handle>")",
+                    retryAfterMs: 200)
             }
         }
 

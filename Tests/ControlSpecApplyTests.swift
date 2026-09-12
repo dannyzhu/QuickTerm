@@ -315,7 +315,7 @@ final class ControlSpecApplyTests: XCTestCase {
             let body = error as? ControlErrorBody
             XCTAssertEqual(body?.code, ControlErrorCode.partialApply.rawValue,
                            "落刀之后失败要有自己的错误码，绝不能报成「什么都没发生」")
-            XCTAssertTrue((body?.message ?? "").contains("一半"), body?.message ?? "")
+            XCTAssertTrue((body?.message ?? "").contains("only half applied"), body?.message ?? "")
         }
         harness.spin(0.5)
 
@@ -523,7 +523,7 @@ final class ControlSpecApplyTests: XCTestCase {
         let reply = try apply(text, target: "1", mode: "replace")
         XCTAssertFalse(reply.ok)
         XCTAssertEqual(reply.error?.code, ControlErrorCode.badRequest.rawValue)
-        XCTAssertTrue((reply.error?.message ?? "").contains("只能写一次"), reply.error?.message ?? "")
+        XCTAssertTrue((reply.error?.message ?? "").contains("only appear once"), reply.error?.message ?? "")
         harness.spin(0.4)
         XCTAssertTrue(try panes(1).isEmpty, "被拒的那一次一个 pane 都不许建")
     }

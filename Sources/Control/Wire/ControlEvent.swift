@@ -19,15 +19,15 @@ enum ControlEventType: String, Codable, CaseIterable {
 
     var summary: String {
         switch self {
-        case .paneOpened: "新建了一个 pane（终端 / 浏览器 / 文件管理器）"
-        case .paneClosed: "一个 pane 关掉了（进入关闭动效即上报，与 state 的可寻址口径一致）"
-        case .focusChanged: "某块屏幕的键盘焦点换了 pane"
-        case .workspaceChanged: "某块屏幕切了工作区，或者某个工作区改了名（带 title）"
-        case .layoutChanged: "某个工作区的结构变了（布局种类 / 列宽 / split 比例 / zoom / 浮动层）"
-        case .screenOpened: "新建了一块屏幕（窗口）"
-        case .screenClosed: "一块屏幕关掉了"
-        case .paneTitleChanged: "pane 标题变了（**不是**输出内容）"
-        case .paneCwdChanged: "终端 pane 的工作目录变了（OSC 7）"
+        case .paneOpened: "a pane was created (terminal / browser / file manager)"
+        case .paneClosed: "a pane closed (reported as soon as the close animation starts, matching what state still counts as addressable)"
+        case .focusChanged: "keyboard focus on a screen moved to another pane"
+        case .workspaceChanged: "a screen switched workspace, or a workspace was renamed (carries title)"
+        case .layoutChanged: "the structure of a workspace changed (layout kind / column width / split ratio / zoom / floating layer)"
+        case .screenOpened: "a screen (window) was created"
+        case .screenClosed: "a screen closed"
+        case .paneTitleChanged: "a pane title changed (**not** its output)"
+        case .paneCwdChanged: "the working directory of a terminal pane changed (OSC 7)"
         }
     }
 }
@@ -142,14 +142,14 @@ enum ControlEventLimits {
             value = Double(text)
         }
         guard let value, value >= 0, value.isFinite else {
-            throw ControlErrorBody(.badRequest, "--timeout 认不得 \(raw)",
-                                   hint: "写成 5s / 500ms / 2m，或直接给秒数")
+            throw ControlErrorBody(.badRequest, "--timeout does not understand \(raw)",
+                                   hint: "Write it as 5s / 500ms / 2m, or just give a number of seconds.")
         }
         let seconds = value * scale
         guard seconds <= maxPollTimeout else {
             throw ControlErrorBody(.badRequest,
-                                   "--timeout 最多 \(Int(maxPollTimeout))s（给了 \(Int(seconds))s）",
-                                   hint: "长轮询到点会回一批空的，再轮一次即可")
+                                   "--timeout is at most \(Int(maxPollTimeout))s (got \(Int(seconds))s)",
+                                   hint: "A long poll that times out returns an empty batch, just poll again.")
         }
         return seconds
     }
@@ -162,8 +162,8 @@ enum ControlEventLimits {
         guard !names.isEmpty else { return nil }
         let known = Set(ControlEventType.allCases.map(\.rawValue))
         for name in names where !known.contains(name) {
-            throw ControlErrorBody(.badRequest, "未知事件类型 \(name)",
-                                   hint: "quickterm describe --json 的 events 里有全部类型",
+            throw ControlErrorBody(.badRequest, "Unknown event type \(name)",
+                                   hint: "The events section of quickterm describe --json lists every type.",
                                    candidates: ControlEventType.allCases.map(\.rawValue))
         }
         return Set(names)

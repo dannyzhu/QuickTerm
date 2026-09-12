@@ -123,13 +123,13 @@ final class MCPServer {
 
     private func callTool(params: [String: JSONValue]) -> JSONValue {
         guard let name = params["name"]?.stringValue else {
-            return Self.toolError(ControlErrorBody(.badRequest, "tools/call 缺少 name",
-                                                   hint: "先 tools/list"))
+            return Self.toolError(ControlErrorBody(.badRequest, "tools/call is missing `name`",
+                                                   hint: "Call tools/list first."))
         }
         guard let tool = MCPToolMap.tool(named: name) else {
             return Self.toolError(ControlErrorBody(
-                .unknownCommand, "没有名为 \(name) 的工具",
-                hint: "tools/list 里是全部工具",
+                .unknownCommand, "There is no tool named \(name)",
+                hint: "tools/list returns the full set of tools.",
                 candidates: MCPToolMap.tools.map(\.name)))
         }
         let arguments = params["arguments"]?.objectValue ?? [:]
@@ -147,7 +147,7 @@ final class MCPServer {
         } catch let error as ControlErrorBody {
             return Self.toolError(error)
         } catch {
-            return Self.toolError(ControlErrorBody(.notRunning, "连不上 QuickTerm：\(error)",
+            return Self.toolError(ControlErrorBody(.notRunning, "Cannot reach QuickTerm: \(error)",
                                                    hint: "open -a QuickTerm"))
         }
     }
@@ -161,14 +161,14 @@ final class MCPServer {
             spec = specs[0]
         } else {
             guard let asked = arguments["command"]?.stringValue else {
-                throw ControlErrorBody(.badRequest, "\(tool.name) 需要 command 参数",
-                                       hint: "可选：\(specs.map(\.cli).joined(separator: " | "))",
+                throw ControlErrorBody(.badRequest, "\(tool.name) needs a `command` argument",
+                                       hint: "One of: \(specs.map(\.cli).joined(separator: " | "))",
                                        candidates: specs.map(\.cli))
             }
             guard let found = ControlCommandTable.command(asked),
                   tool.commandNames.contains(found.name) else {
-                throw ControlErrorBody(.unknownCommand, "\(tool.name) 不认得 command=\(asked)",
-                                       hint: "可选：\(specs.map(\.cli).joined(separator: " | "))",
+                throw ControlErrorBody(.unknownCommand, "\(tool.name) does not know command=\(asked)",
+                                       hint: "One of: \(specs.map(\.cli).joined(separator: " | "))",
                                        candidates: specs.map(\.cli))
             }
             spec = found
@@ -182,8 +182,9 @@ final class MCPServer {
             allowed.insert(ControlCommandTable.Flag.failIfNoop)
         }
         for key in arguments.keys where !allowed.contains(key) {
-            throw ControlErrorBody(.badRequest, "\(spec.cli) 不认得参数 \(key)",
-                                   hint: "这个工具背着好几条命令，参数各归各的：\(spec.cli) 认的是 "
+            throw ControlErrorBody(.badRequest, "\(spec.cli) does not take the argument \(key)",
+                                   hint: "This tool carries several commands and each has its own "
+                                       + "arguments: \(spec.cli) takes "
                                        + allowed.sorted().joined(separator: " / "),
                                    candidates: allowed.sorted())
         }
@@ -192,7 +193,8 @@ final class MCPServer {
         for arg in spec.args {
             guard let raw = arguments[arg.name] else {
                 if arg.required {
-                    throw ControlErrorBody(.badRequest, "\(spec.cli) 缺少必填参数 \(arg.name)",
+                    throw ControlErrorBody(.badRequest,
+                                           "\(spec.cli) is missing the required argument \(arg.name)",
                                            hint: arg.help)
                 }
                 continue
@@ -205,14 +207,15 @@ final class MCPServer {
             }
         }
         if spec.readsFile, args["spec"] == nil {
-            throw ControlErrorBody(.badRequest, "\(spec.cli) 要把 spec 正文直接给过来",
-                                   hint: "MCP 这一侧没有 -f：读文件永远是调用方那边的事")
+            throw ControlErrorBody(.badRequest, "\(spec.cli) needs the spec body passed inline",
+                                   hint: "There is no -f on the MCP side: reading a file is always "
+                                       + "the caller's job.")
         }
 
         var target = arguments["target"]?.stringValue
         if let value = target, value.isEmpty { target = nil }
         if target != nil, !spec.acceptsTarget {
-            throw ControlErrorBody(.badRequest, "\(spec.cli) 不接受 target")
+            throw ControlErrorBody(.badRequest, "\(spec.cli) does not accept a target")
         }
 
         nextRequestID += 1
@@ -233,37 +236,37 @@ final class MCPServer {
     static func coerce(_ raw: JSONValue, to arg: ControlArgSpec,
                        command: String) throws -> JSONValue {
         func bad(_ want: String) -> ControlErrorBody {
-            ControlErrorBody(.badRequest, "\(command) 的 \(arg.name) 需要\(want)")
+            ControlErrorBody(.badRequest, "\(command): \(arg.name) must be \(want)")
         }
         if arg.repeatable {
             if let array = raw.arrayValue {
                 return .array(try array.map { item in
-                    guard let text = item.stringValue else { throw bad("一组字符串") }
+                    guard let text = item.stringValue else { throw bad("an array of strings") }
                     return .string(text)
                 })
             }
-            guard let text = raw.stringValue else { throw bad("一组字符串") }
+            guard let text = raw.stringValue else { throw bad("an array of strings") }
             return .array([.string(text)])
         }
         switch arg.kind {
         case .string:
-            guard let text = raw.stringValue else { throw bad("字符串") }
+            guard let text = raw.stringValue else { throw bad("a string") }
             return .string(text)
         case .int:
-            guard let value = raw.intValue else { throw bad("整数") }
+            guard let value = raw.intValue else { throw bad("an integer") }
             return .int(value)
         case .double:
-            guard let value = raw.doubleValue else { throw bad("数值") }
+            guard let value = raw.doubleValue else { throw bad("a number") }
             return .double(value)
         case .bool:
-            guard let value = raw.boolValue else { throw bad("布尔值") }
+            guard let value = raw.boolValue else { throw bad("a boolean") }
             return .bool(value)
         case .enumeration:
-            guard let text = raw.stringValue else { throw bad("字符串") }
+            guard let text = raw.stringValue else { throw bad("a string") }
             guard arg.values?.contains(text) ?? true else {
                 throw ControlErrorBody(.badRequest,
-                                       "\(command) 的 \(arg.name) 不接受 \(text)",
-                                       hint: "可选：\((arg.values ?? []).joined(separator: " | "))",
+                                       "\(command): \(arg.name) does not accept \(text)",
+                                       hint: "One of: \((arg.values ?? []).joined(separator: " | "))",
                                        candidates: arg.values)
             }
             return .string(text)

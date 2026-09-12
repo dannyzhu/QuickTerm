@@ -356,7 +356,8 @@ final class WorkspaceTitleTests: XCTestCase {
         let command = try XCTUnwrap(ControlCommandTable.commands.first { $0.name == "workspace.set" })
         let help = try XCTUnwrap(command.args.first { $0.name == "title" }).help
         XCTAssertTrue(help.contains("spec"), "帮助得交代 spec apply 到底动不动名字")
-        XCTAssertFalse(help.contains("spec apply 都不会动它"), "这句话与下面两条断言是反的")
+        XCTAssertTrue(help.contains("carries a title"),
+                      "帮助必须说清「spec 里写了 title 就会改名」——与下面两条断言是同一件事：\(help)")
         XCTAssertNil(SpecApplier.wantedTitle(WorkspaceSpec()), "不写 title = 不动名字")
         XCTAssertEqual(SpecApplier.wantedTitle(WorkspaceSpec(title: "dev")) ?? nil, "dev",
                        "写了 title 的 spec 会改名——帮助里说的必须是这件事")

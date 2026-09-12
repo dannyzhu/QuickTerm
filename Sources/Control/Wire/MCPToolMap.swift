@@ -353,12 +353,12 @@ enum MCPToolMap {
             let values: [String]? = valueSets.allSatisfy { $0 == valueSets.first } ? valueSets.first ?? nil : nil
 
             var help = entries[0].1.help
-            if let def = entries[0].1.defaultValue { help += "（默认 \(def)）" }
+            if let def = entries[0].1.defaultValue { help += " (default \(def))" }
             if values == nil, entries.contains(where: { $0.1.values != nil }) {
                 let perCommand = entries.compactMap { entry -> String? in
                     entry.1.values.map { "\(entry.0.cli): \($0.joined(separator: " | "))" }
                 }
-                help += "（" + perCommand.joined(separator: "；") + "）"
+                help += " (" + perCommand.joined(separator: "; ") + ")"
             }
             if commands.count > 1, entries.count < commands.count {
                 help = "[" + entries.map { $0.0.cli }.joined(separator: ", ") + "] " + help
@@ -486,8 +486,9 @@ enum MCPToolMap {
 enum MCPSamples {
     static let resolved = ResolvedTarget(screen: 1, screenID: "3F2A9C", workspace: 2,
                                          pane: "t7", paneID: "C40D")
-    static let error = ControlErrorBody(.ambiguousTarget, "3 个 pane 匹配 title:~dev",
-                                        hint: "改用 -t <句柄>", candidates: ["t2", "t7", "b1"],
+    static let error = ControlErrorBody(.ambiguousTarget, "3 panes match title:~dev",
+                                        hint: "Re-address it by handle: -t <handle>",
+                                        candidates: ["t2", "t7", "b1"],
                                         retryAfterMs: 800)
 
     static let paneInfo = ControlStatePayload.PaneInfo(
@@ -544,7 +545,7 @@ enum MCPSamples {
         changes: [ControlChange("1:2.t7.zoom", from: "off", to: "on")],
         pane: paneInfo, panes: [paneInfo], workspace: workspaceInfo, screen: screenInfo,
         focusPending: true, confirmPending: false, undo: "控制面：pane set",
-        note: "由 config.toml 监听落地，约 0.2s 后生效",
+        note: "Lands through the config.toml watcher, in effect about 0.2s later",
         spec: ControlSpecApplyReport(mode: "reuse", scope: "workspace", created: ["t9"],
                                      reused: ["t3"], closed: ["t4"], partial: false,
                                      skipped: ["screen 3"]),
@@ -559,7 +560,7 @@ enum MCPSamples {
 
     static let specValidate = ControlSpecValidatePayload(valid: true, scope: "workspace",
                                                          schema: SpecSchema.workspace, panes: 3,
-                                                         notes: ["dump 不会回吐 cmd"])
+                                                         notes: ["dump never gives cmd back"])
 
     static let events = ControlEventsPayload(
         events: [ControlEvent(seq: 418, ts: ControlEvent.stamp(), type: .paneOpened,

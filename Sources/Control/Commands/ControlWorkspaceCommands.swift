@@ -15,7 +15,7 @@ extension ControlCommandRunner {
         case "equalize": return try workspaceEqualize(ctx)
         case "clear": return try workspaceClear(ctx)
         case "count": return try workspaceCount(ctx)
-        default: throw ControlErrorBody(.unknownCommand, "workspace 没有 \(ctx.spec.verb) 这个动词")
+        default: throw ControlErrorBody(.unknownCommand, "workspace has no verb \(ctx.spec.verb)")
         }
     }
 
@@ -23,13 +23,14 @@ extension ControlCommandRunner {
         let scope = try requireScope(ctx, ctx.target)
         let controller = scope.controller
         guard let wanted = ctx.int("index") else {
-            throw ControlErrorBody(.badRequest, "workspace goto 需要一个工作区序号（1 起）")
+            throw ControlErrorBody(.badRequest, "workspace goto needs a workspace index (1-based)")
         }
         let count = controller.model.layouts.count
         guard wanted >= 1, wanted <= count else {
             throw ControlErrorBody(
-                .notFound, "工作区 \(wanted) 不存在：屏幕 \(controller.screenIndex + 1) 当前有 \(count) 个（1–\(count)）",
-                hint: "quickterm workspace count \(wanted) 可以加到那么多（1–10）")
+                .notFound, "Workspace \(wanted) does not exist: screen "
+                    + "\(controller.screenIndex + 1) currently has \(count) (1–\(count))",
+                hint: "quickterm workspace count \(wanted) grows it to that many (1–10).")
         }
         let index = wanted - 1
         let now = controller.model.activeIndex
@@ -58,24 +59,27 @@ extension ControlCommandRunner {
         let index = scope.workspace
         // 空串 ≠ 没写（`ctx.string` 把空串当没写），与 pane set --title 同一条
         guard let title = ctx.rawString("title") else {
-            throw ControlErrorBody(.badRequest, "workspace set 至少要给一个设值（--title）",
+            throw ControlErrorBody(.badRequest,
+                                   "workspace set needs at least one value to set (--title)",
                                    hint: "quickterm workspace set --help")
         }
         guard title.count <= ControlCommandRunner.maxTitleLength else {
             throw ControlErrorBody(
                 .badRequest,
-                "--title 太长了（\(title.count) 个字符，上限 \(ControlCommandRunner.maxTitleLength)）")
+                "--title is too long (\(title.count) characters, limit "
+                    + "\(ControlCommandRunner.maxTitleLength))")
         }
         guard title.unicodeScalars.allSatisfy(WorkspaceModel.isTitleScalar) else {
-            throw ControlErrorBody(.badRequest, "--title 里有控制字符",
-                                   hint: "名字会原样画进状态条的工作区胶囊与 state 的 title 字段")
+            throw ControlErrorBody(.badRequest, "--title contains control characters",
+                                   hint: "The name is drawn verbatim into the workspace pill in "
+                                       + "the status bar and into the title field in state.")
         }
         let wanted = WorkspaceModel.normalizedTitle(title)
         let now = controller.model.title(at: index)
         // 值本身是用户写的字，按敏感处理：与 pane 标题同一条规矩，不进 OSLog
         let changes = now == wanted ? [] : [ControlChange("\(path(controller, index)).title",
-                                                          from: now ?? "（没起过名）",
-                                                          to: wanted ?? "（清掉）", sensitive: true)]
+                                                          from: now ?? "(unnamed)",
+                                                          to: wanted ?? "(cleared)", sensitive: true)]
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
             controllers: [controller], undoName: "控制面：\(ctx.spec.cli)",
@@ -91,7 +95,7 @@ extension ControlCommandRunner {
         let scope = try requireScope(ctx, ctx.target)
         let controller = scope.controller
         guard let wanted = ctx.string("layout"), ["scrolling", "dwindle"].contains(wanted) else {
-            throw ControlErrorBody(.badRequest, "workspace set-layout 只接受 scrolling / dwindle",
+            throw ControlErrorBody(.badRequest, "workspace set-layout only accepts scrolling / dwindle",
                                    candidates: ["scrolling", "dwindle"])
         }
         let index = scope.workspace
@@ -107,7 +111,7 @@ extension ControlCommandRunner {
             // 非活动工作区一样能设：这正是 toggle-layout 做不到的那件事
             let previous = controller.model.layouts[index]
             guard controller.model.setLayout(wanted, at: index, columnFactor: controller.columnFactor) else {
-                throw ControlErrorBody(.failed, "布局转换没能给出 \(wanted)")
+                throw ControlErrorBody(.failed, "The layout conversion did not produce \(wanted)")
             }
             // 转换必须保 pane 保序（有损的是列宽 / 叠栈结构，不是 pane 本身）
             let after = controller.model.layouts[index].paneList.map(\.id)
@@ -115,7 +119,9 @@ extension ControlCommandRunner {
                 // 已经动过手了：整份放回去（布局是值类型），保住"抛出 = 什么都没变"这条不变量——
                 // 否则丢了的那个 pane 既不在布局里、也没跑过任何收尾，就是泄漏一个终端
                 controller.model.layouts[index] = previous
-                throw ControlErrorBody(.internalError, "布局转换丢了 pane（\(before.count) → \(after.count)）")
+                throw ControlErrorBody(.internalError,
+                                       "The layout conversion lost panes "
+                                           + "(\(before.count) → \(after.count))")
             }
             if index == controller.model.activeIndex, let focused = controller.focusedPane {
                 controller.requestFocus(to: focused)
@@ -183,7 +189,8 @@ extension ControlCommandRunner {
             + controller.model.floatings[index].map(\.pane)
         let infos = victims.map { paneInfo($0, controller: controller, workspace: index, encoder: ctx.encoder) }
         let changes = victims.isEmpty ? [] : [ControlChange(path(controller, index),
-                                                            from: "\(victims.count) panes", to: "0 panes")]
+                                                            from: ControlChange.count(victims.count, "pane"),
+                                                            to: "0 panes")]
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
             controllers: [controller],
@@ -219,14 +226,15 @@ extension ControlCommandRunner {
     /// 一次写盘、一条生效路径，永远只有一个真相。
     private func workspaceCount(_ ctx: ControlContext) throws -> (ResolvedTarget?, any Encodable) {
         guard let wanted = ctx.int("n") else {
-            throw ControlErrorBody(.badRequest, "workspace count 需要一个数字（1–10）")
+            throw ControlErrorBody(.badRequest, "workspace count needs a number (1–10)")
         }
         guard (1...10).contains(wanted) else {
-            throw ControlErrorBody(.badRequest, "工作区数只能是 1–10，收到 \(wanted)",
-                                   hint: "这是 WorkspaceModel.setWorkspaceCount 的硬上限（⌘1..0 就十个键）")
+            throw ControlErrorBody(.badRequest, "The workspace count must be 1–10, got \(wanted)",
+                                   hint: "That is the hard limit in "
+                                       + "WorkspaceModel.setWorkspaceCount (⌘1..0 is ten keys).")
         }
         guard let session = (NSApp.delegate as? AppDelegate)?.session else {
-            throw ControlErrorBody(.internalError, "没有会话")
+            throw ControlErrorBody(.internalError, "No session")
         }
         let now = session.settings.workspaces
         // 缩容保护：配置层本来就"不裁掉非空工作区"，但那是**静默**保留——
@@ -237,8 +245,10 @@ extension ControlCommandRunner {
             }.max() ?? 0
             if wanted < highest {
                 throw ControlErrorBody(
-                    .denied, "不能缩到 \(wanted)：第 \(highest) 号工作区里还有 pane",
-                    hint: "先 quickterm workspace clear -t :\(highest)（会结束其中的进程）")
+                    .denied, "Cannot shrink to \(wanted): workspace \(highest) still has panes "
+                        + "in it",
+                    hint: "Clear it first with quickterm workspace clear -t :\(highest) (that "
+                        + "kills the processes inside).")
             }
         }
         let changes = now == wanted ? [] : [ControlChange("config.workspaces",
@@ -252,12 +262,13 @@ extension ControlCommandRunner {
             do {
                 try ConfigStore.rewrite(key: "workspaces", value: String(wanted))
             } catch {
-                throw ControlErrorBody(.failed, "改写 config.toml 失败：\(error)")
+                throw ControlErrorBody(.failed, "Rewriting config.toml failed: \(error)")
             }
         }
         if payload.applied {
-            payload.note = "已写入 \(ConfigStore.activeConfigURL.path) 的 workspaces = \(wanted)；"
-                + "由配置监听热重载落地（约 0.2s 后 quickterm state 才会显示新的个数）"
+            payload.note = "Wrote workspaces = \(wanted) into "
+                + "\(ConfigStore.activeConfigURL.path); the config watcher hot-reloads it "
+                + "(quickterm state shows the new count about 0.2s from now)"
         }
         return (nil, payload)
     }

@@ -225,6 +225,8 @@ macOS 菜单栏的 Shell / Pane 菜单只列了少数动作的默认快捷键；
 
 ## 控制面（命令行与 AI agent）
 
+**命令行这一侧一律说英文**：`--help`、`describe --json`、报错、提示、给 MCP 宿主的工具描述全是英文——读它的主要是 agent，而 agent 之间的通用语是英文。应用界面（菜单、确认框、活动日志）仍然是中文。
+
 QuickTerm 在 `~/Library/Application Support/QuickTerm/` 下监听一个 Unix domain socket，并随包提供 `quickterm` 命令行。快捷键能做的，命令行都能做；在这之上还有一层名词-动词层，它的定规是**只给绝对设值，绝不 toggle**——agent 看不到状态，重试一次 toggle 会把自己撤销。
 
 ```sh

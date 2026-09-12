@@ -314,9 +314,9 @@ final class ControlSecurityTests: XCTestCase {
         XCTAssertFalse(modeLine?.contains("| on") ?? false, "模板不能再宣传一个 ask 之外的第四档")
 
         // describe 里那句策略也不能在 readonly 下继续说"会弹确认"
-        XCTAssertTrue(ControlDescribeDocument.destructivePolicy(mode: "ask").contains("确认"))
-        XCTAssertTrue(ControlDescribeDocument.destructivePolicy(mode: "readonly").contains("拒绝"))
-        XCTAssertFalse(ControlDescribeDocument.destructivePolicy(mode: "readonly").contains("确认一次"))
+        XCTAssertTrue(ControlDescribeDocument.destructivePolicy(mode: "ask").contains("Confirmed once"))
+        XCTAssertTrue(ControlDescribeDocument.destructivePolicy(mode: "readonly").contains("always refused"))
+        XCTAssertFalse(ControlDescribeDocument.destructivePolicy(mode: "readonly").contains("Confirmed once"))
     }
 
     // MARK: title:~ 曾经能用 7 个字节把整个 app 冻死

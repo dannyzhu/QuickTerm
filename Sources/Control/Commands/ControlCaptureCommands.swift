@@ -29,20 +29,21 @@ extension ControlCommandRunner {
         guard let surface = hit.pane as? Ghostty.SurfaceView else {
             throw ControlErrorBody(
                 .wrongPaneKind,
-                "\(handleName(hit.pane)) 是 \(hit.pane.kind.rawValue) pane，没有终端屏幕可读",
-                hint: "只有 kind=terminal 的 pane 能 capture-text（quickterm list panes）")
+                "\(handleName(hit.pane)) is a \(hit.pane.kind.rawValue) pane, so it has no terminal screen to read",
+                hint: "Only a kind=terminal pane can be captured (quickterm list panes)")
         }
         let scrollback = ctx.int("scrollback") ?? 0
         guard (0...ControlCaptureLimits.maxScrollback).contains(scrollback) else {
             throw ControlErrorBody(
                 .badRequest,
-                "--scrollback 必须在 0–\(ControlCaptureLimits.maxScrollback) 之间，收到 \(scrollback)",
-                hint: "要更多历史请在那个 pane 里自己落盘（tee / script），"
-                    + "整份回滚缓冲塞进一次响应会把 agent 的上下文吃光")
+                "--scrollback has to be between 0 and \(ControlCaptureLimits.maxScrollback), got \(scrollback)",
+                hint: "For more history, write it to a file from inside that pane (tee / script): "
+                    + "a whole scrollback buffer in one response eats an agent's entire context.")
         }
         guard let capture = Self.capture(surface, scrollback: scrollback) else {
-            throw ControlErrorBody(.busy, "终端还没准备好（引擎 surface 尚未创建）",
-                                   hint: "稍后重试；本次什么都没做", retryAfterMs: 200)
+            throw ControlErrorBody(.busy, "The terminal is not ready yet (the engine surface "
+                                       + "has not been created)",
+                                   hint: "Retry shortly; nothing was done this time.", retryAfterMs: 200)
         }
 
         let payload = ControlCaptureTextPayload(

@@ -75,7 +75,7 @@ final class ControlInputTests: XCTestCase {
         let spec = try XCTUnwrap(ControlCommandTable.command("input.send-text"))
         XCTAssertEqual(spec.cli, "input send-text")
         XCTAssertFalse(spec.idempotent, "打两次字就是打了两次，不是幂等的")
-        XCTAssertTrue(spec.summary.contains("默认关闭"), "帮助里必须写明它默认是关的")
+        XCTAssertTrue(spec.summary.contains("off by default"), "帮助里必须写明它默认是关的")
         XCTAssertTrue(spec.args.contains { $0.name == "enter" })
 
         // readonly 模式下也进不来（`sensitive.isMutation == true` 是这条的实现方式）
@@ -353,7 +353,7 @@ final class ControlInputTests: XCTestCase {
             token: ControlEnvironment.token, origin: paneOrigin))
         XCTAssertEqual(plain["applied"]?.boolValue, true)
         let plainDiff = try XCTUnwrap(plain["changes"]?.arrayValue?.first?.objectValue?["to"]?.stringValue)
-        XCTAssertTrue(plainDiff.contains("无回车"), "不给 --enter 就明确写出没有回车：\(plainDiff)")
+        XCTAssertTrue(plainDiff.contains("(no Return)"), "不给 --enter 就明确写出没有回车：\(plainDiff)")
 
         // 给了 --enter：diff 里说清楚多送了一个回车
         let entered = try harness.mutation(try harness.run(
@@ -361,8 +361,8 @@ final class ControlInputTests: XCTestCase {
             args: ["text": .string("echo hi"), "enter": .bool(true)],
             token: ControlEnvironment.token, origin: paneOrigin))
         let enterDiff = try XCTUnwrap(entered["changes"]?.arrayValue?.first?.objectValue?["to"]?.stringValue)
-        XCTAssertTrue(enterDiff.contains("回车"), "\(enterDiff)")
-        XCTAssertFalse(enterDiff.contains("无回车"))
+        XCTAssertTrue(enterDiff.contains("+ Return"), "\(enterDiff)")
+        XCTAssertFalse(enterDiff.contains("no Return"))
     }
 
     // MARK: 其它不变量

@@ -40,19 +40,19 @@ enum ControlPaneFactory {
         switch request.kind {
         case "terminal", "file-manager", "browser": break
         default:
-            throw ControlErrorBody(.badRequest, "认不得的 pane 种类 \(request.kind)",
+            throw ControlErrorBody(.badRequest, "Unknown pane kind \(request.kind)",
                                    candidates: ["terminal", "browser", "file-manager"])
         }
         if request.kind != "browser", request.url != nil {
-            throw ControlErrorBody(.badRequest, "--url 只对 --kind browser 有意义",
+            throw ControlErrorBody(.badRequest, "--url only means anything with --kind browser",
                                    hint: "quickterm pane new --kind browser --url …")
         }
         if request.kind == "browser", request.cmd != nil {
-            throw ControlErrorBody(.badRequest, "--cmd 对浏览器 pane 没有意义")
+            throw ControlErrorBody(.badRequest, "--cmd means nothing to a browser pane")
         }
         if let cwd = request.cwd {
             guard cwd.hasPrefix("/"), !cwd.contains("\0") else {
-                throw ControlErrorBody(.badRequest, "--cwd 不是一个可用的路径：\(cwd)")
+                throw ControlErrorBody(.badRequest, "--cwd is not a usable path: \(cwd)")
             }
         }
         if request.kind == "browser" {
@@ -75,9 +75,9 @@ enum ControlPaneFactory {
         guard let cwd else { return nil }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory) else {
-            return "目录不存在：\(cwd)"
+            return "no such directory: \(cwd)"
         }
-        guard isDirectory.boolValue else { return "不是一个目录：\(cwd)" }
+        guard isDirectory.boolValue else { return "not a directory: \(cwd)" }
         return nil
     }
 
@@ -137,7 +137,7 @@ enum ControlPaneFactory {
     static func browserURL(_ request: Request) throws -> URL {
         let raw = request.url ?? BrowserPaneView.settings.home
         guard let url = resolveURL(raw) else {
-            throw ControlErrorBody(.badRequest, "解析不出一个网址：\(raw)")
+            throw ControlErrorBody(.badRequest, "Could not resolve \(raw) to a URL")
         }
         return url
     }

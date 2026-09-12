@@ -17,8 +17,8 @@ enum InstallCLI {
         // Gatekeeper 的 App Translocation：随机只读路径，应用一退出软链就悬空
         if source.contains("/AppTranslocation/") {
             throw Failure("""
-            QuickTerm 正从只读的隔离路径运行（App Translocation）。
-            请先把 QuickTerm.app 拖进 /Applications 再打开一次，然后重试。
+            QuickTerm is running from a read-only quarantined path (App Translocation).
+            Move QuickTerm.app into /Applications, open it once from there, then try again.
             """)
         }
         let candidates = override.map { [($0 as NSString).expandingTildeInPath] }
@@ -36,8 +36,8 @@ enum InstallCLI {
             if FileManager.default.isWritableFile(atPath: candidate) { chosen = candidate; break }
         }
         guard let directory = chosen else {
-            throw Failure("没有可写的安装目录（试过：\(candidates.joined(separator: "、"))）。"
-                          + "用 --dir <目录> 指定一个你能写的目录。")
+            throw Failure("No writable install directory (tried: \(candidates.joined(separator: ", "))). "
+                          + "Pass --dir <dir> to name a directory you can write to.")
         }
 
         var installed: [String] = []
@@ -62,8 +62,9 @@ enum InstallCLI {
             installed: installed,
             source: source,
             directory: directory,
-            pathHint: onPath ? nil : "把 \(directory) 加进 PATH：echo 'export PATH=\"\(directory):$PATH\"' >> ~/.zshrc",
-            note: "升级或移动 QuickTerm.app 之后重新跑一次（软链会悬空）。")
+            pathHint: onPath ? nil
+                : "Add \(directory) to PATH: echo 'export PATH=\"\(directory):$PATH\"' >> ~/.zshrc",
+            note: "Run this again after upgrading or moving QuickTerm.app; the symlink goes stale.")
     }
 
     struct Failure: Error, CustomStringConvertible {
