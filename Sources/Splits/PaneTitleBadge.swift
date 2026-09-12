@@ -74,21 +74,31 @@ enum PaneTitleBadge {
             - CGFloat(metrics.reservedCharacters) * metrics.characterWidth
     }
 
+    /// **数字数**这一条规则本身（状态条的工作区胶囊也照这条数，只是上限是 12）：
+    /// 按字素簇截到 `limit` 个字，省略号**算在 limit 里面**（20 → 19 字 + `…`）；
+    /// 空串 / 全是空白 → nil = 没有标题这回事。
+    /// 像素宽度那一层不在这里：胶囊自己会撑开，只有边框上的标题才需要再按宽度缩一次
+    static func clamp(_ title: String, to limit: Int = maxCharacters) -> String? {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let chars = Array(trimmed)   // Character = 字素簇，CJK / emoji 各算一个
+        guard chars.count > limit, limit >= 2 else { return chars.count <= limit ? trimmed : nil }
+        return String(chars.prefix(limit - 1)) + ellipsis
+    }
+
     /// 纯函数：这一帧顶边框上该画的字符串；一个字都放不下（或本来就没标题）时 nil。
     /// nil 的意思是**整条边框照常连着画**，而不是画个空口子或者孤零零一个省略号
     static func fit(title: String, topEdgeWidth: CGFloat, metrics: Metrics = .standard) -> String? {
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
+        guard let capped = clamp(title, to: maxCharacters) else { return nil }
         let available = availableTextWidth(topEdgeWidth: topEdgeWidth, metrics: metrics)
         guard available > 0 else { return nil }
+        if metrics.width(of: capped) <= available { return capped }
 
-        let chars = Array(trimmed)   // Character = 字素簇，CJK / emoji 各算一个
-        if chars.count <= maxCharacters, metrics.width(of: trimmed) <= available { return trimmed }
-
-        // 逐格往回缩。`content` 是省略号**之外**的字数，画出来一共 content + 1 个字，
-        // 所以起点 19 正好压在 20 的上限上。缩到只剩省略号就收手——
+        // 字数够了、像素不够：逐格往回缩。`content` 是省略号**之外**的字数，
+        // 画出来一共 content + 1 个字，所以起点正压在 20 的上限上。缩到只剩省略号就收手——
         // 一个 `…` 占着边框却什么也没说，还不如把线画全
-        for content in stride(from: min(chars.count - 1, maxCharacters - 1), through: 1, by: -1) {
+        let chars = Array(capped)   // 已经 ≤ 20 个字素簇（含截断的省略号）
+        for content in stride(from: chars.count - 1, through: 1, by: -1) {
             let candidate = String(chars.prefix(content)) + ellipsis
             if metrics.width(of: candidate) <= available { return candidate }
         }

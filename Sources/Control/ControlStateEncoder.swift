@@ -131,6 +131,7 @@ struct ControlStateEncoder {
 
         return .init(
             index: index + 1,
+            title: model.title(at: index),
             layout: layout.name,
             empty: handles.isEmpty && floating.isEmpty,
             active: index == model.activeIndex,

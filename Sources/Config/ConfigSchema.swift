@@ -354,6 +354,10 @@ enum ConfigSchema {
                       labelZH: "pane 标题", labelEN: "Pane title",
                       helpZH: "把标题画在 pane 上边框上（只显示手动设过的标题，最长 20 字）",
                       helpEN: "draw the title into the pane's top border (only titles you set; 20 chars max)"),
+        ConfigKeySpec(.appearance, "workspace-title", .bool, default: .bool(true),
+                      labelZH: "工作区名字", labelEN: "Workspace title",
+                      helpZH: "起过名的工作区胶囊显示名字而不是序号（最长 12 字；放不下就整排回到序号）",
+                      helpEN: "named workspaces show the name instead of the number (12 chars max)"),
 
         // MARK: [workspace]
         ConfigKeySpec(.workspace, "workspaces", .int(min: 1, max: 10), default: .int(5),

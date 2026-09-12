@@ -164,6 +164,17 @@ final class SpecApplier {
                                    "visibleColumns 必须在 \(SpecLimits.visibleColumns.lowerBound)–"
                                        + "\(SpecLimits.visibleColumns.upperBound) 之间，收到 \(columns)")
         }
+        // 名字：与 `workspace set --title` 同一条尺子（`SpecParser` 已经拦过一遍，
+        // 但 applier 也会被直接喂一份 `WorkspaceSpec`——两处都拦才叫"落不下去就不动手"）
+        if let title = spec.title {
+            guard title.count <= SpecLimits.maxTitleCharacters else {
+                throw ControlErrorBody(.badRequest,
+                                       "title 太长了（\(title.count) 个字符，上限 \(SpecLimits.maxTitleCharacters)）")
+            }
+            guard title.unicodeScalars.allSatisfy(WorkspaceModel.isTitleScalar) else {
+                throw ControlErrorBody(.badRequest, "title 里有控制字符")
+            }
+        }
 
         // 位置引用要落得下去。**建之前**就核：zoom 指着一个不存在的格子时，
         // 半途才发现意味着工作区已经被拆了一半
@@ -206,6 +217,13 @@ final class SpecApplier {
         if let columns = spec.visibleColumns, columns != controller.visibleColumns {
             out.append(ControlChange("\(path).visibleColumns",
                                      from: String(controller.visibleColumns), to: String(columns)))
+        }
+        // 名字：**不写就不动它**（与 visibleColumns 同一条）。写了且不一样才算一次改动——
+        // 否则一份不提名字的 spec 会把 `--fail-if-noop` 的判断搅成"总是有变化"
+        if let wanted = Self.wantedTitle(spec), wanted != controller.model.title(at: workspace) {
+            out.append(ControlChange("\(path).title",
+                                     from: controller.model.title(at: workspace) ?? "（没起过名）",
+                                     to: wanted ?? "（清掉）", sensitive: true))
         }
         let creating = slots.filter { $0.existing == nil }.count
         if creating > 0 || !displaced.isEmpty {
@@ -342,6 +360,7 @@ final class SpecApplier {
         if let columns = spec.visibleColumns, columns != controller.visibleColumns {
             controller.setVisibleColumns(columns, persist: true)
         }
+        if let wanted = Self.wantedTitle(spec) { controller.model.setTitle(wanted, at: workspace) }
         controller.model.layouts[workspace] = layout
         if !floatings.isEmpty || !controller.model.floatings[workspace].isEmpty {
             controller.model.floatings[workspace] = floatings
@@ -357,6 +376,13 @@ final class SpecApplier {
             controller.requestFocus(to: focus)
         }
         return outcome
+    }
+
+    /// 这份 spec 要把名字设成什么。外层 nil = 这份 spec 压根没提名字（别动它）；
+    /// 内层 nil（写了个空串）= 清掉名字
+    nonisolated static func wantedTitle(_ spec: WorkspaceSpec) -> String?? {
+        guard let title = spec.title else { return nil }
+        return .some(WorkspaceModel.normalizedTitle(title))
     }
 
     // MARK: 组装（纯值运算）

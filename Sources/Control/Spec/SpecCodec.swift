@@ -36,6 +36,8 @@ enum SpecCodec {
         spec.schema = nested ? nil : SpecSchema.workspace
         spec.index = nested ? index + 1 : nil
         spec.layout = model.layouts[index].name
+        // 起过名才写这一项：没写 = apply 时不动目标工作区的名字
+        spec.title = model.title(at: index)
         spec.visibleColumns = controller.visibleColumns
 
         let focused = index == model.activeIndex ? controller.focusedPane : nil

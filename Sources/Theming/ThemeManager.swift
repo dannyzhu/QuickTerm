@@ -31,6 +31,8 @@ final class ThemeManager: ObservableObject {
     @Published private(set) var paneGap: CGFloat = 5
     /// 在 pane 上边框上画标题（config `pane-title`，默认开；纯 UI 层，PaneChrome 读）
     @Published private(set) var paneTitleEnabled = true
+    /// 工作区胶囊显示名字（config `workspace-title`，默认开；纯 UI 层，StatusBarView 读）
+    @Published private(set) var workspaceTitleEnabled = true
 
     var frostedInactive: Bool { opacityEnabled && inactiveBlur > 0 }
 
@@ -51,9 +53,10 @@ final class ThemeManager: ObservableObject {
                           paneOpacity: Double = 0.92, inactiveBlur: Double = 2.5,
                           activeOpacity: Double = 0.98, barOpacity: Double = 0.75,
                           dividerOpacity: Double = 0.2, paneGap: Int = 5,
-                          paneTitle: Bool = true) {
+                          paneTitle: Bool = true, workspaceTitle: Bool = true) {
         self.paneGap = CGFloat(paneGap)  // 纯 UI 层
         paneTitleEnabled = paneTitle  // 纯 UI 层
+        workspaceTitleEnabled = workspaceTitle  // 纯 UI 层
         self.activeOpacity = activeOpacity  // 纯 UI 层
         self.inactiveBlur = inactiveBlur  // 纯 UI 层
         self.barOpacity = barOpacity  // 纯 UI 层

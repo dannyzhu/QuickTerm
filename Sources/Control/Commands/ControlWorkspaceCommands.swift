@@ -1,6 +1,6 @@
 import AppKit
 
-/// `workspace goto|set-layout|equalize|clear|count`。
+/// `workspace goto|set|set-layout|equalize|clear|count`。
 ///
 /// `set-layout` 是整套"绝对设值"规则的招牌例子：应用里只有 `toggle-layout`，
 /// 而且它**只作用于活动工作区**——想把 4 号工作区设成 dwindle，快捷键做不到，
@@ -10,6 +10,7 @@ extension ControlCommandRunner {
     func runWorkspace(_ ctx: ControlContext) throws -> (echo: ResolvedTarget?, data: any Encodable) {
         switch ctx.spec.verb {
         case "goto": return try workspaceGoto(ctx)
+        case "set": return try workspaceSet(ctx)
         case "set-layout": return try workspaceSetLayout(ctx)
         case "equalize": return try workspaceEqualize(ctx)
         case "clear": return try workspaceClear(ctx)
@@ -42,6 +43,45 @@ extension ControlCommandRunner {
         var payload = try commit(mutation) { controller.switchWorkspace(index) }
         payload.workspace = ctx.encoder.workspaceInfo(controller, index: index)
         payload.screen = ctx.encoder.screenInfo(controller, isKey: controller === screens.controlCurrent)
+        return (ResolvedTarget(screen: controller.screenIndex + 1,
+                               screenID: controller.windowID.uuidString,
+                               workspace: index + 1, pane: nil, paneID: nil), payload)
+    }
+
+    /// `workspace set --title`：给**槽位**起名。与 `pane set --title` 一条一条对齐——
+    /// 空串是有意义的值（清掉名字）、200 字上限、控制字符一律拒绝、变更按敏感处理。
+    /// 名字**不描述内容**：`workspace clear` 与 `spec apply --replace` 都不碰它，
+    /// 所以这条命令是（连同右键改名）唯一改得动它的入口
+    private func workspaceSet(_ ctx: ControlContext) throws -> (ResolvedTarget?, any Encodable) {
+        let scope = try requireScope(ctx, ctx.target)
+        let controller = scope.controller
+        let index = scope.workspace
+        // 空串 ≠ 没写（`ctx.string` 把空串当没写），与 pane set --title 同一条
+        guard let title = ctx.rawString("title") else {
+            throw ControlErrorBody(.badRequest, "workspace set 至少要给一个设值（--title）",
+                                   hint: "quickterm workspace set --help")
+        }
+        guard title.count <= ControlCommandRunner.maxTitleLength else {
+            throw ControlErrorBody(
+                .badRequest,
+                "--title 太长了（\(title.count) 个字符，上限 \(ControlCommandRunner.maxTitleLength)）")
+        }
+        guard title.unicodeScalars.allSatisfy(WorkspaceModel.isTitleScalar) else {
+            throw ControlErrorBody(.badRequest, "--title 里有控制字符",
+                                   hint: "名字会原样画进状态条的工作区胶囊与 state 的 title 字段")
+        }
+        let wanted = WorkspaceModel.normalizedTitle(title)
+        let now = controller.model.title(at: index)
+        // 值本身是用户写的字，按敏感处理：与 pane 标题同一条规矩，不进 OSLog
+        let changes = now == wanted ? [] : [ControlChange("\(path(controller, index)).title",
+                                                          from: now ?? "（没起过名）",
+                                                          to: wanted ?? "（清掉）", sensitive: true)]
+        let mutation = ControlMutationRequest(
+            command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
+            controllers: [controller], undoName: "控制面：\(ctx.spec.cli)",
+            target: path(controller, index))
+        var payload = try commit(mutation) { controller.model.setTitle(wanted, at: index) }
+        payload.workspace = ctx.encoder.workspaceInfo(controller, index: index)
         return (ResolvedTarget(screen: controller.screenIndex + 1,
                                screenID: controller.windowID.uuidString,
                                workspace: index + 1, pane: nil, paneID: nil), payload)

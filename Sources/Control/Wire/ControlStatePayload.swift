@@ -39,6 +39,9 @@ struct ControlStatePayload: Codable, Equatable {
 
     struct WorkspaceInfo: Codable, Equatable {
         var index: Int
+        /// 这个槽位的名字（右键胶囊 / `workspace set --title` 起的；没起过就整条字段不出现）。
+        /// **不打码**：与 pane 标题同一条——那是用户自己写的字，不是网页给的
+        var title: String?
         var layout: String
         var empty: Bool
         var active: Bool

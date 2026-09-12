@@ -310,6 +310,9 @@ final class ControlEventBus {
         var layout: String
         /// 结构指纹（列宽 / split 比例 / zoom / 浮动层都在内）：变了就是一次 layout.changed
         var signature: String
+        /// 槽位的名字：改了报一条 workspace.changed（**不新造事件类型**——
+        /// "这个工作区有点变化"本来就是那条事件的意思，多一个类型只会让订阅方多写一个分支）
+        var title: String?
     }
 
     private struct ScreenState {
@@ -341,7 +344,8 @@ final class ControlEventBus {
                     let layout = model.layouts[index]
                     workspaces.append(WorkspaceState(
                         layout: layout.name,
-                        signature: signature(layout, floating: model.floatings[index], closing: closing)))
+                        signature: signature(layout, floating: model.floatings[index], closing: closing),
+                        title: model.title(at: index)))
                     for pane in layout.paneList where !closing.contains(pane.id) {
                         out.record(pane, controller: controller, workspace: index)
                     }
@@ -446,6 +450,12 @@ final class ControlEventBus {
                     guard index < before.workspaces.count else { continue }
                     let a = before.workspaces[index]
                     let b = now.workspaces[index]
+                    // 改名：用户自己写的字，与 pane 标题同一条——不打码
+                    if a.title != b.title {
+                        out.append(Record(event: ControlEvent(
+                            type: .workspaceChanged, screen: now.index, screenID: id.uuidString,
+                            workspace: index + 1, title: b.title), redactable: false))
+                    }
                     guard a.layout != b.layout || a.signature != b.signature else { continue }
                     out.append(Record(event: ControlEvent(
                         type: .layoutChanged, screen: now.index, screenID: id.uuidString,

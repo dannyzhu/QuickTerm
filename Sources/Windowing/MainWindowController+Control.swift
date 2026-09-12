@@ -22,6 +22,8 @@ extension MainWindowController {
         var layouts: [WorkspaceLayout]
         var floatings: [[FloatingPane]]
         var activeIndex: Int
+        /// 每工作区的名字：整份盖回布局时一起盖回去，否则 ⌘Z 撤销一次改名会什么都不发生
+        var titles: [String?]
         var visibleColumns: Int
         /// 这块屏幕在**变更之后**该有的那一组 pane（只存 id，不强引用）。
         /// 整份盖回布局 = 替换整个 pane 集合，所以撤销的前提是"从那以后没人动过 pane 集合"：
@@ -73,6 +75,7 @@ extension MainWindowController {
             controller.setVisibleColumns(visibleColumns, persist: false)
             controller.model.layouts = layouts
             controller.model.floatings = floatings
+            controller.model.titles = titles
             controller.model.activeIndex = min(max(activeIndex, 0), max(layouts.count - 1, 0))
             if let focus = controller.model.layouts[controller.model.activeIndex].paneList.first
                 ?? controller.model.floatings[controller.model.activeIndex].first?.pane {
@@ -90,7 +93,8 @@ extension MainWindowController {
 
     func controlSnapshot() -> ControlSnapshot {
         ControlSnapshot(controller: self, layouts: model.layouts, floatings: model.floatings,
-                        activeIndex: model.activeIndex, visibleColumns: visibleColumns)
+                        activeIndex: model.activeIndex, titles: model.titles,
+                        visibleColumns: visibleColumns)
     }
 
     // MARK: 摘下 / 插入

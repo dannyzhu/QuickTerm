@@ -8,6 +8,12 @@ final class WorkspaceModel: ObservableObject {
     @Published var layouts: [WorkspaceLayout]
     /// 每工作区的浮动层（与 layouts 平行索引；spec v7）
     @Published var floatings: [[FloatingPane]]
+    /// 每工作区的名字（与 layouts 平行索引；nil = 没起过名）。
+    ///
+    /// 名字是给**槽位**起的，不是给里面那堆 pane 起的：`workspace clear`、关掉最后一个 pane、
+    /// `spec apply --replace` 都不碰它——只有改名（或清空）才改它。
+    /// 写入一律走 `setTitle(_:at:)`（它负责规范化与越界保护）
+    @Published var titles: [String?]
     /// 每工作区上一次离开的布局（Cmd+L 往返恢复用；不持久化）
     private var alternates: [WorkspaceLayout?] = []
     @Published var activeIndex: Int = 0
@@ -16,6 +22,7 @@ final class WorkspaceModel: ObservableObject {
     init() {
         layouts = (0..<Self.workspaceCount).map { _ in .empty }
         floatings = Array(repeating: [], count: Self.workspaceCount)
+        titles = Array(repeating: nil, count: Self.workspaceCount)
     }
 
     /// 活动工作区布局
@@ -49,6 +56,64 @@ final class WorkspaceModel: ObservableObject {
     func isEmpty(_ index: Int) -> Bool {
         guard layouts.indices.contains(index) else { return true }
         return layouts[index].isEmpty && floatings[index].isEmpty
+    }
+
+    // MARK: 工作区名字
+
+    /// 规范形态：首尾空白去掉，空串 = 没起名。
+    /// 长度上限与控制字符由各入口自己把关（控制面要**报错**，对话框是滤掉再截断，
+    /// 见 `titleFromInput`——在这里一刀切会让 `workspace set --title`
+    /// 静默接受一个它本该拒绝的值）
+    static func normalizedTitle(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
+    /// 控制字符（换行、制表、DEL、C1）不算名字的一部分。
+    /// 命令行与 spec 见到它**报错**——那头是程序在调，写错了得知道；
+    /// 对话框只能**滤掉**：人粘进来一个换行不值得弹个错误框，可留着它状态条就废了——
+    /// 条高 26pt 是写死的，`Text` 多排一行就顶到背景外面去
+    static func isTitleScalar(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.value >= 0x20 && scalar.value != 0x7F && !(0x80...0x9F).contains(scalar.value)
+    }
+
+    /// 人在对话框里敲 / 粘进来的那一串变成名字：滤掉控制字符，再截到与命令行同一个上限
+    static func titleFromInput(_ raw: String) -> String {
+        let printable = String(String.UnicodeScalarView(raw.unicodeScalars.filter(isTitleScalar)))
+        return String(printable.prefix(ControlCommandRunner.maxTitleLength))
+    }
+
+    /// 状态条画出来的那一排的名字：**只有真实存在的槽位**。
+    /// `titles` 缩容时不裁（名字是槽位的，工作区数调回来还得在），所以要按 layouts 截一次——
+    /// 拿原始的 `titles` 去算"放不放得下"，会替几个根本不画的胶囊买单，
+    /// 整排名字就被几个看不见的名字吓回序号了
+    var visibleTitles: [String?] { (0..<layouts.count).map { title(at: $0) } }
+
+    /// 这个槽位的名字。**不存在的槽位一律没名字**——工作区数是热重载的，
+    /// `titles` 里可能还留着缩容前那几个（见 `alignTitles`），但一个不存在的工作区
+    /// 不该在状态条、`state` 或 spec 里冒出一个名字来
+    func title(at index: Int) -> String? {
+        guard layouts.indices.contains(index), titles.indices.contains(index) else { return nil }
+        return titles[index]
+    }
+
+    /// 起名 / 改名 / 清空（nil 或空串 = 清空）。返回是否真的改了（幂等命令靠它退 7）
+    @discardableResult
+    func setTitle(_ raw: String?, at index: Int) -> Bool {
+        guard layouts.indices.contains(index) else { return false }
+        alignTitles()
+        let next = Self.normalizedTitle(raw)
+        guard titles[index] != next else { return false }
+        titles[index] = next
+        return true
+    }
+
+    /// 与 layouts 对齐。**缩容时不裁**：名字是槽位的，工作区数调小再调回来
+    /// （config 热重载一改就是一次扩缩容）不该把名字弄丢；多出来的那几个谁也读不到
+    private func alignTitles() {
+        guard titles.count < layouts.count else { return }
+        titles.append(contentsOf: Array(repeating: nil, count: layouts.count - titles.count))
     }
 
     /// Cmd+L：优先恢复该工作区上次离开的另一种布局——只要 pane 集合没变，
@@ -115,6 +180,7 @@ final class WorkspaceModel: ObservableObject {
 
     /// config workspaces=N（1–10）：扩容补空；缩容仅当被裁的全空（否则保留至最后非空）
     func setWorkspaceCount(_ n: Int) {
+        defer { alignTitles() }
         let target = min(max(n, 1), 10)
         if target > layouts.count {
             layouts.append(contentsOf: (layouts.count..<target).map { _ in WorkspaceLayout.empty })
@@ -175,6 +241,8 @@ struct RootView: View {
     let action: (TerminalSplitOperation) -> Void
     let onScrollingDrop: (PaneView, PaneView, TerminalSplitDropZone) -> Void
     let onSelectWorkspace: (Int) -> Void
+    /// 右键工作区胶囊：起名 / 改名
+    let onRenameWorkspace: (Int) -> Void
     let onPanelChoose: (Int) -> Void
 
     var body: some View {
@@ -198,6 +266,7 @@ struct RootView: View {
                 StatusBarView(
                     model: model, stats: stats,
                     onSelectWorkspace: onSelectWorkspace,
+                    onRenameWorkspace: onRenameWorkspace,
                     onToggleMute: { [weak stats] in stats?.toggleMute() })
             }
             ZStack {

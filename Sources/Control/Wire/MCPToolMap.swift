@@ -244,10 +244,11 @@ enum MCPToolMap {
         MCPTool(name: "quickterm_arrange", title: "Arrange panes, workspaces and screens",
                 summary: "Absolute setters for everything geometric plus the process-level settings: zoom, "
                     + "float, column width, split ratio, moving and swapping panes, workspace layout and "
-                    + "equalize, workspace count, screen display / fullscreen / visible columns, theme and "
-                    + "background. Running the same call twice leaves the same state.",
+                    + "equalize, workspace name, workspace count, screen display / fullscreen / visible "
+                    + "columns, theme and background. Running the same call twice leaves the same state.",
                 commandNames: ["pane.set", "pane.move", "pane.swap", "pane.resize",
-                               "workspace.set-layout", "workspace.equalize", "workspace.count",
+                               "workspace.set", "workspace.set-layout", "workspace.equalize",
+                               "workspace.count",
                                "screen.move", "screen.set", "app.set"]),
         MCPTool(name: "quickterm_close", title: "Close panes, tabs, workspaces or screens",
                 summary: "Close a pane, one browser tab (closing the last tab closes the pane, exactly like "
@@ -502,7 +503,8 @@ enum MCPSamples {
         focused: false, busy: true, float: false, zoom: false, redacted: false)
 
     static let workspaceInfo = ControlStatePayload.WorkspaceInfo(
-        index: 2, layout: "scrolling", empty: false, active: true, panes: ["t7", "b3"], zoom: "t7",
+        index: 2, title: "dev", layout: "scrolling", empty: false, active: true,
+        panes: ["t7", "b3"], zoom: "t7",
         columns: [ControlStatePayload.ColumnInfo(width: 0.485, panes: ["t7"])],
         tree: .split(.init(split: "vertical", ratio: 0.62, a: .leaf("t7"), b: .leaf("b3"))),
         floating: ["t9"])

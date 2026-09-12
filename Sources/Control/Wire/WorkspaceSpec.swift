@@ -43,6 +43,8 @@ enum SpecLimits {
     static let maxPanes = 32
     /// 一份 spec 的字节上限（NDJSON 单行上限是 1 MiB，转义之后还要留出余量）
     static let maxBytes = 256 * 1024
+    /// == `ControlCommandRunner.maxTitleLength`（工作区名字；Wire 够不着那边，用例锁死两处相等）
+    static let maxTitleCharacters = 200
 }
 
 /// spec 里的一个 pane。**每个字段都可省**，省掉时的默认值写在各自的注释里——
@@ -161,6 +163,10 @@ struct WorkspaceSpec: Codable, Equatable {
     var index: Int?
     /// `scrolling`（默认）/ `dwindle`
     var layout: String?
+    /// 这个槽位的名字（不写 = **不动它**，与 `visibleColumns` 同一条规矩；
+    /// 写空串 = 清掉）。名字属于槽位，不属于里面那堆 pane——所以 `apply --replace`
+    /// 换掉全部 pane 时它照样留着，只有这份 spec 明说了才改
+    var title: String?
     /// scrolling 每屏可见列数（1–6）。**作用于整块屏幕**，不写就不动它
     var visibleColumns: Int?
     /// scrolling：列 × 列内纵栈
@@ -174,12 +180,13 @@ struct WorkspaceSpec: Codable, Equatable {
     /// 浮动层（不写 = 空）
     var floating: [FloatingSpec]?
 
-    init(schema: String? = nil, index: Int? = nil, layout: String? = nil,
+    init(schema: String? = nil, index: Int? = nil, layout: String? = nil, title: String? = nil,
          visibleColumns: Int? = nil, columns: [ColumnSpec]? = nil, tree: NodeSpec? = nil,
          zoom: PaneRef? = nil, focus: PaneRef? = nil, floating: [FloatingSpec]? = nil) {
         self.schema = schema
         self.index = index
         self.layout = layout
+        self.title = title
         self.visibleColumns = visibleColumns
         self.columns = columns
         self.tree = tree
@@ -359,7 +366,7 @@ enum SpecParser {
 /// 结构校验（纯函数，不碰任何活的东西）。
 /// 规则有意写死："认得的键"是白名单——写错键名一律报错，绝不静默忽略
 enum SpecValidator {
-    static let workspaceKeys: Set<String> = ["schema", "index", "layout", "visibleColumns",
+    static let workspaceKeys: Set<String> = ["schema", "index", "layout", "title", "visibleColumns",
                                              "columns", "tree", "zoom", "focus", "floating"]
     static let screenKeys: Set<String> = ["schema", "index", "display", "frame", "fullscreen",
                                           "joinAllSpaces", "visibleColumns", "activeWorkspace",
@@ -458,6 +465,22 @@ enum SpecValidator {
         }
         if let columns = object["visibleColumns"] {
             intInRange(columns, SpecLimits.visibleColumns, at: join(path, "visibleColumns"), into: &issues)
+        }
+        if let title = object["title"], title != .null {
+            // 校验与 `workspace set --title` 逐条对齐：长度、控制字符。
+            // spec 这一侧宽了的后果是"validate 过了、apply 却被命令层拒掉"
+            guard let text = title.stringValue else {
+                issues.append(.init(path: join(path, "title"), message: "必须是字符串（空串 = 清掉名字）"))
+                return
+            }
+            if text.count > SpecLimits.maxTitleCharacters {
+                issues.append(.init(path: join(path, "title"),
+                                    message: "最长 \(SpecLimits.maxTitleCharacters) 个字符，这份写了 \(text.count)"))
+            }
+            if text.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F
+                                                     || (0x80...0x9F).contains($0.value) }) {
+                issues.append(.init(path: join(path, "title"), message: "不能有控制字符"))
+            }
         }
         if layoutName == "scrolling", object["tree"] != nil, object["tree"] != .null {
             issues.append(.init(path: join(path, "tree"), message: "只对 layout=dwindle 有意义"))

@@ -22,7 +22,7 @@ enum ControlEventType: String, Codable, CaseIterable {
         case .paneOpened: "新建了一个 pane（终端 / 浏览器 / 文件管理器）"
         case .paneClosed: "一个 pane 关掉了（进入关闭动效即上报，与 state 的可寻址口径一致）"
         case .focusChanged: "某块屏幕的键盘焦点换了 pane"
-        case .workspaceChanged: "某块屏幕切了工作区"
+        case .workspaceChanged: "某块屏幕切了工作区，或者某个工作区改了名（带 title）"
         case .layoutChanged: "某个工作区的结构变了（布局种类 / 列宽 / split 比例 / zoom / 浮动层）"
         case .screenOpened: "新建了一块屏幕（窗口）"
         case .screenClosed: "一块屏幕关掉了"
@@ -48,7 +48,8 @@ struct ControlEvent: Codable, Equatable {
     var paneID: String?
     var kind: String?
     var layout: String?
-    /// pane.title.changed / pane.opened 的标题；浏览器 pane 对无 token 的调用方是 `<redacted>`
+    /// pane.title.changed / pane.opened 的标题；浏览器 pane 对无 token 的调用方是 `<redacted>`。
+    /// workspace.changed 带它时说的是**工作区的名字**（清掉名字 = 这一条没有 title）
     var title: String?
     /// pane.cwd.changed / pane.opened 的工作目录
     var cwd: String?

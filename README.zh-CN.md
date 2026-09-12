@@ -17,7 +17,7 @@ QuickTerm 把 [Omarchy](https://omarchy.org) 的 Hyprland 平铺桌面装进一�
 - **默认无限横向画布** —— 每个工作区是一条可以一直往右长的列条带（Hyprland `scrolling` 布局：默认每屏两列，两侧各露出相邻列的一条边）。新终端插在焦点列右侧；视口以最小滚动量跟随焦点。经典 **dwindle** 平铺一键 `Cmd+L` 切换。
 - **悬停即焦点** —— 鼠标移到哪个 pane，哪个就激活：边框变主题 accent 色，键盘直接输入。
 - **浮动 pane** —— `Cmd+T` 把 pane 从平铺里浮起；`⌘`+左键拖动移动，`⌘`+右键拖动调大小。
-- **5 个工作区** —— `Cmd+1…5` 切换，`Cmd+Shift+1…5` 带着 pane 一起走；顶栏上滚滚轮循环。
+- **5 个工作区** —— `Cmd+1…5` 切换，`Cmd+Shift+1…5` 带着 pane 一起走；顶栏上滚滚轮循环。右键工作区胶囊可以给它起名（`dev`、`web`），名字显示在胶囊上，跟着槽位走、不跟着里面的 pane。
 - **waybar 风格顶栏** —— 工作区、时钟、CPU、网络、音量、电池。26pt、单色 SF Symbols、半透明。
 - **22 套 Omarchy 主题** 连同全部壁纸，一帧内热切换；也可以选自己的图片当背景。
 - **玻璃质感** —— pane 以 0.92 透明度压在连续壁纸之上，激活 pane 合成到 0.98，非激活的平铺 pane 垫磨砂（文字依然锐利）。一个键全部关掉。
@@ -124,6 +124,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | 双指横滑 | 平移 scrolling 画布。鼠标在**激活的**浏览器 pane 上时交给网页（横向滚动 / 前进后退手势） |
 | 顶栏空白处双击 | 窗口 zoom 铺满可视区 |
 | 点时钟 / 喇叭 / 工作区胶囊 | 切日期格式 / 静音 / 跳到该工作区 |
+| 右键工作区胶囊 | 给这个工作区起名（留空 = 清掉），**不会**切过去 |
 
 ### 面板
 
@@ -144,6 +145,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `divider-opacity` | 0.2 | dwindle 分隔细线（1pt）的不透明度（1 = 实线，0 = 隐藏） |
 | `pane-gap` | 5 | 每 pane 每边留白 pt，scrolling / dwindle 一致（相邻间距 = 2×gap；dwindle 分隔线不占空间）。旧键 `dwindle-gap` 仍可读作别名 |
 | `pane-title` | true | 把 pane 的标题画在上边框上（fieldset legend 那个样子：边框在文字处断开，文字与边框同色）。**只显示手动设过的**标题（右键「Change Terminal Title」或 `quickterm pane set --title`），shell 用 OSC 报的不算。最长 20 字（含截断的 `…`），且永远碰不到右上角：右侧始终留至少 2 个字符宽的边框，窄到连一个字都放不下就不画。文字是压在线上的，上边框外得有地方落字：gaps 关掉（Cmd+Shift+Backspace）或 `pane-gap` 小于 3 时不画，边框照常连着 |
+| `workspace-title` | true | 起过名的工作区，状态条胶囊上显示名字而不是序号（活动的那个仍是重音色）。起名：右键工作区胶囊，或 `quickterm workspace set --title`；名字属于**槽位**，清空工作区也不会丢。最长 12 字（含截断的 `…`）。带名字的一排胶囊要是会顶到居中的时钟，**整排**一起退回序号——半排名字半排序号看着就像坏了
 | `file-manager-command` | yazi | `file-manager` 动作运行的程序（名字按 PATH 与常见 Homebrew/cargo 目录查找，或绝对路径；`lf`、`ranger` 亦可）。安装：`brew install yazi` |
 | `browser-home` | https://www.google.com | 新浏览器 pane 打开的页面 |
 | `browser-search` | https://www.google.com/search?q=%s | 地址栏输入非网址时的搜索模板（`%s` = 关键词） |
@@ -236,7 +238,7 @@ CLI 解析、`--help`、`describe --json`、安全分级与 MCP 工具表**全�
 quickterm state | list | get | action <wm-action> | describe | version
 quickterm pane      new | close | focus | move | swap | set | resize | capture-text
 quickterm browser   open | goto | reload | close
-quickterm workspace goto | set-layout | equalize | clear | count
+quickterm workspace goto | set | set-layout | equalize | clear | count
 quickterm screen    new | close | move | focus | set
 quickterm app       get | set
 quickterm spec      dump | validate | apply
@@ -340,6 +342,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # pane-padding = 14      # pane 内终端四边留白（pt，0–32；Omarchy 官方值 14）
 # pane-gap = 5           # 每 pane 每边留白 pt（0–20；相邻间距 = 2×gap；scrolling / dwindle 一致）
 # pane-title = true      # 把标题画在 pane 上边框上（只显示手动设过的标题，最长 20 字）
+# workspace-title = true # 起过名的工作区胶囊显示名字而不是序号（最长 12 字）
 
 [workspace]
 # workspaces = 5       # 1–10

@@ -140,6 +140,8 @@ struct ControlDescribeDocument: Codable, Equatable {
             fields: [
                 Field(path: "layout", type: "scrolling | dwindle", defaultValue: "scrolling",
                       help: "写了 tree 而没写 layout 时按 dwindle 认"),
+                Field(path: "title", type: "string ≤200", defaultValue: "不动",
+                      help: "工作区的名字（名字跟着格子走）；写空串 = 清掉，不写这个键 = 一个字不动"),
                 Field(path: "visibleColumns", type: "int \(SpecLimits.visibleColumns.lowerBound)–\(SpecLimits.visibleColumns.upperBound)",
                       defaultValue: "不动", help: "scrolling 每屏可见列数（**作用于整块屏幕**）"),
                 Field(path: "columns[]", type: "array", defaultValue: "[]",

@@ -41,6 +41,9 @@ struct WindowState: Codable {
     /// 每工作区浮动层（v3 起；缺省 = 空浮动层）
     var floatings: [[FloatingPane]]?
     var activeIndex: Int
+    /// 每工作区的名字（与 layouts 平行；nil = 这份存档里一个名字都没起过）。
+    /// **可选字段**：v5 老档缺它照常解码，所以不动信封版本号
+    var workspaceTitles: [String?]?
     /// scrolling 每屏可见列数（nil = 用全局默认 / config）
     var visibleColumns: Int?
     /// 存档时窗口所在的显示器（nil = 未知 → 主屏）
@@ -53,13 +56,15 @@ struct WindowState: Codable {
     var focusedPaneID: UUID?
 
     init(id: UUID = UUID(), layouts: [WorkspaceLayout], floatings: [[FloatingPane]]? = nil,
-         activeIndex: Int = 0, visibleColumns: Int? = nil, display: DisplayRef? = nil,
+         activeIndex: Int = 0, workspaceTitles: [String?]? = nil, visibleColumns: Int? = nil,
+         display: DisplayRef? = nil,
          frame: CGRect? = nil, isFullscreen: Bool = false, joinAllSpaces: Bool = false,
          focusedPaneID: UUID? = nil) {
         self.id = id
         self.layouts = layouts
         self.floatings = floatings
         self.activeIndex = activeIndex
+        self.workspaceTitles = workspaceTitles
         self.visibleColumns = visibleColumns
         self.display = display
         self.frame = frame
@@ -74,8 +79,8 @@ struct WindowState: Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, layouts, floatings, activeIndex, visibleColumns, display, frame, isFullscreen,
-             joinAllSpaces, focusedPaneID
+        case id, layouts, floatings, activeIndex, workspaceTitles, visibleColumns, display, frame,
+             isFullscreen, joinAllSpaces, focusedPaneID
     }
 
     /// 手写解码：缺字段一律走默认值（合成的解码器对非可选字段缺键会直接抛错，
@@ -86,6 +91,7 @@ struct WindowState: Codable {
         layouts = try c.decode([WorkspaceLayout].self, forKey: .layouts)
         floatings = try c.decodeIfPresent([[FloatingPane]].self, forKey: .floatings)
         activeIndex = try c.decodeIfPresent(Int.self, forKey: .activeIndex) ?? 0
+        workspaceTitles = try c.decodeIfPresent([String?].self, forKey: .workspaceTitles)
         visibleColumns = try c.decodeIfPresent(Int.self, forKey: .visibleColumns)
         display = try c.decodeIfPresent(DisplayRef.self, forKey: .display)
         frame = try c.decodeIfPresent(CGRect.self, forKey: .frame)

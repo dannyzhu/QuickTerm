@@ -118,7 +118,9 @@ enum Render {
                 guard let w = workspace.objectValue else { continue }
                 let handles = (w["panes"]?.arrayValue ?? []).compactMap { $0.stringValue }
                 out.append("  \(w["active"]?.boolValue == true ? "*" : " ") "
-                           + "\(w["index"]?.intValue ?? 0)  \(w["layout"]?.stringValue ?? "")"
+                           + "\(w["index"]?.intValue ?? 0)"
+                           + (w["title"]?.stringValue.map { "「\($0)」" } ?? "")
+                           + "  \(w["layout"]?.stringValue ?? "")"
                            + "  \(handles.isEmpty ? "(空)" : handles.joined(separator: " "))"
                            + (w["zoom"]?.stringValue.map { "  zoom=\($0)" } ?? ""))
             }
@@ -168,6 +170,7 @@ enum Render {
         workspaces.compactMap(\.objectValue).map { w in
             let handles = (w["panes"]?.arrayValue ?? []).compactMap { $0.stringValue }
             return "\(w["active"]?.boolValue == true ? "*" : " ") \(w["index"]?.intValue ?? 0)"
+                + (w["title"]?.stringValue.map { "「\($0)」" } ?? "")
                 + "  \(w["layout"]?.stringValue ?? "")"
                 + "  \(handles.isEmpty ? "(空)" : handles.joined(separator: " "))"
         }.joined(separator: "\n")

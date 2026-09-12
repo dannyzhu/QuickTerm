@@ -47,7 +47,7 @@ quickterm install-cli [--alias qt] [--dir 目录]
 ```
 quickterm pane      new|close|focus|move|swap|set|resize|capture-text
 quickterm browser   open|goto|reload|close          # 浏览器 pane 里的标签
-quickterm workspace goto|set-layout|equalize|clear|count
+quickterm workspace goto|set|set-layout|equalize|clear|count
 quickterm screen    new|close|move|focus|set
 quickterm app       get|set
 ```
@@ -175,6 +175,28 @@ quickterm pane set -t t7 --title ''              # 空串 = 交还给 shell
 给几个长期存在的 pane 起名字，比每次都去查一串句柄稳得多（句柄会随 pane 关掉而回收）。
 只有终端 pane 能设：浏览器 pane 的标题来自网页，设了也会被下一次导航盖掉。
 这样设下的标题还会直接画在 pane 的上边框上（最长 20 字；配置 `[appearance] pane-title = false` 关掉）。
+
+### 给工作区起个名字：`workspace set --title`
+
+```sh
+quickterm workspace set --title dev              # = 右键状态条上的工作区胶囊
+quickterm workspace set -t 2:4 --title 'web 日志'  # 指名某块屏幕的第 4 个工作区
+quickterm workspace set -t :4 --title ''         # 空串 = 清掉，胶囊回到序号
+```
+
+绝对设值，规则与 `pane set --title` 逐条一致（200 字上限、控制字符拒绝、跑两次第二次
+`changed:false`，带 `--fail-if-noop` 时退 7）。不写 `-t` 就是**被寻址那块屏幕的活动工作区**。
+
+名字属于**槽位**，不属于里面那堆 pane：`workspace clear`、关掉最后一个 pane、
+`spec apply --replace` 换掉里面全部 pane，都不会动它。
+改得动它的有三条路：这条命令、右键改名，以及一份**写了 `title` 的** spec——
+`spec dump` 出来的那份就写了，所以把 1 号的 dump apply 到 5 号会连名字一起盖过去。
+名字出现在 `state` / `list workspaces` / `get` 的工作区 `title` 字段里（不打码），
+改名会报一条 `workspace.changed`（带 `title`）。
+`spec dump` 会把它写进 `title`，`spec apply` 照着落——**不写 `title` = 不动目标工作区的名字**
+（与 `visibleColumns` 同一条规矩），所以 `dump → apply → dump` 仍是逐字节的不动点。
+状态条上最长显示 12 字；带名字的一排胶囊放不下时整排退回序号（配置
+`[appearance] workspace-title = false` 可以彻底关掉显示，但名字还在）。
 
 ### 浏览器标签：`browser`
 
@@ -357,6 +379,7 @@ quickterm events poll --since "$seq" --timeout 30s     # 一次调用回答"我�
 - 缓冲是环形的：`missed: true` 意味着中间被挤掉了事件，手里的快照不完整，**重新读一次 `state`**。
 - 九种事件：`pane.opened` `pane.closed` `focus.changed` `workspace.changed` `layout.changed`
   `screen.opened` `screen.closed` `pane.title.changed` `pane.cwd.changed`。
+  `workspace.changed` 有两种由头：切了工作区，或者某个工作区改了名（那一条带 `title`）。
 - **任何事件都不携带 pane 的输出内容**——只有结构、标题与 cwd，浏览器 pane 的标题 / cwd
   对没有 token 的调用方与 `state` 一样打码。想看输出，去那个 pane 里自己看。
 - 有些变更（`app set theme`、`screen set --fullscreen`）会推进 `seq` 却没有对应的类型化事件：

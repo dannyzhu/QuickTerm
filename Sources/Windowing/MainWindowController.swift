@@ -232,6 +232,7 @@ final class MainWindowController: BaseTerminalController {
         // 重挂后 focused 标志可能与窗口 FR 脱节（见 SurfaceView.viewWillMove(toWindow:)）
         for publisher in [model.$layouts.map { _ in () }.eraseToAnyPublisher(),
                           model.$floatings.map { _ in () }.eraseToAnyPublisher(),
+                          model.$titles.map { _ in () }.eraseToAnyPublisher(),
                           model.$activeIndex.map { _ in () }.eraseToAnyPublisher()] {
             publisher.dropFirst().sink { [weak self] in
                 guard let self else { return }
@@ -253,6 +254,7 @@ final class MainWindowController: BaseTerminalController {
         // 每处手写 emit 必然漏，而 `perform()` 可重入又会让同一件事被报好几遍
         for publisher in [model.$layouts.map { _ in () }.eraseToAnyPublisher(),
                           model.$floatings.map { _ in () }.eraseToAnyPublisher(),
+                          model.$titles.map { _ in () }.eraseToAnyPublisher(),
                           model.$activeIndex.map { _ in () }.eraseToAnyPublisher(),
                           model.$closingPanes.map { _ in () }.eraseToAnyPublisher()] {
             publisher.dropFirst().sink { ControlEventBus.noteChange() }.store(in: &cancellables)
@@ -265,6 +267,7 @@ final class MainWindowController: BaseTerminalController {
                 self?.scrollingDrop(payload: payload, destination: dest, zone: zone)
             },
             onSelectWorkspace: { [weak self] i in self?.switchWorkspace(i) },
+            onRenameWorkspace: { [weak self] i in self?.promptWorkspaceTitle(i) },
             onPanelChoose: { [weak self] i in self?.choosePanelItem(i) })
             .environmentObject(themeManager))
 
@@ -500,6 +503,8 @@ final class MainWindowController: BaseTerminalController {
             layouts: layouts,
             floatings: floatings,
             activeIndex: model.activeIndex,
+            // 一个名字都没起过就整条字段不写：绝大多数存档里它是一串 null，没必要占地方
+            workspaceTitles: model.titles.contains(where: { $0 != nil }) ? model.titles : nil,
             visibleColumns: visibleColumns,
             display: DisplayRef(screen: window?.screen),
             frame: savedFrame ?? window?.frame,
@@ -565,7 +570,7 @@ final class MainWindowController: BaseTerminalController {
             setVisibleColumns(columns, persist: false)
         }
         let restored = applyArchive(layouts: state.layouts, floatings: state.floatings,
-                                    activeIndex: state.activeIndex)
+                                    activeIndex: state.activeIndex, titles: state.workspaceTitles)
         guard restored else { return false }
         for case let browser as BrowserPaneView in allPanes { applyBrowserTheme(browser) }   // 恢复的浏览器 pane 也套主题
         // 存档里的焦点 pane 优先（只在活动工作区里找：别把焦点交给一个没挂载的工作区）；
@@ -579,7 +584,7 @@ final class MainWindowController: BaseTerminalController {
 
     /// 布局/浮动层/活动工作区三件套的落地（v2–v5 共用；含历史列宽归一与浮动层补齐）
     private func applyArchive(layouts: [WorkspaceLayout], floatings rawFloatings: [[FloatingPane]]?,
-                              activeIndex: Int) -> Bool {
+                              activeIndex: Int, titles: [String?]? = nil) -> Bool {
         let floatings = rawFloatings ?? Array(repeating: [], count: layouts.count)
         guard !(layouts.allSatisfy(\.isEmpty) && floatings.allSatisfy(\.isEmpty)) else { return false }
         // 旧状态归一：0.49（露边 2% 时代）/ 0.44（露边 6% 时代）是历史默认列宽，
@@ -598,6 +603,8 @@ final class MainWindowController: BaseTerminalController {
             model.floatings.append(contentsOf: Array(
                 repeating: [], count: model.layouts.count - model.floatings.count))
         }
+        // 名字先落，再让 setWorkspaceCount 去对齐长度（老档没有这一项 = 一个名字都没起过）
+        if let titles { model.titles = titles }
         model.setWorkspaceCount(max(model.layouts.count, 1))
         model.activeIndex = min(max(activeIndex, 0), model.layouts.count - 1)
         return true
@@ -693,6 +700,37 @@ final class MainWindowController: BaseTerminalController {
                 behavior.remove(.canJoinAllSpaces)
             }
             window.collectionBehavior = behavior
+        }
+    }
+
+    /// 右键工作区胶囊：给这个**槽位**起名 / 改名。
+    /// 形状与终端的「Change Terminal Title」一模一样（NSAlert + 一行文本框 + 好 / 取消），
+    /// 留空 = 清掉名字、胶囊回到序号。只有这条路和 `quickterm workspace set --title` 能改名字——
+    /// 清空工作区、关掉最后一个 pane、spec apply 都不碰它
+    func promptWorkspaceTitle(_ index: Int) {
+        guard model.layouts.indices.contains(index), !AppDelegate.isRunningTests else { return }
+        let alert = NSAlert()
+        alert.messageText = "给工作区 \(index + 1) 起个名字"
+        alert.informativeText = "留空 = 恢复显示序号。名字跟着这个槽位走，清空工作区也不会丢。"
+        alert.alertStyle = .informational
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
+        field.stringValue = model.title(at: index) ?? ""
+        alert.accessoryView = field
+        alert.addButton(withTitle: "好")
+        alert.addButton(withTitle: "取消")
+        alert.window.initialFirstResponder = field
+        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn else { return }
+            // 上限与控制面那条命令同源；这里是人在打字，超了就截断而不是报错。
+            // 控制字符也一样得在这儿滤掉：这块 `NSTextField` 收得下粘贴进来的换行，
+            // 而一个带换行的名字会把胶囊排成两行、顶破 26pt 的状态条
+            self.model.setTitle(WorkspaceModel.titleFromInput(field.stringValue), at: index)
+        }
+        // 有窗口就走 sheet（与「Change Terminal Title」同）：模态框飘在别的屏幕上会让人找不着
+        if let window {
+            alert.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            finish(alert.runModal())
         }
     }
 

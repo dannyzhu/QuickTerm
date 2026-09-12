@@ -17,7 +17,7 @@ QuickTerm puts the feel of [Omarchy](https://omarchy.org)'s Hyprland desktop ins
 - **Scrolling canvas by default** — each workspace is an endless horizontal strip of columns (Hyprland `scrolling` layout: two columns per screen by default, with a sliver of each neighbouring column peeking in at the edges). New terminals open to the right of the focused column; the viewport follows focus with minimal scrolling. Classic **dwindle** tiling is one `Cmd+L` away.
 - **Hover to focus** — move the mouse over a pane and it's active. Border turns to the theme accent, keystrokes go straight in.
 - **Floating panes** — `Cmd+T` lifts a pane out of the tiling; `⌘`+drag moves it, `⌘`+right-drag resizes it.
-- **Five workspaces** — `Cmd+1…5` to switch, `Cmd+Shift+1…5` to move a pane along. Scroll the status bar to cycle.
+- **Five workspaces** — `Cmd+1…5` to switch, `Cmd+Shift+1…5` to move a pane along. Scroll the status bar to cycle. Right-click a workspace pill to name it (`dev`, `web`); the name shows in the pill and belongs to the slot, not to what is in it.
 - **waybar-style status bar** — workspaces, clock, CPU, network, volume, battery. 26pt, monochrome SF Symbols, translucent.
 - **22 Omarchy themes** with all their wallpapers, hot-switched in under a frame; pick any image of your own as a background.
 - **Glass** — panes at 0.92 opacity over a continuous wallpaper, active pane composites to 0.98, inactive tiled panes get a frosted backdrop (text stays sharp). One key toggles it all off.
@@ -124,6 +124,7 @@ Two honest limits, both from macOS itself: **a window cannot be sent to a specif
 | Two-finger horizontal swipe | Pan the scrolling canvas. Over the **focused** browser pane the swipe goes to the page instead (horizontal scroll / back-forward gesture) |
 | Double-click empty status bar | Zoom window to the visible screen area |
 | Click clock / speaker / workspace pill | Toggle date format / mute / jump to workspace |
+| Right-click a workspace pill | Name that workspace (blank clears it) — it does **not** switch to it |
 
 ### Panels
 
@@ -144,6 +145,7 @@ All panels are centred, Walker-style: `↑`/`↓` to move, `Return` to choose, `
 | `divider-opacity` | 0.2 | Opacity of the 1pt divider line between dwindle splits (1 = solid, 0 = hidden) |
 | `pane-gap` | 5 | Padding around each pane in pt, same in scrolling and dwindle (neighbours are 2×gap apart; the dwindle divider line takes no space). `dwindle-gap` is still read as a legacy alias |
 | `pane-title` | true | Draw the pane's title into its top border, fieldset-legend style: the line breaks where the text sits and the text takes the border's colour. Only a title you set yourself shows up — right-click **Change Terminal Title** or `quickterm pane set --title`; the one the shell reports over OSC never does. 20 characters max, and it never reaches the top-right corner (2 characters of border always stay to its right; too narrow for that and no title is drawn). The text sits on the line itself, so it needs room above the border: with gaps off (Cmd+Shift+Backspace) or `pane-gap` below 3 no title is drawn and the border stays unbroken |
+| `workspace-title` | true | A workspace you have named shows the name in its status-bar pill instead of the number (the active one still takes the accent colour). Name one by right-clicking its pill or with `quickterm workspace set --title`; the name belongs to the slot, so clearing the workspace keeps it. 12 characters max, the ellipsis counted inside the 12. If the named pills would reach the centred clock, **all** pills fall back to plain numbers at once — a half-named row reads as a bug
 | `file-manager-command` | yazi | Program run by the `file-manager` action (a name looked up in PATH plus the usual Homebrew/cargo dirs, or an absolute path; `lf` and `ranger` work too). Install with `brew install yazi` |
 | `browser-home` | https://www.google.com | Page a new browser pane opens |
 | `browser-search` | https://www.google.com/search?q=%s | Search template used when the address bar input is not a URL (`%s` = query) |
@@ -236,7 +238,7 @@ The CLI parser, `--help`, `describe --json`, the security classes and the MCP to
 quickterm state | list | get | action <wm-action> | describe | version
 quickterm pane      new | close | focus | move | swap | set | resize | capture-text
 quickterm browser   open | goto | reload | close
-quickterm workspace goto | set-layout | equalize | clear | count
+quickterm workspace goto | set | set-layout | equalize | clear | count
 quickterm screen    new | close | move | focus | set
 quickterm app       get | set
 quickterm spec      dump | validate | apply
@@ -340,6 +342,7 @@ Full agent-facing documentation, including the addressing grammar and the exit-c
 # pane-padding = 14      # terminal padding in pt, 0–32 (Omarchy's value is 14)
 # pane-gap = 5           # 0–20 pt around each pane (neighbours end up 2×gap apart)
 # pane-title = true      # draw the title into the pane's top border (only titles you set; 20 chars max)
+# workspace-title = true # named workspaces show the name instead of the number (12 chars max)
 
 [workspace]
 # workspaces = 5       # 1–10

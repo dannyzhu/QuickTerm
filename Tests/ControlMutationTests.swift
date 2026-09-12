@@ -44,6 +44,9 @@ final class ControlMutationTests: XCTestCase {
             ("workspace.set-layout", ":\(workspace)", ["layout": .string("dwindle")]),
             ("workspace.set-layout", ":\(workspace)", ["layout": .string("scrolling")]),
             ("workspace.equalize", ":\(workspace)", [:]),
+            // 起名 + 清名各跑一轮：第二条的第一次执行顺带把名字还回去，不留给后面的用例
+            ("workspace.set", ":\(workspace)", ["title": .string("幂等")]),
+            ("workspace.set", ":\(workspace)", ["title": .string("")]),
             ("screen.set", "1", ["visible-columns": .int(wantedColumns)]),
             ("screen.set", "1", ["join-all-spaces": .string("off")]),
             ("app.set", nil, ["key": .string("gaps"), "value": .string("off")]),

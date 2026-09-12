@@ -442,6 +442,23 @@ enum ControlCommandTable {
             ],
             outputSample: nil),
         ControlCommandSpec(
+            group: "workspace", "set",
+            summary: "绝对设值：给工作区起名（同样的命令跑两次结果一致）",
+            cls: .mutate, idempotent: true, acceptsTarget: true,
+            args: [
+                ControlArgSpec("title", .string,
+                               help: "工作区的名字（= 右键工作区胶囊改名）；空串 \"\" 清掉，胶囊回到序号。"
+                                   + "名字跟着**槽位**走，不跟着里面那堆 pane：clear、关掉最后一个 pane "
+                                   + "都不会动它。改得动它的只有这条命令、右键改名，"
+                                   + "以及一份**写了 title 的** spec（`spec dump` 出来的就写了）"),
+            ],
+            examples: [
+                "quickterm workspace set --title dev",
+                "quickterm workspace set -t 2:4 --title 'web · 日志'",
+                "quickterm workspace set -t :4 --title ''            # 清掉名字",
+            ],
+            outputSample: nil),
+        ControlCommandSpec(
             group: "workspace", "equalize",
             summary: "把工作区里的列宽 / split 比例全部等分（幂等）",
             cls: .mutate, idempotent: true, acceptsTarget: true,
@@ -796,7 +813,7 @@ enum ControlCommandTable {
       "screens":[{"index":1,"id":"3F2A9C…","title":"QuickTerm","key":true,"activeWorkspace":2,
         "visibleColumns":2,"fullscreen":false,
         "workspaces":[{"index":1,"layout":"scrolling","empty":true,"panes":[]},
-                      {"index":2,"layout":"scrolling","empty":false,"panes":["t1","t2"],
+                      {"index":2,"title":"dev","layout":"scrolling","empty":false,"panes":["t1","t2"],
                        "columns":[{"width":0.485,"panes":["t1"]},{"width":0.485,"panes":["t2"]}]},
                       {"index":3,"layout":"dwindle","empty":false,"panes":["t8","b3"],
                        "tree":{"split":"vertical","ratio":0.62,
