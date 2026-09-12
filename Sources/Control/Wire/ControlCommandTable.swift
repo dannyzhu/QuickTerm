@@ -549,7 +549,7 @@ enum ControlCommandTable {
             outputSample: appGetSample),
         ControlCommandSpec(
             group: "app", "set",
-            summary: "Process-level settings as absolute setters (the socket-side route around the 5 modal-panel actions)",
+            summary: "Process-level settings as absolute setters (the socket-side route around the 6 modal-panel actions)",
             cls: .mutate, idempotent: true, acceptsTarget: true,
             args: [
                 ControlArgSpec("key", .enumeration, help: "setting", required: true, positional: true,

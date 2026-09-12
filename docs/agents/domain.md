@@ -1,16 +1,16 @@
-# Domain Docs
+# Domain docs
 
 ## Before exploring, read these
 
-- 阅读仓库根目录的 `CONTEXT.md`。
-- 阅读 `docs/adr/` 中与当前工作相关的架构决策记录。
-- 若以后出现根目录 `CONTEXT-MAP.md`，先读取地图，再读取其中与当前主题相关的上下文及其 ADR。
+- Read `CONTEXT.md` in the repository root.
+- Read whichever architecture decision records under `docs/adr/` bear on the work at hand.
+- If a root-level `CONTEXT-MAP.md` ever appears, read the map first, then the contexts in it that relate to the current topic, plus their ADRs.
 
-文件不存在时直接继续。由 `domain-modeling` 在术语或决策实际确定后按需创建领域文档。
+If a file isn't there, just carry on. Domain docs are created on demand by `domain-modeling`, once a term or a decision has actually settled.
 
 ## File structure
 
-本项目采用 **single-context** 布局：
+This project uses a **single-context** layout:
 
 ```text
 /
@@ -20,12 +20,12 @@
 └── Sources/
 ```
 
-以上是按需创建的路径约定。`vendor/ghostty/` 是第三方依赖，不因此拆分项目领域上下文。
+Those paths are a convention; the files appear as they are needed. `vendor/ghostty/` is a third-party dependency; it does not split the project's domain context.
 
 ## Use the glossary's vocabulary
 
-在任务标题、重构提案、假设和测试名称中引用领域概念时，使用 `CONTEXT.md` 定义的术语。缺少所需概念时，先核对项目现有用词；确有缺口则记录供 `domain-modeling` 处理。
+When task titles, refactoring proposals, hypotheses and test names refer to a domain concept, use the term `CONTEXT.md` defines. If the concept you need isn't there, check what the project already calls it; if there is a genuine gap, write it down for `domain-modeling` to handle.
 
 ## Flag ADR conflicts
 
-建议与现有 ADR 冲突时，明确指出该 ADR，并解释重新讨论的理由。
+When a proposal conflicts with an existing ADR, name that ADR and explain why it is worth reopening.

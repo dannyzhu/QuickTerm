@@ -1,85 +1,88 @@
-# QuickTerm 控制面（给 AI agent 的说明）
+# QuickTerm control plane (for AI agents)
 
-> 把本文件复制到你项目根目录的 `AGENTS.md`（或追加进去），或者放到 `~/.codex/AGENTS.md` 让它对所有项目生效。
-> 适用于 Codex CLI、Claude Code，以及任何能执行 shell 的 agent。
+> Copy this file into your project's root `AGENTS.md` (or append it there), or drop it at `~/.codex/AGENTS.md` to make it apply to every project.
+> Works with Codex CLI, Claude Code, and any agent that can run a shell.
 
-你正运行在 **QuickTerm** 里 —— 一个 macOS 平铺终端。你可以用 `quickterm` 命令**操作你周围的界面**：
-屏幕（窗口）、工作区、pane（终端 / 浏览器 / 文件管理器）。
+You are running inside **QuickTerm** — a macOS tiling terminal. The `quickterm` command lets you **drive the UI around you**:
+screens (windows), workspaces, and panes (terminal / browser / file manager).
 
-## 先做这一件事
+## Do this first
 
 ```bash
 quickterm describe --json
 ```
 
-一次拿到全部：命令、参数类型与可选值、安全分级、退出码、事件类型、工作区规格 schema、以及 67 个快捷键动作。
-**读这一份就够了，不要反复翻 `--help`。** 命令不存在（`command not found`）说明这台机器没装 QuickTerm 命令行，
-或者用户没把它装到 PATH —— 那就别用本文件的任何内容。
+One call gives you the lot: the commands, their argument types and allowed values, the safety classes, the exit codes, the event
+types, the workspace spec schema, and all 67 keybinding actions.
+**Read that once and stop there — don't keep paging through `--help`.** If the command isn't there (`command not found`), this
+machine has no QuickTerm CLI, or the user never put it on PATH — in which case ignore everything in this file.
 
-## 你是谁、你在哪
+## Who you are, where you are
 
-每个 pane 的环境里都有这些（不用问用户）：
+Every pane's environment carries these (no need to ask the user):
 
-| 变量 | 含义 |
+| Variable | Meaning |
 |---|---|
-| `QUICKTERM_PANE` | 本 pane 的 UUID —— `-t @self` 就靠它 |
-| `QUICKTERM_SOCKET` | 控制 socket 路径 |
-| `QUICKTERM_SCREEN` / `QUICKTERM_WORKSPACE` | 创建时的屏幕 / 工作区序号（**提示值**，pane 被移走后不更新） |
+| `QUICKTERM_PANE` | this pane's UUID — what `-t @self` resolves through |
+| `QUICKTERM_SOCKET` | path to the control socket |
+| `QUICKTERM_SCREEN` / `QUICKTERM_WORKSPACE` | the screen / workspace index at creation time (a hint; not updated when the pane moves) |
+| `QUICKTERM_TOKEN` | proof that a command came from a QuickTerm pane — what stops browser URLs and titles reading `<redacted>` |
 
-想知道"现在什么样"，永远用 `quickterm state --json`，别依赖后两个变量。
+To find out what things look like *now*, always use `quickterm state --json`.
+Never lean on `QUICKTERM_SCREEN` / `QUICKTERM_WORKSPACE`.
 
-## 寻址
+## Addressing
 
-`screen:workspace.pane`，每段可省。常用写法：
+`screen:workspace.pane`, every part optional. The forms you'll actually use:
 
-- `t7` / `b3` —— **短句柄**（`t`=终端，`b`=浏览器），`state` 里每个 pane 都有，人和你都该用这个
-- `@self` —— 你自己所在的 pane；`@focused` —— 当前焦点 pane
-- `@left @right @up @down` / `@next @prev` —— 相对位置
-- `1:3` —— 1 号屏幕的 3 号工作区；`#<uuid 前缀>` —— 跨重启稳定的 id
-- 谓词：`cwd:~/proj`、`title:~regex`、`kind:terminal`
+- `t7` / `b3` — **short handles** (`t` = terminal, `b` = browser); every pane in `state` has one, and it's what both you and the user should say
+- `@self` — the pane you are running in; `@focused` — whichever pane has focus right now
+- `@left @right @up @down` / `@next @prev` — relative position
+- `1:3` — workspace 3 on screen 1; `#<uuid, prefix of ≥4>` — an id that survives restarts
+- predicates: `cwd:~/proj`, `title:~regex`, `kind:terminal`
 
-**匹配到多个会报错并列出候选**，不会替你猜。
+**More than one match is an error that lists the candidates** — it will refuse rather than guess for you.
 
-## 常用命令
+## The commands you'll use
 
 ```bash
-quickterm state --json                  # 全部：屏幕 / 工作区 / pane / 每个 pane 的尺寸
-quickterm list panes                    # 人看的表格
-quickterm get -t t7                     # 单个 pane 的细节
+quickterm state --json                  # everything: screens / workspaces / panes / every pane's size
+quickterm list panes                    # the table for humans
+quickterm get -t t7                     # the full record of a single pane
 
 quickterm pane new --cwd "$PWD" --cmd "npm run dev" --at @self --where right
 quickterm pane new --kind browser --url http://localhost:3000 --at @self --where down
 quickterm pane focus -t t7
-quickterm pane set -t t7 --zoom on      # 绝对设值：on/off，不是切换
-quickterm pane resize -t t7 --ratio 0.6 # 也可 --points +120 / --dir right
+quickterm pane set -t t7 --zoom on      # absolute setter: on/off, not a toggle
+quickterm pane resize -t t7 --ratio 0.6 # also --points +120 / --dir right
 quickterm pane move -t t7 --to 1:3
 quickterm workspace set-layout dwindle -t 1:3
 quickterm workspace goto 2
 ```
 
-浏览器 pane 里的**标签**（`-t` 指 pane，`--tab` 指标签）：
+**Tabs** inside a browser pane (`-t` picks the pane, `--tab` picks the tab):
 
 ```bash
-quickterm browser open   -t b3 --url http://localhost:3000   # 新开一个标签
-quickterm browser goto   -t b3 --url http://localhost:5173   # 当前标签换网址（绝对设值）
+quickterm browser open   -t b3 --url http://localhost:3000   # opens a new tab
+quickterm browser goto   -t b3 --url http://localhost:5173   # points the current tab at a URL (absolute setter)
 quickterm browser goto   -t b3 --tab 2 --url https://example.com
-quickterm browser reload -t b3 --hard                        # 绕过缓存
-quickterm browser close  -t b3 --tab 1                       # 破坏性：会弹确认
-quickterm browser close  -t b3 --others                      # 只留当前这一个
+quickterm browser reload -t b3 --hard                        # bypass the cache
+quickterm browser close  -t b3 --tab 1                       # destructive: pops a confirmation
+quickterm browser close  -t b3 --others                      # keep only the current one
 ```
 
-`--tab` 认四种写法：`1`（1 起的序号）、`#<id 前缀>`、`@active`（默认）、`@last`。
-序号与 id 都在 `state` / `get` 的 `tabList` 里。
-**关掉最后一个标签 = 关掉整个 pane**（和 ⌘W 一样）。
+`--tab` accepts four forms: `1` (a 1-based index), `#<id, or a prefix of ≥4>`, `@active` (the default), `@last`.
+Both the indexes and the ids are in `tabList`, in `state` / `get`.
+**Closing the last tab closes the whole pane** (same as ⌘W).
 
-给 pane 起名，之后就能按名字找它：
+Name a pane, and afterwards you can find it by that name:
 
 ```bash
-quickterm pane set -t t7 --title 'build · web'   # 之后 -t 'title:~build' 就能命中
-quickterm pane set -t t7 --title ''              # 交还给 shell
+quickterm pane set -t t7 --title 'build · web'   # -t 'title:~build' hits it from then on
+quickterm pane set -t t7 --title ''              # hand the title back to the shell
 ```
 
-一条命令拼出整个工作区（**最高效的用法**）：
+Build a whole workspace in one command (**the most efficient thing you can do here**):
 
 ```bash
 cat <<'EOF' | quickterm spec apply -t 1:4 --into-empty -f -
@@ -90,52 +93,60 @@ cat <<'EOF' | quickterm spec apply -t 1:4 --into-empty -f -
 EOF
 ```
 
-先导出现有布局改两行再装回去，比从零写更稳：
+Dumping the layout you already have, changing two lines and putting it back is safer than writing one from scratch:
 
 ```bash
 quickterm spec dump -t 1:2 > /tmp/ws.json
-quickterm spec apply -f /tmp/ws.json --dry-run   # 先看会改什么
+quickterm spec apply -f /tmp/ws.json --dry-run   # look at what it would change first
 ```
 
-## 规矩（照做，能少踩坑）
+## House rules (follow them and you'll stay out of trouble)
 
-1. **只用绝对设值，别指望 toggle。** `pane set --zoom on` 而不是 `action toggle-zoom`。
-   你看不到当前状态，一条 toggle 重试一次就把自己撤销了。所有 `pane set` / `workspace set-layout`
-   都是幂等的：重复执行结果相同，加 `--fail-if-noop` 时"已经是目标状态"会退出码 7。
-2. **动之前先 `--dry-run`**，尤其是 `spec apply`。它只报告会改什么，什么都不动。
-3. **地址要用句柄或 uuid，别跨命令依赖"当前焦点"。** 两条命令之间焦点可能已经变了。
-4. **组合布局用 `spec apply`，不要连发 N 条 `pane new`。** 前者一次重排、一次动画；后者界面会闪，
-   而且中途失败会留下半成品。
-5. **别刷命令。** 有限流。要等界面变化就用 `quickterm events poll --since <seq> --timeout 10`
-   （`state` 的返回里有 `seq`），不要轮询 `state`。
-6. **`--cwd` 要给真实路径**（`"$PWD"` 或 `~/proj`），`.` 会被拒绝。
-   `~/Desktop`、`~/Documents`、`~/Downloads` 是 macOS 的受保护目录：QuickTerm 没拿到
-   「文件与文件夹」授权时用不上，pane 照开但 shell 起在别处——响应里会带一条
-   `warnings[].code == "cwd_denied"`（**读这个 code，别读文案**）。目录不对就宁可失败的话加 `--require-cwd`。
-7. **错误要读 JSON。** 失败时 stderr 是带稳定 `code` 的 JSON，退出码有含义（3=参数/目标错，
-   4=用户拒绝或超时，7=无变化）。别去匹配中文提示文字。
+1. **Set absolute values; don't count on toggles.** `pane set --zoom on`, not `action toggle-zoom`.
+   You cannot see the current state, and a retried toggle undoes what the first one did. Every `pane set` /
+   `workspace set-layout` is idempotent: run it twice, same result. Add `--fail-if-noop` and "already in the requested
+   state" exits with code 7.
+2. **`--dry-run` before you move anything**, `spec apply` above all. It reports what would change and touches nothing.
+3. **Address by handle or uuid; never carry "whatever has focus" from one command to the next.** Focus may have moved in between.
+4. **Compose layouts with `spec apply`; don't fire off N `pane new`s in a row.** The first reflows once and animates once; the
+   second makes the UI flicker, and failing halfway leaves you with a half-built workspace.
+5. **Don't hammer it.** There's a rate limit. To wait for the UI to change, use `quickterm events poll --since <seq> --timeout 10`
+   (`state`'s reply carries the `seq`) — don't poll `state`.
+6. **Give `--cwd` an absolute path** (`"$PWD"` or `~/proj`). A relative path is refused (`bad_request`): it would be
+   resolved inside QuickTerm's process, whose working directory is not yours, so `.` never means what you meant.
+   `~/Desktop`, `~/Documents` and `~/Downloads` are macOS protected directories: QuickTerm can't use them until it has been
+   granted "Files and Folders", and the pane still opens but the shell starts somewhere else — the reply then carries a
+   `warnings[].code == "cwd_denied"` (**read the code, not the prose**). If you'd rather fail than land elsewhere, add `--require-cwd`.
+7. **Read errors as JSON.** On failure stderr is JSON with a stable `code`, and the exit codes mean something
+   (1 = a bad argument or a plain failure, 3 = a bad or ambiguous target, 4 = the user declined or it timed out,
+   7 = nothing changed). Never match on the message text.
 
-## 会被拦下来的事
+## What will get stopped
 
-- **破坏性操作**（`pane close`、`screen close`、`workspace clear`、`spec apply --replace`）
-  会在 QuickTerm 里**弹确认框**，按"调用进程"记一次。用户拒绝 → 退出码 4。别重试，去问用户。
-- **`input send-text`（往 pane 里打字）默认关闭**，要用户在配置里打开 `[control] send-text = true`。
-  即便打开：写**你自己**那个 pane 免确认，写别的 pane **每次都要用户确认**——
-  因为那等于在别人的 shell 里执行命令（可能是 root，也可能是一条活着的 ssh 会话）。
-  要跑命令，优先 `pane new --cmd "..."`，不要往别人的终端里塞字符。
-- **打开面板类的动作**（主题选择器、主菜单等）一律被拒绝：它们需要键盘交互，经 socket 执行只会把界面卡在半路。
-- **读终端屏幕上的文字（`pane capture-text`）默认关闭**，要用户写 `[control] capture-text = true`。
-  即便打开：必须带 `QUICKTERM_TOKEN`，而且**每个调用进程都要用户确认一次**——包括读你自己那个 pane。
-  （`send-text` 写自己免确认，读没有这个豁免：屏幕上可能停着用户把 pane 交给你之前敲的东西。）
-  它什么都不改，所以不认 `--dry-run` / `--fail-if-noop`。
-  要自己命令的输出，用 `pane new --cmd "..."` 或直接在本地跑，别去读别人的屏幕。
-- **浏览器 pane 的网址与标题**对没有 `QUICKTERM_TOKEN` 的调用方显示为 `<redacted>`——
-  逐标签的 `tabList` 也一样。你在 pane 里跑就有这个变量。
+- **Destructive operations** (`pane close`, `screen close`, `workspace clear`, `spec apply --replace`)
+  **pop a confirmation dialog** inside QuickTerm, counted once per (calling process, command class). The user
+  declines → exit code 4.
+  Don't retry; go ask the user.
+- **`input send-text` (typing into a pane) is off by default**; the user has to turn on `[control] send-text = true` in the config.
+  Even with it on: writing to **your own** pane skips the confirmation, writing to any other pane **asks the user every single time** —
+  because that amounts to running a command in someone else's shell (which may be root, and may be a live ssh session).
+  To run a command, reach for `pane new --cmd "..."` rather than stuffing characters into another terminal.
+- **Actions that open a panel** (the theme picker, the main menu, and so on) are refused outright: they need keyboard interaction, and
+  running them over the socket would only leave the UI stuck half-open.
+- **Reading the text on a terminal's screen (`pane capture-text`) is off by default**; the user has to write `[control] capture-text = true`.
+  Even with it on: it requires `QUICKTERM_TOKEN`, and **every calling process has to be confirmed by the user once** — including
+  reading your own pane. (`send-text` gets an exemption for writing to itself; reading gets none: whatever the user typed before
+  handing you the pane may still be sitting on that screen.)
+  It changes nothing, so it accepts neither `--dry-run` nor `--fail-if-noop`.
+  For the output of your own commands, use `pane new --cmd "..."` or just run them locally — don't go reading someone else's screen.
+- **A browser pane's URL and title read `<redacted>`** to any caller without `QUICKTERM_TOKEN` — and so does the per-tab `tabList`.
+  Run inside a pane and you have that variable.
 
-## 建议的工作方式
+## How to work well here
 
-- 开发服务：`pane new --cwd "$PWD" --cmd "npm run dev" --hold --at @self --where right`，
-  日志就在旁边，用户随时能看见——比你把输出塞进自己的上下文好得多。
-- 要用户看网页：`pane new --kind browser --url ...`，别去开系统浏览器。
-- 布局乱了：`quickterm spec dump -t <工作区> > /tmp/before.json`，改完出问题能一键还原。
-- 干完活别留垃圾 pane；但**关 pane 会弹确认**，所以更好的做法是问用户要不要关，而不是自己去关。
+- Dev server: `pane new --cwd "$PWD" --cmd "npm run dev" --hold --at @self --where right` —
+  the log sits right there where the user can see it at any time, which beats pulling the output into your own context.
+- Want the user to look at a web page: `pane new --kind browser --url ...`; don't open the system browser.
+- Layout got messy: `quickterm spec dump -t <workspace> > /tmp/before.json`, and one command puts it back if your edit goes wrong.
+- Don't leave junk panes behind when you're done — but **closing a pane pops a confirmation**, so ask the user
+  whether to close them rather than firing `pane close` yourself.

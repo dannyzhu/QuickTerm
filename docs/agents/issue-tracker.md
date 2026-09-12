@@ -1,33 +1,33 @@
-# Issue tracker: Local Markdown
+# Issue tracker: local Markdown
 
-本项目的决策地图、规格和任务以本地 Markdown 为准，保存在仓库的 `.scratch/` 下。工程技能中的“发布到任务跟踪器”表示写入本地文件。
+This project's decision maps, specs and tasks live in local Markdown under `.scratch/` in the repo — that is the source of truth. When an engineering skill says "publish to the issue tracker", it means write a local file.
 
 ## Conventions
 
-- 每个事项使用独立目录：`.scratch/<effort>/`，目录名使用 kebab-case。
-- 决策地图：`.scratch/<effort>/map.md`。
-- 规格：`.scratch/<effort>/spec.md`，需要形成规格时创建。
-- 实施任务：`.scratch/<effort>/issues/<NN>-<slug>.md`，从 `01` 连续编号，每个任务一个文件。
-- 实施任务在文件顶部使用 `Status:` 行保存分诊角色，取值见 [triage-labels.md](triage-labels.md)；领取后使用 `claimed`，完成后使用 `resolved`。
-- 评论和对话历史追加到任务文件末尾的 `## Comments` 下。
-- 这些文件作为持久项目记录，可纳入 Git 版本管理。
+- One directory per effort: `.scratch/<effort>/`, the directory name in kebab-case.
+- Decision map: `.scratch/<effort>/map.md`.
+- Spec: `.scratch/<effort>/spec.md`, created once something needs a spec.
+- Implementation tasks: `.scratch/<effort>/issues/<NN>-<slug>.md`, numbered consecutively from `01`, one file per task.
+- An implementation task carries its triage role on a `Status:` line at the top of the file; the values are in [triage-labels.md](triage-labels.md). Use `claimed` once it is picked up, `resolved` once it is done.
+- Comments and conversation history are appended at the end of the task file, under `## Comments`.
+- These files are the persistent project record and can be committed to Git.
 
 ## When a skill says "publish to the issue tracker"
 
-按上述文件类型在 `.scratch/<effort>/` 内创建文件，必要时创建目录。复用已有事项目录，保留已有内容，新任务使用尚未占用的下一个编号。
+Create the file inside `.scratch/<effort>/`, following the file types above, and create the directory if it isn't there. Reuse an existing effort directory, leave what is already in it alone, and give a new task the next number nobody has taken.
 
 ## When a skill says "fetch the relevant ticket"
 
-读取用户引用的任务路径。若只提供编号，在当前事项的 `issues/` 目录内查找；多个事项存在相同编号且上下文无法确定时，请用户指定事项。
+Read the task path the user pointed at. If all you were given is a number, look inside the current effort's `issues/` directory; if several efforts share that number and the context can't settle which one it is, ask the user to name the effort.
 
 ## Wayfinding operations
 
-- **Map**：`.scratch/<effort>/map.md`，包含 `Destination`、`Notes`、`Decisions so far`、`Not yet specified`、`Out of scope` 各节。地图作为索引，决策细节保存在任务中。
-- **Child ticket**：`.scratch/<effort>/issues/NN-<slug>.md`，以标题命名，并在 `## Question` 下记录待解决的问题。顶部 `Type:` 为 `research`、`prototype`、`grilling` 或 `task`；`Status:` 初始为 `open`，领取后为 `claimed`，解决后为 `resolved`。
-- **Blocking**：顶部使用 `Blocked by: NN, NN`，引用同一事项内的任务；无依赖时写 `Blocked by: none`。所有依赖均为 `resolved` 才可开始；缺失的依赖视为未解决。
-- **Frontier**：扫描当前事项的 `issues/`，筛选 `Status: open` 且所有依赖已解决的任务，按编号选择第一个。
-- **Claim**：开始工作前将 `Status:` 改为 `claimed` 并保存。
-- **Resolve**：在任务的 `## Answer` 下记录答案或完成结果，将 `Status:` 改为 `resolved`，然后在地图的 `Decisions so far` 追加一行“任务标题链接 + 结论摘要”。
-- **Triage**：五个分诊角色用于实施任务的分诊；决策任务使用上述 `open` / `claimed` / `resolved` 生命周期。
+- **Map**: `.scratch/<effort>/map.md`, with the sections `Destination`, `Notes`, `Decisions so far`, `Not yet specified` and `Out of scope`. The map is an index; the detail behind a decision stays in the ticket.
+- **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, named after its title, with the open question recorded under `## Question`. `Type:` at the top is `research`, `prototype`, `grilling` or `task`; `Status:` starts at `open`, becomes `claimed` when picked up and `resolved` when answered.
+- **Blocking**: `Blocked by: NN, NN` at the top, referring to tickets in the same effort; write `Blocked by: none` when there are none. Work may start only once every dependency is `resolved`; a dependency that is missing counts as unresolved.
+- **Frontier**: scan the current effort's `issues/`, keep the ones with `Status: open` whose dependencies are all resolved, and take the first by number.
+- **Claim**: set `Status:` to `claimed` and save it before you start work.
+- **Resolve**: record the answer, or what was done, under the ticket's `## Answer`, set `Status:` to `resolved`, then append one line to the map's `Decisions so far` — a link to the ticket title plus a summary of the conclusion.
+- **Triage**: the five triage roles apply to implementation tasks; decision tickets use the `open` / `claimed` / `resolved` lifecycle above.
 
-当前配置事项的记录见 [配置 QuickTerm 的工程技能](../../.scratch/setup-matt-pocock-skills/map.md)。
+The record of the current configuration effort is in [Setting up QuickTerm's engineering skills](../../.scratch/setup-matt-pocock-skills/map.md).

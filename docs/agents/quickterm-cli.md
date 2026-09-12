@@ -1,105 +1,106 @@
-# quickterm 控制面（CLI / AI agent）
+# The quickterm control plane (CLI and AI agents)
 
-QuickTerm 内置一个 Unix domain socket 控制面，随包提供 `quickterm` 命令行工具。
-**先做一次 `quickterm describe --json`**（整个控制面的机器可读 schema），之后不必再反复读 `--help`。
+QuickTerm ships a control plane on a Unix domain socket, plus a `quickterm` command-line tool inside the app bundle.
+**Read `quickterm describe --json` once first** (the whole control plane as a machine-readable schema); after that you never have to go back to `--help`.
 
-## 装好它
+## Install it
 
 ```
-quickterm install-cli --alias qt        # 软链到 /usr/local/bin，不可写则 ~/.local/bin
+quickterm install-cli --alias qt        # symlink into /usr/local/bin, or ~/.local/bin when that is not writable
 ```
-也可以走菜单：QuickTerm → 安装 quickterm 命令行工具…
-二进制在 `QuickTerm.app/Contents/SharedSupport/quickterm`
-（**不是** `Contents/MacOS`：APFS 大小写不敏感，`quickterm` 会覆盖掉主可执行文件 `QuickTerm`）。
-**永远不会请求管理员权限**；升级或移动 QuickTerm.app 之后重新跑一次。
+There is a menu item too: QuickTerm ▸ Install the quickterm Command Line Tool…
+The binary lives at `QuickTerm.app/Contents/SharedSupport/quickterm`
+(**not** `Contents/MacOS`: APFS is case-insensitive, so `quickterm` would clobber the main executable `QuickTerm`).
+It **never asks for an admin password**; run it again after you upgrade or move QuickTerm.app.
 
-## 在 pane 里零配置
+## Zero configuration inside a pane
 
-每个新建 pane 的环境里都有：
+Every pane is created with these in its environment:
 
-| 变量 | 含义 |
+| Variable | Meaning |
 |---|---|
-| `QUICKTERM_SOCKET` | 控制 socket 路径 |
-| `QUICKTERM_PANE` | 本 pane 的 UUID —— `-t @self` 就靠它 |
-| `QUICKTERM_SCREEN` / `QUICKTERM_WORKSPACE` | **创建时**的序号（提示值；pane 移动后不更新） |
-| `QUICKTERM_TOKEN` | 来源证明，**不是权限边界**（见下） |
-| `QUICKTERM_PANE_TOKEN` | **每 pane 一枚**、可验证的来源标记。只用在一处：`input send-text` 写自己那个 pane 时免确认 |
+| `QUICKTERM_SOCKET` | path to the control socket |
+| `QUICKTERM_PANE` | this pane's UUID — what `-t @self` resolves through |
+| `QUICKTERM_SCREEN` / `QUICKTERM_WORKSPACE` | the indices **at creation time** (a hint; they do not update when the pane moves) |
+| `QUICKTERM_TOKEN` | proof of origin, **not a permission boundary** (see below) |
+| `QUICKTERM_PANE_TOKEN` | **one per pane**, a verifiable origin mark. Used in exactly one place: skipping confirmation when `input send-text` writes to the caller's own pane |
 
-在任意 pane 里 `env | grep QUICKTERM` 就能看到。
+`env | grep QUICKTERM` in any pane shows them.
 
-## 命令面
+## The command surface
 
-查询与直通（Phase 1）：
+Queries and the passthrough (Phase 1):
 
 ```
-quickterm state   [-t 目标] [--fields a,b]
-quickterm list    screens|workspaces|panes [-t 目标] [--fields a,b]
-quickterm get     -t 目标
-quickterm action  <wm-action> [-t 目标] [--precise]
+quickterm state   [-t target] [--fields a,b]
+quickterm list    screens|workspaces|panes [-t target] [--fields a,b]
+quickterm get     -t target
+quickterm action  <wm-action> [-t target] [--precise]
 quickterm action  --list
 quickterm describe [--json]
 quickterm version
-quickterm install-cli [--alias qt] [--dir 目录]
+quickterm install-cli [--alias qt] [--dir directory]
 ```
 
-名词-动词层（Phase 2，**这一层才是给 agent 用的**）：
+The noun-verb layer (Phase 2, **this is the layer meant for agents**):
 
 ```
 quickterm pane      new|close|focus|move|swap|set|resize|capture-text
-quickterm browser   open|goto|reload|close          # 浏览器 pane 里的标签
-quickterm workspace goto|set|set-layout|equalize|clear|count
+quickterm browser   open|goto|reload|close          # tabs inside a browser pane
+quickterm workspace goto|set-layout|set|equalize|clear|count
 quickterm screen    new|close|move|focus|set
 quickterm app       get|set
 ```
 
-一次性组合（Phase 3）：
+Compose it all at once (Phase 3):
 
 ```
-quickterm spec dump     [-t 目标] [--all] [--relocatable] [--include-ids]
-quickterm spec validate [-f 文件 | --spec JSON]
-quickterm spec apply    [-f 文件 | --spec JSON] [-t 目标]
+quickterm spec dump     [-t target] [--all] [--relocatable] [--include-ids]
+quickterm spec validate [-f file | --spec JSON]
+quickterm spec apply    [-f file | --spec JSON] [-t target]
                         [--into-empty | --replace | --reuse] [--dry-run]
 ```
 
-事件与打字（Phase 4）：
+Events and typing (Phase 4):
 
 ```
 quickterm events poll   [--since <seq>] [--timeout 5s] [--limit N] [--types a,b]
 quickterm events follow [--since <seq>] [--types a,b]
-quickterm input send-text <文本> -t 目标 [--enter]
+quickterm input send-text <text> -t target [--enter]
 ```
 
-MCP（Phase 5）：
+MCP (Phase 5):
 
 ```
-quickterm mcp                    # stdio MCP 服务；由宿主拉起，别在终端里手敲
-quickterm mcp --list-tools       # 工具表本身（JSON）
+quickterm mcp                    # stdio MCP server; the host launches it, do not type it in a terminal
+quickterm mcp --list-tools       # the tool table itself (JSON)
 ```
 
-`action` 是**快捷键平价的直通车**：全部 67 个 `WMAction` 原样直达 `perform()`，
-所以「快捷键能做的，命令行都能做」在第一天就成立，而且结构上不可能漂移。
-但它保留的是**快捷键语义**（全是 toggle、全是"作用于焦点"）。
+`action` is the **keybinding-parity passthrough**: all 67 `WMAction`s go straight to `perform()` untouched,
+so "anything a keybinding can do, the command line can do" was true on day one and cannot quietly drift out of true.
+What rides along with that reach is **keybinding semantics**: these are toggles, and they act on whatever has focus.
 
-**名词-动词层全是绝对设值**——这是整个 Phase 2 的定规：
+**The noun-verb layer is absolute setters, every one of them** — that is the rule the whole of Phase 2 is built on:
 
-| 别写 | 要写 | 为什么 |
+| Don't write | Write | Why |
 |---|---|---|
-| `action toggle-zoom` | `pane set -t t7 --zoom on` | agent 看不到状态；重试一次 toggle 会把自己撤销 |
-| `action toggle-layout` | `workspace set-layout dwindle -t :4` | toggle 只能作用于**活动**工作区，而且没法指定目标 |
-| `action move-to-workspace-3` | `pane move -t t7 --to :3 [--follow]` | 前者只搬焦点 pane，而且强制跟随切换 |
-| `action resize-right` | `pane set -t t7 --width 0.33`（或 `pane resize -t t7 --dir right`） | 绝对值可重放，增量不行 |
-| `action theme-picker` | `app set theme tokyo-night` | 面板要靠方向键选，经 socket 执行等于把 UI 卡在半路 |
+| `action toggle-zoom` | `pane set -t t7 --zoom on` | an agent cannot see state; retrying a toggle undoes itself |
+| `action toggle-layout` | `workspace set-layout dwindle -t :4` | the toggle only reaches the **active** workspace, and cannot name a target |
+| `action move-to-workspace-3` | `pane move -t t7 --to :3 [--follow]` | the former moves only the focused pane, and forces you to follow it |
+| `action resize-right` | `pane set -t t7 --width 0.33` (or `pane resize -t t7 --dir right`) | absolute values are replayable, increments are not |
+| `action theme-picker` | `app set theme tokyo-night` | that panel is driven by arrow keys; running it over the socket leaves the UI stuck halfway |
 
-同一条设值命令跑两次，第二次什么都不做（`changed:false`）；
-加上 `--fail-if-noop` 时第二次是**退出码 7**——这正是"我以为我改了，其实没有"的信号。
+Run the same setter twice and the second run does nothing (`changed:false`);
+add `--fail-if-noop` and the second run is **exit code 7** — which is exactly the signal for "I thought I changed something, and I did not".
 
-### 每条变更命令都认的两个开关
+### The two flags every mutating command takes
 
-- `--dry-run`：只回 `changes`（一份 diff），**一个字节都不改**。动真格之前先预演。
-  （只有名词-动词层认这两个开关；`action <wm-action>` 是直通车，带上会退出码 3。）
-- `--fail-if-noop`：已经是目标状态时退出码 7，而不是静默成功。
+- `--dry-run`: returns `changes` (a diff) and **does not touch a single byte**. Rehearse before you commit.
+  (Only the noun-verb layer implements these two. `action <wm-action>` is a direct line to `perform()` with no diff
+  to preview, so passing them there is a `bad_request` — exit code 1, refused before the confirmation gate.)
+- `--fail-if-noop`: exit code 7 when you are already in the requested state, instead of succeeding silently.
 
-变更类响应是统一的信封：
+Mutating replies share one envelope:
 
 ```json
 {"ok":true,"seq":415,"resolved":{"screen":1,"workspace":2,"pane":"t9"},
@@ -108,169 +109,189 @@ quickterm mcp --list-tools       # 工具表本身（JSON）
    "pane":{"handle":"t9","…":"…"},"undo":"控制面：pane set"}}
 ```
 
-### 落点（`--at` / `--where`）
+### Where it lands (`--at` / `--where`)
 
-`--where right|left|up|down|stack` 走的就是鼠标拖放那一套落点算法（同一份代码），
-`--at` 是锚点 pane：`quickterm pane new --cwd ~/proj --cmd 'npm run dev' --at t1 --where right`。
-`--cmd` 建出来的 pane 在命令退出时自己关掉（`--hold` 可以让它留着）。
+`--where right|left|up|down|stack` runs the very same landing algorithm as a mouse drop (literally the same code),
+and `--at` is the anchor pane: `quickterm pane new --cwd ~/proj --cmd 'npm run dev' --at t1 --where right`.
+A pane created with `--cmd` closes itself when the command exits (`--hold` keeps it around).
 
-### 尺寸：读得到，也调得动
+### Sizes: you can read them, and you can change them
 
-**每一条读命令都带尺寸。** `state` / `list panes` / `get` 里每个 pane 都有一段 `size`：
+**Every read command carries sizes.** Each pane in `state` / `list panes` / `get` has a `size` block:
 
 ```json
 "size":{"rect":[0.3,0,0.7,0.7],"points":[1086,630],"cols":135,"rows":33,
         "split":"vertical","ratio":0.7}
 ```
 
-- `rect` = 工作区布局区里的归一化矩形 `[x,y,w,h]`，**左上角为原点**，由模型里的
-  比例 / 列宽算出来（不是读 frame，所以重排期间也不会给出上一帧的数）；
-  scrolling 的横向单位是"一个视口宽"，条带溢出时 `x+w` 会大于 1。**`rect` 是准的那个**。
-- `points` = 这个 pane 的**槽位**点尺寸。底是工作区布局区 = 窗口内容区去掉顶部状态条、
-  再去掉外圈那一圈 pane-gap 留白——正是分裂树真正铺开的那块地，也是 `--points` 换算和
-  分隔条夹取踩的同一块底。槽位里面还有每个 pane 自己的一圈留白和终端 pane-padding，
-  终端画布比槽位小：要网格就看 `cols`/`rows`（引擎量的），别拿 points 去除字宽。
-  窗口还没挂上时整字段没有。
-- dwindle 另给 `split`/`ratio`（最近那条分隔条的方向与比例）；
-  scrolling 另给 `width`（列宽因子）与 `share`（列内份额 = 1/列内 pane 数）。
-- `hidden: true` = 本工作区有 pane 被 zoom，而这一片不是它：**它现在屏幕上一点位置都没有**，
-  所以不给 `points`。`rect`/`ratio`/`width` 照旧是底下那层平铺——`pane resize` 调的就是它，
-  取消 zoom 也回到它。被 zoom 的那一片则报满整块布局区。
+- `rect` = the normalized rectangle `[x,y,w,h]` inside the workspace's layout area, **origin at the top left**,
+  computed from the ratios / column widths in the model (not read off a frame, so it never hands you last frame's
+  numbers mid-relayout); in scrolling the horizontal unit is "one viewport width", so `x+w` goes past 1 when the
+  strip overflows. **`rect` is the accurate one.**
+- `points` = this pane's **slot** size in points. The base is the workspace layout area = the window's content area
+  minus the status bar at the top, minus the ring of pane-gap padding around the outside — exactly the patch of
+  ground the split tree really lays out on, and the same base `--points` converts against and the divider clamps to.
+  Inside that slot there is still each pane's own ring of padding and the terminal's pane-padding, so the terminal
+  canvas is smaller than the slot: if you want the grid, read `cols`/`rows` (measured by the engine), don't divide
+  points by a character width. The whole field is absent until the window is mounted.
+- dwindle adds `split`/`ratio` (the direction and ratio of the nearest divider);
+  scrolling adds `width` (the column width factor) and `share` (the share within the column = 1 / panes in it).
+- `hidden: true` = some pane in this workspace is zoomed and this is not that one: **it has no place on screen at all
+  right now**, so it gets no `points`. `rect`/`ratio`/`width` still describe the tiling underneath — that is what
+  `pane resize` changes, and what un-zooming returns to. The zoomed one reports the whole layout area.
 
-dwindle 工作区的骨架就是那棵树，**和 `spec dump` 一套词**（`split`/`ratio`/`a`/`b`），
-叶子装句柄：
+The skeleton of a dwindle workspace is that tree, and it **uses the same vocabulary as `spec dump`**
+(`split`/`ratio`/`a`/`b`), with handles at the leaves:
 
 ```json
 {"index":3,"layout":"dwindle","panes":["t8","b3"],
  "tree":{"split":"vertical","ratio":0.62,"a":{"pane":"t8"},"b":{"pane":"b3"}}}
 ```
 
-**调尺寸与鼠标同权**，三条路对应鼠标的三种手势：
+**Resizing has the same reach as the mouse**; three routes, one per mouse gesture:
 
 ```sh
-quickterm pane resize -t t8 --ratio 0.62              # = 把那条分隔条拖到 62%
-quickterm pane resize -t t8 --points +120             # = 把它往右/下拖 120pt（裸数字 = a 侧设成 N pt）
-quickterm pane resize -t t8 --split root --ratio 0.3  # = 去拖祖先那条分隔条（路径 a/b，根写 root）
-quickterm pane resize -t t7 --dir right --points 100  # = 按一次 ⌘⌃→（也是 ⌘右键拖拽那条路）
-quickterm pane resize -t t7 --width +0.05             # scrolling 列宽因子（--points 则按点数）
+quickterm pane resize -t t8 --ratio 0.62              # = drag that divider to 62%
+quickterm pane resize -t t8 --points +120             # = drag it 120pt right/down (a bare number = set the a side to N pt)
+quickterm pane resize -t t8 --split root --ratio 0.3  # = go drag an ancestor divider (path of a/b, the root one is root)
+quickterm pane resize -t t7 --dir right --points 100  # = press ⌘⌃→ once (also the ⌘right-drag route)
+quickterm pane resize -t t7 --width +0.05             # scrolling column width factor (--points works in points instead)
 ```
 
-夹取规则也是同一条：`--ratio` / `--points` 走分隔条拖拽那条（两侧各留 10pt，
-与拖拽同一个函数、同一块底，命令行够不到鼠标够不到的地方），`--dir` 走快捷键那条（0.1–0.9），
-列宽走 `0.25–0.90`。到边界就是空操作（`--fail-if-noop` 退 7）。
-`--dir`（就近同向那条）与 `--split`（指名哪一条）互斥，一起给会报错而**不会**悄悄调另一条。
-组合工作区时把尺寸直接写进 spec（`columns[].width` / `tree` 每层的 `ratio`），
-`spec dump → apply → dump` 连非默认比例都是逐字节不动点。
+The clamping rules are the same ones too: `--ratio` / `--points` take the divider-drag route (each side keeps at
+least 10pt — same function, same base as the drag, so the command line can reach nothing the mouse cannot),
+`--dir` takes the keybinding route (0.1–0.9), and column width runs `0.25–0.90`.
+At the boundary it is a no-op (`--fail-if-noop` exits 7).
+`--dir` (the nearest divider on that axis) and `--split` (name one) are mutually exclusive: passing both is an error,
+and it **never** quietly picks one of them and moves that.
+When you compose a workspace, write the sizes straight into the spec (`columns[].width` / a `ratio` at each level of
+`tree`): `spec dump → apply → dump` is a byte-for-byte fixed point even with non-default ratios.
 
-### 给 pane 起个名字：`pane set --title`
+### Name a pane: `pane set --title`
 
 ```sh
-quickterm pane set -t t7 --title 'build · web'   # = 右键「Change Terminal Title」
-quickterm get -t 'title:~build'                  # 之后就能按标题寻址它
-quickterm pane set -t t7 --title ''              # 空串 = 交还给 shell
+quickterm pane set -t t7 --title 'build · web'   # = the right-click "Change Terminal Title"
+quickterm get -t 'title:~build'                  # and now you can address it by title
+quickterm pane set -t t7 --title ''              # empty string = hand it back to the shell
 ```
 
-绝对设值：跑两次结果一样，第二次 `changed:false`（带 `--fail-if-noop` 时退 7）。
-标题会出现在 `state` / `list` / `get` 的 `title` 字段里，而 **`title:~<正则>` 是一等的寻址写法**——
-给几个长期存在的 pane 起名字，比每次都去查一串句柄稳得多（句柄会随 pane 关掉而回收）。
-只有终端 pane 能设：浏览器 pane 的标题来自网页，设了也会被下一次导航盖掉。
-这样设下的标题还会直接画在 pane 的上边框上（最长 20 字；配置 `[appearance] pane-title = false` 关掉）。
+An absolute setter: run it twice and you get the same result, the second time with `changed:false`
+(exit 7 with `--fail-if-noop`).
+The title shows up in the `title` field of `state` / `list` / `get`, and **`title:~<regex>` is a first-class way to
+address things** — naming the few panes that stick around is far steadier than looking up a handle every time
+(handles are recycled when a pane closes).
+Only terminal panes take one: a browser pane's title comes from the page, and the next navigation overwrites whatever
+you set.
+A title set this way is also drawn on the pane's top border (20 characters max; turn it off with
+`[appearance] pane-title = false`).
 
-### 给工作区起个名字：`workspace set --title`
+### Name a workspace: `workspace set --title`
 
 ```sh
-quickterm workspace set --title dev              # = 右键状态条上的工作区胶囊
-quickterm workspace set -t 2:4 --title 'web 日志'  # 指名某块屏幕的第 4 个工作区
-quickterm workspace set -t :4 --title ''         # 空串 = 清掉，胶囊回到序号
+quickterm workspace set --title dev              # = right-click the workspace pill in the status bar
+quickterm workspace set -t 2:4 --title 'web · logs'  # name the 4th workspace on a particular screen
+quickterm workspace set -t :4 --title ''         # empty string = clear it, the pill falls back to the index
 ```
 
-绝对设值，规则与 `pane set --title` 逐条一致（200 字上限、控制字符拒绝、跑两次第二次
-`changed:false`，带 `--fail-if-noop` 时退 7）。不写 `-t` 就是**被寻址那块屏幕的活动工作区**。
+An absolute setter, with rules identical to `pane set --title` point for point (200-character limit, control
+characters refused, run it twice and the second run reports `changed:false`, exit 7 with `--fail-if-noop`).
+With no `-t` it means **the active workspace of whichever screen was addressed**.
 
-名字属于**槽位**，不属于里面那堆 pane：`workspace clear`、关掉最后一个 pane、
-`spec apply --replace` 换掉里面全部 pane，都不会动它。
-改得动它的有三条路：这条命令、右键改名，以及一份**写了 `title` 的** spec——
-`spec dump` 出来的那份就写了，所以把 1 号的 dump apply 到 5 号会连名字一起盖过去。
-名字出现在 `state` / `list workspaces` / `get` 的工作区 `title` 字段里（不打码），
-改名会报一条 `workspace.changed`（带 `title`）。
-`spec dump` 会把它写进 `title`，`spec apply` 照着落——**不写 `title` = 不动目标工作区的名字**
-（与 `visibleColumns` 同一条规矩），所以 `dump → apply → dump` 仍是逐字节的不动点。
-状态条上最长显示 12 字；带名字的一排胶囊放不下时整排退回序号（配置
-`[appearance] workspace-title = false` 可以彻底关掉显示，但名字还在）。
+The name belongs to the **slot**, not to the panes inside it: `workspace clear`, closing the last pane, and
+`spec apply --replace` swapping out every pane in it all leave the name alone.
+Three things can change it: this command, a right-click rename, and a spec that **carries a `title`** —
+the one `spec dump` writes does, so applying screen 1's dump to workspace 5 carries the name over as well.
+The name appears in the workspace `title` field of `state` / `list workspaces` / `get` (never redacted),
+and a rename emits a `workspace.changed` event (carrying `title`).
+`spec dump` writes it into `title` and `spec apply` lands it — **no `title` = don't touch the target workspace's name**
+(the same rule as `visibleColumns`), so `dump → apply → dump` is still a byte-for-byte fixed point.
+The status bar shows at most 12 characters; when a row of named pills will not fit, the whole row falls back to
+indices (`[appearance] workspace-title = false` turns the display off entirely, though the names are still there).
 
-### 浏览器标签：`browser`
+### Browser tabs: `browser`
 
 ```sh
-quickterm browser open   -t b3 --url http://localhost:3000   # 新标签
-quickterm browser goto   -t b3 --url http://localhost:5173   # 当前标签换网址
-quickterm browser goto   -t b3 --tab 2 --url https://a.b     # 指定标签
-quickterm browser reload -t b3 --tab 1 [--hard]              # 刷新（--hard 绕过缓存）
+quickterm browser open   -t b3 --url http://localhost:3000   # a new tab
+quickterm browser goto   -t b3 --url http://localhost:5173   # point the current tab at a URL
+quickterm browser goto   -t b3 --tab 2 --url https://a.b     # name the tab
+quickterm browser reload -t b3 --tab 1 [--hard]              # reload (--hard bypasses the cache)
 quickterm browser close  -t b3 [--tab 1 | --others] [--force]
 ```
 
-- **`-t` 指 pane（`b3`），`--tab` 指 pane 里的标签。** 标签有三种写法：
-  **1 起的序号**（会随开关标签移位）、**`#<id 或 ≥4 位前缀>`**（标签活着就不变，agent 该用这个）、
-  **`@active`（默认）/ `@last`**。三种都能在 `state` / `get` 的 `tabList` 里原样读到：
+- **`-t` names the pane (`b3`), `--tab` names a tab inside it.** A tab can be written four ways:
+  a **1-based index** (which shifts as tabs open and close), **`#<id, or a prefix of ≥4>`** (stable for as long as the
+  tab lives — this is the one an agent should use), **`@active`** (the default) and **`@last`**. All of them read back
+  verbatim from `tabList` in `state` / `get`:
 
   ```sh
   quickterm get -t b3 --json | jq '.data.pane.tabList'
   # [{"index":1,"id":"8A1F…","active":true,"title":"docs","url":"https://…"}]
   ```
 
-- `browser goto` 是**绝对设值**：已经在那个网址上就什么都不做（`--fail-if-noop` 退 7）。
-  要强制重新取一次用 `browser reload`——"换网址"与"刷新"是两个不同的意图。
-  比的是**规范化之后**的网址：`http://localhost:3000` 与 WebKit 落地后报的
-  `http://localhost:3000/` 是同一个页面（scheme / 主机名大小写、默认端口同理）。
-  到此为止——路径末尾的斜杠（`/a` 与 `/a/`）、query 的顺序、fragment 都是**不同的页面**。
-  同一条规则也用在 `spec apply --reuse` 的浏览器 pane 匹配上，
-  所以手写 spec 里的 `"url":"http://localhost:3000"` 不会每次都把 pane 拆了重建。
-- **`browser close` 关掉最后一个标签时会关掉整个 pane**，与 ⌘W 逐字一致（Chrome 语义）。
-  它是破坏性的，会先要求确认；`--others` 则永远留下 `--tab` 指的那一个，不会关 pane。
-- **打码规则一个字都不松**：没有 `QUICKTERM_TOKEN` 的调用方读到的 `tabList` 里，
-  `title` / `url` 是 `<redacted>`（`index` / `id` / `active` 照给——那是寻址要用的），
-  变更信封里的 diff 同样打码。对这类调用方 **`goto` 不再是幂等的**：它一律当成一次改动
-  （`changed` 恒真、照常加载），否则一条 `--dry-run --fail-if-noop` 就成了
-  「这个标签是不是正停在某网址上」的是/否探测器——而它本来连那个网址都读不到。
-- **网址与标题不进系统日志**：应用内的活动日志面板里写全（看的人就是你本人），
-  但镜像进统一日志（OSLog）的那一份只留路径（`1:2.b3.tab1.url 已变更`）。
-  那份日志落在 `/var/db/diagnostics`，应用退出后还在、`sysdiagnose` 会打包带走。
-  终端标题（`pane set --title` / `pane close`）同理。
+- `browser goto` is an **absolute setter**: already on that URL means it does nothing (`--fail-if-noop` exits 7).
+  To force a refetch use `browser reload` — "point it somewhere" and "reload" are two different intents.
+  The comparison happens **after normalization**: `http://localhost:3000` and the `http://localhost:3000/` WebKit
+  reports once it lands are the same page (likewise scheme / host case and default ports).
+  And that is where it stops — a trailing slash on the path (`/a` vs `/a/`), query order, and the fragment are all
+  **different pages**.
+  The same rule drives browser-pane matching in `spec apply --reuse`, so a hand-written `"url":"http://localhost:3000"`
+  in a spec does not tear the pane down and rebuild it every time.
+- **`browser close` on the last tab closes the whole pane**, exactly like ⌘W (Chrome semantics).
+  It is destructive and asks for confirmation first; `--others` always keeps the one `--tab` names, and never closes
+  the pane.
+- **The redaction rule does not bend an inch**: for a caller without `QUICKTERM_TOKEN`, `title` / `url` in `tabList`
+  read `<redacted>` (`index` / `id` / `active` still come through — you address tabs with those), and the diff in the
+  mutation envelope is redacted too. For such a caller **`goto` stops being idempotent**: it counts as a change every
+  time (`changed` is always true, and it loads as usual), because otherwise a single `--dry-run --fail-if-noop` would
+  become a yes/no probe for "is this tab sitting on that URL right now" — a URL that caller cannot even read.
+- **URLs and titles never reach the system log**: the in-app activity panel writes them in full (the person reading it
+  is you), but the copy mirrored into the unified log (OSLog) keeps the path alone — `1:2.b3.tab1.url` changed,
+  never what it changed to.
+  That log lands in `/var/db/diagnostics`, survives app exit, and `sysdiagnose` packages it up.
+  Terminal titles (`pane set --title` / `pane close`) work the same way.
 
-### 读终端屏幕：`pane capture-text`
+### Read a terminal screen: `pane capture-text`
 
 ```sh
-quickterm pane capture-text -t t7                      # 可视区
-quickterm pane capture-text -t t7 --scrollback 200     # 再往上带 200 行历史
+quickterm pane capture-text -t t7                      # the viewport
+quickterm pane capture-text -t t7 --scrollback 200     # plus 200 lines of history above it
 quickterm pane capture-text -t t7 --json | jq -r .data.text
 ```
 
-回的是那个 pane **此刻屏幕上的文字**（外加引擎量到的 `cols` × `rows`），
-用来回答"我刚起的那条命令到底跑成什么样了"——事件流里永远不会有 pane 的输出。
+You get **the text on that pane's screen right now**, along with the `cols` × `rows` the engine measured.
+This is how you answer "what did that command I just started actually do?" — the event stream will never carry a
+pane's output.
 
-**它是 `sensitive`，不是 `read`**，因为一个 shell 的可视区里可能有 token、
-刚敲进去还没回车的密码、私有代码。四道闸门各自独立：
+**It is `sensitive`, not `read`**, because a shell's viewport can hold tokens, a password typed but not yet entered,
+or private code. Four gates, each independent:
 
-- 默认**关闭**：`[control] capture-text = true` 之前一律拒绝（退出码 5）。
-  它与 `send-text` 是**两个**开关，打开一个绝不会顺带打开另一个。
-- 调用方必须带着本次启动的 `QUICKTERM_TOKEN`（浏览器网址打码用的同一枚）——
-  在 QuickTerm 的 pane 里跑就是自动的；读不到浏览器标题的调用方一律读不到终端屏幕。
-- 每个调用进程要用户在 QuickTerm 里**确认一次**（框里写明是"读取哪个 pane 屏幕上的全部文字"）。
-  没有"读自己那个 pane 免确认"的豁免：一个进程本来就读不到自己 tty 的回滚缓冲。
-- 正文**只在那一条响应里出现一次**：不进活动日志、不进事件流、不进统一日志。
+- **Off by default**: refused (exit code 5) until `[control] capture-text = true`.
+  It and `send-text` are **two** switches; turning one on never turns on the other.
+- The caller has to carry this launch's `QUICKTERM_TOKEN` (the same one browser URL redaction keys off) —
+  automatic when you run inside a QuickTerm pane; a caller that cannot read browser titles can never read a terminal
+  screen.
+- Every calling process needs the user to **confirm once** inside QuickTerm (the dialog spells out that this is
+  "read all the text on the screen of pane X").
+  There is no "reading your own pane needs no confirmation" exemption: a process could not read its own tty's
+  scrollback buffer in the first place.
+- The text **appears exactly once, in that one reply**: not in the activity log, not in the event stream, not in the
+  unified log.
 
-它什么都不改，因此**不认 `--dry-run` / `--fail-if-noop`**（带了退 3）：
-`--dry-run` 在别处同时意味着免确认，在这里就成了绕过闸门拿到全部内容的后门。
+It changes nothing, so it **does not take `--dry-run` / `--fail-if-noop`** (passing them is a `bad_request`, exit
+code 1): `--dry-run` elsewhere also means "no confirmation needed", which here would be a back door around every gate
+straight to the full contents.
 
-### 工作目录用不上时：`cwd_denied` 与 `--require-cwd`
+### When the working directory cannot be used: `cwd_denied` and `--require-cwd`
 
-macOS 把 `~/Desktop` `~/Documents` `~/Downloads` 划成受保护目录，授权按**代码签名身份**记账。
-没有授权时 QuickTerm 不会把这个目录交给引擎（否则启动会挂死，见 `WorkingDirectoryGate`），
-shell 于是起在默认目录。这件事**不再是静默的**：
+macOS counts `~/Desktop` `~/Documents` `~/Downloads` as protected directories, and a grant is recorded against a
+**code-signing identity**.
+Without the grant QuickTerm does not hand that directory to the engine (it would hang at startup — see
+`WorkingDirectoryGate`), so the shell starts in the default directory. This **is no longer silent**:
 
 ```sh
 quickterm pane new --cwd ~/Downloads
-# ⚠️ 工作目录 /Users/you/Downloads 没能用上：…（cwd_denied）
-#    → 在系统设置 ▸ 隐私与安全性 ▸ 文件与文件夹里给 QuickTerm 勾上对应的项…
+# ⚠️ Working directory /Users/you/Downloads could not be used: … (cwd_denied)
+#    → Tick QuickTerm's entry under System Settings ▸ Privacy & Security ▸ Files and Folders…
 ```
 
 ```json
@@ -279,28 +300,31 @@ quickterm pane new --cwd ~/Downloads
                "message":"…","hint":"…"}]}}
 ```
 
-- 默认**照常开 pane 并带一条告警**：命令确实成功了，把它变成失败会让每一个不在乎
-  目录的脚本跟着挂掉。**在 `code` 上分支**（`cwd_denied` 是稳定的），别去匹配文案。
-- 受不了这种回退的脚本加 **`--require-cwd`**：目录用不上就退出码 5，而且**一个 pane 都不建**。
-  `spec apply` 同样认这个开关（预检阶段就失败，一个 pane 都不动）。
-- 只对**真的会用到 cwd 的 pane** 生效：浏览器 pane 不消费 `--cwd`（它只要一个网址），
-  所以 `pane new --kind browser --cwd ~/Downloads` 既不告警也不会被 `--require-cwd` 拦下——
-  一律带 `--cwd "$PWD"` 的脚本不会因为当前目录恰好受保护就开不出浏览器 pane。
+- By default it **opens the pane anyway and attaches a warning**: the command really did succeed, and turning it into
+  a failure would take down every script that does not care about the directory.
+  **Branch on `code`** (`cwd_denied` is stable), never match the message text.
+- A script that cannot live with that fallback adds **`--require-cwd`**: an unusable directory exits 5, and **not one
+  pane is created**. `spec apply` takes the same flag (it fails during the precheck, touching nothing).
+- It only applies to **panes that actually use a cwd**: a browser pane does not consume `--cwd` (it only wants a URL),
+  so `pane new --kind browser --cwd ~/Downloads` neither warns nor gets blocked by `--require-cwd` — a script that
+  always passes `--cwd "$PWD"` will not fail to open a browser pane just because the current directory happens to be
+  protected.
 
-## 一次性组合：`spec`
+## Compose it all at once: `spec`
 
-**要摆好一整个工作区，用 `spec apply`，别发 N 条 `pane new`。**
-N 条命令 = N 次重排、N 次动画、N 个失败点，中途失败还会留下一个谁也说不清的半成品；
-`spec apply` 是一次算完、一次落地（先把整个布局值算好，再一次赋给模型）。
+**To lay out a whole workspace, use `spec apply`; do not fire N `pane new`s.**
+N commands = N relayouts, N animations, N failure points, and a failure halfway through leaves behind a half-built
+thing nobody can explain; `spec apply` computes once and lands once (the whole layout is computed first, then assigned
+to the model in one go).
 
-公开格式是 `quickterm.workspace/1`（外加 `quickterm.screen/1` / `quickterm.session/1`
-两个信封，原样复用同一套词汇）。**每个字段都可省**，所以两行就是一份合法的 spec：
+The public format is `quickterm.workspace/1` (plus two envelopes, `quickterm.screen/1` and `quickterm.session/1`,
+which reuse the same vocabulary verbatim). **Every field may be omitted**, so two lines is a legal spec:
 
 ```json
 {"columns":[{"panes":[{}]},{"panes":[{},{}]}]}
 ```
 
-完整一点的一份（scrolling：列 × 列内纵栈）：
+A fuller one (scrolling: columns × a vertical stack inside each column):
 
 ```json
 { "schema": "quickterm.workspace/1", "layout": "scrolling", "visibleColumns": 3,
@@ -313,7 +337,7 @@ N 条命令 = N 次重排、N 次动画、N 个失败点，中途失败还会留
   "focus": {"column":0,"row":0} }
 ```
 
-dwindle 则是一棵分裂树（`split` = `horizontal` 时 a 左 b 右，`vertical` 时 a 上 b 下）：
+dwindle is a split tree instead (`split` = `horizontal` puts a left and b right, `vertical` puts a on top and b below):
 
 ```json
 { "layout":"dwindle",
@@ -325,207 +349,245 @@ dwindle 则是一棵分裂树（`split` = `horizontal` 时 a 左 b 右，`vertic
   "focus":{"path":"b.a"} }
 ```
 
-默认值：`kind` = terminal，`ratio` = 0.5，`width` = 按每屏可见列数折算，
-`cwd` = 继承锚点 pane 的目录，`focus` = 第一个 pane。字段表在 `quickterm spec apply --help`
-与 `describe --json` 的 `specSchema` 里（两处同一出处）。
+Defaults: `kind` = terminal, `ratio` = 0.5, `width` = derived from the visible column count,
+`cwd` = inherited from the anchor pane, `focus` = the first pane. The field table lives in
+`quickterm spec apply --help` and in `specSchema` in `describe --json` (one source, printed in two places).
 
-三种模式：
+Three modes:
 
-| 模式 | 语义 |
+| Mode | What it means |
 |---|---|
-| `--into-empty`（默认） | 只往**空**工作区里放；非空一律拒绝（退出码 4）。**毁不掉任何东西** |
-| `--replace` | 覆盖：原有 pane 全部走真正的关闭路径（**破坏性**，会先确认）。整份一模一样时是空操作 |
-| `--reuse` | 能对上的 pane 原地留着（跑着的 dev server 不会被重启），其余关掉 / 新建 |
+| `--into-empty` (the default) | fill an **empty** workspace only; a non-empty one is refused (exit code 4). **It cannot destroy anything** |
+| `--replace` | overwrite: every existing pane goes through the real close path (**destructive**, confirms first). An identical spec is a no-op |
+| `--reuse` | panes that match stay exactly where they are (a running dev server is not restarted); the rest are closed / created |
 
-典型工作流——**dump 一份已知好用的，改两个字段，再落回去**：
+The typical workflow — **dump one you know works, change two fields, land it again**:
 
 ```sh
-quickterm spec dump -t 1:2 > dev.json          # 打印的就是那份 spec 本身，可以直接重定向
-vi dev.json                                     # 比如把某一列的 width 改成 0.5
-quickterm spec apply -f dev.json -t 2:4 --dry-run   # 先看 diff：只报几何变化就说明不会重建 pane
+quickterm spec dump -t 1:2 > dev.json          # what it prints is the spec itself; redirect it straight to a file
+vi dev.json                                     # e.g. change one column's width to 0.5
+quickterm spec apply -f dev.json -t 2:4 --dry-run   # look at the diff first: geometry-only changes mean no pane gets rebuilt
 quickterm spec apply -f dev.json -t 2:4 --reuse
 ```
 
-几条一定要知道的：
+A few things you have to know:
 
-- `cmd` / `env` / `hold` **只进不出**：活着的 surface 不记得自己是被什么命令拉起来的，
-  `spec dump` 因此不会回吐 `cmd`。写了 `cmd` 的那一格，`--reuse` 会把对得上的 pane 原地留着
-  （**不重跑**，重试不会重启 dev server）；`--replace` 的语义是拆了重建，那条命令会被重新拉起来。
-- `--include-ids` 里的 `id` 是"就要这一个 pane"的指名道姓，**只有 `--reuse` 认它**：
-  否则 dump 一份带 id 的、改掉某个 `cwd` 再 `--replace`，每一格都会靠 id 对上，改动被整份丢掉。
-- `dump → apply → dump` 是**不动点**：dump 出来的东西落回去，再 dump 一次逐字节相同。
-- 认不得的键一律报错（写错 `colums` 不会被静默忽略），数值越界报错并给出范围，**绝不静默夹紧**。
-- 没有 token 的调用方读不到浏览器 pane 的网址（`redacted:true`，与 `state` 同一条规则）：
-  这样一份 dump 再 apply 回去时，浏览器 pane 会开在主页而不是原来的网址。
-- `spec apply` **不搬窗口**：屏幕信封里的 `display` / `frame` 只在 dump 里回显，
-  要搬窗口请用 `quickterm screen move`。
-- 落刀之后才失败会报 `partial_apply`（退出码 1）：工作区**已经被改过**，
-  重新 `spec dump` 看一眼现状再决定怎么收拾——绝不会假装什么都没发生。
+- `cmd` / `env` / `hold` are **write-only**: a live surface does not remember what command started it, so
+  `spec dump` never gives `cmd` back. For a slot that carries a `cmd`, `--reuse` keeps the matching pane in place
+  (**it does not re-run it**, so retrying never restarts your dev server); `--replace` means tear down and rebuild, so
+  that command does get started again.
+- The `id` in `--include-ids` says "this exact pane and no other", and **only `--reuse` honors it**:
+  otherwise you dump a spec with ids, change a `cwd`, `--replace` it, and every slot matches by id while your edit is
+  thrown away wholesale.
+- `dump → apply → dump` is a **fixed point**: land a dump back and dump again, and you get the same bytes.
+- An unrecognized key is always an error (a misspelled `colums` is never silently ignored); a number out of range is
+  an error that names the range, **never a silent clamp**.
+- A caller without a token cannot read a browser pane's URL (`redacted:true`, the same rule as `state`):
+  apply such a dump back and the browser pane opens on the home page instead of the original URL.
+- `spec apply` **never moves windows**: `display` / `frame` in the screen envelope are echoed back by dump only.
+  To move a window use `quickterm screen move`.
+- A failure after the knife is in reports `partial_apply` (exit code 1): the workspace **has already been changed**,
+  so run `spec dump` again, look at where things stand, and then decide how to clean up — it will never pretend
+  nothing happened.
 
-## 事件：`seq` 与 `events poll`
+## Events: `seq` and `events poll`
 
-每一条成功的变更都会推进一个全局单调的 `seq`（`state` 与每条响应里回的就是它）。
-**两处的 seq 是同一条尺子**：拿变更响应回的 seq 去 poll，不会漏掉自己那条命令产生的事件。
+Every successful change advances one globally monotonic `seq` (the one `state` and every reply carry).
+**Both places measure with the same ruler**: poll with the seq a mutation returned and you will not miss the events
+your own command produced.
 
 ```sh
 seq=$(quickterm state --json | jq .seq)
-quickterm events poll --since "$seq" --timeout 30s     # 一次调用回答"我上次看之后发生了什么"
+quickterm events poll --since "$seq" --timeout 30s     # one call answers "what happened since I last looked"
 ```
 
-- **`events poll` 才是 agent 该用的形式**（一次请求-应答，长轮询）。
-  `events follow` 是给人和 shell 脚本的 NDJSON 流——一条永不结束的流对模型是纯负担：
-  每一条都进上下文，还得自己盯着。
-- 回来的 `seq` 就是**下一次 `--since` 该给的值**，哪怕这一批是空的（`timedOut: true` 不是错误）。
-- 缓冲是环形的：`missed: true` 意味着中间被挤掉了事件，手里的快照不完整，**重新读一次 `state`**。
-- 九种事件：`pane.opened` `pane.closed` `focus.changed` `workspace.changed` `layout.changed`
-  `screen.opened` `screen.closed` `pane.title.changed` `pane.cwd.changed`。
-  `workspace.changed` 有两种由头：切了工作区，或者某个工作区改了名（那一条带 `title`）。
-- **任何事件都不携带 pane 的输出内容**——只有结构、标题与 cwd，浏览器 pane 的标题 / cwd
-  对没有 token 的调用方与 `state` 一样打码。想看输出，去那个 pane 里自己看。
-- 有些变更（`app set theme`、`screen set --fullscreen`）会推进 `seq` 却没有对应的类型化事件：
-  那时你只知道"快照过期了"，具体变了什么要重新读 `state`。
-- **回的 `data.seq` 是游标，照着它一直轮下去就不会漏。** 一批被 `--limit` 截断时它只走到
-  最后一条真的送出去的事件，同时带 `truncated: true`——看到它就拿这个 seq 立刻再轮一次，
-  不必等下一次 timeout。（`missed` 说的是另一件事：事件已经被挤出缓冲，再也拿不回来了，重读 `state`。）
+- **`events poll` is the shape an agent wants** (one request, one reply, long-polled).
+  `events follow` is an NDJSON stream for humans and shell scripts — a stream that never ends is pure overhead for a
+  model: every line enters the context, and you have to watch it yourself.
+- The `seq` that comes back is **the value to pass as `--since` next time**, even when the batch was empty
+  (`timedOut: true` is not an error).
+- The buffer is a ring: `missed: true` means events were pushed out in between, your snapshot is incomplete, so
+  **read `state` again**.
+- Nine event types: `pane.opened` `pane.closed` `focus.changed` `workspace.changed` `layout.changed`
+  `screen.opened` `screen.closed` `pane.title.changed` `pane.cwd.changed`.
+  `workspace.changed` has two causes: a workspace switch, or a workspace being renamed (that one carries `title`).
+- **No event ever carries a pane's output** — only structure, titles and cwds, and for a caller without a token a
+  browser pane's title / cwd are redacted exactly as in `state`. To see output, go look in that pane.
+- Some changes (`app set theme`, `screen set --fullscreen`) advance `seq` without a typed event of their own:
+  then all you know is "the snapshot is stale", and you re-read `state` to find out what.
+- **The `data.seq` you get back is the cursor; keep polling with it and you miss nothing.** When `--limit` truncates a
+  batch it only reaches the last event actually sent, and comes with `truncated: true` — see that and poll again
+  immediately with that seq, don't wait for the next timeout. (`missed` is a different story: those events are out of
+  the buffer for good, so re-read `state`.)
 
-## 向别人的 shell 打字：`input send-text`
+## Typing into someone else's shell: `input send-text`
 
 ```sh
 quickterm input send-text 'git status' -t @self --enter
 ```
 
-**这条命令等于在那个 tty 上打字**——那个 shell 可能是 root，可能是一条活着的 ssh 会话。
-所以：
+**This command is typing on that tty** — and that shell might be root, or a live ssh session.
+So:
 
-- 默认**关闭**：`~/.config/quickterm/config.toml` 里 `[control] send-text = true` 之前一律拒绝（退出码 5）。
-- 写调用方**自己**那个 pane 免确认（那个 tty 本来就是它自己的）。判定只认**可验证的**那一枚：
-  请求带来的 `QUICKTERM_PANE_TOKEN` 要与 `-t` **真正解析到的那个 pane** 现算的 HMAC 对得上。
-  自报的 `QUICKTERM_PANE` 不参与判定（服务端验不了它），所以把它改成别人的 UUID 也换不来免确认。
-- 写**任何**别的 pane 每次都要用户确认，而且这次批准**不进缓存**；
-  确认框里会列出**要打进去的正文**（净化并截断）以及后面跟不跟回车——
-  用户批准的是"这一串字"，不是笼统的"允许打字"。
-- 控制字符一律拒绝（不是过滤，是拒绝）；**换行只能靠显式的 `--enter`**——
-  没有 `--enter` 的文本只是躺在命令行上，不会执行。
-- `-t` 是必须的：没有"往当前焦点那个 pane 里打字"这种写法。
-- 文本本身**不进活动日志**（日志只记"多少个字符 + 有没有回车"）。
+- **Off by default**: refused until `[control] send-text = true` in `~/.config/quickterm/config.toml` (exit code 5).
+- Writing to the caller's **own** pane needs no confirmation (that tty was already its own). The test only accepts the
+  **verifiable** token: the `QUICKTERM_PANE_TOKEN` the request carries has to match the freshly computed HMAC for the
+  pane `-t` **actually resolved to**.
+  The self-reported `QUICKTERM_PANE` plays no part in the test (the server cannot verify it), so setting it to somebody
+  else's UUID buys you nothing.
+- Writing to **any** other pane is confirmed every single time, and that approval **is not cached**;
+  the dialog lists **the text about to be typed** (sanitized and truncated) and whether a Return follows —
+  what the user approves is "this string", not a blanket "typing allowed".
+- Control characters are always refused (refused, not filtered); **a newline only ever comes from an explicit
+  `--enter`** — text without `--enter` just sits on the command line and does not run.
+- `-t` is mandatory: there is no "type into whatever pane has focus" spelling.
+- The text itself **never enters the activity log** (the log records "how many characters + whether Return followed").
 
-## MCP：`quickterm mcp`
+## MCP: `quickterm mcp`
 
-同一张命令表还生成一个 stdio 的 MCP 服务，**13 个粗粒度工具**（不是一个命令一个工具）：
+The same command table also generates a stdio MCP server with **13 coarse-grained tools** (not one tool per command):
 
 ```sh
 claude mcp add quickterm -- /usr/local/bin/quickterm mcp     # Claude Code
 codex mcp add quickterm -- /usr/local/bin/quickterm mcp      # Codex CLI
-quickterm mcp --list-tools | jq -r '.tools[].name'           # 看一眼会暴露出去的东西
+quickterm mcp --list-tools | jq -r '.tools[].name'           # see what gets exposed
 ```
 
-工具：`quickterm_describe` `quickterm_state` `quickterm_action` `quickterm_new_pane`
+The tools: `quickterm_describe` `quickterm_state` `quickterm_action` `quickterm_new_pane`
 `quickterm_focus` `quickterm_arrange` `quickterm_close` `quickterm_browser`
 `quickterm_read_terminal` `quickterm_dump_spec` `quickterm_apply_spec`
-`quickterm_poll_events` `quickterm_send_text`。
+`quickterm_poll_events` `quickterm_send_text`.
 
-- 每个工具背后是命令表里的哪几条命令，写在它的 `description` 里，也在
-  `quickterm describe --json` 的 `mcpTools` 里。参数名与 CLI 一模一样（`target` / `dry-run` / …）。
-- 注解是**机械地**从安全分级映射的：`read` → `readOnlyHint`，
-  `destructive` / `sensitive` → `destructiveHint`，`idempotent` → `idempotentHint`。
-  宿主靠它自动放行读、对破坏性调用弹确认——这是 QuickTerm 自己的确认闸门之外**独立的第二道闸**。
-- MCP 这一层**没有任何自己的特权**：每次 `tools/call` 走的都是同一条 socket、同一套确认、限流与活动日志。
-- `events follow`（流）与 `install-cli`（造软链）刻意不上 MCP；`spec` 只能内联给
-  （MCP 这一侧没有 `-f`：读文件永远是调用方那一边的事）。
-- **什么时候用哪个**：交互式的一次性控制用 MCP（宿主那一层能替你把闸门做好）；
-  批量组合用 CLI —— 工具表是每次会话都要付的上下文税（约 64 KB 的 schema），
-  而 CLI 不调用就不占一个 token。
+- Which commands from the table sit behind each tool is written in its `description`, and in `mcpTools` in
+  `quickterm describe --json`. The parameter names are identical to the CLI's (`target` / `dry-run` / …).
+- The annotations are **mechanically** mapped from the safety classes: `read` → `readOnlyHint`,
+  `destructive` / `sensitive` → `destructiveHint`, `idempotent` → `idempotentHint`.
+  Hosts use them to auto-allow reads and to prompt on destructive calls — a **second, independent** gate on top of
+  QuickTerm's own confirmation.
+- The MCP layer **has no privileges of its own**: every `tools/call` goes over the same socket, through the same
+  confirmations, the same rate limiting and the same activity log.
+- `events follow` (a stream) and `install-cli` (which creates symlinks) are deliberately not exposed over MCP;
+  `spec` can only be passed inline (there is no `-f` on the MCP side: reading files is always the caller's job).
+- **Which one when**: interactive, one-off control goes through MCP (the host layer does the gating for you);
+  batch composition goes through the CLI — the tool table is a context tax you pay every session (roughly 70 KB of
+  schema), while the CLI costs you not one token until you call it.
 
-## 寻址
+## Addressing
 
-`screen:workspace.pane`，每段可省，向右默认取上下文。
+`screen:workspace.pane`, every part optional, defaulting rightward to the current context.
 
-- **screen**：1 起序号（= 窗口标题）、`#uuid:`（注意冒号）、`@current`、`@primary`
-- **workspace**：1 起序号（= ⌘1..0）、`@active`、`@next`、`@prev`
-- **pane**：`t7`/`b3` 短句柄、`#uuid`（≥4 位前缀）、`@focused`（默认）、`@self`、
-  `@left @right @up @down`、`@next @prev`
-- **谓词**：`title:~<regex>`、`cwd:<prefix>`、`kind:terminal|browser`、`role:file-manager`
-  - `title:~` 的正则整条命令共用 200ms 匹配预算，超时报 `bad_target`（退出码 3）而不是把主线程钉死：
-    嵌套量词（`(a|aa)+`、`(.|.)+`）在 ICU 上是指数级的。**别写嵌套量词**，或者直接用句柄。
-  - `expose-browser` 打码生效时，浏览器 pane **不进 `title:~` 的候选池**——
-    否则谓词就成了逐字符探测被打码标题的通道。
+- **screen**: 1-based index (= the window title), `#uuid:` (mind the colon), `@current`, `@primary`
+- **workspace**: 1-based index (= ⌘1..0), `@active`, `@next`, `@prev`
+- **pane**: `t7`/`b3` short handles, `#uuid` (prefix of ≥4), `@focused` (the default), `@self`,
+  `@left @right @up @down`, `@next @prev`
+- **predicates**: `title:~<regex>`, `cwd:<prefix>`, `kind:terminal|browser`, `role:file-manager`
+  - `title:~` regexes share a 200ms matching budget across the whole command; a timeout is a `bad_target` error
+    (exit code 3) rather than a wedged main thread: nested quantifiers (`(a|aa)+`, `(.|.)+`) are exponential on
+    ICU. **Don't write nested quantifiers**, or just use a handle.
+  - While `expose-browser` redaction is in effect, browser panes **stay out of the `title:~` candidate pool** —
+    otherwise the predicate would become a channel for probing a redacted title character by character.
 
-消歧规则（不留"看情况"）：裸数字是**屏幕**（pane 句柄一律带类型前缀）；裸 `#uuid` 是 **pane**，
-要按 uuid 指屏幕必须写 `#uuid:`；谓词里的 `:`/`.` 不会被当成分隔符。
+Disambiguation rules (nothing is left to "it depends"): a bare number is a **screen** (pane handles always carry a type
+prefix); a bare `#uuid` is a **pane**, and naming a screen by uuid requires `#uuid:`; a `:` or `.` inside a predicate
+is never taken as a separator.
 
-**匹配到多个一律报错并列出候选（退出码 3），绝不取第一个。**
+**Multiple matches are always an error that lists the candidates (exit code 3), never the first one.**
 
-"当前"的解析顺序：显式 `-t` → 调用方所在 pane（`QUICKTERM_PANE`）→
-应用在前台时的 key 窗口 → 最近一次 key 的窗口 → 第一个屏幕。
-每条响应都回显 `resolved`，不必再发一次查询就知道打中了哪里。
+How "current" is resolved: an explicit `-t` → the caller's own pane (`QUICKTERM_PANE`) →
+the key window while the app is frontmost → the window that was key most recently → the first screen.
+Every reply echoes `resolved`, so you know what you hit without sending a second query.
 
-## 输出与错误
+## Output and errors
 
-- stdout 是 TTY → 人话；不是 TTY → JSON。**agent 不必加任何开关**。
-- 错误一律是 **stderr 上的 JSON**，带稳定 `code` 与 `exit`。**绝不要去匹配文案。**
-- 退出码：0 成功 · 1 失败 · 2 没在运行 · 3 目标非法/有歧义 · 4 需要确认 ·
-  5 被拒 · 6 忙/限流 · 7 无操作 · 8 协议版本不匹配
+- stdout is a TTY → human-readable; not a TTY → JSON. **An agent needs no flag at all.**
+- Errors are always **JSON on stderr**, carrying a stable `code` and `exit`. **Never match on the message text.**
+- Exit codes: 0 success · 1 failure · 2 not running · 3 bad or ambiguous target · 4 confirmation required ·
+  5 denied · 6 busy / rate-limited · 7 no-op · 8 protocol version mismatch
 
-## 安全
+## Security
 
-默认**开**，模式 `ask`（`~/.config/quickterm/config.toml` 的 `[control]` 段可改）。
-`mode` 只有三档：`off`（不监听）· `readonly`（只读）· `ask`（默认；`on` 是 `ask` 的别名）。
-**没有"免确认"档**：确认闸门只能靠 `off` / `readonly` 绕开，写错一个值也只会回落到 `ask`。
+**On** by default, in mode `ask` (change it in the `[control]` section of `~/.config/quickterm/config.toml`).
+`mode` has exactly three settings: `off` (does not listen) · `readonly` (reads only) · `ask` (the default; `on` is an
+alias for `ask`).
+**There is no "never ask" setting**: the confirmation gate can only be bypassed via `off` / `readonly`, and a
+misspelled value just falls back to `ask`.
 
-- **read** 静默；但**没有来源 token 的调用方读不到浏览器 pane 的网址与标题**（`<redacted>`）——
-  浏览器 pane 里装着用户已登录的会话，`quickterm state` 本身就是一个外泄面。
-- **mutate** 静默执行，但**可见**：状态栏闪一下（写明命令与自称来源 pane），
-  完整记录在 QuickTerm ▸「控制面活动…」里；布局类变更登记到 UndoManager，
-  Edit ▸ 撤销（⌘Z）能整份回滚。（焦点在终端 pane 上时 ⌘Z 归终端，用菜单项那一条。）
-  变更命令按来源限流，超了是退出码 6 并带 `retryAfterMs`。
-- **destructive**（`close-pane`、`pane close`、`workspace clear`、`screen close`）按 (调用进程 pid, 命令类) **在 QuickTerm 里确认一次**；
-  确认框显示的进程名与 pid 来自内核（`LOCAL_PEERPID`），所以抄走 token 也伪装不了；
-  框里那句"自称来自 pane t3"是**调用方自报的**，服务端验不了，所以写明是自称。
-  确认框里点名的是**解析好的那一个 pane**（句柄 + 标题 + 屏幕/工作区），
-  批准之后落刀前还会再核一次身份——确认期间焦点被别的命令挪走了就整条 busy 掉，什么都不做。
-  10 秒无人应答 → 退出码 4，去 QuickTerm 里批准后重试。
-  用户面前挂着别的对话框时，**所有**变更类命令都返回 `busy`（退出码 6）。
-- **sensitive**（`input send-text`、`pane capture-text`）**一条命令一个开关，默认全关**，
-  确认的缓存也是一条命令一份——批准过"读屏幕"绝不等于顺手批准"往 shell 里打字"。
-  - `input send-text`（`[control] send-text = true`）：只有写调用方自己那个 pane 免确认，
-    而且要靠每 pane 一枚的 `QUICKTERM_PANE_TOKEN` 证明这一点（自报的 `QUICKTERM_PANE` 不算数）；
-    写**任何**别的 pane 每次都要确认（框里带正文），且这次批准不进缓存。
-  - `pane capture-text`（`[control] capture-text = true`）：**没有自读豁免**，
-    调用方还必须带着 `QUICKTERM_TOKEN`（与浏览器打码同一枚），然后每个调用进程确认一次；
-    不认 `--dry-run`（那会变成绕过确认的后门）；正文不进任何长期留存的记录。
-- **interactive**（`theme-picker` `next-background` `keybind-help` `main-menu` `open-settings`
-  `web-extensions`）**一律拒绝**：它们会打开需要键盘交互的面板或弹出菜单。
-- 连接必须与 QuickTerm 同 uid（`LOCAL_PEERCRED` 硬校验）；socket 0600、目录 0700。
-- **`QUICKTERM_TOKEN` 是来源证明，不是权限边界。** 每次启动只有一枚、注入每一个 pane，
-  所以它只回答"这条命令来自**某个** QuickTerm pane"，**任何"有 token 就跳过确认"的写法都是错的**。
-- **`QUICKTERM_PANE_TOKEN` 每 pane 一枚**（`HMAC(每次启动的密钥, paneID)`），
-  能回答上面那枚答不了的"来自**哪一个** pane"。它只被用在 `input send-text` 的自写豁免上，
-  同样不是权限边界：拿到它只等于"我在这个 pane 里"。
+- **read** is silent; but **a caller with no origin token cannot read a browser pane's URL or title** (`<redacted>`) —
+  browser panes hold sessions the user is logged into, which makes `quickterm state` an exfiltration surface all by
+  itself.
+- **mutate** runs silently, but **visibly**: the status bar flashes (naming the command and the pane it claims to come
+  from), and it is recorded in full under QuickTerm ▸ "Control Plane Activity…"; layout changes are registered with the
+  UndoManager, so Edit ▸ Undo (⌘Z) rolls the whole thing back. (With focus in a terminal pane ⌘Z belongs to the
+  terminal — use the menu item.)
+  Mutating commands are rate-limited per origin; over the limit is exit code 6 with a `retryAfterMs`.
+- **destructive** (`close-pane`, `pane close`, `workspace clear`, `screen close`) is **confirmed once inside QuickTerm**
+  per (calling process pid, command class);
+  the process name and pid the dialog shows come from the kernel (`LOCAL_PEERPID`), so stealing a token does not let
+  you impersonate anyone;
+  the line in the dialog saying "claims to come from pane t3" is **the caller's own claim**, which the server cannot
+  verify — hence the wording.
+  The dialog names **the one pane that was resolved** (handle + title + screen/workspace),
+  and after approval the identity is checked once more before the knife goes in — if another command moved focus while
+  the dialog was up, the whole thing comes back busy and nothing happens.
+  10 seconds with nobody answering → exit code 4; approve it inside QuickTerm and retry.
+  While another dialog is in front of the user, **every** mutating command returns `busy` (exit code 6).
+- **sensitive** (`input send-text`, `pane capture-text`) is **one switch per command, both off by default**,
+  and the confirmation cache is per command as well — approving "read the screen" never quietly approves "type into
+  the shell".
+  - `input send-text` (`[control] send-text = true`): only writing to the caller's own pane skips confirmation,
+    and it has to prove that with the per-pane `QUICKTERM_PANE_TOKEN` (the self-reported `QUICKTERM_PANE` does not
+    count); writing to **any** other pane is confirmed every time (with the text in the dialog), and that approval is
+    not cached.
+  - `pane capture-text` (`[control] capture-text = true`): **no self-read exemption**;
+    the caller must also carry `QUICKTERM_TOKEN` (the same one browser redaction uses), and then each calling process
+    confirms once;
+    it does not take `--dry-run` (that would become a back door around the confirmation); the text never enters any
+    durable record.
+- **interactive** (`theme-picker` `next-background` `keybind-help` `main-menu` `open-settings`
+  `web-extensions`) is **always refused**: these open panels or pop-up menus that need the keyboard.
+- A connection must share QuickTerm's uid (`LOCAL_PEERCRED`, checked on every connection, no exceptions);
+  the socket is 0600, the directory 0700.
+- **`QUICKTERM_TOKEN` is proof of origin, not a permission boundary.** There is one per launch, injected into every
+  pane, so all it can answer is "this command came from **some** QuickTerm pane";
+  **any design of the form "has a token, skip the confirmation" is wrong**.
+- **`QUICKTERM_PANE_TOKEN` is one per pane** (`HMAC(per-launch key, paneID)`), and answers the question the other one
+  cannot: "from **which** pane". It is used in exactly one place, the self-write exemption in `input send-text`, and it
+  is not a permission boundary either: holding it only means "I am in this pane".
 
-真正的威胁不是别的用户，是**被利用的代理**：pane 里的 agent 读到一个被投毒的网页 /
-README / CI 日志，然后被指使去跑 `quickterm` 命令。所以确认闸门从第一版就在。
+The real threat is not another user, it is **a subverted agent**: an agent in a pane reads a poisoned web page /
+README / CI log and is then told to go run `quickterm` commands. That is why the confirmation gate has been there
+since version one.
 
-## 给 agent 的经验法则
+## Rules of thumb for agents
 
-1. 会话开始读一次 `quickterm describe --json`，别反复读 `--help`。
-2. 按**句柄或 `#uuid`** 寻址，别跨两条命令去指"那个焦点 pane"——焦点交接是异步的。
-3. 变更命令的响应里已经带了受影响的子树与新的 `seq`，**不要**再补一次 `state`。
-4. 拿到退出码 3 时读 `candidates`，别重试同一个模糊目标。
-5. `--fields` 能把 `state` 的体积压下来；六屏会话的完整 JSON 会吃掉大量上下文。
-6. **优先用名词-动词层，别用 `action`**：前者是绝对设值，可重放；后者是 toggle，重试会把自己撤销。
-7. 破坏性命令（`pane close` / `workspace clear` / `screen close`）之前先 `--dry-run` 看一眼 `changes`。
-8. 退出码 7 不是错误，是"你要的状态已经成立"。只有在你**需要知道自己是否真的改了**时才加 `--fail-if-noop`。
-9. **批量组合走 `spec apply`，不要发 N 条 `pane new`**；`spec apply --replace` 之前先 `--dry-run`。
-10. 想改一份已有布局：`spec dump` → 改字段 → `spec apply --reuse`，别推倒重来（`--replace` 会把跑着的进程一起结束）。
-11. 要等一件事发生，用 `events poll --since <seq> --timeout 30s`，**别去轮询 `state`**：
-    一次调用就回答"我上次看之后发生了什么"，而轮 `state` 是每次都把整份快照塞进上下文。
-12. 事件里没有、也永远不会有 pane 的输出内容。要读屏幕上的字用 `pane capture-text`
-    （用户要先在 `[control]` 里打开它并确认一次）；要可靠地拿一条命令的输出，
-    还是 `pane new --cmd 'cmd > /tmp/out' --hold` 落到文件里最稳。
-13. `input send-text` 不是"运行一条命令"的 API：它是**在别人的键盘上打字**。
-    要跑东西，优先 `pane new --cmd`——那条路有明确的进程边界，也不会撞进一个正在等你输入密码的 shell。
-14. 给长期存在的 pane 起名字（`pane set --title`），之后用 `-t 'title:~…'` 寻址——
-    句柄会随 pane 关掉而回收，名字不会。
-15. 浏览器标签用 `--tab #<id>`（从 `tabList` 里抄），别用序号：开一个新标签就把序号全挪了。
-16. 交互式的一次性控制挂 `quickterm mcp`（宿主那一层会替你确认）；
-    批量组合直接用 CLI——工具表是每次会话都要付的上下文税，CLI 不调用就不占一个 token。
+1. Read `quickterm describe --json` once at the start of a session; stop going back to `--help`.
+2. Address things **by handle or `#uuid`**, never by pointing at "that focused pane" across two commands — focus
+   handoff is asynchronous.
+3. A mutating reply already carries the affected subtree and the new `seq`, so **do not** follow it with a `state`.
+4. On exit code 3, read `candidates`; do not retry the same ambiguous target.
+5. `--fields` cuts `state` down; the full JSON for a six-screen session eats a great deal of context.
+6. **Prefer the noun-verb layer over `action`**: the former is absolute setters and replayable, the latter is toggles,
+   and retrying one undoes it.
+7. Before a destructive command (`pane close` / `workspace clear` / `screen close`), run `--dry-run` and read
+   `changes`.
+8. Exit code 7 is not an error; it is "the state you asked for already holds". Only add `--fail-if-noop` when you
+   **need to know whether you really changed something**.
+9. **Compose in bulk with `spec apply`, do not fire N `pane new`s**; `--dry-run` before `spec apply --replace`.
+10. To change an existing layout: `spec dump` → edit fields → `spec apply --reuse`. Don't start over (`--replace` ends
+    the running processes along with everything else).
+11. To wait for something to happen, use `events poll --since <seq> --timeout 30s`, **don't poll `state`**:
+    one call answers "what happened since I last looked", while polling `state` stuffs the entire snapshot into your
+    context every time.
+12. Events do not carry a pane's output, and never will. To read the text on screen use `pane capture-text`
+    (the user has to enable it under `[control]` and confirm once); to capture a command's output reliably,
+    `pane new --cmd 'cmd > /tmp/out' --hold` into a file is still the steadiest route.
+13. `input send-text` is not a "run a command" API: it is **typing on somebody else's keyboard**.
+    To run something, reach for `pane new --cmd` first — that route has a clear process boundary, and it will not
+    blunder into a shell that is waiting for a password.
+14. Name the panes that stick around (`pane set --title`) and address them with `-t 'title:~…'` afterwards —
+    handles are recycled when a pane closes, names are not.
+15. Address browser tabs with `--tab #<id>` (copied from `tabList`), not by index: opening one new tab shifts every
+    index.
+16. Mount `quickterm mcp` for interactive, one-off control (the host layer handles the confirmations for you);
+    compose in bulk straight from the CLI — the tool table is a context tax you pay every session, while the CLI costs
+    you not one token until you call it.

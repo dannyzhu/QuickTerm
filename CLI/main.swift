@@ -219,7 +219,7 @@ func send(_ parsed: ParsedCommand, over client: ControlClient) -> Never {
             fail(ControlErrorBody(.protocolMismatch,
                                   "Protocol version mismatch: quickterm \(cliVersion) speaks "
                                       + "v\(ControlProtocol.version), QuickTerm speaks v\(reply.v)",
-                                  hint: "Re-run install-cli from QuickTerm.app/Contents/MacOS/quickterm."),
+                                  hint: "Re-run install-cli from QuickTerm.app/Contents/SharedSupport/quickterm."),
                  plain: plainMode)
         }
         emit(reply, plain: plainMode, spec: parsed.spec)
