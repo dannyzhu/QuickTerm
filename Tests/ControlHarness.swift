@@ -19,6 +19,10 @@ final class ControlHarness {
     private(set) var created: [PaneView] = []
 
     init(allowDestructive: Bool = true) throws {
+        // The consent alert text follows the UI language (`[general] language`). These cases
+        // compare that text verbatim, so the harness pins the language to Chinese — otherwise
+        // the very same case would go red on a machine whose system language is English.
+        Localization.shared.setLanguage(.zh)
         app = try XCTUnwrap(NSApp.delegate as? AppDelegate)
         consent = ControlConsent(screens: app.screens)
         if allowDestructive { consent.decisionStub = { _, reply in reply(.allow) } }

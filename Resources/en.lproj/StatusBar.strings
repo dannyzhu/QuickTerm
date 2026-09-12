@@ -1,0 +1,59 @@
+/* QuickTerm — English (base) UI strings for the status bar.
+ *
+ * ONE AREA = ONE TABLE. Every `<Area>.strings` inside a `.lproj` is loaded and merged at
+ * runtime, so separate translation passes add their own file instead of all appending to one
+ * shared table. A key declared in two tables fails LocalizationTests.
+ *
+ * English is the development language: every key MUST exist here, and any key missing from
+ * another language falls back to this table (never to the raw key).
+ *
+ * A NEW table file (Panes.strings, StatusBar.strings …) must be added to BOTH .lproj folders
+ * and then `xcodegen generate` re-run — this project is generated from project.yml, and a
+ * table that is not in the project is simply never copied into the app bundle. The build
+ * refuses it (scripts/check-localization.py) rather than letting the app draw raw keys.
+ *
+ * Rules (enforced on every build by scripts/check-localization.py, and by
+ * Tests/LocalizationTests.swift):
+ *   - one key = one WHOLE sentence or one whole label; never a fragment that code glues together;
+ *   - the only format specifier is %1$@, %2$@ … (positional). Never %@, %d, %f. A literal
+ *     percent sign is written %%;
+ *   - a key that varies with a count comes as a ".one"/".other" pair, read through Lp(_:count:_:);
+ *   - keys are lowercase, dot separated, area first: <area>.<subject>.<detail>.
+ *
+ * Not localized, by policy: the quickterm CLI, OSLog messages, wire identifiers, config keys,
+ * pane handles, and the AppKit "undo"/"redo" selector names.
+ */
+
+/* MARK: - workspace pills (Sources/StatusBar/StatusBarView.swift)
+ *
+ * VoiceOver labels. The pill itself draws a number, a ■ or the slot's name; the label is the
+ * whole spoken sentence. %1$@ is the workspace number, %2$@ the name the user gave the slot.
+ */
+
+"status.workspace.label" = "Workspace %1$@";
+"status.workspace.label-with-name" = "Workspace %1$@: %2$@";
+
+/* MARK: - clock
+ *
+ * These two are Unicode date patterns (UTS #35), not sentences: they decide the ORDER of the
+ * parts, while the weekday and month NAMES come from the language the UI is drawn in. Keep
+ * both patterns short — the bar hides the workspace names when the middle section grows.
+ * "status.clock.format" is the default; tapping the clock switches to "…-alt".
+ */
+
+"status.clock.format" = "EEEE HH:mm";
+"status.clock.format-alt" = "MMMM d 'W'ww yyyy";
+
+/* MARK: - control plane activity flash
+ *
+ * A `mutate` command from an external program runs without a prompt; this short flash is the
+ * trace that says it happened. %1$@ is the command line as the control plane received it.
+ */
+
+"status.control.flash-label" = "Control plane activity: %1$@";
+"status.control.flash-help" = "An external program just ran this command through the quickterm control plane.";
+
+/* MARK: - system stats */
+
+"status.volume.mute" = "Mute";
+"status.volume.unmute" = "Unmute";

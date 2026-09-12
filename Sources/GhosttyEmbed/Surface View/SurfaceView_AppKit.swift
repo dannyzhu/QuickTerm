@@ -647,8 +647,8 @@ extension Ghostty {
         func promptTitle() {
             // Create an alert dialog
             let alert = NSAlert()
-            alert.messageText = "Change Terminal Title"
-            alert.informativeText = "Leave blank to restore the default."
+            alert.messageText = L("terminal.rename.title")
+            alert.informativeText = L("terminal.rename.hint")
             alert.alertStyle = .informational
 
             // Add a text field to the alert
@@ -657,8 +657,8 @@ extension Ghostty {
             alert.accessoryView = textField
 
             // Add buttons
-            alert.addButton(withTitle: "OK")
-            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: L("terminal.rename.button.ok"))
+            alert.addButton(withTitle: L("terminal.rename.button.cancel"))
 
             // Make the text field the first responder so it gets focus
             alert.window.initialFirstResponder = textField
@@ -1665,24 +1665,24 @@ extension Ghostty {
             // 右键菜单留短一点。AutoFill 与 Services 是 AppKit 自动追加的，不在这里加
             let selection = self.accessibilitySelectedText()
             if let text = selection, !text.isEmpty {
-                menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+                menu.addItem(withTitle: L("terminal.menu.copy"), action: #selector(copy(_:)), keyEquivalent: "")
                 // QuickTerm：拿选中的文字去搜索，落在**最近用过的浏览器 pane** 的新标签里
                 // （没有浏览器 pane 就开一个），而不是跳去系统默认浏览器
                 item = menu.addItem(withTitle: Self.searchMenuTitle(for: text),
                                     action: #selector(searchSelectionInBrowserPane(_:)), keyEquivalent: "")
                 item.setImageIfDesired(systemSymbolName: "magnifyingglass")
             }
-            menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: L("terminal.menu.paste"), action: #selector(paste(_:)), keyEquivalent: "")
 
             menu.addItem(.separator())
-            item = menu.addItem(withTitle: "Reset Terminal", action: #selector(resetTerminal(_:)), keyEquivalent: "")
+            item = menu.addItem(withTitle: L("terminal.menu.reset"), action: #selector(resetTerminal(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "arrow.trianglehead.2.clockwise")
-            item = menu.addItem(withTitle: "Terminal Read-only", action: #selector(toggleReadonly(_:)), keyEquivalent: "")
+            item = menu.addItem(withTitle: L("terminal.menu.readonly"), action: #selector(toggleReadonly(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "eye.fill")
             item.state = readonly ? .on : .off
 
             menu.addItem(.separator())
-            item = menu.addItem(withTitle: "Change Terminal Title...", action: #selector(changeTitle(_:)), keyEquivalent: "")
+            item = menu.addItem(withTitle: L("terminal.menu.change-title"), action: #selector(changeTitle(_:)), keyEquivalent: "")
 
             return menu
         }
@@ -1698,12 +1698,12 @@ extension Ghostty {
             if host.contains("google") { engine = "Google" }
             else if host.contains("bing") { engine = "Bing" }
             else if host.contains("duckduckgo") { engine = "DuckDuckGo" }
-            else if host.contains("baidu") { engine = "百度" }
-            else { engine = "Web" }
+            else if host.contains("baidu") { engine = L("terminal.search.engine-baidu") }
+            else { engine = L("terminal.search.engine-web") }
             let flat = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 .replacingOccurrences(of: "\n", with: " ")
             let shown = flat.count > 24 ? flat.prefix(24) + "…" : flat[...]
-            return "Search with \(engine) “\(shown)”"
+            return L("terminal.menu.search-selection", engine, String(shown))
         }
 
         /// QuickTerm：把选中的文字丢进最近用过的浏览器 pane 搜索（新标签）。
@@ -2425,7 +2425,7 @@ extension Ghostty.SurfaceView {
     }
 
     override func accessibilityHelp() -> String? {
-        return "Terminal content area"
+        return L("terminal.accessibility.help")
     }
 
     override func accessibilityValue() -> Any? {

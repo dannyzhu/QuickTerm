@@ -14,20 +14,22 @@ enum MenuEntry: Int, CaseIterable {
     case toggleBar, toggleGaps, toggleOpacity
     case keybindings, settings, about
 
+    /// Looked up on every read rather than stored: `OverlayPanelView` observes `Localization`,
+    /// so a language change re-renders the panel and every row picks up the new wording.
     var title: String {
         switch self {
-        case .newTerminal: "新建终端"
-        case .fileManager: "文件管理器"
-        case .browser: "新建浏览器"
-        case .themes: "主题…"
-        case .backgrounds: "背景…"
-        case .visibleColumns: "每屏列数"
-        case .toggleBar: "顶栏 显示/隐藏"
-        case .toggleGaps: "Gaps 开关"
-        case .toggleOpacity: "透明度开关"
-        case .keybindings: "快捷键速查"
-        case .settings: "设置（config.toml）"
-        case .about: "关于 QuickTerm"
+        case .newTerminal: L("palette.menu.new-terminal")
+        case .fileManager: L("palette.menu.file-manager")
+        case .browser: L("palette.menu.new-browser")
+        case .themes: L("palette.menu.themes")
+        case .backgrounds: L("palette.menu.backgrounds")
+        case .visibleColumns: L("palette.menu.visible-columns")
+        case .toggleBar: L("palette.menu.toggle-bar")
+        case .toggleGaps: L("palette.menu.toggle-gaps")
+        case .toggleOpacity: L("palette.menu.toggle-opacity")
+        case .keybindings: L("palette.menu.keybindings")
+        case .settings: L("palette.menu.settings")
+        case .about: L("palette.menu.about")
         }
     }
 
@@ -56,6 +58,7 @@ struct OverlayPanelView: View {
     static let backgroundsColumns = 3
 
     @EnvironmentObject var theme: ThemeManager
+    @EnvironmentObject private var i18n: Localization
     @ObservedObject var model: WorkspaceModel
     let onChoose: (Int) -> Void
 
@@ -90,7 +93,8 @@ struct OverlayPanelView: View {
                         HStack(spacing: 10) {
                             Text(item.displayName)
                             if item.isLight {
-                                Text("light").font(.custom("Monaco", size: 11)).opacity(0.6)
+                                Text(i18n("palette.theme.light-badge"))
+                                    .font(.custom("Monaco", size: 11)).opacity(0.6)
                             }
                             Spacer()
                             swatches(item)
@@ -142,7 +146,8 @@ struct OverlayPanelView: View {
                     // 自选图片入口（拷入 ~/.config/quickterm/backgrounds，全主题共用）
                     VStack(spacing: 4) {
                         Image(systemName: "plus")
-                        Text("选择图片…").font(.custom("Monaco", size: 11))
+                        Text(i18n("palette.background.choose-image"))
+                            .font(.custom("Monaco", size: 11))
                     }
                     .frame(maxWidth: .infinity)
                     .frame(height: 76)
@@ -158,7 +163,7 @@ struct OverlayPanelView: View {
             }
             .frame(maxHeight: 420)
             if choices.isEmpty {
-                Text("当前主题没有背景图（显示纯色）——可选择自己的图片")
+                Text(i18n("palette.background.empty"))
                     .font(.custom("Monaco", size: 11)).opacity(0.6)
                     .padding([.horizontal, .bottom], 12)
             }
@@ -173,8 +178,9 @@ struct OverlayPanelView: View {
                 HStack(spacing: 12) {
                     Image(systemName: entry.symbol).frame(width: 20)
                     if entry == .visibleColumns {
-                        Text("每屏列数：\(model.visibleColumnsDisplay)")
-                        Text("（回车循环 2→3→4）")
+                        Text(i18n("palette.menu.visible-columns-value",
+                                  model.visibleColumnsDisplay))
+                        Text(i18n("palette.menu.visible-columns-hint"))
                             .font(.custom("Monaco", size: 11)).opacity(0.6)
                     } else {
                         Text(entry.title)

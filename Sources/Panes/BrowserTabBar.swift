@@ -65,9 +65,10 @@ final class BrowserTabBarView: NSView {
         newTabButton.bezelStyle = .accessoryBarAction
         newTabButton.isBordered = false
         newTabButton.imagePosition = .imageOnly
-        newTabButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "新建标签")?
+        newTabButton.image = NSImage(systemSymbolName: "plus",
+                                     accessibilityDescription: L("browser.tab.new"))?
             .withSymbolConfiguration(.init(pointSize: 11, weight: .medium))
-        newTabButton.toolTip = "新建标签（⌘N）"
+        newTabButton.toolTip = L("browser.tab.new-tooltip")
         newTabButton.target = self
         newTabButton.action = #selector(newTabTapped)
         addSubview(newTabButton)
@@ -329,9 +330,10 @@ final class BrowserTabItemView: NSView {
         closeButton.bezelStyle = .accessoryBarAction
         closeButton.isBordered = false
         closeButton.imagePosition = .imageOnly
-        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "关闭标签")?
+        closeButton.image = NSImage(systemSymbolName: "xmark",
+                                    accessibilityDescription: L("browser.tab.close"))?
             .withSymbolConfiguration(.init(pointSize: 9, weight: .bold))
-        closeButton.toolTip = "关闭标签"
+        closeButton.toolTip = L("browser.tab.close")
         closeButton.target = self
         closeButton.action = #selector(closeTapped)
         closeButton.isHidden = true

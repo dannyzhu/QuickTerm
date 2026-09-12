@@ -1,0 +1,74 @@
+/* QuickTerm — Simplified Chinese UI strings for Windowing.
+ *
+ * A new table file must be added to BOTH .lproj folders and then `xcodegen generate` re-run,
+ * or it is never copied into the app bundle (the build refuses it).
+ *
+ * Same key set as en.lproj/Windowing.strings (Tests/LocalizationTests.swift pins that).
+ * A key missing here falls back to the English value, never to the raw key — but a missing key
+ * is a bug, not a feature.
+ *
+ * The positional arguments (%1$@, %2$@ …) may be reordered freely to fit Chinese word order;
+ * the SET of indices used must match the English value.
+ */
+
+/* MARK: - shared buttons */
+
+"window.button.ok" = "好";
+"window.button.cancel" = "取消";
+"window.button.close" = "关闭";
+"window.button.quit" = "退出";
+
+/* MARK: - launch (Sources/App/AppDelegate.swift) */
+
+"window.engine.failed-title" = "QuickTerm 引擎初始化失败";
+"window.engine.failed-detail" = "libghostty 未能启动（readiness: %1$@）。请检查 GhosttyKit 构建与资源包。";
+
+/* MARK: - quit confirmation (Sources/App/AppDelegate.swift) */
+
+"window.quit.title" = "退出 QuickTerm？";
+"window.quit.detail.one" = "还有 %1$@ 个终端打开着，退出会结束其中的进程。布局与目录会保存，下次启动恢复。";
+"window.quit.detail.other" = "还有 %1$@ 个终端打开着，退出会结束其中的进程。布局与目录会保存，下次启动恢复。";
+
+/* MARK: - screens and workspaces (Sources/Windowing/MainWindowController.swift) */
+
+"window.workspace-title.title" = "给工作区 %1$@ 起个名字";
+"window.workspace-title.detail" = "留空 = 恢复显示序号。名字跟着这个槽位走，清空工作区也不会丢。";
+
+"window.close-screen.title" = "关闭这个屏幕？";
+"window.close-screen.detail.one" = "还有 %1$@ 个终端打开着，关闭会结束其中的进程。";
+"window.close-screen.detail.other" = "还有 %1$@ 个终端打开着，关闭会结束其中的进程。";
+
+"window.close-pane.title" = "关闭这个终端？";
+"window.close-pane.detail" = "其中仍有进程在运行。";
+
+"window.background.choose-image" = "选择背景图片（将拷入 ~/.config/quickterm/backgrounds）";
+
+/* MARK: - empty workspace hint (Sources/Windowing/RootView.swift) */
+
+"window.empty.new-terminal" = "%1$@  新建终端";
+"window.empty.quit" = "⌘Q  退出";
+
+/* MARK: - display submenus (Sources/App/AppDelegate+Screens.swift) */
+
+"window.display.none-available" = "没有可用的显示器";
+"window.display.unnamed" = "显示器 %1$@";
+"window.display.current" = "%1$@（当前）";
+
+/* MARK: - control plane activity (Sources/App/AppDelegate+ControlCLI.swift) */
+
+"window.control-activity.title.one" = "控制面活动（最近 %1$@ 条）";
+"window.control-activity.title.other" = "控制面活动（最近 %1$@ 条）";
+"window.control-activity.empty" = "还没有任何外部程序通过 quickterm 控制过 QuickTerm。\n\nsocket：%1$@\n关掉控制面：在 ~/.config/quickterm/config.toml 的 [control] 里写 enabled = false";
+"window.control-activity.socket-none" = "（未监听）";
+"window.control-activity.button.clear" = "清空";
+
+/* MARK: - install the command line tool (Sources/App/AppDelegate+ControlCLI.swift) */
+
+"window.install-cli.missing-title" = "找不到随包的 quickterm";
+"window.install-cli.missing-detail" = "应该在 QuickTerm.app/Contents/SharedSupport/quickterm。请重新构建或重新安装 QuickTerm。";
+"window.install-cli.failed-title" = "安装失败";
+"window.install-cli.installed-title" = "quickterm 已装到 PATH";
+
+/* MARK: - file manager pane (Sources/Windowing/FileManagerLaunch.swift) */
+
+"window.file-manager.not-found" = "QuickTerm: 未找到文件管理器 \"%1$@\"。安装: brew install yazi（或在 config.toml 设置 file-manager-command）";

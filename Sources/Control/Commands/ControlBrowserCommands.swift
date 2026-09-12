@@ -115,7 +115,7 @@ extension ControlCommandRunner {
                                     to: ControlChange.count(before + 1, "tab"))],
             controllers: [hit.controller],
             // 布局没动，撤销栈里放一条"关掉那个标签"的假动作只会更乱
-            undoName: nil, target: base)
+            undoCommand: nil, target: base)
         var payload = try commit(mutation) {
             browser.addTab(url: url, activate: activate)
         }
@@ -163,7 +163,7 @@ extension ControlCommandRunner {
         }
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
-            controllers: [hit.controller], undoName: nil, target: base)
+            controllers: [hit.controller], undoCommand: nil, target: base)
         var payload = try commit(mutation) {
             browser.load(url, in: tab)
         }
@@ -189,7 +189,7 @@ extension ControlCommandRunner {
                                     from: browserVisible(ctx, tab.effectiveURL?.absoluteString),
                                     to: hard ? "reload (bypassing the cache)" : "reload",
                                     sensitive: true)],
-            controllers: [hit.controller], undoName: nil, target: base)
+            controllers: [hit.controller], undoCommand: nil, target: base)
         var payload = try commit(mutation) {
             browser.reload(tab, fromOrigin: hard)
         }
@@ -231,7 +231,7 @@ extension ControlCommandRunner {
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
             controllers: [hit.controller],
             // 关掉的页面放不回来（进程 / 会话都没了），登记撤销只会造一个假象
-            undoName: nil, target: panePath)
+            undoCommand: nil, target: panePath)
 
         var stillOpen = false
         var payload = try commit(mutation) {

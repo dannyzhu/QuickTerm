@@ -7,6 +7,7 @@ struct StatusBarView: View {
     static let height: CGFloat = 26
 
     @EnvironmentObject var theme: ThemeManager
+    @EnvironmentObject private var i18n: Localization
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var stats: SystemStatsService
     let onSelectWorkspace: (Int) -> Void
@@ -89,8 +90,8 @@ struct StatusBarView: View {
                 .frame(minHeight: 18)
                 .background(theme.accent.opacity(0.15))
                 .transition(.opacity)
-                .accessibilityLabel("控制面活动：\(flash.text)")
-                .help("外部程序刚刚通过 quickterm 控制面执行了这条命令")
+                .accessibilityLabel(i18n("status.control.flash-label", flash.text))
+                .help(i18n("status.control.flash-help"))
         }
     }
 
@@ -111,7 +112,8 @@ struct StatusBarView: View {
         .buttonStyle(.plain)
         // 右键改名。名字放不下（或配置关掉）时也照样能改——改名是槽位的事，与显示无关
         .overlay(RightClickCatcher { onRenameWorkspace(i) })
-        .accessibilityLabel(title.map { "工作区 \(i + 1)：\($0)" } ?? "工作区 \(i + 1)")
+        .accessibilityLabel(title.map { i18n("status.workspace.label-with-name", i + 1, $0) }
+                            ?? i18n("status.workspace.label", i + 1))
     }
 
     private var clock: some View {
@@ -124,8 +126,13 @@ struct StatusBarView: View {
 
     private func clockText(_ date: Date, alt: Bool) -> String {
         let fmt = DateFormatter()
+        // Weekday and month names follow the language the UI is drawn in, not the system
+        // locale: the config may pin the UI to a language the Mac is not set to, and a Chinese
+        // weekday sitting next to an English menu is exactly where that seam would show.
+        fmt.locale = Locale(identifier: i18n.language.lprojName)
         // Omarchy："Sunday 14:32"；点击换 "31 August W36 2026"
-        fmt.dateFormat = alt ? "d MMMM 'W'ww yyyy" : "EEEE HH:mm"
+        // The pattern itself is in the catalog: the two languages order a date differently.
+        fmt.dateFormat = i18n(alt ? "status.clock.format-alt" : "status.clock.format")
         return fmt.string(from: date)
     }
 
@@ -152,7 +159,7 @@ struct StatusBarView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(stats.muted ? "取消静音" : "静音")
+            .accessibilityLabel(i18n(stats.muted ? "status.volume.unmute" : "status.volume.mute"))
             if let percent = stats.batteryPercent {
                 battery(percent)
             }

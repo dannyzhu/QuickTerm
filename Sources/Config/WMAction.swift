@@ -75,6 +75,21 @@ enum WMAction: String, CaseIterable {
     var isGotoWorkspace: Bool { rawValue.hasPrefix("goto-workspace-") }
     var isMoveToWorkspace: Bool { rawValue.hasPrefix("move-to-workspace-") }
 
+    /// The description to draw **in the app's own window** (the Cmd+K cheat sheet, the control
+    /// plane's consent alert): the active UI language, picked from the fixed pair below.
+    ///
+    /// `help` (Chinese) and `helpEN` stay exactly as they are — `describe --json` and the MCP
+    /// tool table hand out *both* wordings at once, and the CLI is English in either language.
+    /// `ConfigSchema.templateLanguage` rather than `Localization`: this file is compiled into
+    /// the `quickterm` CLI too, which has no AppKit and no `.lproj` directories. The app keeps
+    /// the two in sync (`Localization.setLanguage`).
+    ///
+    /// A SwiftUI view that draws this must still read its `Localization` environment object
+    /// somewhere in the same body, or nothing tells it to re-render when the language changes.
+    var localizedHelp: String {
+        ConfigSchema.templateLanguage == .zh ? help : helpEN
+    }
+
     /// 速查表（Cmd+K）展示用中文说明
     var help: String {
         switch self {

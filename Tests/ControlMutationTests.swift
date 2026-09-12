@@ -257,7 +257,7 @@ final class ControlMutationTests: XCTestCase {
         harness.app.undoManager.removeAllActions()
         let payload = try harness.mutation(try harness.run("pane.set", target: handle,
                                                            args: ["width": .double(0.75)]))
-        XCTAssertEqual(payload["undo"]?.stringValue, "控制面：pane set",
+        XCTAssertEqual(payload["undo"]?.stringValue, "Control plane: pane set",
                        "变更要登记撤销项，否则 ⌘Z 撤不了 agent 造成的损失")
         XCTAssertEqual(controller.controlColumnWidth(of: pane, workspace: workspace) ?? 0, 0.75,
                        accuracy: 0.001)
@@ -314,7 +314,7 @@ final class ControlMutationTests: XCTestCase {
             let payload = try harness.mutation(try harness.run(
                 "pane.set", target: ControlHandleRegistry.shared.handle(for: pane),
                 args: ["width": .double(0.6)]))
-            XCTAssertEqual(payload["undo"]?.stringValue, "控制面：pane set", "前提：这一步登记了撤销")
+            XCTAssertEqual(payload["undo"]?.stringValue, "Control plane: pane set", "前提：这一步登记了撤销")
             harness.app.closeScreen(second)
         }
         harness.spin(1.0)
@@ -364,7 +364,7 @@ final class ControlMutationTests: XCTestCase {
         let existing = Set(controller.model.allPanes.map(\.id))
 
         let payload = try harness.mutation(try harness.run("pane.new", args: ["kind": .string("terminal")]))
-        XCTAssertEqual(payload["undo"]?.stringValue, "控制面：pane new")
+        XCTAssertEqual(payload["undo"]?.stringValue, "Control plane: pane new")
         harness.spin(0.4)
         let created = try XCTUnwrap(controller.model.allPanes.first { !existing.contains($0.id) })
         harness.track(created)

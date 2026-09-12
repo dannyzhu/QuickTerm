@@ -1,0 +1,28 @@
+/* QuickTerm — Simplified Chinese UI strings for the control plane's visible traces.
+ *
+ * A new table file must be added to BOTH .lproj folders and then `xcodegen generate` re-run,
+ * or it is never copied into the app bundle (the build refuses it).
+ *
+ * Same key set as en.lproj/ControlPlane.strings (Tests/LocalizationTests.swift pins that).
+ * A key missing here falls back to the English value, never to the raw key — but a missing key
+ * is a bug, not a feature.
+ *
+ * The positional arguments (%1$@, %2$@ …) may be reordered freely to fit Chinese word order;
+ * the SET of indices used must match the English value.
+ */
+
+/* MARK: - status-bar flash (Sources/Control/ControlMutation.swift) */
+
+"control.flash.command" = "控制面 %1$@";
+"control.flash.command-from-pane" = "控制面 %1$@ ←%2$@";
+
+/* MARK: - activity log panel (Sources/Control/ControlActivityLog.swift) */
+
+"control.activity.outcome.failed" = "失败：%1$@";
+"control.activity.outcome.refused" = "拒绝：%1$@";
+
+/* MARK: - undo (Sources/Control/ControlMutation.swift) */
+
+"control.undo.name" = "控制面：%1$@";
+"control.undo.undone" = "撤销 %1$@";
+"control.undo.stale" = "布局已变，「%1$@」这一步撤销作废";

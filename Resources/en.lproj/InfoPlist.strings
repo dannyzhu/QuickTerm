@@ -1,0 +1,11 @@
+/* QuickTerm — English (base) strings for the Info.plist keys macOS itself draws.
+ *
+ * These are NOT part of the app's own catalog (Localization skips InfoPlist.strings): the
+ * privacy prompt is drawn by the system, before and outside the app, so macOS picks the
+ * .lproj by the SYSTEM language — `[general] language` cannot move it. The base wording in
+ * project.yml is English; this file is what a n English system shows instead.
+ */
+
+"NSDesktopFolderUsageDescription" = "QuickTerm needs access to your Desktop so it can reopen terminal panes in the directory you were last working in.";
+"NSDocumentsFolderUsageDescription" = "QuickTerm needs access to your Documents folder so it can reopen terminal panes in the directory you were last working in.";
+"NSDownloadsFolderUsageDescription" = "QuickTerm needs access to your Downloads folder so it can reopen terminal panes in the directory you were last working in.";

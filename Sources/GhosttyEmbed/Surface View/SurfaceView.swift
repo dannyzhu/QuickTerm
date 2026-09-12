@@ -1083,7 +1083,7 @@ extension Ghostty {
                     HStack(spacing: 5) {
                         Image(systemName: "eye.fill")
                             .font(.system(size: 12))
-                        Text("Read-only")
+                        Text(L("terminal.readonly.badge"))
                             .font(.system(size: 12, weight: .medium))
                     }
                     .padding(.horizontal, 8)
@@ -1103,7 +1103,7 @@ extension Ghostty {
                 Spacer()
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Read-only terminal")
+            .accessibilityLabel(L("terminal.readonly.accessibility"))
         }
 
         private var badgeBackground: some View {
@@ -1127,11 +1127,11 @@ extension Ghostty {
                         Image(systemName: "eye.fill")
                             .foregroundColor(.orange)
                             .font(.system(size: 13))
-                        Text("Read-Only Mode")
+                        Text(L("terminal.readonly.title"))
                             .font(.system(size: 13, weight: .semibold))
                     }
 
-                    Text("This terminal is in read-only mode. You can still view, select, and scroll through the content, but no input events will be sent to the running application.")
+                    Text(L("terminal.readonly.detail"))
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1140,7 +1140,7 @@ extension Ghostty {
                 HStack {
                     Spacer()
 
-                    Button("Disable") {
+                    Button(L("terminal.readonly.disable")) {
                         onDisable()
                         isPresented = false
                     }

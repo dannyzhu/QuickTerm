@@ -1,0 +1,124 @@
+/* QuickTerm — Simplified Chinese UI strings for the browser pane.
+ *
+ * A new table file must be added to BOTH .lproj folders and then `xcodegen generate` re-run,
+ * or it is never copied into the app bundle (the build refuses it).
+ *
+ * Same key set as en.lproj/Browser.strings (Tests/LocalizationTests.swift pins that).
+ * A key missing here falls back to the English value, never to the raw key — but a missing key
+ * is a bug, not a feature.
+ *
+ * The positional arguments (%1$@, %2$@ …) may be reordered freely to fit Chinese word order;
+ * the SET of indices used must match the English value.
+ */
+
+/* MARK: - browser chrome (Sources/Panes/BrowserPaneView.swift) */
+
+"browser.pane.title" = "浏览器";
+
+"browser.toolbar.back" = "后退";
+"browser.toolbar.forward" = "前进";
+"browser.toolbar.reload" = "重新加载";
+"browser.toolbar.stop" = "停止";
+"browser.address.placeholder" = "输入网址或搜索";
+
+"browser.button.ok" = "好";
+"browser.button.cancel" = "取消";
+
+/* MARK: - tabs (Sources/Panes/BrowserTabBar.swift) */
+
+"browser.tab.untitled" = "新标签页";
+"browser.tab.new" = "新建标签";
+"browser.tab.new-tooltip" = "新建标签（⌘N）";
+"browser.tab.close" = "关闭标签";
+
+/* MARK: - error page (Sources/Panes/BrowserPaneView.swift) */
+
+"browser.error.title" = "页面无法加载";
+"browser.error.repeated-crash" = "页面进程反复崩溃，已停止自动重载。按 ⌘R 重试。";
+
+/* MARK: - JavaScript dialogs (Sources/Panes/BrowserPaneView.swift) */
+
+"browser.dialog.alert-title" = "页面消息";
+"browser.dialog.confirm-title" = "页面确认";
+
+/* MARK: - downloads (Sources/Panes/BrowserDownloads.swift) */
+
+"browser.download.default-filename" = "下载中的文件";
+/* same-as-english: 纯格式（已下载 / 总量 · 百分比），没有可译的词。 */
+"browser.download.status.progress" = "%1$@ / %2$@ · %3$@%%";
+"browser.download.status.downloading" = "%1$@ · 下载中";
+"browser.download.status.completed" = "已完成 · %1$@";
+"browser.download.status.cancelled" = "已取消";
+"browser.download.status.failed" = "失败：%1$@";
+
+"browser.download.button" = "下载";
+"browser.download.button.active.one" = "下载（%1$@ 个进行中）";
+"browser.download.button.active.other" = "下载（%1$@ 个进行中）";
+"browser.download.button.count.one" = "下载（%1$@ 项）";
+"browser.download.button.count.other" = "下载（%1$@ 项）";
+"browser.download.button.stopped.one" = "下载（%1$@ 项，%2$@ 项失败或已取消）";
+"browser.download.button.stopped.other" = "下载（%1$@ 项，%2$@ 项失败或已取消）";
+
+"browser.download.empty" = "没有下载";
+"browser.download.clear-finished" = "清除已完成";
+"browser.download.cancel" = "取消";
+"browser.download.remove" = "从列表移除";
+"browser.download.reveal" = "在 Finder 中显示";
+
+/* MARK: - extension toolbar and menu (Sources/Panes/BrowserExtensionUI.swift) */
+
+"browser.extension.toolbar" = "扩展";
+"browser.extension.toolbar-tooltip" = "扩展（⌘⇧E）";
+"browser.extension.unnamed" = "扩展";
+
+"browser.extension.menu.turned-off" = "扩展已在配置里关闭（browser-extensions = false）";
+"browser.extension.menu.empty" = "没有已安装的扩展";
+"browser.extension.menu.disabled-suffix" = "%1$@（已停用）";
+"browser.extension.menu.import-from-chrome" = "从 Chrome 导入已安装扩展…";
+"browser.extension.menu.open-web-store" = "打开 Chrome Web Store";
+"browser.extension.menu.open-folder" = "打开扩展文件夹";
+"browser.extension.menu.open" = "打开";
+"browser.extension.menu.pin" = "固定到工具条";
+"browser.extension.menu.enable" = "启用";
+"browser.extension.menu.options" = "选项…";
+"browser.extension.menu.remove" = "移除…";
+
+"browser.extension.remove.title" = "移除扩展「%1$@」？";
+"browser.extension.remove.body" = "扩展文件会从 QuickTerm 的扩展文件夹里删除。";
+"browser.extension.remove.confirm" = "移除";
+
+"browser.extension.import.title" = "从 Chrome 导入完成";
+"browser.extension.import.summary" = "导入 %1$@ 个，跳过 %2$@ 个（已安装 / 主题 / 应用）。";
+"browser.extension.import.failed" = "失败 %1$@ 个：%2$@";
+"browser.extension.import.none" = "没有在本机 Chrome 的默认配置目录里找到可导入的扩展。";
+
+/* MARK: - Web Store install (Sources/Panes/BrowserPaneView.swift, BrowserExtensions.swift) */
+
+"browser.webstore.add" = "添加到 QuickTerm";
+"browser.webstore.installing" = "正在安装…";
+
+"browser.install.turned-off.title" = "扩展已关闭";
+"browser.install.turned-off.body" = "配置里 browser-extensions = false，先打开再安装。";
+"browser.install.confirm.title" = "安装「%1$@」？";
+"browser.install.confirm.no-permissions" = "该扩展没有声明额外权限。";
+"browser.install.confirm.permissions" = "它将获得：\n%1$@";
+"browser.install.confirm.button" = "安装";
+"browser.install.progress.downloading" = "正在下载扩展…";
+"browser.install.progress.unpacking" = "正在解包…";
+"browser.install.progress.installing" = "正在安装…";
+"browser.install.done.title" = "已安装「%1$@」";
+"browser.install.done.body" = "扩展按钮在地址栏右侧。";
+"browser.install.failed.title" = "安装失败";
+
+"browser.install.error.invalid-id" = "不是有效的扩展 ID";
+"browser.install.error.download" = "下载失败：%1$@";
+"browser.install.error.not-crx" = "下载到的不是 Chrome 扩展包（CRX）";
+"browser.install.error.unpack" = "解包失败：%1$@";
+"browser.install.error.no-manifest" = "扩展包里没有 manifest.json";
+
+/* MARK: - permission prompt (Sources/Panes/BrowserExtensions.swift) */
+
+"browser.permission.title" = "扩展「%1$@」请求权限";
+"browser.permission.none" = "（无具体项目）";
+"browser.permission.allow" = "允许";
+"browser.permission.deny" = "拒绝";

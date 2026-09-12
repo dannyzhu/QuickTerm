@@ -85,8 +85,9 @@ final class ControlCommandRunner {
         /// 确认框里那句话的简短版（漂移时回给调用方，让它知道当时确认的是什么）。
         /// **写英文**：它会原样进 `busy` 的错误正文，而命令行那一侧全是英文
         var description: String
-        /// 同一个主体的中文版，**只给确认框用**：那段文字只在 QuickTerm 自己的窗口里出现，
-        /// 从不回到 socket 上去，所以它跟着应用界面走中文，不跟着命令行走英文
+        /// The same subject in the **UI language**, for the consent alert only: that text is
+        /// shown in QuickTerm's own window and never travels back over the socket, so it
+        /// follows `[general] language` instead of staying English the way the CLI does.
         var consentText: String
     }
 
@@ -223,7 +224,7 @@ final class ControlCommandRunner {
         // 那它更没有道理读到一个 shell 的可视区——那里可能停着刚 export 的凭据。
         // 这道闸在确认闸门**之前**：一条注定要被拒的命令不该先把用户叫起来点一次"允许"
         if spec.name == "pane.capture-text", request.token != ControlEnvironment.token {
-            logRefusal(request.cmd, peer: peer, request: request, code: .denied, message: "无 token")
+            logRefusal(request.cmd, peer: peer, request: request, code: .denied, message: "no token")
             fail(ControlErrorBody(
                 .denied, "capture-text requires the caller to carry this launch's origin token (QUICKTERM_TOKEN)",
                 hint: "Run this command inside a QuickTerm pane, where the environment variable is injected for you; "
@@ -273,7 +274,7 @@ final class ControlCommandRunner {
             let origin = request.origin?.pane.map { "pane:\($0)" } ?? "pid:\(peer.pid)"
             if case .limited(let retry, let scope) = rateLimiter.admit(origin: origin) {
                 logRefusal(request.cmd, peer: peer, request: request, code: .rateLimited,
-                           message: "限流（\(scope)）")
+                           message: "rate limited (\(scope))")
                 fail(ControlErrorBody(.rateLimited, "Mutations are coming in too fast (\(scope) rate limit)",
                                       hint: "Batch the operations, or retry more slowly.", retryAfterMs: retry))
                 return
@@ -469,8 +470,10 @@ final class ControlCommandRunner {
                 paneIDs: Set(panes.map(\.id)),
                 description: "screen \(controller.screenIndex + 1) workspace \(resolution.workspace + 1)"
                     + " (\(panes.count) pane\(panes.count == 1 ? "" : "s"): \(handles.joined(separator: " ")))",
-                consentText: "屏幕 \(controller.screenIndex + 1) 工作区 \(resolution.workspace + 1)"
-                    + "（\(panes.count) 个 pane：\(handles.joined(separator: " "))）")
+                consentText: Lp("consent.subject.workspace", count: panes.count,
+                                L("consent.subject.place", controller.screenIndex + 1,
+                                  resolution.workspace + 1),
+                                panes.count, handles.joined(separator: " ")))
         case "spec.apply":
             // 钉住的是"这一批工作区里的这些 pane"：**作用域由 spec 正文说了算**，不是 `-t`。
             // 一份屏幕 spec 覆盖整块屏幕的每一个工作区、一份会话 spec 覆盖每一块屏幕；
@@ -487,7 +490,8 @@ final class ControlCommandRunner {
             var scopes: [PinnedScope] = []
             var handles: [String] = []
             var places: [String] = []
-            var placesZH: [String] = []
+            /// The same places in the UI language (consent alert only, never over the socket).
+            var localizedPlaces: [String] = []
             for target in targets {
                 let closing = target.controller.model.closingPanes
                 let panes = (target.controller.model.layouts[target.workspace].paneList
@@ -496,7 +500,8 @@ final class ControlCommandRunner {
                 handles += panes.map { ControlHandleRegistry.shared.handle(for: $0) }
                 if places.count < 6 {
                     places.append("screen \(target.controller.screenIndex + 1) workspace \(target.workspace + 1)")
-                    placesZH.append("屏幕 \(target.controller.screenIndex + 1) 工作区 \(target.workspace + 1)")
+                    localizedPlaces.append(L("consent.subject.place",
+                                             target.controller.screenIndex + 1, target.workspace + 1))
                 }
                 scopes.append(PinnedScope(controller: target.controller, workspace: target.workspace,
                                           paneIDs: Set(panes.map(\.id))))
@@ -504,14 +509,17 @@ final class ControlCommandRunner {
             let listed = handles.prefix(12).joined(separator: " ")
                 + (handles.count > 12 ? " …" : "")
             let where_ = places.joined(separator: ", ") + (targets.count > places.count ? " …" : "")
-            let whereZH = placesZH.joined(separator: "、") + (targets.count > placesZH.count ? " …" : "")
+            let whereLocalized = localizedPlaces.joined(separator: L("consent.list.separator"))
+                + (targets.count > localizedPlaces.count ? " …" : "")
             let description = targets.count == 1
                 ? "\(where_) (\(handles.count) pane\(handles.count == 1 ? "" : "s"): \(listed))"
                 : "\(targets.count) workspaces (\(where_)), "
                     + "\(ControlChange.count(handles.count, "pane")) in all: \(listed)"
             let consentText = targets.count == 1
-                ? "\(whereZH)（\(handles.count) 个 pane：\(listed)）"
-                : "\(targets.count) 个工作区（\(whereZH)），共 \(handles.count) 个 pane：\(listed)"
+                ? Lp("consent.subject.workspace", count: handles.count,
+                     whereLocalized, handles.count, listed)
+                : Lp("consent.subject.spec-multi", count: handles.count,
+                     targets.count, whereLocalized, handles.count, listed)
             return PinnedSubject(
                 controller: resolution.controller, workspace: resolution.workspace,
                 pane: nil, handle: nil, paneIDs: nil, scopes: scopes, description: description,
@@ -525,8 +533,8 @@ final class ControlCommandRunner {
                 paneIDs: nil,
                 description: "screen \(controller.screenIndex + 1) \"\(controller.window?.title ?? "")\""
                     + " (\(count) pane\(count == 1 ? "" : "s"))",
-                consentText: "屏幕 \(controller.screenIndex + 1)「\(controller.window?.title ?? "")」"
-                    + "（\(count) 个 pane）")
+                consentText: Lp("consent.subject.screen", count: count,
+                                controller.screenIndex + 1, controller.window?.title ?? "", count))
         default:
             var effective = target ?? ControlTarget()
             if effective.pane == nil { effective.pane = .focused }
@@ -537,7 +545,7 @@ final class ControlCommandRunner {
                 controller: resolution.controller, workspace: resolution.workspace,
                 pane: subject, handle: handle, paneIDs: nil,
                 description: "\(handle) \"\(subject.paneTitle)\"",
-                consentText: "\(handle)「\(subject.paneTitle)」")
+                consentText: L("consent.subject.pane", handle, subject.paneTitle))
         }
     }
 
@@ -547,45 +555,55 @@ final class ControlCommandRunner {
     /// 从不回到 socket 上去
     static func consentSummary(_ request: ControlRequest, spec: ControlCommandSpec, action: WMAction?,
                                target: ControlTarget?, subject: PinnedSubject?) -> String {
-        var text = action.map { "执行动作 \($0.rawValue)（\($0.help)）" }
-            ?? "执行 \(spec.cli)（\(spec.summary)）"
+        // One line = one whole sentence. **Never glue fragments together** ("applies to X" +
+        // "· screen 1 · workspace 2"): word order differs between the two languages, so that
+        // shape cannot be translated. The location is its own line, and so is "tab only".
+        var lines = [action.map { L("consent.summary.action", $0.rawValue, $0.help) }
+            ?? L("consent.summary.command", spec.cli, spec.summary)]
         if let subject {
             let controller = subject.controller
             switch spec.name {
             case "workspace.clear":
-                text += "\n清空 \(subject.consentText) —— 其中的进程会被结束"
+                lines.append(L("consent.summary.workspace-clear", subject.consentText))
             case "screen.close":
-                text += "\n关闭 \(subject.consentText) —— 其中的进程会被结束"
+                lines.append(L("consent.summary.screen-close", subject.consentText))
             case "spec.apply":
-                text += "\n用一份 spec 覆盖 \(subject.consentText) —— 对不上的那些 pane 会被关掉，其中的进程会被结束"
+                lines.append(L("consent.summary.spec-apply", subject.consentText))
             case "browser.close":
                 let tabs = (subject.pane as? BrowserPaneView)?.tabs.count ?? 0
                 let which = request.args["tab"]?.stringValue ?? "@active"
                 if request.args["others"]?.boolValue == true {
-                    text += "\n关掉 \(subject.consentText) 里除 \(which) 之外的 \(max(tabs - 1, 0)) 个标签"
+                    let others = max(tabs - 1, 0)
+                    lines.append(Lp("consent.summary.browser-close-others", count: others,
+                                    subject.consentText, which, others))
                 } else if tabs <= 1 {
-                    text += "\n关掉 \(subject.consentText) 的最后一个标签 —— **整个 pane 会一起关掉**"
+                    lines.append(L("consent.summary.browser-close-last", subject.consentText))
                 } else {
-                    text += "\n关掉 \(subject.consentText) 的标签 \(which)（还剩 \(tabs - 1) 个）"
+                    lines.append(Lp("consent.summary.browser-close-tab", count: tabs - 1,
+                                    subject.consentText, which, tabs - 1))
                 }
-                text += "· 屏幕 \(controller.screenIndex + 1) · 工作区 \(subject.workspace + 1)"
+                lines.append(L("consent.summary.location",
+                               controller.screenIndex + 1, subject.workspace + 1))
             case "pane.capture-text":
                 // 读屏幕这件事必须在框里说成"读"：用户批准的是"把那个 pane 屏幕上的字交出去"，
                 // 而不是一句抽象的"执行敏感操作"
-                text += "\n**读取 \(subject.consentText) 屏幕上的全部文字**并交给这个调用方"
-                    + "（其中可能有密码、token、私有代码）"
-                    + "· 屏幕 \(controller.screenIndex + 1) · 工作区 \(subject.workspace + 1)"
+                lines.append(L("consent.summary.capture-text", subject.consentText))
+                lines.append(L("consent.summary.location",
+                               controller.screenIndex + 1, subject.workspace + 1))
             default:
+                lines.append(L("consent.summary.applies-to", subject.consentText))
+                lines.append(L("consent.summary.location",
+                               controller.screenIndex + 1, subject.workspace + 1))
                 // 浏览器 pane 还有别的标签时，close-pane 关的是当前标签而不是整个 pane（Chrome 语义）
                 let tabOnly = (subject.pane as? BrowserPaneView).map { $0.tabs.count > 1 } ?? false
-                text += "\n作用于 \(subject.consentText)"
-                    + "· 屏幕 \(controller.screenIndex + 1) · 工作区 \(subject.workspace + 1)"
-                if action == .closePane || spec.name == "pane.close", tabOnly { text += "（只关当前标签）" }
+                if action == .closePane || spec.name == "pane.close", tabOnly {
+                    lines.append(L("consent.summary.tab-only"))
+                }
             }
         } else if let target, !target.isEmpty {
-            text += "，目标 \(target.text)"
+            lines[0] = L("consent.summary.with-target", lines[0], target.text)
         }
-        return text
+        return lines.joined(separator: "\n")
     }
 
     /// 打错的动作名给出最接近的几个（agent 会幻觉出 `close_pane` / `focus-l`）

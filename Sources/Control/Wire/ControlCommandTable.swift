@@ -835,7 +835,7 @@ enum ControlCommandTable {
        "changes":[{"path":"1:3.tree.ratio","from":"0.620","to":"0.700"}],
        "pane":{"handle":"t8","size":{"rect":[0,0,1,0.7],"points":[1552,630],"cols":192,"rows":33,
                                      "split":"vertical","ratio":0.7}},
-       "undo":"控制面：pane resize"}}
+       "undo":"Control plane: pane resize"}}
     """
 
     static let listSample = """
@@ -851,7 +851,7 @@ enum ControlCommandTable {
        "changes":[{"path":"1:2","from":"2 panes","to":"3 panes"}],
        "pane":{"handle":"t9","id":"C40D…","kind":"terminal","role":"shell","screen":1,
                "workspace":2,"at":{"column":2,"row":0},"cwd":"/Users/danny/proj"},
-       "focusPending":true,"undo":"控制面：pane new"}}
+       "focusPending":true,"undo":"Control plane: pane new"}}
     """
 
     static let appGetSample = """

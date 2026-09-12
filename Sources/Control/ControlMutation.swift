@@ -20,11 +20,18 @@ struct ControlMutationRequest {
     let changes: [ControlChange]
     /// 会被改动的控制器（撤销快照 + 状态栏闪烁的落点；跨屏幕移动时是两块）
     let controllers: [MainWindowController]
-    /// 撤销项的名字；nil = 这一步不可撤销（比如关 pane：进程已经死了，撤销只会造一个假象）
-    let undoName: String?
+    /// The command the undo entry stands for (`pane set`), or nil when this step cannot be
+    /// undone (closing a pane, say: the process is already dead, so an undo would only be a
+    /// pretence). The wire spells it in English (`ControlUndo.wireName`); the Edit menu and the
+    /// status-bar flash draw `ControlUndo.displayName`, which follows the UI language.
+    let undoCommand: String?
     /// 日志里显示的落点（`1:2.t7`）
     let target: String?
 }
+
+/// The activity log's outcome vocabulary, spelled out once so `commit` and `logRefusal` cannot
+/// drift from the panel that renders them. English in both UI languages — see `Entry.Outcome`.
+private typealias Outcome = ControlActivityLog.Entry.Outcome
 
 @MainActor
 extension ControlCommandRunner {
@@ -40,7 +47,7 @@ extension ControlCommandRunner {
         let dryRun = isDryRun
 
         guard changed else {
-            log(mutation, outcome: failsIfNoop ? "noop(exit 7)" : "noop")
+            log(mutation, outcome: failsIfNoop ? Outcome.noopFailIfNoop : Outcome.noop)
             if failsIfNoop {
                 throw ControlErrorBody(.noop, "Already in the requested state, nothing changed",
                                        hint: "Without --fail-if-noop this is a silent success, which is how an absolute setter is meant to behave.")
@@ -49,14 +56,14 @@ extension ControlCommandRunner {
                                           changed: false, dryRun: dryRun)
         }
         guard !dryRun else {
-            log(mutation, outcome: "dry-run")
+            log(mutation, outcome: Outcome.dryRun)
             return ControlMutationPayload(command: mutation.command, applied: false,
                                           changed: true, dryRun: true, changes: mutation.changes)
         }
 
         // 撤销快照要在动手**之前**拍：值类型的 layouts / floatings 拍下来就是完整的一份旧布局
         let generation = ControlUndo.generation
-        var snapshots = mutation.undoName == nil ? [] : mutation.controllers.map { $0.controlSnapshot() }
+        var snapshots = mutation.undoCommand == nil ? [] : mutation.controllers.map { $0.controlSnapshot() }
         do {
             try apply()
         } catch {
@@ -66,28 +73,29 @@ extension ControlCommandRunner {
             //   那样 seq 会为一次没发生的变更 +1，撤销栈会多一个撤不到点子上的项，
             //   日志还会记成 applied）
             let body = (error as? ControlErrorBody) ?? ControlErrorBody(.failed, "\(error)")
-            log(mutation, outcome: "失败：\(body.code)")
+            log(mutation, outcome: Outcome.failed(body.code))
             throw body
         }
         seqDidMutate()
-        if let undoName = mutation.undoName, !snapshots.isEmpty,
+        if let undoCommand = mutation.undoCommand, !snapshots.isEmpty,
            ControlUndo.generation == generation {
             // apply 期间没有任何 pane 被关掉才登记：关掉过就说明快照里吊着一个已死的 pane
             for index in snapshots.indices { snapshots[index].stampExpectedPanes() }
-            ControlUndo.register(name: undoName, before: snapshots)
+            ControlUndo.register(command: undoCommand, before: snapshots)
         }
         flash(mutation)
-        log(mutation, outcome: "applied")
+        log(mutation, outcome: Outcome.applied)
         return ControlMutationPayload(command: mutation.command, applied: true, changed: true,
                                       dryRun: false, changes: mutation.changes,
-                                      undo: mutation.undoName)
+                                      undo: mutation.undoCommand.map(ControlUndo.wireName))
     }
 
     /// 状态栏闪一下：`mutate` 类命令是静默执行的，**可见性是它被允许静默的前提**。
     /// 文案里写清是哪条命令、来自哪个 pane（自称）——用户至少知道刚才不是自己按错了键
     private func flash(_ mutation: ControlMutationRequest) {
         let origin = originHandle(for: mutation.request)
-        let text = "控制面 " + mutation.command + (origin.map { " ←\($0)" } ?? "")
+        let text = origin.map { L("control.flash.command-from-pane", mutation.command, $0) }
+            ?? L("control.flash.command", mutation.command)
         let controllers = mutation.controllers.isEmpty
             ? [screens.controlCurrent].compactMap { $0 }
             : mutation.controllers
@@ -115,7 +123,7 @@ extension ControlCommandRunner {
             peer: "\(peer.processName)(pid \(peer.pid))",
             originPane: originHandle(for: request),
             target: request.target,
-            outcome: "拒绝：\(code.rawValue)",
+            outcome: Outcome.refused(code.rawValue),
             changes: []))
     }
 }
@@ -167,7 +175,14 @@ enum ControlUndo {
         }
     }
 
-    static func register(name: String, before: [MainWindowController.ControlSnapshot]) {
+    /// The undo entry's name on the wire — English in both UI languages, like the rest of the
+    /// CLI surface, because `quickterm --json` prints it and an agent may match on it.
+    static func wireName(_ command: String) -> String { "Control plane: \(command)" }
+
+    /// The same name for the Edit menu and the status-bar flash, in the UI language.
+    static func displayName(_ command: String) -> String { L("control.undo.name", command) }
+
+    static func register(command: String, before: [MainWindowController.ControlSnapshot]) {
         guard let manager = (NSApp.delegate as? AppDelegate)?.undoManager else { return }
         manager.levelsOfUndo = levels
         generation &+= 1
@@ -179,7 +194,8 @@ enum ControlUndo {
                 // 那一组 pane 时才撤销，而且全有全无（跨屏幕移动只回滚一半会凭空多出/少掉一个 pane）
                 guard before.allSatisfy({ $0.matchesLive() }) else {
                     for snapshot in before {
-                        snapshot.controller?.model.showControlFlash("布局已变，「\(name)」这一步撤销作废")
+                        snapshot.controller?.model.showControlFlash(
+                            L("control.undo.stale", displayName(command)))
                     }
                     return
                 }
@@ -190,11 +206,14 @@ enum ControlUndo {
                 if !after.isEmpty, !closes {
                     var redo = after
                     for index in redo.indices { redo[index].stampExpectedPanes() }
-                    register(name: name, before: redo)
+                    register(command: command, before: redo)
                 }
-                for snapshot in before { snapshot.controller?.model.showControlFlash("撤销 " + name) }
+                for snapshot in before {
+                    snapshot.controller?.model.showControlFlash(
+                        L("control.undo.undone", displayName(command)))
+                }
             }
         }
-        manager.setActionName(name)
+        manager.setActionName(displayName(command))
     }
 }

@@ -328,6 +328,7 @@ final class ControlBrowserTabTests: XCTestCase {
 
     /// 破坏性分级 + 确认框里说的是**具体那件事**（关标签还是连 pane 一起关）
     func testCloseIsDestructiveAndTheDialogSaysWhatWillHappen() throws {
+        pinUILanguage(.en)
         let spec = try XCTUnwrap(ControlCommandTable.command("browser.close"))
         XCTAssertEqual(spec.cls, .destructive, "关标签会毁掉用户的东西（页面状态、未提交的表单）")
         for other in ControlCommandTable.commands(inGroup: "browser") where other.verb != "close" {
@@ -342,7 +343,7 @@ final class ControlBrowserTabTests: XCTestCase {
             reply(.allow)
         }
         _ = try run("browser.close", target: handle(browser))
-        XCTAssertTrue(seen.first?.summary.contains("还剩 1 个") ?? false,
+        XCTAssertTrue(seen.first?.summary.contains("1 tab left") ?? false,
                       "多标签：框里要说这只关一个标签 —— \(String(describing: seen.first?.summary))")
 
         // **每一次都重来一遍**：破坏性命令按 (pid, 类) 缓存一次授权，
@@ -351,7 +352,7 @@ final class ControlBrowserTabTests: XCTestCase {
         harness.consent.reset()
         _ = try run("browser.close", target: handle(browser), args: ["force": .bool(true)])
         harness.spin(0.3)
-        XCTAssertTrue(seen.first?.summary.contains("整个 pane") ?? false,
+        XCTAssertTrue(seen.first?.summary.contains("the whole pane closes with it") ?? false,
                       "最后一个标签：框里必须说清 pane 会一起关 —— \(String(describing: seen.first?.summary))")
 
         // 用户拒绝 = 什么都不发生

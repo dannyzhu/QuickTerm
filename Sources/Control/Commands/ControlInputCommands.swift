@@ -72,7 +72,7 @@ extension ControlCommandRunner {
             controllers: [hit.controller],
             // **不可撤销**：打进 shell 的字不存在"放回去"这回事，
             // 登记一个撤销项只会让用户以为 ⌘Z 能把已经跑起来的命令收回来
-            undoName: nil,
+            undoCommand: nil,
             target: path(hit.controller, hit.workspace, hit.pane))
         var payload = try commit(mutation) {
             if !text.isEmpty { model.sendText(text) }

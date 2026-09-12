@@ -198,6 +198,11 @@ final class ControlInputTests: XCTestCase {
     /// 命令名与目标 pane 完全相同的两次调用，一次是 `echo hi`、一次可以是 `curl … | sh`：
     /// 不把正文摆出来，用户读到的两句话一模一样，那就不是一次知情的同意
     func testThePromptShowsTheTextAndWhetherItWillRun() throws {
+        // The alert text follows the UI language; this case pins it so it cannot go red on a
+        // machine whose system language is English.
+        let language = Localization.shared.language
+        defer { Localization.shared.setLanguage(language) }
+        Localization.shared.setLanguage(.zh)
         enableSendText()
         let mine = try harness.newTerminal()
         let other = try harness.newTerminal()

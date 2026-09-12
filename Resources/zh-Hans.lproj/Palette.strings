@@ -1,0 +1,39 @@
+/* QuickTerm — Simplified Chinese UI strings for the centered overlay panels.
+ *
+ * A new table file must be added to BOTH .lproj folders and then `xcodegen generate` re-run,
+ * or it is never copied into the app bundle (the build refuses it).
+ *
+ * Same key set as en.lproj/Palette.strings (Tests/LocalizationTests.swift pins that).
+ * A key missing here falls back to the English value, never to the raw key — but a missing key
+ * is a bug, not a feature.
+ *
+ * The positional arguments (%1$@, %2$@ …) may be reordered freely to fit Chinese word order;
+ * the SET of indices used must match the English value.
+ */
+
+/* MARK: - main menu, Cmd+Alt+Space (Sources/Palette/OverlayPanel.swift, MenuEntry) */
+
+"palette.menu.new-terminal" = "新建终端";
+"palette.menu.file-manager" = "文件管理器";
+"palette.menu.new-browser" = "新建浏览器";
+"palette.menu.themes" = "主题…";
+"palette.menu.backgrounds" = "背景…";
+"palette.menu.visible-columns" = "每屏列数";
+"palette.menu.toggle-bar" = "顶栏 显示/隐藏";
+"palette.menu.toggle-gaps" = "Gaps 开关";
+"palette.menu.toggle-opacity" = "透明度开关";
+"palette.menu.keybindings" = "快捷键速查";
+"palette.menu.settings" = "设置（config.toml）";
+"palette.menu.about" = "关于 QuickTerm";
+
+"palette.menu.visible-columns-value" = "每屏列数：%1$@";
+"palette.menu.visible-columns-hint" = "（回车循环 2→3→4）";
+
+/* MARK: - theme picker */
+
+"palette.theme.light-badge" = "浅色";
+
+/* MARK: - background picker */
+
+"palette.background.choose-image" = "选择图片…";
+"palette.background.empty" = "当前主题没有背景图（显示纯色）——可选择自己的图片";

@@ -1,0 +1,76 @@
+/* QuickTerm — English (base) UI strings for Control.
+ *
+ * ONE AREA = ONE TABLE. Every `<Area>.strings` inside a `.lproj` is loaded and merged at
+ * runtime, so separate translation passes add their own file instead of all appending to one
+ * shared table. A key declared in two tables fails LocalizationTests.
+ *
+ * English is the development language: every key MUST exist here, and any key missing from
+ * another language falls back to this table (never to the raw key).
+ *
+ * A NEW table file (Panes.strings, StatusBar.strings …) must be added to BOTH .lproj folders
+ * and then `xcodegen generate` re-run — this project is generated from project.yml, and a
+ * table that is not in the project is simply never copied into the app bundle. The build
+ * refuses it (scripts/check-localization.py) rather than letting the app draw raw keys.
+ *
+ * Rules (enforced on every build by scripts/check-localization.py, and by
+ * Tests/LocalizationTests.swift):
+ *   - one key = one WHOLE sentence or one whole label; never a fragment that code glues together;
+ *   - the only format specifier is %1$@, %2$@ … (positional). Never %@, %d, %f. A literal
+ *     percent sign is written %%;
+ *   - a key that varies with a count comes as a ".one"/".other" pair, read through Lp(_:count:_:);
+ *   - keys are lowercase, dot separated, area first: <area>.<subject>.<detail>.
+ *
+ * Not localized, by policy: the quickterm CLI, OSLog messages, wire identifiers, config keys,
+ * pane handles, and the AppKit "undo"/"redo" selector names.
+ */
+
+/* MARK: - consent alert (Sources/Control/ControlConsent.swift) */
+
+"consent.alert.title.destructive" = "Allow an external program to run a destructive command?";
+"consent.alert.title.sensitive" = "Allow an external program to run a sensitive command?";
+
+"consent.alert.request.plain" = "%1$@ (pid %2$@) is asking to: %3$@";
+"consent.alert.request.from-pane" = "%1$@ (pid %2$@), from pane %3$@, is asking to: %4$@";
+"consent.alert.request.claims-pane" = "%1$@ (pid %2$@), claiming to come from pane %3$@, is asking to: %4$@";
+
+"consent.alert.payload.header" = "The text it wants to type (%1$@ characters in all):\n%2$@";
+"consent.alert.payload.enter" = "(A Return follows it — that shell will run it straight away.)";
+"consent.alert.payload.no-enter" = "(No Return — the text is only left on the command line, not run.)";
+
+"consent.alert.scope.cacheable" = "Once you allow it, the same kind of command from this process will not be asked about again for the rest of this launch.";
+"consent.alert.scope.once" = "This allows it this once. Injecting text into another pane is asked about every time.";
+
+"consent.alert.token.present" = "(The caller carries the origin marker QuickTerm injected — that only says it came from some pane; it does not mean it is authorized.)";
+"consent.alert.token.absent" = "(The caller carries no QuickTerm origin marker.)";
+
+"consent.alert.button.deny" = "Deny";
+"consent.alert.button.allow" = "Allow";
+
+/* MARK: - consent subject and summary (Sources/Control/ControlCommandRunner.swift) */
+
+"consent.list.separator" = ", ";
+"consent.subject.place" = "screen %1$@ workspace %2$@";
+"consent.subject.workspace.one" = "%1$@ (%2$@ pane: %3$@)";
+"consent.subject.workspace.other" = "%1$@ (%2$@ panes: %3$@)";
+"consent.subject.spec-multi.one" = "%1$@ workspaces (%2$@), %3$@ pane in all: %4$@";
+"consent.subject.spec-multi.other" = "%1$@ workspaces (%2$@), %3$@ panes in all: %4$@";
+"consent.subject.screen.one" = "screen %1$@ “%2$@” (%3$@ pane)";
+"consent.subject.screen.other" = "screen %1$@ “%2$@” (%3$@ panes)";
+"consent.subject.pane" = "%1$@ “%2$@”";
+
+"consent.summary.action" = "Run the action %1$@ (%2$@).";
+"consent.summary.command" = "Run %1$@ (%2$@).";
+"consent.summary.with-target" = "%1$@ Target: %2$@.";
+"consent.summary.location" = "· screen %1$@ · workspace %2$@";
+
+"consent.summary.workspace-clear" = "Clear %1$@ — the processes running in it will be killed.";
+"consent.summary.screen-close" = "Close %1$@ — the processes running in it will be killed.";
+"consent.summary.spec-apply" = "Overwrite %1$@ with a spec — every pane that does not match is closed and the processes in it killed.";
+"consent.summary.browser-close-others.one" = "Close the %3$@ tab of %1$@ other than %2$@.";
+"consent.summary.browser-close-others.other" = "Close the %3$@ tabs of %1$@ other than %2$@.";
+"consent.summary.browser-close-last" = "Close the last tab of %1$@ — the whole pane closes with it.";
+"consent.summary.browser-close-tab.one" = "Close tab %2$@ of %1$@ (%3$@ tab left).";
+"consent.summary.browser-close-tab.other" = "Close tab %2$@ of %1$@ (%3$@ tabs left).";
+"consent.summary.capture-text" = "Read every character on the screen of %1$@ and hand it to this caller (it may hold passwords, tokens, private source).";
+"consent.summary.applies-to" = "Applies to %1$@.";
+"consent.summary.tab-only" = "Only the current tab is closed.";

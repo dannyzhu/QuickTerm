@@ -16,22 +16,21 @@ extension AppDelegate {
     @objc func controlActivityAction(_ sender: Any?) {
         let entries = ControlActivityLog.shared.recent(40)
         let alert = NSAlert()
-        alert.messageText = "控制面活动（最近 \(entries.count) 条）"
+        alert.messageText = Lp("window.control-activity.title", count: entries.count, entries.count)
         alert.informativeText = entries.isEmpty
-            ? "还没有任何外部程序通过 quickterm 控制过 QuickTerm。\n\n"
-                + "socket：\(ControlEnvironment.socketPath ?? "（未监听）")\n"
-                + "关掉控制面：在 ~/.config/quickterm/config.toml 的 [control] 里写 enabled = false"
+            ? L("window.control-activity.empty",
+                ControlEnvironment.socketPath ?? L("window.control-activity.socket-none"))
             : entries.map(\.line).joined(separator: "\n")
-        alert.addButton(withTitle: "好")
-        if !entries.isEmpty { alert.addButton(withTitle: "清空") }
+        alert.addButton(withTitle: L("window.button.ok"))
+        if !entries.isEmpty { alert.addButton(withTitle: L("window.control-activity.button.clear")) }
         if alert.runModal() == .alertSecondButtonReturn { ControlActivityLog.shared.clear() }
     }
 
     @objc func installCLIAction(_ sender: Any?) {
         let alert = NSAlert()
         guard let cli = Self.bundledCLIURL, FileManager.default.isExecutableFile(atPath: cli.path) else {
-            alert.messageText = "找不到随包的 quickterm"
-            alert.informativeText = "应该在 QuickTerm.app/Contents/SharedSupport/quickterm。请重新构建或重新安装 QuickTerm。"
+            alert.messageText = L("window.install-cli.missing-title")
+            alert.informativeText = L("window.install-cli.missing-detail")
             alert.runModal()
             return
         }
@@ -45,7 +44,7 @@ extension AppDelegate {
         do {
             try process.run()
         } catch {
-            alert.messageText = "安装失败"
+            alert.messageText = L("window.install-cli.failed-title")
             alert.informativeText = "\(error)"
             alert.runModal()
             return
@@ -54,7 +53,9 @@ extension AppDelegate {
         let stderr = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         process.waitUntilExit()
 
-        alert.messageText = process.terminationStatus == 0 ? "quickterm 已装到 PATH" : "安装失败"
+        alert.messageText = process.terminationStatus == 0
+            ? L("window.install-cli.installed-title")
+            : L("window.install-cli.failed-title")
         alert.informativeText = (process.terminationStatus == 0 ? stdout : stderr)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         alert.runModal()

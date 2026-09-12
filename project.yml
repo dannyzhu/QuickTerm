@@ -51,9 +51,9 @@ targets:
         # 有了这几条系统才可能弹授权窗；没有的话请求会被静默处理（见 WorkingDirectoryGate）。
         # 注意：ad-hoc 签名（CODE_SIGN_IDENTITY "-"）下授权按 cdhash 绑定，每次重新构建都作废——
         # 真正治本的是换成稳定的签名身份，见 docs/manual-launch-check.md
-        NSDesktopFolderUsageDescription: "QuickTerm 需要访问桌面，才能把终端 pane 恢复到你上次所在的目录。"
-        NSDocumentsFolderUsageDescription: "QuickTerm 需要访问「文稿」，才能把终端 pane 恢复到你上次所在的目录。"
-        NSDownloadsFolderUsageDescription: "QuickTerm 需要访问「下载」，才能把终端 pane 恢复到你上次所在的目录。"
+        NSDesktopFolderUsageDescription: "QuickTerm needs access to your Desktop so it can reopen terminal panes in the directory you were last working in."
+        NSDocumentsFolderUsageDescription: "QuickTerm needs access to your Documents folder so it can reopen terminal panes in the directory you were last working in."
+        NSDownloadsFolderUsageDescription: "QuickTerm needs access to your Downloads folder so it can reopen terminal panes in the directory you were last working in."
         # 浏览器 pane：允许 http:// 明文页面（本地开发服务器 / 内网）
         NSAppTransportSecurity:
           NSAllowsArbitraryLoadsInWebContent: true
@@ -63,6 +63,20 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.danny.quickterm
         ENABLE_HARDENED_RUNTIME: false
         CODE_SIGN_IDENTITY: "-"
+    preBuildScripts:
+      # The UI catalog (Resources/*.lproj) is linted against the call sites on every build.
+      # LocalizationTests asserts the same invariants, but it can only read the source tree once
+      # the macOS Documents prompt is answered — ad-hoc signing rebinds that grant on every
+      # rebuild, so in this repo (it lives under ~/Documents) those cases skip. A build script
+      # runs as the developer's own shell and has that access, so the check runs for everybody.
+      - name: Check Localization Catalog
+        script: |
+          if ! command -v python3 >/dev/null 2>&1; then
+            echo "warning: python3 not found — skipping the localization catalog check"
+            exit 0
+          fi
+          python3 "$SRCROOT/scripts/check-localization.py"
+        basedOnDependencyAnalysis: false
     postBuildScripts:
       - name: Bundle Ghostty Resources
         script: |
@@ -107,6 +121,15 @@ targets:
     platform: macOS
     sources:
       - Tests
+      # The two READMEs ride along as test resources. testEveryKeyIsDocumented has to read them,
+      # and the test host cannot: it is ad-hoc signed and the repo lives under ~/Documents, which
+      # macOS gates behind a privacy prompt nobody is there to answer on a build machine. Copying
+      # them at build time keeps the assertion honest (the copy is regenerated on every build)
+      # without asking the runtime for access it will not get.
+      - path: README.md
+        buildPhase: resources
+      - path: README.zh-CN.md
+        buildPhase: resources
     dependencies:
       - target: QuickTerm
       - framework: vendor/ghostty/macos/GhosttyKit.xcframework

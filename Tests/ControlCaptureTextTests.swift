@@ -105,6 +105,7 @@ final class ControlCaptureTextTests: XCTestCase {
     /// 每个调用进程确认一次（`(pid, 命令)` 粒度），框里说的是**读哪个 pane 的屏幕**；
     /// 用户拒绝 = 一个字都拿不到
     func testCapturePromptsPerProcessAndTheDialogNamesTheRead() throws {
+        pinUILanguage(.en)
         enableCapture()
         let pane = try harness.newTerminal()
         var seen: [ControlConsent.Request] = []
@@ -122,7 +123,8 @@ final class ControlCaptureTextTests: XCTestCase {
         XCTAssertEqual(request.cls, .sensitive)
         XCTAssertEqual(request.scope, "pane.capture-text",
                        "敏感命令一条一个授权键：批准读屏幕不等于批准打字")
-        XCTAssertTrue(request.summary.contains("读取"), "框里要说这是在读：\(request.summary)")
+        XCTAssertTrue(request.summary.contains("Read every character"),
+                      "框里要说这是在读：\(request.summary)")
         XCTAssertNil(request.payload, "读命令没有要展示的正文（正文是读回来的东西，不能画给别处）")
 
         // **缓存不串味**：批准过 capture 之后，send-text 仍然要问

@@ -39,7 +39,7 @@ extension ControlCommandRunner {
                                                          to: "workspace \(index + 1)")]
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
-            controllers: [controller], undoName: "控制面：\(ctx.spec.cli)",
+            controllers: [controller], undoCommand: ctx.spec.cli,
             target: path(controller, index))
         var payload = try commit(mutation) { controller.switchWorkspace(index) }
         payload.workspace = ctx.encoder.workspaceInfo(controller, index: index)
@@ -82,7 +82,7 @@ extension ControlCommandRunner {
                                                           to: wanted ?? "(cleared)", sensitive: true)]
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
-            controllers: [controller], undoName: "控制面：\(ctx.spec.cli)",
+            controllers: [controller], undoCommand: ctx.spec.cli,
             target: path(controller, index))
         var payload = try commit(mutation) { controller.model.setTitle(wanted, at: index) }
         payload.workspace = ctx.encoder.workspaceInfo(controller, index: index)
@@ -105,7 +105,7 @@ extension ControlCommandRunner {
                                                           from: now, to: wanted)]
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
-            controllers: [controller], undoName: "控制面：\(ctx.spec.cli)",
+            controllers: [controller], undoCommand: ctx.spec.cli,
             target: path(controller, index))
         var payload = try commit(mutation) {
             // 非活动工作区一样能设：这正是 toggle-layout 做不到的那件事
@@ -146,7 +146,7 @@ extension ControlCommandRunner {
                              from: Self.describe(before), to: Self.describe(after))]
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
-            controllers: [controller], undoName: "控制面：\(ctx.spec.cli)",
+            controllers: [controller], undoCommand: ctx.spec.cli,
             target: path(controller, index))
         var payload = try commit(mutation) { controller.controlEqualize(workspace: index) }
         payload.workspace = ctx.encoder.workspaceInfo(controller, index: index)
@@ -194,7 +194,7 @@ extension ControlCommandRunner {
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
             controllers: [controller],
-            undoName: nil,   // 进程已经被结束了：撤销只会造出一个"好像还在"的假象
+            undoCommand: nil,   // 进程已经被结束了：撤销只会造出一个"好像还在"的假象
             target: path(controller, index))
         var payload = try commit(mutation) {
             // **不逐 pane 弹 QuickTerm 自己那句「仍有进程在运行」**：`closePane` 的那句确认是
@@ -256,7 +256,7 @@ extension ControlCommandRunner {
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
             controllers: screens.controllers,
-            undoName: nil,   // 撤销要连着改回配置文件——那是用户的文件，⌘Z 不该去动它
+            undoCommand: nil,   // 撤销要连着改回配置文件——那是用户的文件，⌘Z 不该去动它
             target: ConfigStore.activeConfigURL.lastPathComponent)
         var payload = try commit(mutation) {
             do {

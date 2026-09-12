@@ -1,0 +1,87 @@
+/* QuickTerm — English (base) UI strings for Windowing (windows, screens, panes, app-level alerts).
+ *
+ * ONE AREA = ONE TABLE. Every `<Area>.strings` inside a `.lproj` is loaded and merged at
+ * runtime, so separate translation passes add their own file instead of all appending to one
+ * shared table. A key declared in two tables fails LocalizationTests.
+ *
+ * English is the development language: every key MUST exist here, and any key missing from
+ * another language falls back to this table (never to the raw key).
+ *
+ * A NEW table file (Panes.strings, StatusBar.strings …) must be added to BOTH .lproj folders
+ * and then `xcodegen generate` re-run — this project is generated from project.yml, and a
+ * table that is not in the project is simply never copied into the app bundle. The build
+ * refuses it (scripts/check-localization.py) rather than letting the app draw raw keys.
+ *
+ * Rules (enforced on every build by scripts/check-localization.py, and by
+ * Tests/LocalizationTests.swift):
+ *   - one key = one WHOLE sentence or one whole label; never a fragment that code glues together;
+ *   - the only format specifier is %1$@, %2$@ … (positional). Never %@, %d, %f. A literal
+ *     percent sign is written %%;
+ *   - a key that varies with a count comes as a ".one"/".other" pair, read through Lp(_:count:_:);
+ *   - keys are lowercase, dot separated, area first: <area>.<subject>.<detail>.
+ *
+ * Not localized, by policy: the quickterm CLI, OSLog messages, wire identifiers, config keys,
+ * pane handles, and the AppKit "undo"/"redo" selector names.
+ */
+
+/* MARK: - shared buttons */
+
+"window.button.ok" = "OK";
+"window.button.cancel" = "Cancel";
+"window.button.close" = "Close";
+"window.button.quit" = "Quit";
+
+/* MARK: - launch (Sources/App/AppDelegate.swift) */
+
+"window.engine.failed-title" = "QuickTerm's terminal engine failed to start";
+"window.engine.failed-detail" = "libghostty could not start (readiness: %1$@). Check the GhosttyKit build and its resource bundle.";
+
+/* MARK: - quit confirmation (Sources/App/AppDelegate.swift) */
+
+"window.quit.title" = "Quit QuickTerm?";
+"window.quit.detail.one" = "%1$@ terminal is still open — quitting will kill the process running in it. Your layout and working directories are saved and restored on the next launch.";
+"window.quit.detail.other" = "%1$@ terminals are still open — quitting will kill the processes running in them. Your layout and working directories are saved and restored on the next launch.";
+
+/* MARK: - screens and workspaces (Sources/Windowing/MainWindowController.swift) */
+
+"window.workspace-title.title" = "Name workspace %1$@";
+"window.workspace-title.detail" = "Leave it blank to go back to showing the number. The name belongs to this slot, so clearing the workspace does not lose it.";
+
+"window.close-screen.title" = "Close this screen?";
+"window.close-screen.detail.one" = "%1$@ terminal is still open — closing this screen will kill the process running in it.";
+"window.close-screen.detail.other" = "%1$@ terminals are still open — closing this screen will kill the processes running in them.";
+
+"window.close-pane.title" = "Close this terminal?";
+"window.close-pane.detail" = "Processes are still running in it.";
+
+"window.background.choose-image" = "Choose a background image (it will be copied into ~/.config/quickterm/backgrounds)";
+
+/* MARK: - empty workspace hint (Sources/Windowing/RootView.swift) */
+
+"window.empty.new-terminal" = "%1$@  New Terminal";
+"window.empty.quit" = "⌘Q  Quit";
+
+/* MARK: - display submenus (Sources/App/AppDelegate+Screens.swift) */
+
+"window.display.none-available" = "No Displays Available";
+"window.display.unnamed" = "Display %1$@";
+"window.display.current" = "%1$@ (Current)";
+
+/* MARK: - control plane activity (Sources/App/AppDelegate+ControlCLI.swift) */
+
+"window.control-activity.title.one" = "Control Plane Activity (last %1$@ entry)";
+"window.control-activity.title.other" = "Control Plane Activity (last %1$@ entries)";
+"window.control-activity.empty" = "No external program has controlled QuickTerm through the quickterm command line yet.\n\nSocket: %1$@\nTo turn the control plane off, set enabled = false under [control] in ~/.config/quickterm/config.toml";
+"window.control-activity.socket-none" = "(not listening)";
+"window.control-activity.button.clear" = "Clear";
+
+/* MARK: - install the command line tool (Sources/App/AppDelegate+ControlCLI.swift) */
+
+"window.install-cli.missing-title" = "The bundled quickterm was not found";
+"window.install-cli.missing-detail" = "It should be at QuickTerm.app/Contents/SharedSupport/quickterm. Rebuild or reinstall QuickTerm.";
+"window.install-cli.failed-title" = "Installation failed";
+"window.install-cli.installed-title" = "quickterm is now on your PATH";
+
+/* MARK: - file manager pane (Sources/Windowing/FileManagerLaunch.swift) */
+
+"window.file-manager.not-found" = "QuickTerm: file manager \"%1$@\" not found. Install one with: brew install yazi (or set file-manager-command in config.toml)";

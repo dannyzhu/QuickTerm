@@ -1,0 +1,56 @@
+/* QuickTerm — English (base) UI strings for the centered overlay panels
+ * (main menu, theme picker, background picker, keyboard-shortcut cheat sheet).
+ *
+ * ONE AREA = ONE TABLE. Every `<Area>.strings` inside a `.lproj` is loaded and merged at
+ * runtime, so separate translation passes add their own file instead of all appending to one
+ * shared table. A key declared in two tables fails LocalizationTests.
+ *
+ * English is the development language: every key MUST exist here, and any key missing from
+ * another language falls back to this table (never to the raw key).
+ *
+ * A NEW table file (Panes.strings, StatusBar.strings …) must be added to BOTH .lproj folders
+ * and then `xcodegen generate` re-run — this project is generated from project.yml, and a
+ * table that is not in the project is simply never copied into the app bundle. The build
+ * refuses it (scripts/check-localization.py) rather than letting the app draw raw keys.
+ *
+ * Rules (enforced on every build by scripts/check-localization.py, and by
+ * Tests/LocalizationTests.swift):
+ *   - one key = one WHOLE sentence or one whole label; never a fragment that code glues together;
+ *   - the only format specifier is %1$@, %2$@ … (positional). Never %@, %d, %f. A literal
+ *     percent sign is written %%;
+ *   - a key that varies with a count comes as a ".one"/".other" pair, read through Lp(_:count:_:);
+ *   - keys are lowercase, dot separated, area first: <area>.<subject>.<detail>.
+ *
+ * Not localized, by policy: the quickterm CLI, OSLog messages, wire identifiers, config keys,
+ * pane handles, theme names, and the AppKit "undo"/"redo" selector names.
+ */
+
+/* MARK: - main menu, Cmd+Alt+Space (Sources/Palette/OverlayPanel.swift, MenuEntry) */
+
+"palette.menu.new-terminal" = "New Terminal";
+"palette.menu.file-manager" = "File Manager";
+"palette.menu.new-browser" = "New Browser";
+"palette.menu.themes" = "Themes…";
+"palette.menu.backgrounds" = "Backgrounds…";
+"palette.menu.visible-columns" = "Columns per Screen";
+"palette.menu.toggle-bar" = "Show/Hide the Status Bar";
+"palette.menu.toggle-gaps" = "Turn Gaps On/Off";
+"palette.menu.toggle-opacity" = "Turn Transparency On/Off";
+"palette.menu.keybindings" = "Keyboard Shortcuts";
+"palette.menu.settings" = "Settings (config.toml)";
+"palette.menu.about" = "About QuickTerm";
+
+/* The columns row shows the current value, and a dimmer hint about what Return does.
+ * %1$@ is the number of columns one screen is divided into. */
+"palette.menu.visible-columns-value" = "Columns per Screen: %1$@";
+"palette.menu.visible-columns-hint" = "(Return cycles 2→3→4)";
+
+/* MARK: - theme picker (theme names themselves are not translated) */
+
+/* Marks a theme whose background is light, shown next to its name. */
+"palette.theme.light-badge" = "light";
+
+/* MARK: - background picker */
+
+"palette.background.choose-image" = "Choose an Image…";
+"palette.background.empty" = "This theme ships no background image (a solid color is drawn) — you can pick one of your own.";

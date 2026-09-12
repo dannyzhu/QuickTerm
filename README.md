@@ -334,6 +334,9 @@ Full agent-facing documentation, including the addressing grammar and the exit-c
 # Every key is declared once in Sources/Config/ConfigSchema.swift; this block is that registry.
 # Keys are grouped by function — one group = one tab in the settings UI.
 
+[general]
+# language = "auto"  # auto (follow the system) | en | zh — the UI only; logs and the CLI are always English
+
 [appearance]
 # theme = "tokyo-night"  # or "ghostty": don't touch colours, follow ~/.config/ghostty/config entirely
 # pane-opacity = 0.92    # 0.5–1.0, inactive baseline; text is never affected

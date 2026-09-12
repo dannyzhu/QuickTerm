@@ -92,13 +92,14 @@ final class BrowserDownloadTests: XCTestCase {
 
     /// 状态文字用 ByteCountFormatter
     func testStatusText() {
+        pinUILanguage(.en)
         let item = Self.fakeItem(name: "x.bin", total: 5_000_000, done: 1_200_000)
         XCTAssertTrue(item.statusText.contains("/"), "进行中显示 已下载 / 总量：\(item.statusText)")
         XCTAssertTrue(item.statusText.contains("24%"), "1.2M / 5M ≈ 24%：\(item.statusText)")
         item.state = .completed
-        XCTAssertTrue(item.statusText.hasPrefix("已完成"), item.statusText)
+        XCTAssertTrue(item.statusText.hasPrefix("Completed"), item.statusText)
         item.state = .cancelled
-        XCTAssertEqual(item.statusText, "已取消")
+        XCTAssertEqual(item.statusText, "Canceled")
         XCTAssertEqual(BrowserDownloadItem.formatBytes(0), ByteCountFormatter().string(fromByteCount: 0))
     }
 
@@ -106,6 +107,7 @@ final class BrowserDownloadTests: XCTestCase {
 
     /// 空列表隐藏；有条目显示；全部完成后仍显示（画勾）直到清除
     func testDownloadButtonVisibility() {
+        pinUILanguage(.en)
         let list = BrowserDownloadList()
         let button = BrowserDownloadButton()
         button.list = list
@@ -115,7 +117,7 @@ final class BrowserDownloadTests: XCTestCase {
         let item = Self.fakeItem(name: "a.bin", total: 100, done: 20)
         list.add(item)
         XCTAssertFalse(button.isHidden, "有下载 → 显示")
-        XCTAssertTrue(button.toolTip?.contains("1 个进行中") ?? false, button.toolTip ?? "nil")
+        XCTAssertTrue(button.toolTip?.contains("1 in progress") ?? false, button.toolTip ?? "nil")
         list.markCompleted(item)
         XCTAssertFalse(button.isHidden, "全部完成仍显示（勾）")
         XCTAssertEqual(list.activeCount, 0)
@@ -134,6 +136,7 @@ final class BrowserDownloadTests: XCTestCase {
 
     /// 弹出层：一条下载一行，行按状态给出取消 / 移除；「清除已完成」按钮只在有结束项时出现
     func testPopoverRowsFollowList() {
+        pinUILanguage(.en)
         let list = BrowserDownloadList()
         let popover = BrowserDownloadPopover(list: list)
         popover.loadView()
@@ -146,7 +149,7 @@ final class BrowserDownloadTests: XCTestCase {
         XCTAssertEqual(popover.rowsForTesting.count, 2)
         let row = try? XCTUnwrap(popover.rowsForTesting.first as? BrowserDownloadRow)
         XCTAssertEqual(row?.nameForTesting, "a.bin")
-        XCTAssertEqual(row?.primaryButtonForTesting.toolTip, "取消", "进行中的行给取消钮")
+        XCTAssertEqual(row?.primaryButtonForTesting.toolTip, "Cancel", "进行中的行给取消钮")
         XCTAssertNil(popover.clearButtonForTesting.superview, "没有已结束的下载 → 不显示清除")
         list.markCompleted(a)
         list.markCompleted(b)
@@ -159,6 +162,7 @@ final class BrowserDownloadTests: XCTestCase {
 
     /// 中心符号：进行中 = 箭头；全部完成 = 勾；只要有失败 / 取消 = 感叹号（不能拿勾当"成功"报）
     func testDownloadButtonGlyphFollowsItemStates() {
+        pinUILanguage(.en)
         let list = BrowserDownloadList()
         let button = BrowserDownloadButton()
         button.list = list
@@ -170,12 +174,12 @@ final class BrowserDownloadTests: XCTestCase {
         XCTAssertEqual(button.glyph, .arrow, "进行中 → 箭头")
         list.markCompleted(a)
         XCTAssertEqual(button.glyph, .check, "全部完成 → 勾")
-        XCTAssertEqual(button.toolTip, "下载（1 项）")
+        XCTAssertEqual(button.toolTip, "Downloads (1 item)")
         let b = Self.fakeItem(name: "b.bin", total: 100, done: 5)
         list.add(b)
         list.markFailed(b, message: "连接被拒")
         XCTAssertEqual(button.glyph, .warning, "有失败项 → 感叹号，不能画勾")
-        XCTAssertTrue(button.toolTip?.contains("失败") ?? false, button.toolTip ?? "nil")
+        XCTAssertTrue(button.toolTip?.contains("failed") ?? false, button.toolTip ?? "nil")
         let c = Self.fakeItem(name: "c.bin", total: 100, done: 5)
         list.add(c)
         XCTAssertEqual(button.glyph, .arrow, "又有新下载 → 回到箭头")
@@ -330,6 +334,7 @@ final class BrowserDownloadTests: XCTestCase {
     /// 连接被拒的下载：进列表并显示为失败（连不上服务器时 decideDestination 根本不会被调用，
     /// 条目要在挂代理那一刻就建好）
     func testFailedDownloadShowsFailureState() throws {
+        pinUILanguage(.en)
         let pane = try makePane(downloadDirectory: FileManager.default.temporaryDirectory.path)
         defer { teardown(pane) }
         // 9 = discard 端口，本机上没人监听 → 连接被拒
@@ -343,7 +348,7 @@ final class BrowserDownloadTests: XCTestCase {
         }
         XCTAssertFalse(message.isEmpty, "失败原因要能显示给用户")
         XCTAssertEqual(pane.downloads.activeCount, 0)
-        XCTAssertTrue(item.statusText.hasPrefix("失败："), item.statusText)
+        XCTAssertTrue(item.statusText.hasPrefix("Failed:"), item.statusText)
     }
 
     /// 两条同名下载几乎同时定目的地：WebKit 要收到我们的回复才建文件，只查磁盘会给出同一个路径

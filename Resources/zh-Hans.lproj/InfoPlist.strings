@@ -1,0 +1,11 @@
+/* QuickTerm — Simplified Chinese strings for the Info.plist keys macOS itself draws.
+ *
+ * These are NOT part of the app's own catalog (Localization skips InfoPlist.strings): the
+ * privacy prompt is drawn by the system, before and outside the app, so macOS picks the
+ * .lproj by the SYSTEM language — `[general] language` cannot move it. The base wording in
+ * project.yml is English; this file is what a Simplified Chinese system shows instead.
+ */
+
+"NSDesktopFolderUsageDescription" = "QuickTerm 需要访问桌面，才能把终端 pane 恢复到你上次所在的目录。";
+"NSDocumentsFolderUsageDescription" = "QuickTerm 需要访问「文稿」，才能把终端 pane 恢复到你上次所在的目录。";
+"NSDownloadsFolderUsageDescription" = "QuickTerm 需要访问「下载」，才能把终端 pane 恢复到你上次所在的目录。";

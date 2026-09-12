@@ -302,7 +302,7 @@ extension ControlCommandRunner {
 
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
-            controllers: controllers, undoName: "控制面：\(ctx.spec.cli)",
+            controllers: controllers, undoCommand: ctx.spec.cli,
             target: path(scope.controller, scope.workspace))
 
         var payload = try commit(mutation) {

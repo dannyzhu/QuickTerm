@@ -1,0 +1,42 @@
+/* QuickTerm — Simplified Chinese UI strings for the terminal pane.
+ *
+ * A new table file must be added to BOTH .lproj folders and then `xcodegen generate` re-run,
+ * or it is never copied into the app bundle (the build refuses it).
+ *
+ * Same key set as en.lproj/Terminal.strings (Tests/LocalizationTests.swift pins that).
+ * A key missing here falls back to the English value, never to the raw key — but a missing key
+ * is a bug, not a feature.
+ *
+ * The positional arguments (%1$@, %2$@ …) may be reordered freely to fit Chinese word order;
+ * the SET of indices used must match the English value.
+ */
+
+/* MARK: - terminal context menu (Sources/GhosttyEmbed/Surface View/SurfaceView_AppKit.swift) */
+
+"terminal.menu.copy" = "拷贝";
+"terminal.menu.paste" = "粘贴";
+"terminal.menu.reset" = "重置终端";
+"terminal.menu.readonly" = "终端只读";
+"terminal.menu.change-title" = "更改终端标题…";
+
+"terminal.menu.search-selection" = "用 %1$@ 搜索「%2$@」";
+
+"terminal.search.engine-baidu" = "百度";
+"terminal.search.engine-web" = "Web";
+
+/* MARK: - change title dialog (same file, promptTitle) */
+
+"terminal.rename.title" = "更改终端标题";
+"terminal.rename.hint" = "留空 = 恢复默认标题。";
+"terminal.rename.button.ok" = "好";
+"terminal.rename.button.cancel" = "取消";
+
+/* MARK: - accessibility */
+
+"terminal.readonly.badge" = "只读";
+"terminal.readonly.accessibility" = "只读终端";
+"terminal.readonly.title" = "只读模式";
+"terminal.readonly.detail" = "这个终端处于只读模式：内容仍可查看、选择、滚动，但任何输入都不会送给里面运行的程序。";
+"terminal.readonly.disable" = "关掉";
+
+"terminal.accessibility.help" = "终端内容区域";

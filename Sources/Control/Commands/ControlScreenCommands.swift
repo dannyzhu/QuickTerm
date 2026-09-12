@@ -67,7 +67,7 @@ extension ControlCommandRunner {
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer,
             changes: [ControlChange("screens", from: "\(before)", to: "\(before + 1)")],
             controllers: [],
-            undoName: nil,   // 撤销一块屏幕 = 关掉它连同里面的进程：那不是撤销，是第二次破坏
+            undoCommand: nil,   // 撤销一块屏幕 = 关掉它连同里面的进程：那不是撤销，是第二次破坏
             target: display?.localizedName)
         var payload = try commit(mutation) {
             let controller = app.newScreen(on: display, inheritingFrom: inherit)
@@ -101,7 +101,7 @@ extension ControlCommandRunner {
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer,
             changes: [ControlChange(path(controller), from: "open (\(panes) panes)", to: "closed")],
-            controllers: [], undoName: nil,
+            controllers: [], undoCommand: nil,
             target: path(controller))
         var payload = try commit(mutation) {
             // 我们自己的确认闸门已经问过一次了：`closeScreen` 里那句 `confirmCloseScreen()`
@@ -130,7 +130,7 @@ extension ControlCommandRunner {
                              from: now?.localizedName ?? "—", to: display.localizedName)]
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
-            controllers: [controller], undoName: nil,   // 窗口几何不进撤销栈（快照里没有它）
+            controllers: [controller], undoCommand: nil,   // 窗口几何不进撤销栈（快照里没有它）
             target: path(controller))
         var payload = try commit(mutation) { app.moveScreen(controller, to: display) }
         payload.screen = ctx.encoder.screenInfo(controller, isKey: controller === screens.controlCurrent)
@@ -150,7 +150,7 @@ extension ControlCommandRunner {
                              to: String(controller.screenIndex + 1))]
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
-            controllers: [controller], undoName: nil, target: path(controller))
+            controllers: [controller], undoCommand: nil, target: path(controller))
         var payload = try commit(mutation) {
             controller.window?.makeKeyAndOrderFront(nil)
             if let focused = controller.focusedPane { controller.requestFocus(to: focused) }
@@ -195,7 +195,7 @@ extension ControlCommandRunner {
         }
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
-            controllers: [controller], undoName: "控制面：\(ctx.spec.cli)", target: base)
+            controllers: [controller], undoCommand: ctx.spec.cli, target: base)
         var payload = try commit(mutation) {
             // 全部都是"设成这个值"：toggleSimpleFullscreen 是 toggle，所以先比对再决定翻不翻
             if let fullscreen, fullscreen != controller.isSimpleFullscreen {

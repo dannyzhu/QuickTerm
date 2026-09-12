@@ -126,29 +126,35 @@ final class ControlConsent {
     /// 安全闸门的默认答案必须是"不"：允许要**点**，拒绝可以按回车 / Esc。
     static func makeAlert(_ request: Request) -> NSAlert {
         let alert = NSAlert()
-        alert.messageText = "允许外部程序\(request.cls == .destructive ? "执行破坏性操作" : "执行敏感操作")？"
-        let origin = request.originPane.map {
-            request.originVerified ? "，来自 pane \($0)" : "，自称来自 pane \($0)"
-        } ?? ""
+        alert.messageText = L(request.cls == .destructive
+            ? "consent.alert.title.destructive"
+            : "consent.alert.title.sensitive")
+        // One line = one whole sentence. **Never splice in a fragment** like ", claiming to
+        // come from pane t3": word order differs between the two languages, so the smallest
+        // translatable unit is a whole sentence — each of the three origins is its own key.
+        let pid = String(request.peerPID)
+        let who = request.originPane.map { pane in
+            L(request.originVerified ? "consent.alert.request.from-pane"
+                                     : "consent.alert.request.claims-pane",
+              request.peerName, pid, pane, request.summary)
+        } ?? L("consent.alert.request.plain", request.peerName, pid, request.summary)
+
+        var paragraphs = [who]
         // 正文单独一段，并且明写"回车 = 它会被执行"——`--enter` 是"送文本"与"让它跑"
         // 之间唯一的分界，用户批准的到底是哪一件，必须在框里说出来
-        let payload = request.payload.map { text in
-            "\n\n要打进去的是（共 \(request.payloadLength ?? text.count) 个字符）：\n\(text)\n"
-                + (request.payloadEnter
-                    ? "（后面跟一个回车 —— 那个 shell 会**直接执行**它）"
-                    : "（不带回车 —— 只是把字留在命令行上，不会执行）")
-        } ?? ""
-        alert.informativeText = """
-        \(request.peerName)（pid \(request.peerPID)）\(origin)\
-        要求：\(request.summary)\(payload)
-
-        \(request.cacheable ? "允许之后，本次启动内该进程的同类命令不再询问。"
-                             : "**这一次**允许。向别的 pane 注入文本每次都会重新询问。")
-        \(request.tokenPresent ? "（该调用方带着 QuickTerm 注入的来源标记——这只说明它来自某个 pane，不代表被授权。）"
-                               : "（该调用方没有 QuickTerm 的来源标记。）")
-        """
-        alert.addButton(withTitle: "拒绝")   // 第一个 = 默认按钮 = 回车
-        alert.addButton(withTitle: "允许")
+        if let text = request.payload {
+            paragraphs.append(L("consent.alert.payload.header",
+                                request.payloadLength ?? text.count, text))
+            paragraphs.append(L(request.payloadEnter ? "consent.alert.payload.enter"
+                                                     : "consent.alert.payload.no-enter"))
+        }
+        paragraphs.append(L(request.cacheable ? "consent.alert.scope.cacheable"
+                                              : "consent.alert.scope.once"))
+        paragraphs.append(L(request.tokenPresent ? "consent.alert.token.present"
+                                                 : "consent.alert.token.absent"))
+        alert.informativeText = paragraphs.joined(separator: "\n\n")
+        alert.addButton(withTitle: L("consent.alert.button.deny"))    // 第一个 = 默认按钮 = 回车
+        alert.addButton(withTitle: L("consent.alert.button.allow"))
         // NSAlert 默认把第一个按钮的键等价设成回车；这里显式写死，免得将来改按钮顺序时悄悄漂移。
         // Esc 由 NSAlert 自己映射到最后一个按钮，所以"允许"还要再收回一次
         alert.buttons.first?.keyEquivalent = "\r"

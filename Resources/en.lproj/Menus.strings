@@ -1,0 +1,67 @@
+/* QuickTerm — English (base) UI strings for Menus.
+ *
+ * ONE AREA = ONE TABLE. Every `<Area>.strings` inside a `.lproj` is loaded and merged at
+ * runtime, so separate translation passes add their own file instead of all appending to one
+ * shared table. A key declared in two tables fails LocalizationTests.
+ *
+ * English is the development language: every key MUST exist here, and any key missing from
+ * another language falls back to this table (never to the raw key).
+ *
+ * A NEW table file (Panes.strings, StatusBar.strings …) must be added to BOTH .lproj folders
+ * and then `xcodegen generate` re-run — this project is generated from project.yml, and a
+ * table that is not in the project is simply never copied into the app bundle. The build
+ * refuses it (scripts/check-localization.py) rather than letting the app draw raw keys.
+ *
+ * Rules (enforced on every build by scripts/check-localization.py, and by
+ * Tests/LocalizationTests.swift):
+ *   - one key = one WHOLE sentence or one whole label; never a fragment that code glues together;
+ *   - the only format specifier is %1$@, %2$@ … (positional). Never %@, %d, %f. A literal
+ *     percent sign is written %%;
+ *   - a key that varies with a count comes as a ".one"/".other" pair, read through Lp(_:count:_:);
+ *   - keys are lowercase, dot separated, area first: <area>.<subject>.<detail>.
+ *
+ * Not localized, by policy: the quickterm CLI, OSLog messages, wire identifiers, config keys,
+ * pane handles, and the AppKit "undo"/"redo" selector names.
+ */
+
+/* MARK: - menu (Sources/App/MainMenu.swift) */
+
+"menu.app.about" = "About QuickTerm";
+"menu.app.install-cli" = "Install the quickterm Command Line Tool…";
+"menu.app.control-activity" = "Control Plane Activity…";
+"menu.app.hide" = "Hide QuickTerm";
+"menu.app.quit" = "Quit QuickTerm";
+
+"menu.edit" = "Edit";
+"menu.edit.undo" = "Undo";
+"menu.edit.redo" = "Redo";
+"menu.edit.cut" = "Cut";
+"menu.edit.copy" = "Copy";
+"menu.edit.paste" = "Paste";
+"menu.edit.select-all" = "Select All";
+
+"menu.shell" = "Shell";
+"menu.shell.new-terminal" = "New Terminal";
+"menu.shell.file-manager" = "File Manager";
+"menu.shell.new-browser" = "New Browser";
+"menu.shell.clear-terminal" = "Clear Terminal";
+"menu.shell.close-pane" = "Close Pane";
+
+"menu.pane" = "Pane";
+"menu.pane.focus-left" = "Focus Left";
+"menu.pane.focus-right" = "Focus Right";
+"menu.pane.focus-up" = "Focus Up";
+"menu.pane.focus-down" = "Focus Down";
+"menu.pane.toggle-split-direction" = "Toggle Split Direction";
+"menu.pane.toggle-zoom" = "Zoom Pane";
+"menu.pane.equalize" = "Equalize All";
+
+"menu.window" = "Window";
+"menu.window.new-screen" = "New Screen";
+"menu.window.new-screen-on-display" = "New Screen on Display";
+"menu.window.move-screen-to-display" = "Move This Screen to Display";
+"menu.window.join-all-spaces" = "Show on All Desktops";
+"menu.window.close-screen" = "Close Screen";
+"menu.window.minimize" = "Minimize";
+"menu.window.zoom" = "Zoom";
+"menu.window.bring-all-to-front" = "Bring All to Front";

@@ -131,7 +131,7 @@ final class BrowserPaneView: PaneView {
 
         var displayTitle: String {
             if !title.isEmpty { return title }
-            return effectiveURL?.host ?? "新标签页"
+            return effectiveURL?.host ?? L("browser.tab.untitled")
         }
 
         // MARK: WKWebExtensionTab（全部可选；没实现的项 WebKit 用默认值）
@@ -190,7 +190,7 @@ final class BrowserPaneView: PaneView {
         func close(for context: WKWebExtensionContext,
                    completionHandler: @escaping ((any Error)?) -> Void) {
             guard let pane else {
-                completionHandler(BrowserExtensionManager.unsupported("标签已经关闭了"))
+                completionHandler(BrowserExtensionManager.unsupported("The tab is already closed."))
                 return
             }
             if pane.tabs.count > 1 {
@@ -278,7 +278,7 @@ final class BrowserPaneView: PaneView {
     var currentURL: URL? { activeTab?.effectiveURL }
     var lastRequestedURL: URL? { activeTab?.lastRequestedURL }
 
-    override var paneTitle: String { activeTab?.displayTitle ?? "浏览器" }
+    override var paneTitle: String { activeTab?.displayTitle ?? L("browser.pane.title") }
 
     /// 最近一次激活（成为焦点 / 被送来链接）的时间：终端 ⌘+点击链接时选"最近的"浏览器 pane 用
     private(set) var lastActivatedAt = Date()
@@ -687,9 +687,9 @@ final class BrowserPaneView: PaneView {
         tabBarHeight = tabBar.heightAnchor.constraint(equalToConstant: 0)
 
         for (button, symbol, tip, action) in [
-            (backButton, "chevron.left", "后退", #selector(goBack)),
-            (forwardButton, "chevron.right", "前进", #selector(goForward)),
-            (reloadButton, "arrow.clockwise", "重新加载", #selector(reloadOrStop)),
+            (backButton, "chevron.left", L("browser.toolbar.back"), #selector(goBack)),
+            (forwardButton, "chevron.right", L("browser.toolbar.forward"), #selector(goForward)),
+            (reloadButton, "arrow.clockwise", L("browser.toolbar.reload"), #selector(reloadOrStop)),
         ] {
             button.bezelStyle = .accessoryBarAction
             button.isBordered = false
@@ -702,7 +702,7 @@ final class BrowserPaneView: PaneView {
         }
         addressField.pane = self
         addressField.translatesAutoresizingMaskIntoConstraints = false
-        addressField.placeholderString = "输入网址或搜索"
+        addressField.placeholderString = L("browser.address.placeholder")
         addressField.isBezeled = true
         addressField.bezelStyle = .roundedBezel
         addressField.font = .systemFont(ofSize: 12)
@@ -980,8 +980,9 @@ final class BrowserPaneView: PaneView {
         let loading = webView.isLoading
         progressBar.isHidden = !loading
         progressBar.doubleValue = webView.estimatedProgress
+        let reloadLabel = loading ? L("browser.toolbar.stop") : L("browser.toolbar.reload")
         reloadButton.image = NSImage(systemSymbolName: loading ? "xmark" : "arrow.clockwise",
-                                     accessibilityDescription: loading ? "停止" : "重新加载")
+                                     accessibilityDescription: reloadLabel)
     }
 
     private func updateNavigationButtons() {
@@ -1088,7 +1089,8 @@ extension BrowserPaneView {
     func beginWebStoreInstall(id: String) {
         let manager = BrowserExtensionManager.current
         guard manager.isEnabled else {
-            report(title: "扩展已关闭", text: "配置里 browser-extensions = false，先打开再安装。")
+            report(title: L("browser.install.turned-off.title"),
+                   text: L("browser.install.turned-off.body"))
             return
         }
         // 一次只装一个：页面若连着发消息，不能堆起 N 个下载 / ditto / 模态弹窗
@@ -1105,22 +1107,23 @@ extension BrowserPaneView {
                     self?.addressField.placeholderString = text
                 }
                 let alert = NSAlert()
-                alert.messageText = "安装「\(staged.displayName)」？"
+                alert.messageText = L("browser.install.confirm.title", staged.displayName)
                 let permissions = staged.permissionSummary
                 alert.informativeText = permissions.isEmpty
-                    ? "该扩展没有声明额外权限。"
-                    : "它将获得：\n" + permissions.joined(separator: "\n")
-                alert.addButton(withTitle: "安装")
-                alert.addButton(withTitle: "取消")
+                    ? L("browser.install.confirm.no-permissions")
+                    : L("browser.install.confirm.permissions", permissions.joined(separator: "\n"))
+                alert.addButton(withTitle: L("browser.install.confirm.button"))
+                alert.addButton(withTitle: L("browser.button.cancel"))
                 guard alert.runModal() == .alertFirstButtonReturn else {
                     manager.discard(staged)
                     return
                 }
-                self.addressField.placeholderString = "正在安装…"
+                self.addressField.placeholderString = L("browser.install.progress.installing")
                 let installed = try await manager.commit(staged)
-                self.report(title: "已安装「\(installed.displayName)」", text: "扩展按钮在地址栏右侧。")
+                self.report(title: L("browser.install.done.title", installed.displayName),
+                            text: L("browser.install.done.body"))
             } catch {
-                self.report(title: "安装失败", text: error.localizedDescription)
+                self.report(title: L("browser.install.failed.title"), text: error.localizedDescription)
             }
         }
     }
@@ -1129,7 +1132,7 @@ extension BrowserPaneView {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = text
-        alert.addButton(withTitle: "好")
+        alert.addButton(withTitle: L("browser.button.ok"))
         alert.runModal()
     }
 }
@@ -1224,7 +1227,7 @@ extension BrowserPaneView: WKNavigationDelegate {
         let now = Date()
         if let last = tab.lastProcessTerminationAt, now.timeIntervalSince(last) < 10 {
             showError(NSError(domain: "QuickTerm.Browser", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "页面进程反复崩溃，已停止自动重载。按 Cmd+R 重试。"]), in: tab)
+                NSLocalizedDescriptionKey: L("browser.error.repeated-crash")]), in: tab)
             return
         }
         tab.lastProcessTerminationAt = now
@@ -1238,11 +1241,12 @@ extension BrowserPaneView: WKNavigationDelegate {
         if ns.domain == "WebKitErrorDomain" && (ns.code == 102 || ns.code == 204) { return }
         let failing = (ns.userInfo[NSURLErrorFailingURLErrorKey] as? URL) ?? tab.lastRequestedURL
         let url = failing?.absoluteString ?? ""
+        let title = L("browser.error.title")
         let html = """
         <html><head><meta name="color-scheme" content="dark light"><style>
         body{font:14px -apple-system,system-ui;color:#c0caf5;background:transparent;padding:32px}
         h2{font-weight:600;margin:0 0 8px}code{color:#7aa2f7;word-break:break-all}p{opacity:.8}
-        </style></head><body><h2>页面无法加载</h2><p>\(Self.escape(ns.localizedDescription))</p>
+        </style></head><body><h2>\(Self.escape(title))</h2><p>\(Self.escape(ns.localizedDescription))</p>
         <p><code>\(Self.escape(url))</code></p></body></html>
         """
         // 以失败的网址"模拟响应"展示错误页：webView.url 保持为它（地址栏 / 存档 / Cmd+R 不变成 about:blank），
@@ -1272,7 +1276,7 @@ extension BrowserPaneView: WKDownloadDelegate {
         download.delegate = self
         guard downloads.item(for: download) == nil else { return }
         let guessed = download.originalRequest?.url?.lastPathComponent ?? ""
-        let filename = guessed.isEmpty || guessed == "/" ? "下载中的文件" : guessed
+        let filename = guessed.isEmpty || guessed == "/" ? L("browser.download.default-filename") : guessed
         downloads.add(BrowserDownloadItem(download: download, filename: filename))
     }
 
@@ -1371,19 +1375,19 @@ extension BrowserPaneView: WKUIDelegate {
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
                  initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
         let alert = NSAlert()
-        alert.messageText = frame.request.url?.host ?? "页面消息"
+        alert.messageText = frame.request.url?.host ?? L("browser.dialog.alert-title")
         alert.informativeText = message
-        alert.addButton(withTitle: "好")
+        alert.addButton(withTitle: L("browser.button.ok"))
         present(alert) { _ in completionHandler() }
     }
 
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
                  initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
         let alert = NSAlert()
-        alert.messageText = frame.request.url?.host ?? "页面确认"
+        alert.messageText = frame.request.url?.host ?? L("browser.dialog.confirm-title")
         alert.informativeText = message
-        alert.addButton(withTitle: "好")
-        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: L("browser.button.ok"))
+        alert.addButton(withTitle: L("browser.button.cancel"))
         present(alert) { completionHandler($0 == .alertFirstButtonReturn) }
     }
 
@@ -1394,8 +1398,8 @@ extension BrowserPaneView: WKUIDelegate {
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
         field.stringValue = defaultText ?? ""
         alert.accessoryView = field
-        alert.addButton(withTitle: "好")
-        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: L("browser.button.ok"))
+        alert.addButton(withTitle: L("browser.button.cancel"))
         present(alert) { completionHandler($0 == .alertFirstButtonReturn ? field.stringValue : nil) }
     }
 

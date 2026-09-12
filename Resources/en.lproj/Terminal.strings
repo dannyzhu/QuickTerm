@@ -1,0 +1,66 @@
+/* QuickTerm — English (base) UI strings for the terminal pane.
+ *
+ * ONE AREA = ONE TABLE. Every `<Area>.strings` inside a `.lproj` is loaded and merged at
+ * runtime, so separate translation passes add their own file instead of all appending to one
+ * shared table. A key declared in two tables fails LocalizationTests.
+ *
+ * English is the development language: every key MUST exist here, and any key missing from
+ * another language falls back to this table (never to the raw key).
+ *
+ * A NEW table file (Panes.strings, StatusBar.strings …) must be added to BOTH .lproj folders
+ * and then `xcodegen generate` re-run — this project is generated from project.yml, and a
+ * table that is not in the project is simply never copied into the app bundle. The build
+ * refuses it (scripts/check-localization.py) rather than letting the app draw raw keys.
+ *
+ * Rules (enforced on every build by scripts/check-localization.py, and by
+ * Tests/LocalizationTests.swift):
+ *   - one key = one WHOLE sentence or one whole label; never a fragment that code glues together;
+ *   - the only format specifier is %1$@, %2$@ … (positional). Never %@, %d, %f. A literal
+ *     percent sign is written %%;
+ *   - a key that varies with a count comes as a ".one"/".other" pair, read through Lp(_:count:_:);
+ *   - keys are lowercase, dot separated, area first: <area>.<subject>.<detail>.
+ *
+ * Not localized, by policy: the quickterm CLI, OSLog messages, wire identifiers, config keys,
+ * pane handles, and the AppKit "undo"/"redo" selector names.
+ */
+
+/* MARK: - terminal context menu (Sources/GhosttyEmbed/Surface View/SurfaceView_AppKit.swift) */
+
+"terminal.menu.copy" = "Copy";
+"terminal.menu.paste" = "Paste";
+"terminal.menu.reset" = "Reset Terminal";
+"terminal.menu.readonly" = "Terminal Read-Only";
+"terminal.menu.change-title" = "Change Terminal Title…";
+
+/* %1$@ is the search engine, %2$@ the selected text (truncated to 24 characters). */
+"terminal.menu.search-selection" = "Search %1$@ for “%2$@”";
+
+/* Engine names read out of the `browser-search` template. Google, Bing and DuckDuckGo spell
+ * themselves the same way in both languages and stay literals in the code. */
+"terminal.search.engine-baidu" = "Baidu";
+"terminal.search.engine-web" = "the web";
+
+/* MARK: - change title dialog (same file, promptTitle) */
+
+"terminal.rename.title" = "Change Terminal Title";
+"terminal.rename.hint" = "Leave it blank to restore the default.";
+"terminal.rename.button.ok" = "OK";
+"terminal.rename.button.cancel" = "Cancel";
+
+/* MARK: - read-only badge and its popover (Sources/GhosttyEmbed/Surface View/SurfaceView.swift)
+ *
+ * Drawn over a surface that "Terminal Read-Only" put into read-only mode. These read through
+ * the global L(…) rather than an @EnvironmentObject: the badge is built inside the Ghostty
+ * surface hierarchy, which the app's Localization object is not injected into, so it picks up
+ * a language change the next time the badge is built rather than the instant it happens.
+ */
+
+"terminal.readonly.badge" = "Read-only";
+"terminal.readonly.accessibility" = "Read-only terminal";
+"terminal.readonly.title" = "Read-Only Mode";
+"terminal.readonly.detail" = "This terminal is in read-only mode. You can still view, select and scroll through the content, but no input reaches the program running in it.";
+"terminal.readonly.disable" = "Turn Off";
+
+/* MARK: - accessibility */
+
+"terminal.accessibility.help" = "Terminal content area";

@@ -1,0 +1,56 @@
+/* QuickTerm — Simplified Chinese UI strings for Menus.
+ *
+ * A new table file must be added to BOTH .lproj folders and then `xcodegen generate` re-run,
+ * or it is never copied into the app bundle (the build refuses it).
+ *
+ * Same key set as en.lproj/Menus.strings (Tests/LocalizationTests.swift pins that).
+ * A key missing here falls back to the English value, never to the raw key — but a missing key
+ * is a bug, not a feature.
+ *
+ * The positional arguments (%1$@, %2$@ …) may be reordered freely to fit Chinese word order;
+ * the SET of indices used must match the English value.
+ */
+
+/* MARK: - menu (Sources/App/MainMenu.swift) */
+
+"menu.app.about" = "关于 QuickTerm";
+"menu.app.install-cli" = "安装 quickterm 命令行工具…";
+"menu.app.control-activity" = "控制面活动…";
+"menu.app.hide" = "隐藏 QuickTerm";
+"menu.app.quit" = "退出 QuickTerm";
+
+"menu.edit" = "编辑";
+"menu.edit.undo" = "撤销";
+"menu.edit.redo" = "重做";
+"menu.edit.cut" = "剪切";
+"menu.edit.copy" = "拷贝";
+"menu.edit.paste" = "粘贴";
+"menu.edit.select-all" = "全选";
+
+/* same-as-english: 中文界面里 Shell 就叫 Shell。 */
+"menu.shell" = "Shell";
+"menu.shell.new-terminal" = "新建终端";
+"menu.shell.file-manager" = "文件管理器";
+"menu.shell.new-browser" = "新建浏览器";
+"menu.shell.clear-terminal" = "清屏";
+"menu.shell.close-pane" = "关闭 Pane";
+
+/* same-as-english: 全 app 的中文都把一个格子叫 pane（「关闭 Pane」「Pane 缩放」），不译。 */
+"menu.pane" = "Pane";
+"menu.pane.focus-left" = "焦点左移";
+"menu.pane.focus-right" = "焦点右移";
+"menu.pane.focus-up" = "焦点上移";
+"menu.pane.focus-down" = "焦点下移";
+"menu.pane.toggle-split-direction" = "切换分裂方向";
+"menu.pane.toggle-zoom" = "Pane 缩放";
+"menu.pane.equalize" = "全部等分";
+
+"menu.window" = "窗口";
+"menu.window.new-screen" = "新建屏幕";
+"menu.window.new-screen-on-display" = "在显示器上新建屏幕";
+"menu.window.move-screen-to-display" = "将此屏幕移到显示器";
+"menu.window.join-all-spaces" = "在所有桌面显示";
+"menu.window.close-screen" = "关闭屏幕";
+"menu.window.minimize" = "最小化";
+"menu.window.zoom" = "缩放";
+"menu.window.bring-all-to-front" = "前置全部窗口";

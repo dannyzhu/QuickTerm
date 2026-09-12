@@ -145,7 +145,7 @@ final class WorkspaceTitleControlTests: XCTestCase {
         harness.app.undoManager.removeAllActions()
         let payload = try harness.mutation(try harness.run("workspace.set", target: ":2",
                                                            args: ["title": .string("after")]))
-        XCTAssertEqual(payload["undo"]?.stringValue, "控制面：workspace set")
+        XCTAssertEqual(payload["undo"]?.stringValue, "Control plane: workspace set")
         harness.app.undoManager.undo()
         harness.spin(0.2)
         XCTAssertEqual(try title(of: 2), "before")

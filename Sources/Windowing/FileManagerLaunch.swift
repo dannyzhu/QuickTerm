@@ -64,8 +64,7 @@ struct FileManagerLaunch {
         let pathDirs = extraSearchDirs.map(expand) + (pathEnv.map { [$0] } ?? [])
         let environment = ["PATH": pathDirs.joined(separator: ":")]
         guard let exe = resolve(program: program, pathEnv: pathEnv, home: home, isExecutable: isExecutable) else {
-            let hint = "QuickTerm: 未找到文件管理器 \"\(program)\"。安装: brew install yazi"
-                + "（或在 config.toml 设置 file-manager-command）"
+            let hint = L("window.file-manager.not-found", program)
             // 内层由用户登录 shell 解析：只用裸 "$SHELL"（fish 不认 ${…:-…}；login(1) 总会设置 SHELL）
             let script = "printf '%s\\n' \(Ghostty.Shell.quote(hint)); exec \"$SHELL\" -l"
             return FileManagerLaunch(command: viaLoginShell(script),

@@ -236,6 +236,9 @@ final class WorkspaceModel: ObservableObject {
 struct RootView: View {
     @ObservedObject var model: WorkspaceModel
     @EnvironmentObject var theme: ThemeManager
+    // Installed on the root view by MainWindowController; reading it here is what re-renders
+    // the empty-workspace hint when the language changes.
+    @EnvironmentObject private var i18n: Localization
     let ghostty: Ghostty.App
     let stats: SystemStatsService
     let action: (TerminalSplitOperation) -> Void
@@ -288,8 +291,8 @@ struct RootView: View {
                 // 空工作区：最后一个 pane 关掉后窗口保留，提示怎么开新终端
                 if model.layout.isEmpty && model.floating.isEmpty {
                     VStack(spacing: 6) {
-                        Text("\(model.newTerminalCombo)  新建终端")
-                        Text("Cmd+Q  退出").opacity(0.6)
+                        Text(i18n("window.empty.new-terminal", model.newTerminalCombo))
+                        Text(i18n("window.empty.quit")).opacity(0.6)
                     }
                     .font(.custom("Monaco", size: 14))
                     .foregroundStyle(theme.foreground.opacity(0.55))

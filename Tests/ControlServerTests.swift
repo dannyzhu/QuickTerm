@@ -151,6 +151,11 @@ final class ControlServerTests: XCTestCase {
     /// 直接把一条破坏性命令批准了（日志里留下 `控制面确认结果：allow`，用户根本没读那个框）。
     /// 安全闸门的默认答案只能是"不"
     func testConsentAlertDefaultsToDeny() {
+        // The alert text follows the UI language; this case pins it so it cannot go red on a
+        // machine whose system language is English.
+        let language = Localization.shared.language
+        defer { Localization.shared.setLanguage(language) }
+        Localization.shared.setLanguage(.zh)
         let alert = ControlConsent.makeAlert(.init(peerName: "node", peerPID: 4821, cls: .destructive,
                                                    summary: "关闭 pane t7", originPane: "t3",
                                                    tokenPresent: true))

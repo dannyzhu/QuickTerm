@@ -473,14 +473,15 @@ final class BrowserExtensionTests: XCTestCase {
     /// 拼图菜单：没装扩展时只有导入 / 商店 / 文件夹三项 + 提示
     @MainActor
     func testExtensionMenuCommands() throws {
+        pinUILanguage(.en)
         let previous = BrowserPaneView.settings
         defer { BrowserPaneView.settings = previous }
         BrowserPaneView.settings.home = "about:blank"
         let pane = BrowserPaneView(url: URL(string: "about:blank"))
         let titles = pane.extensionBar.buildMenu().items.map(\.title)
-        XCTAssertTrue(titles.contains("从 Chrome 导入已安装扩展…"), "\(titles)")
-        XCTAssertTrue(titles.contains("打开 Chrome Web Store"))
-        XCTAssertTrue(titles.contains("打开扩展文件夹"))
+        XCTAssertTrue(titles.contains("Import Installed Extensions from Chrome…"), "\(titles)")
+        XCTAssertTrue(titles.contains("Open the Chrome Web Store"))
+        XCTAssertTrue(titles.contains("Open the Extensions Folder"))
     }
 
     // MARK: - 固定到工具条
@@ -602,6 +603,7 @@ final class BrowserExtensionTests: XCTestCase {
     /// 拼图菜单：每个扩展一行，子菜单里「固定到工具条」的勾选跟着记录走；停用的加后缀
     @MainActor
     func testExtensionMenuPinItem() throws {
+        pinUILanguage(.en)
         let store = try Self.makeStore()
         defer { try? FileManager.default.removeItem(at: store) }
         let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
@@ -618,15 +620,15 @@ final class BrowserExtensionTests: XCTestCase {
             let entry = try XCTUnwrap(bar.buildMenu().items.first { $0.title.hasPrefix(item.displayName) })
             return try XCTUnwrap(entry.submenu?.items.first { $0.title == title })
         }
-        XCTAssertEqual(try submenuItem("固定到工具条").state, .off, "默认不固定")
-        XCTAssertEqual(try submenuItem("启用").state, .on)
+        XCTAssertEqual(try submenuItem("Pin to Toolbar").state, .off, "默认不固定")
+        XCTAssertEqual(try submenuItem("Enabled").state, .on)
         manager.setPinned(true, for: item)
-        XCTAssertEqual(try submenuItem("固定到工具条").state, .on)
+        XCTAssertEqual(try submenuItem("Pin to Toolbar").state, .on)
 
         manager.setEnabled(false, for: item)
         let titles = bar.buildMenu().items.map(\.title)
-        XCTAssertTrue(titles.contains("\(item.displayName)（已停用）"), "\(titles)")
-        XCTAssertEqual(try submenuItem("启用").state, .off)
+        XCTAssertTrue(titles.contains("\(item.displayName) (Disabled)"), "\(titles)")
+        XCTAssertEqual(try submenuItem("Enabled").state, .off)
     }
 
     /// 地址栏保底：固定的扩展多到摆不下时，压的是扩展条，不是地址栏；pane 宽度也不能被内部约束改掉
@@ -815,6 +817,7 @@ final class BrowserExtensionTests: XCTestCase {
     /// `action.onClicked` 不跑 = 用户看到的"点了没反应"
     @MainActor
     func testActionClickAndMenuGoThroughManagerSoBackgroundGetsWoken() throws {
+        pinUILanguage(.en)
         let store = try Self.makeStore()
         defer { try? FileManager.default.removeItem(at: store) }
         let manager = BrowserExtensionManager(configuration: .nonPersistent(), storeDirectory: store)
@@ -845,7 +848,7 @@ final class BrowserExtensionTests: XCTestCase {
 
         // 拼图菜单的「打开」= 点它的工具条按钮（没固定 / 放不下时的唯一入口），同样要唤醒后台
         let entry = try XCTUnwrap(bar.buildMenu().items.first { $0.title.hasPrefix(item.displayName) })
-        let open = try XCTUnwrap(entry.submenu?.items.first { $0.title == "打开" })
+        let open = try XCTUnwrap(entry.submenu?.items.first { $0.title == "Open" })
         let selector = try XCTUnwrap(open.action)
         _ = (open.target as? NSObject)?.perform(selector, with: open)
         XCTAssertEqual(dispatched.count, 2, "拼图菜单的「打开」走同一条路")

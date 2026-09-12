@@ -334,6 +334,9 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # 每个配置项只在 Sources/Config/ConfigSchema.swift 那张注册表里声明一次，这一段就是它。
 # 配置项按功能分组 —— 一个分组 = 设置界面的一个 tab。
 
+[general]
+# language = "auto"  # auto = 跟随系统 | en | zh —— 只管界面；程序日志与命令行永远是英文
+
 [appearance]
 # theme = "tokyo-night"  # 或 "ghostty"：不覆盖配色，完全跟随 ghostty 配置
 # pane-opacity = 0.92    # pane 背景透明度（0.5–1.0；非激活基准，文字不受影响）

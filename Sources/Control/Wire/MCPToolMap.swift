@@ -298,9 +298,11 @@ enum MCPToolMap {
     /// 刻意**不**上 MCP 的命令，以及为什么。`MCPToolMapTests` 要求命令表里的每一条
     /// 要么被某个工具覆盖，要么在这张表里写明理由——"忘了加"不可能悄悄溜过去
     static let excluded: [String: String] = [
-        "install-cli": "在 PATH 里造软链是安装动作，不该由 agent 代劳（人跑一次 quickterm install-cli 即可）",
-        "events.follow": "一条永不结束的 NDJSON 流塞不进一次工具调用；MCP 这边用 quickterm_poll_events",
-        "mcp": "就是这个服务本身",
+        "install-cli": "Symlinking into PATH is an installation step, not something an agent should do "
+            + "on the user's behalf (a human runs `quickterm install-cli` once)",
+        "events.follow": "A never-ending NDJSON stream does not fit into one tool call; "
+            + "MCP callers use quickterm_poll_events instead",
+        "mcp": "This server itself",
     ]
 
     static func tool(named name: String) -> MCPTool? { tools.first { $0.name == name } }
@@ -544,7 +546,7 @@ enum MCPSamples {
         command: "pane.set", applied: true, changed: true, dryRun: false,
         changes: [ControlChange("1:2.t7.zoom", from: "off", to: "on")],
         pane: paneInfo, panes: [paneInfo], workspace: workspaceInfo, screen: screenInfo,
-        focusPending: true, confirmPending: false, undo: "控制面：pane set",
+        focusPending: true, confirmPending: false, undo: "Control plane: pane set",
         note: "Lands through the config.toml watcher, in effect about 0.2s later",
         spec: ControlSpecApplyReport(mode: "reuse", scope: "workspace", created: ["t9"],
                                      reused: ["t3"], closed: ["t4"], partial: false,

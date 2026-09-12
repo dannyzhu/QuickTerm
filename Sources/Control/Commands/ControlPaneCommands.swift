@@ -99,7 +99,7 @@ extension ControlCommandRunner {
             changes: [ControlChange(path(controller, workspace),
                                     from: ControlChange.count(live, "pane"),
                                     to: ControlChange.count(live + 1, "pane"))],
-            controllers: [controller], undoName: "控制面：\(ctx.spec.cli)",
+            controllers: [controller], undoCommand: ctx.spec.cli,
             target: path(controller, workspace, anchor))
 
         var payload = try commit(mutation) {
@@ -177,7 +177,7 @@ extension ControlCommandRunner {
                                     from: "open \"\(title)\"", to: "closed", sensitive: true)],
             controllers: [hit.controller],
             // **不登记撤销**：进程已经被结束了，把布局放回去只会造出一个"好像还在"的假象
-            undoName: nil,
+            undoCommand: nil,
             target: path(hit.controller, hit.workspace, hit.pane))
 
         // 会不会弹确认只有 `closePane` 自己知道（文件管理器 pane 有子进程也不弹；
@@ -234,7 +234,7 @@ extension ControlCommandRunner {
         }
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
-            controllers: [controller], undoName: nil,   // 焦点不进撤销栈（⌘Z 撤销焦点只会更乱）
+            controllers: [controller], undoCommand: nil,   // 焦点不进撤销栈（⌘Z 撤销焦点只会更乱）
             target: path(controller, hit.workspace, hit.pane))
         var payload = try commit(mutation) {
             if controller.model.activeIndex != hit.workspace { controller.switchWorkspace(hit.workspace) }
@@ -279,7 +279,7 @@ extension ControlCommandRunner {
             guard let anchor, let zone else {
                 let mutation = ControlMutationRequest(
                     command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: [],
-                    controllers: [hit.controller], undoName: nil,
+                    controllers: [hit.controller], undoCommand: nil,
                     target: path(hit.controller, hit.workspace, hit.pane))
                 var payload = try commit(mutation) {}
                 payload.pane = paneInfo(hit, encoder: ctx.encoder)
@@ -289,7 +289,7 @@ extension ControlCommandRunner {
                 command: ctx.spec.name, request: ctx.request, peer: ctx.peer,
                 changes: [ControlChange(path(hit.controller, hit.workspace, hit.pane),
                                         from: "in place", to: "\(ctx.string("where") ?? "right") of \(handleName(anchor))")],
-                controllers: [hit.controller], undoName: "控制面：\(ctx.spec.cli)",
+                controllers: [hit.controller], undoCommand: ctx.spec.cli,
                 target: path(hit.controller, hit.workspace, hit.pane))
             var payload = try commit(mutation) {
                 hit.controller.controlReplace(hit.pane, workspace: hit.workspace,
@@ -308,7 +308,7 @@ extension ControlCommandRunner {
                                     from: path(source, hit.workspace),
                                     to: path(target, destination.workspace))],
             controllers: source === target ? [source] : [source, target],
-            undoName: "控制面：\(ctx.spec.cli)",
+            undoCommand: ctx.spec.cli,
             target: path(target, destination.workspace))
 
         var moved = false
@@ -358,7 +358,7 @@ extension ControlCommandRunner {
             changes: [ControlChange(path(controller, hit.workspace),
                                     from: "\(handleName(hit.pane)) ↔ \(handleName(other.pane))",
                                     to: "\(handleName(other.pane)) ↔ \(handleName(hit.pane))")],
-            controllers: [controller], undoName: "控制面：\(ctx.spec.cli)",
+            controllers: [controller], undoCommand: ctx.spec.cli,
             target: path(controller, hit.workspace, hit.pane))
         var payload = try commit(mutation) {
             guard controller.controlSwap(hit.pane, other.pane, workspace: hit.workspace) else {
@@ -509,7 +509,7 @@ extension ControlCommandRunner {
 
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
-            controllers: [controller], undoName: "控制面：\(ctx.spec.cli)", target: base)
+            controllers: [controller], undoCommand: ctx.spec.cli, target: base)
         var payload = try commit(mutation) {
             if let title, let surfaceForTitle { surfaceForTitle.setControlTitle(title) }
             // **层先定下来**：float 决定 pane 在哪一层，zoom / width / ratio 都是层内属性。
@@ -599,7 +599,7 @@ extension ControlCommandRunner {
 
         let mutation = ControlMutationRequest(
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
-            controllers: [controller], undoName: "控制面：\(ctx.spec.cli)", target: base)
+            controllers: [controller], undoCommand: ctx.spec.cli, target: base)
         var payload = try commit(mutation) { apply() }
         payload.pane = paneInfo(hit, encoder: ctx.encoder)
         payload.workspace = ctx.encoder.workspaceInfo(controller, index: hit.workspace)

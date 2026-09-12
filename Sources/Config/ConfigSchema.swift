@@ -15,6 +15,7 @@ import Foundation
 /// `[browser]` / `[control]`）。**旧的扁平写法一律永远接受**（见每个键的 `legacy`）：
 /// 用户的 ~/.config/quickterm/config.toml 不必改一个字。
 enum ConfigSection: String, CaseIterable, Codable {
+    case general
     case appearance
     case workspace
     case terminal
@@ -25,6 +26,7 @@ enum ConfigSection: String, CaseIterable, Codable {
 
     var titleZH: String {
         switch self {
+        case .general: "通用"
         case .appearance: "外观"
         case .workspace: "工作区"
         case .terminal: "终端"
@@ -37,6 +39,7 @@ enum ConfigSection: String, CaseIterable, Codable {
 
     var titleEN: String {
         switch self {
+        case .general: "General"
         case .appearance: "Appearance"
         case .workspace: "Workspaces"
         case .terminal: "Terminal"
@@ -46,6 +49,12 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .ghostty: "Ghostty passthrough"
         }
     }
+
+    /// Section header and note, rendered in the **active** language: the template comments
+    /// follow the UI language. Both wordings stay — a future settings window reads the same
+    /// registry, just in the language it is drawn in.
+    var title: String { ConfigSchema.templateLanguage == .zh ? titleZH : titleEN }
+    var note: String? { ConfigSchema.templateLanguage == .zh ? noteZH : noteEN }
 
     /// 这一段在模板里写在段头下面的说明（可多行）
     var noteZH: String? {
@@ -61,6 +70,25 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .ghostty:
             """
             原样透传给引擎（最高优先级），任意 ghostty 选项。
+            """
+        default: nil
+        }
+    }
+
+    /// English counterpart of `noteZH` (the template writes whichever the UI language is)
+    var noteEN: String? {
+        switch self {
+        case .control:
+            """
+            Control plane (the quickterm CLI / AI agents). Socket: ~/Library/Application Support/QuickTerm/control.sock
+            """
+        case .keybinds:
+            """
+            action = "modifiers+key"; "none" unbinds. The action list is the Cmd+K cheat sheet.
+            """
+        case .ghostty:
+            """
+            Passed through to the engine verbatim (highest priority); any ghostty option.
             """
         default: nil
         }
@@ -83,6 +111,52 @@ enum ConfigSection: String, CaseIterable, Codable {
 
     /// 有注册表项的分组 = 设置界面的 tab（`[keybinds]` 自有界面，`[ghostty]` 是文本框）
     var hasRegisteredKeys: Bool { !(self == .keybinds || self == .ghostty) }
+}
+
+/// The UI language QuickTerm draws itself in.
+///
+/// Pure Foundation and declared here on purpose: this file is compiled into the `quickterm`
+/// CLI as well as the app, and the config-file template renders its comments in the active
+/// language. `Localization` (app side) resolves and owns the live value; this type is only the
+/// vocabulary plus the `auto` resolution rule, so both sides cannot drift.
+///
+/// English is the base language, and it is also what `auto` falls back to when the system asks
+/// for a language QuickTerm does not ship.
+enum AppLanguage: String, CaseIterable, Codable {
+    case en
+    case zh
+
+    /// The `.lproj` directory this language lives in (`zh` ships as Simplified Chinese).
+    var lprojName: String { self == .zh ? "zh-Hans" : "en" }
+
+    /// A BCP-47-ish tag (`zh-Hans`, `zh_CN`, `en-US`) narrowed to a language QuickTerm ships.
+    /// `nil` = not one of ours. Traditional Chinese resolves to Simplified: it is much closer
+    /// to what that reader wants than English is.
+    static func normalize(_ raw: String) -> AppLanguage? {
+        let lower = raw.trimmingCharacters(in: .whitespaces).lowercased()
+        for language in allCases {
+            let tag = language.rawValue
+            if lower == tag || lower.hasPrefix("\(tag)-") || lower.hasPrefix("\(tag)_") { return language }
+        }
+        return nil
+    }
+
+    /// What the system's preferred languages ask for, English when none of them is ours.
+    static func system(_ preferred: [String] = Locale.preferredLanguages) -> AppLanguage {
+        for tag in preferred {
+            if let language = normalize(tag) { return language }
+        }
+        return .en
+    }
+
+    /// `[general] language` → the language to draw in. `auto` (and anything unrecognised,
+    /// which the schema rejects long before it gets here) follows the system.
+    static func resolve(configValue: String,
+                        preferred: [String] = Locale.preferredLanguages) -> AppLanguage {
+        let value = configValue.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !value.isEmpty, value != "auto" else { return system(preferred) }
+        return normalize(value) ?? system(preferred)
+    }
 }
 
 /// 配置文件里的一个写法（段名 + 键名）。段名 `""` = 第一个 `[section]` 之前的顶层键
@@ -121,6 +195,24 @@ enum ConfigKind: Equatable {
         }
     }
 
+    /// English counterpart of `expectationZH`, read through `expectation`.
+    var expectationEN: String {
+        switch self {
+        case .bool: "true / false (1 / 0, yes / no and on / off are accepted too)"
+        case .int(let lo, let hi): "a whole number from \(lo) to \(hi)"
+        case .double(let lo, let hi): "a number between \(lo) and \(hi)"
+        case .enumeration(let values, let strict):
+            strict ? values.joined(separator: " | ")
+                   : "\(values.joined(separator: " | ")), or any other non-empty value"
+        case .string: "a non-empty string"
+        case .path: "a path (~ is expanded)"
+        }
+    }
+
+    /// What this key accepts, in the **active** language — the same rule the template
+    /// comments and `ConfigKeySpec.help` follow.
+    var expectation: String { ConfigSchema.templateLanguage == .zh ? expectationZH : expectationEN }
+
     /// 越界怎么办：数值 clamp，其余（布尔 / 枚举 / 空字符串）拒绝并保留默认
     var outOfRange: ConfigOutOfRange {
         switch self {
@@ -148,6 +240,13 @@ struct ConfigDiagnostic: Equatable {
     var ref: ConfigKeyRef
     var raw: String
     var messageZH: String
+    /// English counterpart of `messageZH`. Both wordings are built up front, like every other
+    /// pair in this registry: the settings window will draw `message` (the active UI language)
+    /// while the program log stays English whatever the window is drawn in.
+    var messageEN: String
+
+    /// The sentence to show the user, in the **active** language.
+    var message: String { ConfigSchema.templateLanguage == .zh ? messageZH : messageEN }
 
     var displayKey: String { ref.section.isEmpty ? ref.name : "[\(ref.section)] \(ref.name)" }
 }
@@ -239,6 +338,12 @@ struct ConfigKeySpec {
     /// 这个配置项认得的所有写法（新名在前）
     var allRefs: [ConfigKeyRef] { [canonical] + legacy }
 
+    /// Label and help in the **active** language (`ConfigSchema.templateLanguage`). Both
+    /// wordings stay: the template comments, the future settings window and the two READMEs
+    /// all read this one registry, only in different languages.
+    var label: String { ConfigSchema.templateLanguage == .zh ? labelZH : labelEN }
+    var help: String { ConfigSchema.templateLanguage == .zh ? helpZH : helpEN }
+
     /// 模板 / README 里那一行左半边（`# home = "https://www.google.com"`）
     var templateAssignment: String { "# \(key) = \(defaultValue.literal)" }
 
@@ -250,7 +355,7 @@ struct ConfigKeySpec {
         let assignment = templateAssignment
         let column = max(width ?? assignment.count, assignment.count)
         let pad = String(repeating: " ", count: max(1, column - assignment.count + 2))
-        let help = helpZH.split(separator: "\n", omittingEmptySubsequences: false)
+        let help = self.help.split(separator: "\n", omittingEmptySubsequences: false)
         var out = ["\(assignment)\(pad)# \(help[0])"]
         // 续行与第一行的 `#` 对齐：模板本身也要好读
         let indent = String(repeating: " ", count: column + 1)
@@ -307,7 +412,32 @@ struct ConfigKeySpec {
 enum ConfigSchema {
     // MARK: 注册表
 
+    /// The language the template comments are written in. On the app side `Localization`
+    /// keeps it in sync (a config hot reload moves it); the `quickterm` CLI never renders the
+    /// template, so following the system is enough there.
+    /// **Deliberately not inside `Localization`**: this file is compiled into the CLI too, and
+    /// that target has neither AppKit nor the `.lproj` directories.
+    nonisolated(unsafe) static var templateLanguage: AppLanguage = AppLanguage.system()
+
     static let keys: [ConfigKeySpec] = [
+        // MARK: [general]
+        ConfigKeySpec(.general, "language",
+                      .enumeration(values: ["auto", "en", "zh"], strict: true),
+                      default: .string("auto"),
+                      labelZH: "界面语言", labelEN: "Language",
+                      helpZH: """
+                      auto = 跟随系统 | en = English | zh = 简体中文
+                      只管**界面**：程序日志与 quickterm 命令行始终是英文
+                      """,
+                      helpEN: """
+                      auto (follow the system) | en | zh
+                      UI only: the logs and the quickterm CLI are English in both languages
+                      """,
+                      valueAliases: ["zh-hans": "zh", "zh-cn": "zh", "zh_cn": "zh",
+                                     "zh-hant": "zh", "zh-tw": "zh",
+                                     "en-us": "en", "en_us": "en", "en-gb": "en",
+                                     "system": "auto"]),
+
         // MARK: [appearance]
         ConfigKeySpec(.appearance, "theme", .string, default: .string("tokyo-night"),
                       labelZH: "主题", labelEN: "Theme",
@@ -536,11 +666,15 @@ enum ConfigSchema {
         func take(_ spec: ConfigKeySpec, _ ref: ConfigKeyRef) -> ConfigValue? {
             guard let raw = raws[ref]?.last else { return nil }
             if let value = spec.coerce(raw) { return value }
+            let display = ref.section.isEmpty ? ref.name : "[\(ref.section)] \(ref.name)"
             notes.append(ConfigDiagnostic(
                 id: spec.id, ref: ref, raw: raw,
-                messageZH: "\(ref.section.isEmpty ? ref.name : "[\(ref.section)] \(ref.name)") = \(raw) "
+                messageZH: "\(display) = \(raw) "
                     + "不是合法的值（要 \(spec.kind.expectationZH)），这一行没生效，"
-                    + "仍按默认值 \(spec.defaultValue.literal)"))
+                    + "仍按默认值 \(spec.defaultValue.literal)",
+                messageEN: "\(display) = \(raw) is not a valid value "
+                    + "(expected \(spec.kind.expectationEN)); that line had no effect, "
+                    + "the default \(spec.defaultValue.literal) is still in use"))
             return nil
         }
         for spec in keys {
@@ -572,13 +706,7 @@ enum ConfigSchema {
 
     /// 模板 = 注册表渲染出来的那份带注释的配置文件。**没有第二份手写模板**
     static var template: String {
-        var out = [
-            "# QuickTerm 配置（spec §4.7）。保存即热重载。",
-            "# 配置项按功能分组，一个分组 = 设置界面的一个 tab；下面每一行都是默认值。",
-            "# 兼容：旧的扁平写法（theme = … / browser-home = … / [control] enabled = …）永远有效，",
-            "# 已有配置文件一个字都不用改。",
-            "",
-        ]
+        var out = templateHeaderLines + [""]
         for section in ConfigSection.allCases {
             out.append(contentsOf: sectionHeaderLines(section))
             let specs = specs(in: section)
@@ -603,10 +731,24 @@ enum ConfigSchema {
         return out
     }
 
+    /// The first few lines of the template, in the active UI language.
+    static var templateHeaderLines: [String] {
+        templateLanguage == .zh
+            ? ["# QuickTerm 配置（spec §4.7）。保存即热重载。",
+               "# 配置项按功能分组，一个分组 = 设置界面的一个 tab；下面每一行都是默认值。",
+               "# 兼容：旧的扁平写法（theme = … / browser-home = … / [control] enabled = …）永远有效，",
+               "# 已有配置文件一个字都不用改。"]
+            : ["# QuickTerm configuration (spec §4.7). Saving hot-reloads it.",
+               "# Keys are grouped by function — one group = one tab in the settings window;",
+               "# every line below is the default value.",
+               "# The old flat spellings (theme = … / browser-home = … / [control] enabled = …) are",
+               "# accepted forever: an existing config file needs no edit."]
+    }
+
     /// 新建一个分组时要写的段头（含段说明），与模板里那几行一模一样
     static func sectionHeaderLines(_ section: ConfigSection) -> [String] {
-        var out = ["[\(section.rawValue)]  # \(section.titleZH) / \(section.titleEN)"]
-        if let note = section.noteZH {
+        var out = ["[\(section.rawValue)]  # \(section.title)"]
+        if let note = section.note {
             out.append(contentsOf: note.split(separator: "\n").map { "# \($0)" })
         }
         return out
@@ -732,9 +874,10 @@ struct ControlConfigGate: Equatable {
     /// `quickterm mcp` 被配置拒绝时给用户看的那句话（**必须点名是哪个键、哪个文件**，
     /// 否则用户只会看到一个 MCP 宿主说"服务器起不来"）
     static func mcpDisabledMessage(path: String = ConfigPaths.configURL().path) -> String {
-        "MCP 服务被配置关掉了：\(path) 的 [control] mcp = false"
+        "The MCP server is turned off in the config: [control] mcp = false in \(path)"
     }
 
     static let mcpDisabledHint =
-        "要用 MCP 的话，把 [control] mcp 改成 true（或删掉这一行）；socket = false / mode = \"off\" 也会让它连不上"
+        "Set [control] mcp = true (or delete that line) to use MCP; socket = false and mode = \"off\" "
+        + "also keep it from connecting"
 }

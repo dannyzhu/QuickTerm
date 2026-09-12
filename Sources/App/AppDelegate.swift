@@ -58,8 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ghostty = Ghostty.App()
         guard ghostty.readiness == .ready else {
             let alert = NSAlert()
-            alert.messageText = "QuickTerm 引擎初始化失败"
-            alert.informativeText = "libghostty 未能启动（readiness: \(ghostty.readiness)）。请检查 GhosttyKit 构建与资源包。"
+            alert.messageText = L("window.engine.failed-title")
+            alert.informativeText = L("window.engine.failed-detail", String(describing: ghostty.readiness))
             alert.runModal()
             NSApp.terminate(nil)
             return
@@ -138,10 +138,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let open = screens.allPanes.count
         guard Self.shouldConfirmQuit(openPaneCount: open) else { return .terminateNow }
         let alert = NSAlert()
-        alert.messageText = "退出 QuickTerm？"
-        alert.informativeText = "还有 \(open) 个终端打开着，退出会结束其中的进程。布局与目录会保存，下次启动恢复。"
-        alert.addButton(withTitle: "退出")
-        alert.addButton(withTitle: "取消")
+        alert.messageText = L("window.quit.title")
+        alert.informativeText = Lp("window.quit.detail", count: open, open)
+        alert.addButton(withTitle: L("window.button.quit"))
+        alert.addButton(withTitle: L("window.button.cancel"))
         return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
     }
 

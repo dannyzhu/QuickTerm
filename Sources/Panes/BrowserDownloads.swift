@@ -85,16 +85,16 @@ final class BrowserDownloadItem: NSObject {
             if progress.totalUnitCount > 0 {
                 let total = Self.formatBytes(progress.totalUnitCount)
                 let percent = Int((progress.fractionCompleted * 100).rounded())
-                return "\(done) / \(total) · \(percent)%"
+                return L("browser.download.status.progress", done, total, percent)
             }
-            return "\(done) · 下载中"
+            return L("browser.download.status.downloading", done)
         case .completed:
             let size = progress.totalUnitCount > 0 ? progress.totalUnitCount : progress.completedUnitCount
-            return "已完成 · \(Self.formatBytes(size))"
+            return L("browser.download.status.completed", Self.formatBytes(size))
         case .cancelled:
-            return "已取消"
+            return L("browser.download.status.cancelled")
         case .failed(let message):
-            return "失败：\(message)"
+            return L("browser.download.status.failed", message)
         }
     }
 
@@ -256,7 +256,7 @@ final class BrowserDownloadButton: NSButton {
         title = ""
         imagePosition = .imageOnly
         setButtonType(.momentaryChange)
-        toolTip = "下载"
+        toolTip = L("browser.download.button")
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -272,11 +272,11 @@ final class BrowserDownloadButton: NSButton {
         let active = list?.activeCount ?? 0
         let stopped = items.filter { $0.state != .completed && !$0.isActive }.count
         if active > 0 {
-            toolTip = "下载（\(active) 个进行中）"
+            toolTip = Lp("browser.download.button.active", count: active, active)
         } else if stopped > 0 {
-            toolTip = "下载（\(items.count) 项，\(stopped) 项失败或已取消）"
+            toolTip = Lp("browser.download.button.stopped", count: items.count, items.count, stopped)
         } else {
-            toolTip = "下载（\(items.count) 项）"
+            toolTip = Lp("browser.download.button.count", count: items.count, items.count)
         }
         // 只有"不知道总大小的进行中下载"才需要转圈
         let indeterminate = active > 0 && list?.aggregateFraction == nil
@@ -373,7 +373,7 @@ final class BrowserDownloadPopover: NSViewController {
 
     private let list: BrowserDownloadList
     private let stack = NSStackView()
-    private let emptyLabel = NSTextField(labelWithString: "没有下载")
+    private let emptyLabel = NSTextField(labelWithString: "")
     private let clearButton = NSButton()
     private var rows: [BrowserDownloadRow] = []
 
@@ -398,9 +398,10 @@ final class BrowserDownloadPopover: NSViewController {
             stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
+        emptyLabel.stringValue = L("browser.download.empty")
         emptyLabel.font = .systemFont(ofSize: 11)
         emptyLabel.textColor = .secondaryLabelColor
-        clearButton.title = "清除已完成"
+        clearButton.title = L("browser.download.clear-finished")
         clearButton.bezelStyle = .inline
         clearButton.controlSize = .small
         clearButton.font = .systemFont(ofSize: 11)
@@ -480,8 +481,8 @@ final class BrowserDownloadRow: NSView {
         bar.maxValue = 1
         bar.controlSize = .small
         for (button, symbol, tip, action) in [
-            (primaryButton, "xmark.circle", "取消", #selector(primaryTapped)),
-            (removeButton, "xmark", "从列表移除", #selector(removeTapped)),
+            (primaryButton, "xmark.circle", L("browser.download.cancel"), #selector(primaryTapped)),
+            (removeButton, "xmark", L("browser.download.remove"), #selector(removeTapped)),
         ] {
             button.bezelStyle = .accessoryBarAction
             button.isBordered = false
@@ -535,12 +536,14 @@ final class BrowserDownloadRow: NSView {
         if bar.isIndeterminate { bar.startAnimation(nil) } else { bar.stopAnimation(nil) }
         removeButton.isHidden = item.isActive
         if item.isActive {
-            primaryButton.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: "取消")
-            primaryButton.toolTip = "取消"
+            let cancel = L("browser.download.cancel")
+            primaryButton.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: cancel)
+            primaryButton.toolTip = cancel
             primaryButton.isHidden = false
         } else if item.state == .completed, item.destination != nil {
-            primaryButton.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "在 Finder 中显示")
-            primaryButton.toolTip = "在 Finder 中显示"
+            let reveal = L("browser.download.reveal")
+            primaryButton.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: reveal)
+            primaryButton.toolTip = reveal
             primaryButton.isHidden = false
         } else {
             primaryButton.isHidden = true

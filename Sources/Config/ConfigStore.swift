@@ -27,9 +27,12 @@ enum ConfigStore {
 
         var description: String {
             switch self {
-            case .unreadable(let path): "读不到 \(path)"
-            case .unwritable(let path): "写不进 \(path)"
-            case .unknownKey(let key): "配置注册表里没有 \(key) 这个键"
+            // English on purpose, like every other CLI-facing string: this description is
+            // handed back over the control socket (`quickterm workspace count` reports it),
+            // and the CLI speaks English in both UI languages.
+            case .unreadable(let path): "cannot read \(path)"
+            case .unwritable(let path): "cannot write \(path)"
+            case .unknownKey(let key): "\(key) is not a key in the config registry"
             }
         }
     }
@@ -126,7 +129,13 @@ enum ConfigStore {
         } catch { return false }
     }
 
-    static let autofillBanner = "# —— QuickTerm 新增配置项（自动补全，注释 = 默认值）——"
+    /// The banner above the auto-filled block, in the active UI language — the same rule the
+    /// template comments follow.
+    static var autofillBanner: String {
+        ConfigSchema.templateLanguage == .zh
+            ? "# —— QuickTerm 新增配置项（自动补全，注释 = 默认值）——"
+            : "# —— New QuickTerm settings (filled in automatically; commented out = the default) ——"
+    }
 
     /// 把若干行按分组插进一份配置文件：分组在 → 插在那一段末尾；分组不在 → 现建一段，
     /// 摆在 `[keybinds]` / `[ghostty]` 这两个自由段之前（它们后面的内容是原样透传的，
@@ -203,6 +212,9 @@ enum ConfigStore {
     // MARK: 设置
 
     struct Settings: Equatable {
+        /// UI language (`[general] language`): auto (follow the system) | en | zh.
+        /// **UI only**: the program logs and the quickterm CLI are always English.
+        var language: String = "auto"
         var themeName: String?
         var workspaces: Int = 5
         /// pane 内终端四边留白（pt，注入引擎 window-padding-x/y；spec v6 默认 14（= Omarchy 官方终端 padding））
@@ -300,6 +312,7 @@ enum ConfigBindings {
     typealias Write = (ConfigValue, inout ConfigStore.Settings) -> Void
 
     static let table: [String: Write] = [
+        "general.language": { v, s in v.stringValue.map { s.language = $0 } },
         "appearance.theme": { v, s in s.themeName = v.stringValue },
         "appearance.pane-opacity": { v, s in v.doubleValue.map { s.paneOpacity = $0 } },
         "appearance.active-opacity": { v, s in v.doubleValue.map { s.activeOpacity = $0 } },

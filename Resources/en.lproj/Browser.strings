@@ -1,0 +1,137 @@
+/* QuickTerm — English (base) UI strings for the browser pane.
+ *
+ * ONE AREA = ONE TABLE. Every `<Area>.strings` inside a `.lproj` is loaded and merged at
+ * runtime, so separate translation passes add their own file instead of all appending to one
+ * shared table. A key declared in two tables fails LocalizationTests.
+ *
+ * English is the development language: every key MUST exist here, and any key missing from
+ * another language falls back to this table (never to the raw key).
+ *
+ * A NEW table file (Panes.strings, StatusBar.strings …) must be added to BOTH .lproj folders
+ * and then `xcodegen generate` re-run — this project is generated from project.yml, and a
+ * table that is not in the project is simply never copied into the app bundle. The build
+ * refuses it (scripts/check-localization.py) rather than letting the app draw raw keys.
+ *
+ * Rules (enforced on every build by scripts/check-localization.py, and by
+ * Tests/LocalizationTests.swift):
+ *   - one key = one WHOLE sentence or one whole label; never a fragment that code glues together;
+ *   - the only format specifier is %1$@, %2$@ … (positional). Never %@, %d, %f. A literal
+ *     percent sign is written %%;
+ *   - a key that varies with a count comes as a ".one"/".other" pair, read through Lp(_:count:_:);
+ *   - keys are lowercase, dot separated, area first: <area>.<subject>.<detail>.
+ *
+ * Not localized, by policy: the quickterm CLI, OSLog messages, wire identifiers, config keys,
+ * pane handles, and the errors handed back to a web extension's JavaScript
+ * (chrome.runtime.lastError) — those are an API surface, English in both languages.
+ */
+
+/* MARK: - browser chrome (Sources/Panes/BrowserPaneView.swift) */
+
+"browser.pane.title" = "Browser";
+
+"browser.toolbar.back" = "Back";
+"browser.toolbar.forward" = "Forward";
+"browser.toolbar.reload" = "Reload";
+"browser.toolbar.stop" = "Stop";
+"browser.address.placeholder" = "Enter a URL or search";
+
+"browser.button.ok" = "OK";
+"browser.button.cancel" = "Cancel";
+
+/* MARK: - tabs (Sources/Panes/BrowserTabBar.swift) */
+
+"browser.tab.untitled" = "New Tab";
+"browser.tab.new" = "New Tab";
+"browser.tab.new-tooltip" = "New Tab (⌘N)";
+"browser.tab.close" = "Close Tab";
+
+/* MARK: - error page (Sources/Panes/BrowserPaneView.swift) */
+
+"browser.error.title" = "This page could not be loaded";
+"browser.error.repeated-crash" = "The page process keeps crashing, so it is no longer being reloaded automatically. Press ⌘R to try again.";
+
+/* MARK: - JavaScript dialogs (Sources/Panes/BrowserPaneView.swift) */
+
+"browser.dialog.alert-title" = "Message from this page";
+"browser.dialog.confirm-title" = "This page is asking you to confirm";
+
+/* MARK: - downloads (Sources/Panes/BrowserDownloads.swift) */
+
+"browser.download.default-filename" = "Download";
+"browser.download.status.progress" = "%1$@ / %2$@ · %3$@%%";
+"browser.download.status.downloading" = "%1$@ · Downloading";
+"browser.download.status.completed" = "Completed · %1$@";
+"browser.download.status.cancelled" = "Canceled";
+"browser.download.status.failed" = "Failed: %1$@";
+
+"browser.download.button" = "Downloads";
+"browser.download.button.active.one" = "Downloads (%1$@ in progress)";
+"browser.download.button.active.other" = "Downloads (%1$@ in progress)";
+"browser.download.button.count.one" = "Downloads (%1$@ item)";
+"browser.download.button.count.other" = "Downloads (%1$@ items)";
+"browser.download.button.stopped.one" = "Downloads (%1$@ item, %2$@ failed or canceled)";
+"browser.download.button.stopped.other" = "Downloads (%1$@ items, %2$@ failed or canceled)";
+
+"browser.download.empty" = "No downloads";
+"browser.download.clear-finished" = "Clear Completed";
+"browser.download.cancel" = "Cancel";
+"browser.download.remove" = "Remove from List";
+"browser.download.reveal" = "Show in Finder";
+
+/* MARK: - extension toolbar and menu (Sources/Panes/BrowserExtensionUI.swift) */
+
+"browser.extension.toolbar" = "Extensions";
+"browser.extension.toolbar-tooltip" = "Extensions (⌘⇧E)";
+"browser.extension.unnamed" = "Extension";
+
+"browser.extension.menu.turned-off" = "Extensions are turned off in the config (browser-extensions = false)";
+"browser.extension.menu.empty" = "No extensions installed";
+"browser.extension.menu.disabled-suffix" = "%1$@ (Disabled)";
+"browser.extension.menu.import-from-chrome" = "Import Installed Extensions from Chrome…";
+"browser.extension.menu.open-web-store" = "Open the Chrome Web Store";
+"browser.extension.menu.open-folder" = "Open the Extensions Folder";
+"browser.extension.menu.open" = "Open";
+"browser.extension.menu.pin" = "Pin to Toolbar";
+"browser.extension.menu.enable" = "Enabled";
+"browser.extension.menu.options" = "Options…";
+"browser.extension.menu.remove" = "Remove…";
+
+"browser.extension.remove.title" = "Remove the extension “%1$@”?";
+"browser.extension.remove.body" = "Its files will be deleted from QuickTerm's extensions folder.";
+"browser.extension.remove.confirm" = "Remove";
+
+"browser.extension.import.title" = "Import from Chrome finished";
+"browser.extension.import.summary" = "Imported %1$@, skipped %2$@ (already installed, themes or apps).";
+"browser.extension.import.failed" = "%1$@ failed: %2$@";
+"browser.extension.import.none" = "No extensions to import were found in Chrome's default profile directory on this Mac.";
+
+/* MARK: - Web Store install (Sources/Panes/BrowserPaneView.swift, BrowserExtensions.swift) */
+
+"browser.webstore.add" = "Add to QuickTerm";
+"browser.webstore.installing" = "Installing…";
+
+"browser.install.turned-off.title" = "Extensions are turned off";
+"browser.install.turned-off.body" = "The config has browser-extensions = false. Turn it on before installing.";
+"browser.install.confirm.title" = "Install “%1$@”?";
+"browser.install.confirm.no-permissions" = "This extension declares no extra permissions.";
+"browser.install.confirm.permissions" = "It will be granted these permissions:\n%1$@";
+"browser.install.confirm.button" = "Install";
+"browser.install.progress.downloading" = "Downloading the extension…";
+"browser.install.progress.unpacking" = "Unpacking…";
+"browser.install.progress.installing" = "Installing…";
+"browser.install.done.title" = "“%1$@” installed";
+"browser.install.done.body" = "Its button is now to the right of the address bar.";
+"browser.install.failed.title" = "Installation failed";
+
+"browser.install.error.invalid-id" = "That is not a valid extension ID.";
+"browser.install.error.download" = "Download failed: %1$@";
+"browser.install.error.not-crx" = "What was downloaded is not a Chrome extension package (CRX).";
+"browser.install.error.unpack" = "Unpacking failed: %1$@";
+"browser.install.error.no-manifest" = "The extension package contains no manifest.json.";
+
+/* MARK: - permission prompt (Sources/Panes/BrowserExtensions.swift) */
+
+"browser.permission.title" = "The extension “%1$@” is requesting permissions";
+"browser.permission.none" = "(nothing specific)";
+"browser.permission.allow" = "Allow";
+"browser.permission.deny" = "Deny";

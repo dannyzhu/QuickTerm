@@ -31,11 +31,11 @@ enum BrowserExtensionError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidID: "不是有效的扩展 ID"
-        case .download(let why): "下载失败：\(why)"
-        case .notCRX: "下载到的不是 Chrome 扩展包（CRX）"
-        case .unpackFailed(let why): "解包失败：\(why)"
-        case .noManifest: "扩展包里没有 manifest.json"
+        case .invalidID: L("browser.install.error.invalid-id")
+        case .download(let why): L("browser.install.error.download", why)
+        case .notCRX: L("browser.install.error.not-crx")
+        case .unpackFailed(let why): L("browser.install.error.unpack", why)
+        case .noManifest: L("browser.install.error.no-manifest")
         }
     }
 }
@@ -483,7 +483,7 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
     /// 从 Chrome Web Store 下载并解包（还没装）
     func stageWebStoreInstall(id: String, progress: @escaping (String) -> Void = { _ in }) async throws -> Staged {
         guard Self.isValidExtensionID(id) else { throw BrowserExtensionError.invalidID }
-        progress("正在下载扩展…")
+        progress(L("browser.install.progress.downloading"))
         let data: Data
         let response: URLResponse
         do {
@@ -495,7 +495,7 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
             throw BrowserExtensionError.download("HTTP \(http.statusCode)")
         }
         guard let zip = CRX.zipData(from: data) else { throw BrowserExtensionError.notCRX }
-        progress("正在解包…")
+        progress(L("browser.install.progress.unpacking"))
         let unpacked = try Self.unpack(zip: zip)
         do {
             let webExtension = try await WKWebExtension(resourceBaseURL: unpacked.payload)
@@ -524,7 +524,7 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
     @discardableResult
     func install(fromWebStore id: String, progress: @escaping (String) -> Void = { _ in }) async throws -> Installed {
         let staged = try await stageWebStoreInstall(id: id, progress: progress)
-        progress("正在安装…")
+        progress(L("browser.install.progress.installing"))
         return try await commit(staged)
     }
 
@@ -701,7 +701,7 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
                                 completionHandler: @escaping ((any WKWebExtensionTab)?, (any Error)?) -> Void) {
         let pane = (configuration.window as? BrowserPaneView) ?? host?.focusedBrowserPane ?? host?.browserPanes.first
         guard let pane else {
-            completionHandler(nil, Self.unsupported("没有可用的浏览器 pane"))
+            completionHandler(nil, Self.unsupported("No browser pane is available."))
             return
         }
         let tab = pane.addTab(url: configuration.url ?? BrowserPaneView.settings.homeURL,
@@ -714,7 +714,7 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
                                 for context: WKWebExtensionContext,
                                 completionHandler: @escaping ((any WKWebExtensionWindow)?, (any Error)?) -> Void) {
         guard let pane = host?.openBrowserWindow(url: configuration.tabURLs.first) else {
-            completionHandler(nil, Self.unsupported("没有可用的窗口"))
+            completionHandler(nil, Self.unsupported("No browser window is available."))
             return
         }
         completionHandler(pane, nil)
@@ -724,11 +724,11 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
                                 openOptionsPageFor context: WKWebExtensionContext,
                                 completionHandler: @escaping ((any Error)?) -> Void) {
         guard let url = context.optionsPageURL else {
-            completionHandler(Self.unsupported("该扩展没有选项页"))
+            completionHandler(Self.unsupported("This extension has no options page."))
             return
         }
         guard openInBrowser(url) else {
-            completionHandler(Self.unsupported("没有可用的浏览器 pane"))
+            completionHandler(Self.unsupported("No browser pane is available."))
             return
         }
         completionHandler(nil)
@@ -776,7 +776,7 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
                                 completionHandler: @escaping ((any Error)?) -> Void) {
         let pane = (action.associatedTab as? BrowserPaneView.Tab)?.pane ?? host?.focusedBrowserPane
         guard let pane else {
-            completionHandler(Self.unsupported("没有可用的浏览器 pane"))
+            completionHandler(Self.unsupported("No browser pane is available."))
             return
         }
         pane.presentExtensionPopup(action, of: context)
@@ -788,14 +788,14 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
                                 toApplicationWithIdentifier applicationIdentifier: String?,
                                 for context: WKWebExtensionContext,
                                 replyHandler: @escaping (Any?, (any Error)?) -> Void) {
-        replyHandler(nil, Self.unsupported("QuickTerm 不支持原生消息（nativeMessaging）"))
+        replyHandler(nil, Self.unsupported("QuickTerm does not support native messaging."))
     }
 
     func webExtensionController(_ controller: WKWebExtensionController,
                                 connectUsing port: WKWebExtension.MessagePort,
                                 for context: WKWebExtensionContext,
                                 completionHandler: @escaping ((any Error)?) -> Void) {
-        completionHandler(Self.unsupported("QuickTerm 不支持原生消息（nativeMessaging）"))
+        completionHandler(Self.unsupported("QuickTerm does not support native messaging."))
     }
 
     static func unsupported(_ message: String) -> NSError {
@@ -805,12 +805,12 @@ final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate 
 
     /// 权限弹窗：挂到 key window 的 sheet 做不到同步返回，这里要的是"允许/拒绝"的即时答案，用 runModal
     private func confirmPermission(context: WKWebExtensionContext, items: [String]) -> Bool {
-        let name = context.webExtension.displayName ?? "扩展"
+        let name = context.webExtension.displayName ?? L("browser.extension.unnamed")
         let alert = NSAlert()
-        alert.messageText = "扩展「\(name)」请求权限"
-        alert.informativeText = items.isEmpty ? "（无具体项目）" : items.joined(separator: "\n")
-        alert.addButton(withTitle: "允许")
-        alert.addButton(withTitle: "拒绝")
+        alert.messageText = L("browser.permission.title", name)
+        alert.informativeText = items.isEmpty ? L("browser.permission.none") : items.joined(separator: "\n")
+        alert.addButton(withTitle: L("browser.permission.allow"))
+        alert.addButton(withTitle: L("browser.permission.deny"))
         return alert.runModal() == .alertFirstButtonReturn
     }
 }

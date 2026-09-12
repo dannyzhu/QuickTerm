@@ -106,7 +106,7 @@ Mutating replies share one envelope:
 {"ok":true,"seq":415,"resolved":{"screen":1,"workspace":2,"pane":"t9"},
  "data":{"command":"pane.set","applied":true,"changed":true,"dryRun":false,
    "changes":[{"path":"1:2.t9.zoom","from":"off","to":"on"}],
-   "pane":{"handle":"t9","…":"…"},"undo":"控制面：pane set"}}
+   "pane":{"handle":"t9","…":"…"},"undo":"Control plane: pane set"}}
 ```
 
 ### Where it lands (`--at` / `--where`)

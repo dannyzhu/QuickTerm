@@ -71,7 +71,7 @@ extension ControlCommandRunner {
             controllers: setting.isPerScreen ? [controller] : screens.controllers,
             // 主题 / 背景 / 间隙这类是进程级视觉开关：布局快照撤不回它们，
             // 与其登记一个撤不干净的撤销项，不如老实说这一步不进撤销栈
-            undoName: setting == .visibleColumns ? "控制面：\(ctx.spec.cli)" : nil,
+            undoCommand: setting == .visibleColumns ? ctx.spec.cli : nil,
             target: setting.isPerScreen ? path(controller) : "app")
         var payload = try commit(mutation) {
             try apply(setting, value: normalized, controller: controller)

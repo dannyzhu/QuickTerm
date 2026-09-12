@@ -1,0 +1,33 @@
+/* QuickTerm — Simplified Chinese UI strings for the status bar.
+ *
+ * A new table file must be added to BOTH .lproj folders and then `xcodegen generate` re-run,
+ * or it is never copied into the app bundle (the build refuses it).
+ *
+ * Same key set as en.lproj/StatusBar.strings (Tests/LocalizationTests.swift pins that).
+ * A key missing here falls back to the English value, never to the raw key — but a missing key
+ * is a bug, not a feature.
+ *
+ * The positional arguments (%1$@, %2$@ …) may be reordered freely to fit Chinese word order;
+ * the SET of indices used must match the English value.
+ */
+
+/* MARK: - workspace pills (Sources/StatusBar/StatusBarView.swift) */
+
+"status.workspace.label" = "工作区 %1$@";
+"status.workspace.label-with-name" = "工作区 %1$@：%2$@";
+
+/* MARK: - clock (Unicode date patterns, not sentences — see the English table) */
+
+/* same-as-english: UTS #35 日期骨架，星期名本身就跟着界面语言走，顺序两种语言一致。 */
+"status.clock.format" = "EEEE HH:mm";
+"status.clock.format-alt" = "yyyy年M月d日 'W'ww";
+
+/* MARK: - control plane activity flash */
+
+"status.control.flash-label" = "控制面活动：%1$@";
+"status.control.flash-help" = "外部程序刚刚通过 quickterm 控制面执行了这条命令";
+
+/* MARK: - system stats */
+
+"status.volume.mute" = "静音";
+"status.volume.unmute" = "取消静音";

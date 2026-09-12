@@ -23,9 +23,9 @@ final class BrowserExtensionToolbar: NSView {
         menuButton.isBordered = false
         menuButton.imagePosition = .imageOnly
         menuButton.image = NSImage(systemSymbolName: "puzzlepiece.extension",
-                                   accessibilityDescription: "扩展")?
+                                   accessibilityDescription: L("browser.extension.toolbar"))?
             .withSymbolConfiguration(.init(pointSize: 12, weight: .regular))
-        menuButton.toolTip = "扩展（⌘⇧E）"
+        menuButton.toolTip = L("browser.extension.toolbar-tooltip")
         menuButton.target = self
         menuButton.action = #selector(showMenu)
         addSubview(menuButton)
@@ -160,27 +160,32 @@ final class BrowserExtensionToolbar: NSView {
     func buildMenu() -> NSMenu {
         let menu = NSMenu()
         if !manager.isEnabled {
-            let off = NSMenuItem(title: "扩展已在配置里关闭（browser-extensions = false）", action: nil, keyEquivalent: "")
+            let off = NSMenuItem(title: L("browser.extension.menu.turned-off"), action: nil, keyEquivalent: "")
             off.isEnabled = false
             menu.addItem(off)
             menu.addItem(.separator())
         } else if manager.installed.isEmpty {
-            let empty = NSMenuItem(title: "没有已安装的扩展", action: nil, keyEquivalent: "")
+            let empty = NSMenuItem(title: L("browser.extension.menu.empty"), action: nil, keyEquivalent: "")
             empty.isEnabled = false
             menu.addItem(empty)
             menu.addItem(.separator())
         } else {
             for item in manager.installed {
-                let title = item.enabled ? item.displayName : "\(item.displayName)（已停用）"
+                let title = item.enabled
+                    ? item.displayName
+                    : L("browser.extension.menu.disabled-suffix", item.displayName)
                 let entry = NSMenuItem(title: title, action: nil, keyEquivalent: "")
                 entry.submenu = submenu(for: item)
                 menu.addItem(entry)
             }
             menu.addItem(.separator())
         }
-        menu.addItem(command(title: "从 Chrome 导入已安装扩展…", selector: #selector(importFromChrome)))
-        menu.addItem(command(title: "打开 Chrome Web Store", selector: #selector(openWebStore)))
-        menu.addItem(command(title: "打开扩展文件夹", selector: #selector(openStoreFolder)))
+        menu.addItem(command(title: L("browser.extension.menu.import-from-chrome"),
+                             selector: #selector(importFromChrome)))
+        menu.addItem(command(title: L("browser.extension.menu.open-web-store"),
+                             selector: #selector(openWebStore)))
+        menu.addItem(command(title: L("browser.extension.menu.open-folder"),
+                             selector: #selector(openStoreFolder)))
         return menu
     }
 
@@ -188,19 +193,24 @@ final class BrowserExtensionToolbar: NSView {
         let menu = NSMenu()
         // 「打开」= 点它工具条按钮的等价物：没固定 / 固定了但工具条放不下时，扩展仍能从这里点开
         if item.enabled, item.context.isLoaded, item.context.action(for: pane?.activeTab) != nil {
-            menu.addItem(command(title: "打开", selector: #selector(performActionFromMenu(_:)), represented: item))
+            menu.addItem(command(title: L("browser.extension.menu.open"),
+                                 selector: #selector(performActionFromMenu(_:)), represented: item))
         }
-        let pin = command(title: "固定到工具条", selector: #selector(togglePinned(_:)), represented: item)
+        let pin = command(title: L("browser.extension.menu.pin"),
+                          selector: #selector(togglePinned(_:)), represented: item)
         pin.state = item.pinned ? .on : .off
         menu.addItem(pin)
-        let enable = command(title: "启用", selector: #selector(toggleEnabled(_:)), represented: item)
+        let enable = command(title: L("browser.extension.menu.enable"),
+                             selector: #selector(toggleEnabled(_:)), represented: item)
         enable.state = item.enabled ? .on : .off
         menu.addItem(enable)
         if item.hasOptionsPage {
-            menu.addItem(command(title: "选项…", selector: #selector(openOptions(_:)), represented: item))
+            menu.addItem(command(title: L("browser.extension.menu.options"),
+                                 selector: #selector(openOptions(_:)), represented: item))
         }
         menu.addItem(.separator())
-        menu.addItem(command(title: "移除…", selector: #selector(removeExtension(_:)), represented: item))
+        menu.addItem(command(title: L("browser.extension.menu.remove"),
+                             selector: #selector(removeExtension(_:)), represented: item))
         return menu
     }
 
@@ -234,10 +244,10 @@ final class BrowserExtensionToolbar: NSView {
     @objc private func removeExtension(_ sender: NSMenuItem) {
         guard let item = sender.representedObject as? BrowserExtensionManager.Installed else { return }
         let alert = NSAlert()
-        alert.messageText = "移除扩展「\(item.displayName)」？"
-        alert.informativeText = "扩展文件会从 QuickTerm 的扩展文件夹里删除。"
-        alert.addButton(withTitle: "移除")
-        alert.addButton(withTitle: "取消")
+        alert.messageText = L("browser.extension.remove.title", item.displayName)
+        alert.informativeText = L("browser.extension.remove.body")
+        alert.addButton(withTitle: L("browser.extension.remove.confirm"))
+        alert.addButton(withTitle: L("browser.button.cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         manager.remove(item)
     }
@@ -246,14 +256,17 @@ final class BrowserExtensionToolbar: NSView {
         Task { @MainActor in
             let result = await manager.importFromChrome()
             let alert = NSAlert()
-            alert.messageText = "从 Chrome 导入完成"
-            var lines = ["导入 \(result.imported) 个，跳过 \(result.skipped) 个（已安装 / 主题 / 应用）。"]
-            if !result.failed.isEmpty { lines.append("失败 \(result.failed.count) 个：\(result.failed.joined(separator: "、"))") }
+            alert.messageText = L("browser.extension.import.title")
+            var lines = [L("browser.extension.import.summary", result.imported, result.skipped)]
+            if !result.failed.isEmpty {
+                lines.append(L("browser.extension.import.failed", result.failed.count,
+                               result.failed.joined(separator: ", ")))
+            }
             if result.imported == 0, result.skipped == 0, result.failed.isEmpty {
-                lines = ["没有在本机 Chrome 的默认配置目录里找到可导入的扩展。"]
+                lines = [L("browser.extension.import.none")]
             }
             alert.informativeText = lines.joined(separator: "\n")
-            alert.addButton(withTitle: "好")
+            alert.addButton(withTitle: L("browser.button.ok"))
             alert.runModal()
         }
     }
@@ -326,8 +339,22 @@ enum BrowserExtensionWebStore {
     /// Web Store 的两个域名（只有它们的详情页能触发安装）
     static let storeHosts = ["chromewebstore.google.com", "chrome.google.com"]
 
-    static let userScript = WKUserScript(source: script, injectionTime: .atDocumentEnd,
-                                         forMainFrameOnly: true, in: contentWorld)
+    /// Built on every read: the button's labels come from the app catalog, so the injected
+    /// button follows the language QuickTerm is drawn in rather than the page's navigator.language.
+    static var userScript: WKUserScript {
+        WKUserScript(source: script(label: L("browser.webstore.add"),
+                                    installing: L("browser.webstore.installing")),
+                     injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: contentWorld)
+    }
+
+    /// A Swift string as a single-quoted JavaScript literal.
+    private static func javaScriptLiteral(_ value: String) -> String {
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        return "'" + escaped + "'"
+    }
 
     /// 页面回传的消息能不能触发安装：必须是 Web Store 详情页的主框架，且 id 与该详情页的 id 一致。
     /// （纯函数，便于单测；`frameURL` 传 `WKScriptMessage.frameInfo.request.url`）
@@ -345,82 +372,83 @@ enum BrowserExtensionWebStore {
     /// 注入脚本：把「添加到 QuickTerm」放在商店自己那颗（对非 Chrome 浏览器灰掉的）「添加至 Chrome」按钮旁边；
     /// 商店是 SPA、按钮由 JS 晚些渲染，所以先放右下角兜底，MutationObserver 等到商店按钮出现再挪过去；
     /// 详情页之间的站内跳转不会重新注入，id 在点击时从 location 重新取，不在详情页时把按钮藏起来
-    private static let script = """
-    (function () {
-      if (\(storeHosts.map { "location.hostname !== '\($0)'" }.joined(separator: " && "))) return;
-      if (document.getElementById('quickterm-install-button')) return;
-      var zh = (navigator.language || '').toLowerCase().indexOf('zh') === 0;
-      var label = zh ? '添加到 QuickTerm' : 'Add to QuickTerm';
-      var installing = zh ? '正在安装…' : 'Installing…';
-      var storeButtonText = /^(添加至 Chrome|添加到 Chrome|Add to Chrome|加入 Chrome|安裝到 Chrome)$/i;
-      function currentID() {
-        if (!location.pathname.includes('/detail/')) return null;
-        var m = location.pathname.match(/([a-p]{32})/);
-        return m ? m[1] : null;
-      }
-      var button = document.createElement('button');
-      button.id = 'quickterm-install-button';
-      button.type = 'button';
-      button.textContent = label;
-      var base = 'z-index:2147483647;padding:10px 20px;border:0;border-radius:20px;background:#1a73e8;color:#fff;' +
-        'font:500 14px -apple-system,system-ui,sans-serif;cursor:pointer;white-space:nowrap;';
-      function styleFloating() {
-        button.style.cssText = base + 'position:fixed;right:20px;bottom:20px;box-shadow:0 2px 10px rgba(0,0,0,.35);';
-      }
-      function styleInline() {
-        button.style.cssText = base + 'position:static;margin-left:12px;vertical-align:middle;';
-      }
-      function storeButton() {
-        var buttons = document.querySelectorAll('button');
-        for (var i = 0; i < buttons.length; i++) {
-          if (buttons[i] === button) continue;
-          if (storeButtonText.test((buttons[i].textContent || '').trim())) return buttons[i];
-        }
-        return null;
-      }
-      function place() {
-        var id = currentID();
-        button.hidden = !id;
-        if (!id) return;
-        var anchor = storeButton();
-        if (anchor && anchor.parentNode) {
-          if (button.previousElementSibling !== anchor) {
-            anchor.insertAdjacentElement('afterend', button);
-            styleInline();
+    private static func script(label: String, installing: String) -> String {
+        """
+        (function () {
+          if (\(storeHosts.map { "location.hostname !== '\($0)'" }.joined(separator: " && "))) return;
+          if (document.getElementById('quickterm-install-button')) return;
+          var label = \(javaScriptLiteral(label));
+          var installing = \(javaScriptLiteral(installing));
+          var storeButtonText = /^(添加至 Chrome|添加到 Chrome|Add to Chrome|加入 Chrome|安裝到 Chrome)$/i;
+          function currentID() {
+            if (!location.pathname.includes('/detail/')) return null;
+            var m = location.pathname.match(/([a-p]{32})/);
+            return m ? m[1] : null;
           }
-        } else if (button.parentNode !== document.body) {
-          document.body.appendChild(button);
+          var button = document.createElement('button');
+          button.id = 'quickterm-install-button';
+          button.type = 'button';
+          button.textContent = label;
+          var base = 'z-index:2147483647;padding:10px 20px;border:0;border-radius:20px;background:#1a73e8;color:#fff;' +
+            'font:500 14px -apple-system,system-ui,sans-serif;cursor:pointer;white-space:nowrap;';
+          function styleFloating() {
+            button.style.cssText = base + 'position:fixed;right:20px;bottom:20px;box-shadow:0 2px 10px rgba(0,0,0,.35);';
+          }
+          function styleInline() {
+            button.style.cssText = base + 'position:static;margin-left:12px;vertical-align:middle;';
+          }
+          function storeButton() {
+            var buttons = document.querySelectorAll('button');
+            for (var i = 0; i < buttons.length; i++) {
+              if (buttons[i] === button) continue;
+              if (storeButtonText.test((buttons[i].textContent || '').trim())) return buttons[i];
+            }
+            return null;
+          }
+          function place() {
+            var id = currentID();
+            button.hidden = !id;
+            if (!id) return;
+            var anchor = storeButton();
+            if (anchor && anchor.parentNode) {
+              if (button.previousElementSibling !== anchor) {
+                anchor.insertAdjacentElement('afterend', button);
+                styleInline();
+              }
+            } else if (button.parentNode !== document.body) {
+              document.body.appendChild(button);
+              styleFloating();
+            }
+          }
+          button.addEventListener('click', function () {
+            var id = currentID();
+            if (!id) return;
+            try {
+              window.webkit.messageHandlers.\(messageHandlerName).postMessage({ id: id });
+              button.textContent = installing;
+            } catch (e) {}
+          });
           styleFloating();
-        }
-      }
-      button.addEventListener('click', function () {
-        var id = currentID();
-        if (!id) return;
-        try {
-          window.webkit.messageHandlers.\(messageHandlerName).postMessage({ id: id });
-          button.textContent = installing;
-        } catch (e) {}
-      });
-      styleFloating();
-      document.body.appendChild(button);
-      place();
-      // 观察回调里只做"必要时才动 DOM"的事（place 自带守卫）：回调里无条件改 DOM 会再次触发观察者，
-      // 微任务死循环把页面 JS 线程卡死。商店 DOM 变动很频繁，用 setTimeout 合并
-      // （不用 requestAnimationFrame：后台标签 / 未渲染的 WebView 里 rAF 不触发）
-      var scheduled = false;
-      var observer = new MutationObserver(function () {
-        if (scheduled) return;
-        scheduled = true;
-        setTimeout(function () {
-          scheduled = false;
-          if (!button.isConnected) { document.body.appendChild(button); styleFloating(); }
+          document.body.appendChild(button);
           place();
-        }, 50);
-      });
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-      window.addEventListener('popstate', place);
-    })();
-    """
+          // 观察回调里只做"必要时才动 DOM"的事（place 自带守卫）：回调里无条件改 DOM 会再次触发观察者，
+          // 微任务死循环把页面 JS 线程卡死。商店 DOM 变动很频繁，用 setTimeout 合并
+          // （不用 requestAnimationFrame：后台标签 / 未渲染的 WebView 里 rAF 不触发）
+          var scheduled = false;
+          var observer = new MutationObserver(function () {
+            if (scheduled) return;
+            scheduled = true;
+            setTimeout(function () {
+              scheduled = false;
+              if (!button.isConnected) { document.body.appendChild(button); styleFloating(); }
+              place();
+            }, 50);
+          });
+          observer.observe(document.documentElement, { childList: true, subtree: true });
+          window.addEventListener('popstate', place);
+        })();
+        """
+    }
 }
 
 /// 弱引用代理：WKUserContentController 会强引用消息处理器，直接注册 pane 会成环

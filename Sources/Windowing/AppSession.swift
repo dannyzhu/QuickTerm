@@ -112,6 +112,16 @@ final class AppSession {
     /// 必须在建第一个屏幕**之前**调用：控制器 init 直接用 `settings`（不再自己读盘），
     /// 而 `visibleColumns` / 工作区数在状态恢复前就得是最终值
     func loadInitialConfig() {
+        // **The UI language has to be settled before the template is written.** The template
+        // comments (and the autofill banner) follow `[general] language`, and writing the
+        // template happens a few lines below. Settling it any later means a user who pinned
+        // language = "en" gets a config file full of Chinese comments — and only on their very
+        // first launch, which is a bug nobody can ever reproduce again.
+        // This read records no diagnostics: the real load happens at the end of this function,
+        // and the "did not take effect" lines should be complained about exactly once.
+        if let text = try? String(contentsOf: ConfigStore.activeConfigURL, encoding: .utf8) {
+            Localization.shared.apply(configValue: ConfigStore.parse(text).language)
+        }
         // 已有配置文件补全新增键（注释形式，幂等）。
         // **测试宿主一个字节都不写**（与 `SessionStore.writesAllowed`、控制 socket 同一条策略）：
         // 跑一次用例就往用户真正的 ~/.config/quickterm/config.toml 里补一段，是谁都没同意过的事。
@@ -152,6 +162,10 @@ final class AppSession {
     func applyGlobalConfig(_ settings: ConfigStore.Settings) {
         globalConfigApplyCount += 1
         self.settings = settings
+        // UI language first: the menus, the consent alerts and every SwiftUI view read their
+        // text from `Localization`, so saving the config switches the language live.
+        // (`Localization` is idempotent on an unchanged value — no menu is rebuilt for nothing.)
+        Localization.shared.apply(configValue: settings.language)
         keybindings = KeybindingMap(
             workspaceCount: settings.workspaces,
             overrides: settings.overrides,

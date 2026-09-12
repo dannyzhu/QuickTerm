@@ -216,7 +216,7 @@ final class ControlSocket {
 
     /// 内核视角的真实进程名（确认框里显示它，而不是调用方自称的任何东西）
     static func processName(for pid: pid_t) -> String {
-        guard pid > 0 else { return "未知进程" }
+        guard pid > 0 else { return "unknown process" }
         var buffer = [CChar](repeating: 0, count: 256)
         let n = proc_name(pid, &buffer, UInt32(buffer.count))
         guard n > 0 else { return "pid \(pid)" }

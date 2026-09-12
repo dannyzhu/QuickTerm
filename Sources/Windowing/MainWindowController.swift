@@ -269,7 +269,11 @@ final class MainWindowController: BaseTerminalController {
             onSelectWorkspace: { [weak self] i in self?.switchWorkspace(i) },
             onRenameWorkspace: { [weak self] i in self?.promptWorkspaceTitle(i) },
             onPanelChoose: { [weak self] i in self?.choosePanelItem(i) })
-            .environmentObject(themeManager))
+            .environmentObject(themeManager)
+            // The UI language, for `@EnvironmentObject private var i18n: Localization` in any
+            // SwiftUI view: reading a string through it is what re-renders that view when
+            // `[general] language` changes. AppKit code uses the global `L(_:_:)` instead.
+            .environmentObject(Localization.shared))
 
         // 主题热切换：overlay 变更 → 全部 surface 热重载（spec §3.2，< 200ms）。
         // 引擎 app 级 reloadConfig 由 AppDelegate 统一做一次（多屏幕下不重复 N 次）
@@ -710,14 +714,14 @@ final class MainWindowController: BaseTerminalController {
     func promptWorkspaceTitle(_ index: Int) {
         guard model.layouts.indices.contains(index), !AppDelegate.isRunningTests else { return }
         let alert = NSAlert()
-        alert.messageText = "给工作区 \(index + 1) 起个名字"
-        alert.informativeText = "留空 = 恢复显示序号。名字跟着这个槽位走，清空工作区也不会丢。"
+        alert.messageText = L("window.workspace-title.title", index + 1)
+        alert.informativeText = L("window.workspace-title.detail")
         alert.alertStyle = .informational
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
         field.stringValue = model.title(at: index) ?? ""
         alert.accessoryView = field
-        alert.addButton(withTitle: "好")
-        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: L("window.button.ok"))
+        alert.addButton(withTitle: L("window.button.cancel"))
         alert.window.initialFirstResponder = field
         let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
@@ -740,10 +744,10 @@ final class MainWindowController: BaseTerminalController {
         let open = model.allPanes.count
         guard AppDelegate.shouldConfirmQuit(openPaneCount: open), !AppDelegate.isRunningTests else { return true }
         let alert = NSAlert()
-        alert.messageText = "关闭这个屏幕？"
-        alert.informativeText = "还有 \(open) 个终端打开着，关闭会结束其中的进程。"
-        alert.addButton(withTitle: "关闭")
-        alert.addButton(withTitle: "取消")
+        alert.messageText = L("window.close-screen.title")
+        alert.informativeText = Lp("window.close-screen.detail", count: open, open)
+        alert.addButton(withTitle: L("window.button.close"))
+        alert.addButton(withTitle: L("window.button.cancel"))
         return alert.runModal() == .alertFirstButtonReturn
     }
 
@@ -1396,7 +1400,7 @@ final class MainWindowController: BaseTerminalController {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
-        panel.message = "选择背景图片（将拷入 ~/.config/quickterm/backgrounds）"
+        panel.message = L("window.background.choose-image")
         panel.begin { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
             self?.themeManager.addUserBackground(from: url)
@@ -1738,10 +1742,10 @@ final class MainWindowController: BaseTerminalController {
             DispatchQueue.main.async { [weak self, weak view] in
                 guard let self, let view, self.paneList.contains(view) else { return }
                 let alert = NSAlert()
-                alert.messageText = "关闭这个终端？"
-                alert.informativeText = "其中仍有进程在运行。"
-                alert.addButton(withTitle: "关闭")
-                alert.addButton(withTitle: "取消")
+                alert.messageText = L("window.close-pane.title")
+                alert.informativeText = L("window.close-pane.detail")
+                alert.addButton(withTitle: L("window.button.close"))
+                alert.addButton(withTitle: L("window.button.cancel"))
                 guard alert.runModal() == .alertFirstButtonReturn else { return }
                 guard self.paneList.contains(view), !self.model.closingPanes.contains(view.id) else { return }
                 self.beginClose(view, animated: animated, successor: successor)

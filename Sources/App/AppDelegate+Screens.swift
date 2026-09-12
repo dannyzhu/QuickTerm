@@ -164,15 +164,17 @@ final class DisplayMenuDelegate: NSObject, NSMenuDelegate {
         let current = target?.screens.current?.window?.screen
         let screens = NSScreen.screens
         guard !screens.isEmpty else {
-            let item = menu.addItem(withTitle: "没有可用的显示器", action: nil, keyEquivalent: "")
+            let item = menu.addItem(withTitle: L("window.display.none-available"), action: nil,
+                                    keyEquivalent: "")
             item.isEnabled = false
             return
         }
         for (i, screen) in screens.enumerated() {
             let isCurrent = screen === current
             var title = screen.localizedName
-            if title.isEmpty { title = "显示器 \(i + 1)" }
-            if isCurrent { title += "（当前）" }
+            if title.isEmpty { title = L("window.display.unnamed", i + 1) }
+            // Whole sentence, not a suffix: the marker sits elsewhere in other languages.
+            if isCurrent { title = L("window.display.current", title) }
             let action = mode == .newScreen
                 ? #selector(AppDelegate.newScreenOnDisplay(_:))
                 : #selector(AppDelegate.moveScreenToDisplay(_:))

@@ -3,93 +3,114 @@ import AppKit
 /// 程序化主菜单：macOS 惯例条目 + WM 动作的可见快捷键注册表。
 /// 实际按键由 MainWindowController 的局部监视器先行消费；菜单点击走这里的 action。
 enum MainMenu {
+    /// Rebuild the whole main menu when the language changes. An NSMenuItem title is a
+    /// **value**, not a binding: once installed, a menu keeps showing the old language until
+    /// something rebuilds it. The observer lives here rather than in AppDelegate — whoever
+    /// builds the menu owns keeping it in the current language.
+    private static var languageObserver: Any?
+    /// The delegate of the last install, reused to rebuild on a language change.
+    private static weak var installedDelegate: AppDelegate?
+
     static func install(delegate: AppDelegate) {
+        installedDelegate = delegate
+        if languageObserver == nil {
+            languageObserver = NotificationCenter.default.addObserver(
+                forName: Localization.didChangeNotification, object: nil, queue: .main
+            ) { _ in
+                guard let delegate = installedDelegate else { return }
+                install(delegate: delegate)
+            }
+        }
+        // The two display submenu delegates are re-registered on every rebuild; the old ones
+        // must not pile up.
+        displayDelegates.removeAll()
+
         let main = NSMenu()
 
         // App 菜单
         let appItem = main.addItem(withTitle: "QuickTerm", action: nil, keyEquivalent: "")
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "关于 QuickTerm",
+        appMenu.addItem(withTitle: L("menu.app.about"),
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
         // VS Code 的 `code` 那一招：把随包的 quickterm 软链进 PATH。绝不弹管理员密码
-        let installItem = appMenu.addItem(withTitle: "安装 quickterm 命令行工具…",
+        let installItem = appMenu.addItem(withTitle: L("menu.app.install-cli"),
                                           action: #selector(AppDelegate.installCLIAction(_:)),
                                           keyEquivalent: "")
         installItem.target = delegate
         // 控制面是**静默执行**的（读免确认、改不弹框）：静默的前提是事后可查。
         // 状态栏闪一下负责"刚刚发生了什么"，这里负责"到底发生过哪些"
-        let logItem = appMenu.addItem(withTitle: "控制面活动…",
+        let logItem = appMenu.addItem(withTitle: L("menu.app.control-activity"),
                                       action: #selector(AppDelegate.controlActivityAction(_:)),
                                       keyEquivalent: "")
         logItem.target = delegate
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "隐藏 QuickTerm", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
-        appMenu.addItem(withTitle: "退出 QuickTerm", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: L("menu.app.hide"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: L("menu.app.quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         main.setSubmenu(appMenu, for: appItem)
 
         // Edit 菜单：浏览器 pane / 地址栏 / 文件选择器等 AppKit 控件的 Cmd+C/V/X/A/Z 经菜单键等价路由；
         // 终端 pane 自己在 performKeyEquivalent 里处理绑定键，不受影响
-        let editItem = main.addItem(withTitle: "Edit", action: nil, keyEquivalent: "")
-        let editMenu = NSMenu(title: "Edit")
-        editMenu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
-        editMenu.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "Z")
+        let editItem = main.addItem(withTitle: L("menu.edit"), action: nil, keyEquivalent: "")
+        let editMenu = NSMenu(title: L("menu.edit"))
+        editMenu.addItem(withTitle: L("menu.edit.undo"), action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: L("menu.edit.redo"), action: Selector(("redo:")), keyEquivalent: "Z")
         editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        editMenu.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(withTitle: L("menu.edit.cut"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: L("menu.edit.copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: L("menu.edit.paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: L("menu.edit.select-all"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editMenu.delegate = EditMenuDelegate.shared
         main.setSubmenu(editMenu, for: editItem)
 
         // Shell 菜单
-        let shellItem = main.addItem(withTitle: "Shell", action: nil, keyEquivalent: "")
-        let shellMenu = NSMenu(title: "Shell")
-        shellMenu.addItem(wm(.newTerminal, title: "新建终端", key: "\r", delegate: delegate))
-        shellMenu.addItem(wm(.fileManager, title: "文件管理器", key: "b", modifiers: [.command, .shift], delegate: delegate))
-        shellMenu.addItem(wm(.newBrowser, title: "新建浏览器", key: "b", delegate: delegate))
-        shellMenu.addItem(wm(.clearTerminal, title: "清屏", key: "k", modifiers: [.command, .shift], delegate: delegate))
-        shellMenu.addItem(wm(.closePane, title: "关闭 Pane", key: "w", delegate: delegate))
+        let shellItem = main.addItem(withTitle: L("menu.shell"), action: nil, keyEquivalent: "")
+        let shellMenu = NSMenu(title: L("menu.shell"))
+        shellMenu.addItem(wm(.newTerminal, title: L("menu.shell.new-terminal"), key: "\r", delegate: delegate))
+        shellMenu.addItem(wm(.fileManager, title: L("menu.shell.file-manager"), key: "b", modifiers: [.command, .shift], delegate: delegate))
+        shellMenu.addItem(wm(.newBrowser, title: L("menu.shell.new-browser"), key: "b", delegate: delegate))
+        shellMenu.addItem(wm(.clearTerminal, title: L("menu.shell.clear-terminal"), key: "k", modifiers: [.command, .shift], delegate: delegate))
+        shellMenu.addItem(wm(.closePane, title: L("menu.shell.close-pane"), key: "w", delegate: delegate))
         main.setSubmenu(shellMenu, for: shellItem)
 
         // Pane 菜单
-        let paneItem = main.addItem(withTitle: "Pane", action: nil, keyEquivalent: "")
-        let paneMenu = NSMenu(title: "Pane")
-        paneMenu.addItem(wm(.focusLeft, title: "焦点左移", key: String(UnicodeScalar(NSLeftArrowFunctionKey)!), delegate: delegate))
-        paneMenu.addItem(wm(.focusRight, title: "焦点右移", key: String(UnicodeScalar(NSRightArrowFunctionKey)!), delegate: delegate))
-        paneMenu.addItem(wm(.focusUp, title: "焦点上移", key: String(UnicodeScalar(NSUpArrowFunctionKey)!), delegate: delegate))
-        paneMenu.addItem(wm(.focusDown, title: "焦点下移", key: String(UnicodeScalar(NSDownArrowFunctionKey)!), delegate: delegate))
+        let paneItem = main.addItem(withTitle: L("menu.pane"), action: nil, keyEquivalent: "")
+        let paneMenu = NSMenu(title: L("menu.pane"))
+        paneMenu.addItem(wm(.focusLeft, title: L("menu.pane.focus-left"), key: String(UnicodeScalar(NSLeftArrowFunctionKey)!), delegate: delegate))
+        paneMenu.addItem(wm(.focusRight, title: L("menu.pane.focus-right"), key: String(UnicodeScalar(NSRightArrowFunctionKey)!), delegate: delegate))
+        paneMenu.addItem(wm(.focusUp, title: L("menu.pane.focus-up"), key: String(UnicodeScalar(NSUpArrowFunctionKey)!), delegate: delegate))
+        paneMenu.addItem(wm(.focusDown, title: L("menu.pane.focus-down"), key: String(UnicodeScalar(NSDownArrowFunctionKey)!), delegate: delegate))
         paneMenu.addItem(.separator())
-        paneMenu.addItem(wm(.toggleSplitDirection, title: "切换分裂方向", key: "j", delegate: delegate))
-        paneMenu.addItem(wm(.toggleZoom, title: "Pane 缩放", key: "f", delegate: delegate))
-        paneMenu.addItem(wm(.equalize, title: "全部等分", key: "=", modifiers: [.command, .control], delegate: delegate))
+        paneMenu.addItem(wm(.toggleSplitDirection, title: L("menu.pane.toggle-split-direction"), key: "j", delegate: delegate))
+        paneMenu.addItem(wm(.toggleZoom, title: L("menu.pane.toggle-zoom"), key: "f", delegate: delegate))
+        paneMenu.addItem(wm(.equalize, title: L("menu.pane.equalize"), key: "=", modifiers: [.command, .control], delegate: delegate))
         main.setSubmenu(paneMenu, for: paneItem)
 
         // Window 菜单（系统标准；AppKit 会自动在末尾追加窗口列表）。
         // 多「屏幕」只从这里驱动：一律不给快捷键（⌘N 已被系统/习惯占用，用户明确要求无键位）
-        let windowItem = main.addItem(withTitle: "Window", action: nil, keyEquivalent: "")
-        let windowMenu = NSMenu(title: "Window")
-        windowMenu.addItem(withTitle: "新建屏幕",
+        let windowItem = main.addItem(withTitle: L("menu.window"), action: nil, keyEquivalent: "")
+        let windowMenu = NSMenu(title: L("menu.window"))
+        windowMenu.addItem(withTitle: L("menu.window.new-screen"),
                            action: #selector(AppDelegate.newScreenAction(_:)), keyEquivalent: "")
             .target = delegate
-        let newOnItem = windowMenu.addItem(withTitle: "在显示器上新建屏幕", action: nil, keyEquivalent: "")
-        let newOnMenu = NSMenu(title: "在显示器上新建屏幕")
+        let newOnItem = windowMenu.addItem(withTitle: L("menu.window.new-screen-on-display"), action: nil, keyEquivalent: "")
+        let newOnMenu = NSMenu(title: L("menu.window.new-screen-on-display"))
         newOnMenu.delegate = newScreenDisplayDelegate(for: delegate)
         windowMenu.setSubmenu(newOnMenu, for: newOnItem)
-        let moveItem = windowMenu.addItem(withTitle: "将此屏幕移到显示器", action: nil, keyEquivalent: "")
-        let moveMenu = NSMenu(title: "将此屏幕移到显示器")
+        let moveItem = windowMenu.addItem(withTitle: L("menu.window.move-screen-to-display"), action: nil, keyEquivalent: "")
+        let moveMenu = NSMenu(title: L("menu.window.move-screen-to-display"))
         moveMenu.delegate = moveScreenDisplayDelegate(for: delegate)
         windowMenu.setSubmenu(moveMenu, for: moveItem)
-        windowMenu.addItem(withTitle: "在所有桌面显示",
+        windowMenu.addItem(withTitle: L("menu.window.join-all-spaces"),
                            action: #selector(AppDelegate.toggleJoinAllSpaces(_:)), keyEquivalent: "")
             .target = delegate
-        windowMenu.addItem(withTitle: "关闭屏幕",
+        windowMenu.addItem(withTitle: L("menu.window.close-screen"),
                            action: #selector(AppDelegate.closeScreenAction(_:)), keyEquivalent: "")
             .target = delegate
         windowMenu.addItem(.separator())
-        windowMenu.addItem(withTitle: "最小化", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
-        windowMenu.addItem(withTitle: "缩放", action: #selector(NSWindow.zoom(_:)), keyEquivalent: "")
-        windowMenu.addItem(withTitle: "前置全部窗口",
+        windowMenu.addItem(withTitle: L("menu.window.minimize"), action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: L("menu.window.zoom"), action: #selector(NSWindow.zoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(withTitle: L("menu.window.bring-all-to-front"),
                            action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
         main.setSubmenu(windowMenu, for: windowItem)
         NSApp.windowsMenu = windowMenu

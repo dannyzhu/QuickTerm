@@ -13,13 +13,27 @@ final class ConfigSchemaTests: XCTestCase {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
     }
 
+    /// Read one of the READMEs.
+    ///
+    /// Prefer the copy inside the test bundle (project.yml copies both in as resources) and fall
+    /// back to the source tree. The fallback is not the normal path: this test host is ad-hoc
+    /// signed and the repo sits under ~/Documents, which macOS gates behind a privacy prompt —
+    /// on a machine where nobody answers it, `String(contentsOf:)` blocks and then fails with
+    /// EINTR. The bundled copy is rewritten by every build, so it is the same file, just reachable.
+    private func readme(_ name: String) throws -> String {
+        if let url = Bundle(for: Self.self).url(forResource: name, withExtension: "md") {
+            return try String(contentsOf: url, encoding: .utf8)
+        }
+        return try String(contentsOf: repoRoot.appendingPathComponent("\(name).md"), encoding: .utf8)
+    }
+
     // MARK: 注册表 = 唯一事实来源
 
     /// 每个配置项都在模板里、在两份 README 里，而且**三处的默认值一模一样**
     func testEveryKeyIsDocumented() throws {
         let template = ConfigStore.template
-        let en = try String(contentsOf: repoRoot.appendingPathComponent("README.md"), encoding: .utf8)
-        let zh = try String(contentsOf: repoRoot.appendingPathComponent("README.zh-CN.md"), encoding: .utf8)
+        let en = try readme("README")
+        let zh = try readme("README.zh-CN")
         for spec in ConfigSchema.keys {
             let line = spec.templateAssignment   // "# home = \"https://www.google.com\""
             XCTAssertTrue(template.contains(line), "模板缺少 \(spec.id)：\(line)")
@@ -525,6 +539,22 @@ final class ConfigHotReloadTests: XCTestCase {
 // MARK: - 模板补全（分组之后）
 
 final class ConfigTemplateFillTests: XCTestCase {
+    /// The template comments follow the UI language (`[general] language`). This class compares
+    /// the template text verbatim, so it pins the language — otherwise every case in here would
+    /// go red on a machine whose system language is English.
+    private var templateLanguage = ConfigSchema.templateLanguage
+
+    override func setUp() {
+        super.setUp()
+        templateLanguage = ConfigSchema.templateLanguage
+        ConfigSchema.templateLanguage = .zh
+    }
+
+    override func tearDown() {
+        ConfigSchema.templateLanguage = templateLanguage
+        super.tearDown()
+    }
+
     private func temporaryFile(_ contents: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("qt-tpl-\(UUID().uuidString.prefix(8)).toml")

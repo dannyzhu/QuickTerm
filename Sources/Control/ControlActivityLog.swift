@@ -33,8 +33,27 @@ final class ControlActivityLog: ObservableObject {
         var outcome: String
         var changes: [ControlChange]
 
+        /// The vocabulary `outcome` is written in.
+        ///
+        /// These tokens are English in both UI languages, because the very same value is
+        /// mirrored into OSLog — which is read with `log stream`, long after the fact, often by
+        /// somebody who is not this user. `localizedOutcome` translates the two that are
+        /// sentences for the in-app panel; `applied` / `noop` / `dry-run` are the CLI's own
+        /// words and stay as they are on both sides.
+        enum Outcome {
+            static let applied = "applied"
+            static let noop = "noop"
+            static let noopFailIfNoop = "noop(exit 7)"
+            static let dryRun = "dry-run"
+            static let failedPrefix = "failed: "
+            static let refusedPrefix = "refused: "
+
+            static func failed(_ code: String) -> String { failedPrefix + code }
+            static func refused(_ code: String) -> String { refusedPrefix + code }
+        }
+
         /// 应用内那一份（活动日志面板）：值写全。看的人就是这台机器前面的用户本人
-        var line: String { render(redactingSensitiveValues: false) }
+        var line: String { render(redactingSensitiveValues: false, localizingOutcome: true) }
 
         /// 写进 OSLog 的那一份：`sensitive` 的变更只留 `path`。
         ///
@@ -42,17 +61,33 @@ final class ControlActivityLog: ObservableObject {
         /// /var/db/diagnostics——任何管理员读得到、sysdiagnose 会打包带走、应用关了还在。
         /// 把一个默认要按 token 打码的网址/标题原样写进那里，等于给打码开了一扇后门
         /// （`input.send-text` 早就是这么办的：正文从不入日志，只记「N 个字符」）
-        var logLine: String { render(redactingSensitiveValues: true) }
+        var logLine: String { render(redactingSensitiveValues: true, localizingOutcome: false) }
 
-        private func render(redactingSensitiveValues redacting: Bool) -> String {
+        private func render(redactingSensitiveValues redacting: Bool,
+                            localizingOutcome localizing: Bool) -> String {
             let stamp = Entry.formatter.string(from: at)
             let origin = originPane.map { " ←\($0)" } ?? ""
             let where_ = target.map { " @\($0)" } ?? ""
             let diff = changes.isEmpty ? "" : "  " + changes.map {
                 if redacting, $0.sensitive { return "\($0.path): 已变更（值不入日志）" }
                 return "\($0.path): \($0.from ?? "-") → \($0.to ?? "-")"
-            }.joined(separator: "，")
-            return "\(stamp)  \(command)\(where_)  [\(outcome)]  \(peer)\(origin)\(diff)"
+            }.joined(separator: ", ")
+            let result = localizing ? localizedOutcome : outcome
+            return "\(stamp)  \(command)\(where_)  [\(result)]  \(peer)\(origin)\(diff)"
+        }
+
+        /// `outcome` as the activity-log panel shows it: the stored token is English and reaches
+        /// OSLog untouched, only this rendering follows the UI language.
+        private var localizedOutcome: String {
+            if outcome.hasPrefix(Outcome.failedPrefix) {
+                return L("control.activity.outcome.failed",
+                         String(outcome.dropFirst(Outcome.failedPrefix.count)))
+            }
+            if outcome.hasPrefix(Outcome.refusedPrefix) {
+                return L("control.activity.outcome.refused",
+                         String(outcome.dropFirst(Outcome.refusedPrefix.count)))
+            }
+            return outcome
         }
 
         static let formatter: DateFormatter = {

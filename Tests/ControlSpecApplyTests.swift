@@ -531,6 +531,7 @@ final class ControlSpecApplyTests: XCTestCase {
     /// 破坏性确认框上写的必须是**这一刀真的会动到的东西**。一份屏幕 spec 覆盖整块屏幕的
     /// 每一个工作区，确认框却只说 `-t` 指的那一个的话，用户批准的是一件小得多的事
     func testConsentNamesEveryWorkspaceAScreenSpecWillOverwrite() throws {
+        pinUILanguage(.en)
         let controller = try harness.controller
         touched.insert(1)
         _ = try newPane([:])
@@ -544,7 +545,7 @@ final class ControlSpecApplyTests: XCTestCase {
         try apply(screen, target: "1", mode: "replace").assertOK()
         harness.spin(0.6)
         let summary = try XCTUnwrap(summaries.first, "破坏性命令没有走确认闸门")
-        XCTAssertTrue(summary.contains("\(controller.model.layouts.count) 个工作区"),
+        XCTAssertTrue(summary.contains("\(controller.model.layouts.count) workspaces"),
                       "确认框要说清这一刀横跨几个工作区：\(summary)")
     }
 
