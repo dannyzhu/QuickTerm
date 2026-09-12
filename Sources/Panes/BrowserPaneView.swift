@@ -608,14 +608,38 @@ final class BrowserPaneView: PaneView {
         return BrowserWebView(frame: .zero, configuration: makeConfiguration())
     }
 
-    /// Wire a WebView into the pane: delegates, appearance, settings, KVO and constraints. Both a new
-    /// tab and a cross-boundary WebView swap go through here.
+    /// Wire a WebView into the pane: delegates, appearance, settings, KVO and geometry. Both a new tab
+    /// and a cross-boundary WebView swap go through here.
     private func install(_ webView: BrowserWebView, for tab: Tab) {
         webView.pane = self
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
-        webView.translatesAutoresizingMaskIntoConstraints = false
+        // Springs and struts, NOT Auto Layout - deliberately, and the one place in this pane that is.
+        //
+        // When a page element goes fullscreen (the fullscreen button on a <video>), WebKit does not
+        // ask us anything: -[WKFullScreenWindowController enterFullScreen:] drops a
+        // WKFullScreenPlaceholderView where the web view sat, moves the real WKWebView into its own
+        // WebCoreFullScreenWindow and sets its frame to the screen rect **by hand**. From that moment
+        // the frame belongs to WebKit, in a window that is not ours.
+        //
+        // With translatesAutoresizingMaskIntoConstraints = false and four edge constraints into
+        // webArea, that frame is owned by a layout engine instead, and the engine does not follow the
+        // view out of the pane: the web view arrives in WebKit's window layout-managed but
+        // unconstrained, and the next layout pass - a SwiftUI update, or rebuildTabBar() off the title
+        // KVO, which is exactly what a pause-then-play on a video site fires - writes the pane's inline
+        // size back over WebKit's fullscreen frame. The page is then laid out at ~500x600 in the corner
+        // of a 1728x1117 black fullscreen backdrop, and because we also turn the web view's own
+        // background off (below) nothing paints at all: the user sees a solid black picture, the audio
+        // keeps playing because the media element never changed state, and a right-click still lands on
+        // the live render tree, so they get an ordinary WebKit page menu on the black.
+        //
+        // An autoresizing mask has no such owner. Inside the pane it makes the view follow webArea on
+        // every resize; the moment WebKit moves it, the mask travels with the view and makes it follow
+        // WebKit's window instead. Do not "tidy this up" into constraints, and do not try to flip the
+        // flag from a fullscreen callback either - macOS WKUIDelegate has no fullscreen hook at all
+        // (_WKFullscreenDelegate is SPI), so there is no supported moment to flip it in.
+        webView.translatesAutoresizingMaskIntoConstraints = true
         applySettings(to: webView, extensionPage: tab.extensionContext != nil)
         // Transparent background, so QuickTerm's wallpaper and blur layer show through; wherever the
         // page paints its own background nothing changes.
@@ -626,13 +650,12 @@ final class BrowserPaneView: PaneView {
         }
         webView.underPageBackgroundColor = .clear
         observe(tab)
+        // Fill webArea and keep filling it. webArea itself is still laid out by Auto Layout; a
+        // springs-and-struts subview inside an Auto Layout parent is the supported mixed mode, and it
+        // is what lets the view keep a frame of its own while WebKit has it.
+        webView.frame = webArea.bounds
+        webView.autoresizingMask = [.width, .height]
         webArea.addSubview(webView)
-        NSLayoutConstraint.activate([
-            webView.topAnchor.constraint(equalTo: webArea.topAnchor),
-            webView.leadingAnchor.constraint(equalTo: webArea.leadingAnchor),
-            webView.trailingAnchor.constraint(equalTo: webArea.trailingAnchor),
-            webView.bottomAnchor.constraint(equalTo: webArea.bottomAnchor),
-        ])
         webView.isHidden = true
     }
 
@@ -898,6 +921,8 @@ final class BrowserPaneView: PaneView {
     var tabBarForTesting: BrowserTabBarView { tabBar }
     /// For tests: the address bar.
     var addressFieldForTesting: NSTextField { addressField }
+    /// For tests: the container the tab web views live in.
+    var webAreaForTesting: NSView { webArea }
 
     /// Whether the tab bar is shown: either always, or once there is more than one tab.
     var tabBarVisible: Bool { Self.settings.tabBarAlwaysVisible || tabs.count > 1 }

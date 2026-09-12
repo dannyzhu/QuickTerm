@@ -368,7 +368,113 @@ final class BrowserPaneTests: XCTestCase {
         XCTAssertTrue(decoded is BrowserPaneView)
         XCTAssertEqual(decoded.id, pane.id)
     }
+
+    // MARK: - Element fullscreen (video)
+
+    /// Build a pane inside a real window, laid out, with one tab.
+    @MainActor
+    private func makeLaidOutPane(size: NSSize) -> (BrowserPaneView, NSWindow) {
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        // Programmatically created NSWindows are released when closed; in ARC that is a double free.
+        window.isReleasedWhenClosed = false
+        let pane = BrowserPaneView(url: URL(string: "about:blank"))
+        pane.frame = window.contentView!.bounds
+        pane.autoresizingMask = [.width, .height]
+        window.contentView!.addSubview(pane)
+        window.contentView!.layoutSubtreeIfNeeded()
+        return (pane, window)
+    }
+
+    /// The web view's frame must belong to the web view, never to the pane's Auto Layout engine.
+    ///
+    /// WKFullScreenWindowController takes ownership of that frame when a page element goes fullscreen,
+    /// so a constraint-pinned web view is dragged back to its inline size (or collapses) the moment
+    /// either window runs a layout pass. See install() for the full story.
+    @MainActor
+    func testWebViewOwnsItsOwnFrame() throws {
+        let (pane, window) = makeLaidOutPane(size: NSSize(width: 600, height: 400))
+        defer { pane.removeFromSuperview() }
+        let webArea = pane.webAreaForTesting
+        let webView = pane.webView
+
+        XCTAssertTrue(webView.translatesAutoresizingMaskIntoConstraints,
+                      "the web view has to keep its own frame: WebKit hands it a fullscreen frame by hand")
+        XCTAssertEqual(webView.autoresizingMask, [.width, .height],
+                       "inside the pane it follows webArea through the autoresizing mask, not constraints")
+        // Constraints we wrote ourselves - as opposed to the NSAutoresizingMaskLayoutConstraints AppKit
+        // synthesizes from the mask, which are regenerated against whatever superview the view is in and
+        // therefore travel with it into WebKit's window.
+        let ours = webArea.constraints.filter {
+            type(of: $0) == NSLayoutConstraint.self
+                && (($0.firstItem as? NSView) === webView || ($0.secondItem as? NSView) === webView)
+        }
+        XCTAssertTrue(ours.isEmpty, "no constraint of ours may address the web view: \(ours)")
+        XCTAssertEqual(webView.frame, webArea.bounds, "it still fills the pane")
+
+        // And it keeps filling it when the pane is resized - that is what the mask buys us.
+        window.setContentSize(NSSize(width: 900, height: 700))
+        window.contentView!.layoutSubtreeIfNeeded()
+        XCTAssertEqual(webView.frame, webArea.bounds, "the web view follows webArea on a resize")
+        XCTAssertGreaterThan(webArea.bounds.width, 600, "sanity: the pane really did grow")
+    }
+
+    /// Replay what -[WKFullScreenWindowController enterFullScreen:] does to our view tree - a
+    /// placeholder takes the web view's place in webArea, the real web view moves into WebKit's own
+    /// window and is given the screen rect by hand - and then run layout passes in both windows, the
+    /// way a title change (pause -> play on a video site) or a SwiftUI update does. The fullscreen
+    /// frame has to survive; when the pane owned it, the web view was resized back to the pane's
+    /// inline size, which is the "sound but a black picture" bug.
+    @MainActor
+    func testFullscreenReparentingSurvivesLayoutPasses() throws {
+        let (pane, window) = makeLaidOutPane(size: NSSize(width: 600, height: 400))
+        defer { pane.removeFromSuperview() }
+        let webArea = pane.webAreaForTesting
+        let webView = pane.webView
+
+        // Stand-in for WebKit's WebCoreFullScreenWindow.
+        let fsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
+                                styleMask: [.borderless], backing: .buffered, defer: false)
+        fsWindow.isReleasedWhenClosed = false
+        let fsContent = fsWindow.contentView!
+
+        // WebKit's replaceViewWithView(): placeholder in, web view out, then into the fullscreen window.
+        let placeholder = NSView(frame: webView.frame)
+        placeholder.autoresizingMask = webView.autoresizingMask
+        webArea.addSubview(placeholder, positioned: .above, relativeTo: webView)
+        webView.removeFromSuperview()
+        fsContent.addSubview(webView)
+        webView.frame = fsContent.bounds
+
+        XCTAssertFalse(webView.hasAmbiguousLayout,
+                       "in WebKit's window nothing of ours constrains it, so it must not be layout-managed")
+
+        // Layout churn on both sides, several rounds: the pane's window keeps laying itself out while
+        // fullscreen is up (tab-bar rebuilds off the title KVO, SwiftUI updates), and so does WebKit's.
+        for _ in 0..<3 {
+            pane.needsLayout = true
+            window.contentView!.needsLayout = true
+            window.contentView!.layoutSubtreeIfNeeded()
+            fsContent.needsLayout = true
+            fsContent.layoutSubtreeIfNeeded()
+        }
+
+        XCTAssertEqual(webView.window, fsWindow, "sanity: it is still WebKit's window that owns it")
+        XCTAssertEqual(webView.frame, fsContent.bounds,
+                       "the fullscreen frame must survive layout in both windows")
+        XCTAssertFalse(webView.hasAmbiguousLayout, "and it must not have become layout-ambiguous")
+
+        // Coming back out: WebKit puts the web view back where the placeholder is and removes it.
+        webView.removeFromSuperview()
+        webView.frame = placeholder.frame
+        webArea.addSubview(webView, positioned: .above, relativeTo: placeholder)
+        placeholder.removeFromSuperview()
+        window.setContentSize(NSSize(width: 700, height: 500))
+        window.contentView!.layoutSubtreeIfNeeded()
+        XCTAssertEqual(webView.frame, webArea.bounds, "back inline, it fills the pane again and tracks resizes")
+    }
 }
+
 
 /// Test helper: round-trip one pane through PaneCodable.
 private struct PaneBox: Codable {
