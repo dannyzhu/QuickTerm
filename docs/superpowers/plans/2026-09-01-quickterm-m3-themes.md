@@ -1,24 +1,24 @@
-# QuickTerm M3（主题 + 背景）Implementation Plan
+# QuickTerm M3 (themes + backgrounds) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 移植全部 Omarchy 主题（colors.toml + 每主题 1 张官方背景），主题选择器 / 背景选择与循环 / 连续壁纸层 / 透明度与 gaps toggle / 浅色主题联动；任意主题热切换 < 200ms 无重启。
+**Goal:** Port every Omarchy theme (colors.toml + one official background per theme), the theme picker / background selection and cycling / the continuous wallpaper layer / the opacity and gaps toggles / light-theme system linkage; any theme switches live in under 200ms with no restart.
 
-**Architecture:** ThemeManager 为唯一主题状态（@Published palette + background）；切换 = 重写 engine-overlay.conf（配置链第 3 层）→ 嵌入层 `reloadConfig` 逐 surface 热更新 + SwiftUI 调色板同步刷新。主题包与 Omarchy 同构（`Themes/<name>/{colors.toml, backgrounds/…, light.mode?}`），用户目录 `~/.config/quickterm/themes` 优先。
+**Architecture:** ThemeManager is the single source of theme state (@Published palette + background); switching = rewrite engine-overlay.conf (layer 3 of the config chain) → the embedding layer's `reloadConfig` updates every surface live + the SwiftUI palette refreshes in step. Theme packages have the same shape as Omarchy's (`Themes/<name>/{colors.toml, backgrounds/…, light.mode?}`), with the user directory `~/.config/quickterm/themes` taking priority.
 
-**Spec:** `docs/superpowers/specs/2026-08-31-quickterm-design.md`（§4.3/§4.5、§3.2 主题热切换/连续壁纸、§5.3、§7 M3 行）
+**Spec:** `docs/superpowers/specs/2026-08-31-quickterm-design.md` (§4.3/§4.5, §3.2 live theme switching / continuous wallpaper, §5.3, §7 the M3 row)
 
 ## Global Constraints
-- 分支 `m3-themes`；决策点 4 已确认：**移植 Omarchy 官方 colors + 每主题 1 张官方背景图**（MIT 仓库；图片不进 git，`scripts/fetch-themes.sh` 拉取缓存，构建期拷入 bundle）
-- 键位（§5.3）：`Cmd+Ctrl+Shift+Space` 主题选择器、`Cmd+Ctrl+Space` 背景选择/下一张、`Cmd+Backspace` 透明度、`Cmd+Shift+Backspace` gaps
-- 选择器视觉：Walker 风格居中面板（Monaco 18、2px accent 边框、直角、0.95 透明背景）
+- Branch `m3-themes`; decision point 4 is confirmed: **port Omarchy's official colors plus one official background image per theme** (MIT repo; images stay out of git, `scripts/fetch-themes.sh` fetches and caches them, and the build copies them into the bundle)
+- Keybindings (§5.3): `Cmd+Ctrl+Shift+Space` theme picker, `Cmd+Ctrl+Space` background selection / next, `Cmd+Backspace` opacity, `Cmd+Shift+Backspace` gaps
+- Picker visuals: a Walker-style centred panel (Monaco 18, 2px accent border, square corners, 0.95 opaque background)
 
 ## Tasks
-1. **主题资产管道**：`scripts/fetch-themes.sh` 从 omarchy master 拉全部主题的 `colors.toml`/`light.mode` 进 git（`Themes/`），每主题第 1 张背景到 `Themes/<name>/backgrounds/`（gitignore）；xcodegen 把 Themes 打进 bundle resources
-2. **Theme 模型 + ThemeManager + 测试**：colors.toml 极简解析（`key = "#RRGGBB"`）；`Theme { name, colors, isLight, backgrounds }`；`ThemeManager { current, backgrounds, apply(theme:), nextBackground(), overlayContents() }`；生成 overlay（配色 palette=0..15 + background/foreground/cursor/selection + 透明度）写入 EngineOverlay + 调 `ghostty.reloadConfig`（嵌入层现成路径）
-3. **UI 动态化 + 壁纸层**：Palette 静态值 → ThemeManager 驱动（StatusBar/PaneChrome/RootView 注入 EnvironmentObject）；RootView 底层放当前背景 Image（fill）；toggle-opacity / toggle-gaps 动作与键位
-4. **选择器面板**：通用 PaletteView（居中列表/网格 + 键盘上下/回车/Esc）→ 主题选择器（名称 + 8 色色板条 + light 标记）与背景选择器（缩略图网格）；接键位
-5. **浅色联动 + 收尾**：apply 时按 isLight 设 `window.appearance` + `ghostty_app_set_color_scheme`；acceptance 文档；merge + tag `m3`
+1. **Theme asset pipeline**: `scripts/fetch-themes.sh` pulls every theme's `colors.toml`/`light.mode` from omarchy master into git (`Themes/`), plus each theme's first background into `Themes/<name>/backgrounds/` (gitignored); xcodegen bundles Themes as resources
+2. **Theme model + ThemeManager + tests**: minimal colors.toml parsing (`key = "#RRGGBB"`); `Theme { name, colors, isLight, backgrounds }`; `ThemeManager { current, backgrounds, apply(theme:), nextBackground(), overlayContents() }`; generate the overlay (colours palette=0..15 + background/foreground/cursor/selection + opacity), write it through EngineOverlay and call `ghostty.reloadConfig` (the path the embedding layer already has)
+3. **Make the UI dynamic + the wallpaper layer**: replace Palette's static values with ThemeManager (inject the EnvironmentObject into StatusBar/PaneChrome/RootView); put the current background Image (fill) at the bottom of RootView; add the toggle-opacity / toggle-gaps actions and their keys
+4. **Picker panels**: a generic PaletteView (a centred list/grid + up/down/return/Esc from the keyboard) → the theme picker (name + an 8-colour swatch strip + a light marker) and the background picker (a thumbnail grid); wire up the keys
+5. **Light-theme linkage + wrap-up**: on apply, set `window.appearance` and `ghostty_app_set_color_scheme` from isLight; the acceptance document; merge + tag `m3`
 
-## Self-Review
-- §7 M3 行全覆盖；popin 动画 M1 已有；"19 主题"以 fetch 脚本实际拉到的官方清单为准（仓库演进以 master 为事实来源）✅ 无占位符 ✅ ThemeManager/Theme 接口在 T2 定义、T3/T4 消费一致 ✅
+## Self-review
+- Spec §7's M3 row is fully covered; the popin animation already landed in M1; "19 themes" means whatever the fetch script actually pulls from the official list (the upstream repo evolves, master is the source of truth) ✅ no placeholders ✅ the ThemeManager/Theme interfaces are defined in T2 and consumed consistently by T3/T4 ✅

@@ -1,134 +1,134 @@
-# 浏览器 pane：WKWebExtension 扩展支持 + 下载进度 UI 实现计划
+# Browser pane: WKWebExtension support + download progress UI — implementation plan
 
-> 方案：Fable 5.1（本文件）。实现：Opus 5 agent。验证：Fable 对抗评审。分支 `feat-browser-extensions`。
-> 两个任务顺序做（都改 `BrowserPaneView.buildChrome` 的工具条布局），每个任务：实现 → 定向测试 → 对抗验证 → 修正。
+> Plan: Fable 5.1 (this file). Implementation: Opus 5 agent. Verification: adversarial review by Fable. Branch `feat-browser-extensions`.
+> The two tasks run in order (both touch the toolbar layout in `BrowserPaneView.buildChrome`); each task is: implement → targeted tests → adversarial verification → fix.
 
-**目标**
-- A：浏览器 pane 能加载并运行 WebExtensions（Chrome / Firefox 格式）：从 Chrome Web Store 安装、从本机 Chrome 配置目录导入已装扩展、启用/禁用/移除、扩展动作按钮 + popup、options 页、权限提示、右键菜单项。
-- B：下载时地址栏右侧显示进度；多个下载可下拉查看进度、取消、清除、在 Finder 中显示。
+**Goals**
+- A: a browser pane can load and run WebExtensions (Chrome / Firefox format): install from the Chrome Web Store, import extensions already installed in the local Chrome profile, enable/disable/remove, extension action buttons + popups, options pages, permission prompts, context-menu items.
+- B: while something is downloading, show progress at the right of the address bar; several downloads can be inspected, cancelled, cleared or shown in Finder from a drop-down.
 
-**约束（项目既有规则，必须遵守）**
-- 所有配置项都要出现在 `ConfigStore.template`（注释行 + 默认值）、`ConfigStore.parse`、README（英/中）配置表与模板、`ConfigStoreTests` 的键清单里。
-- 新文件加进 `Sources/`/`Tests/` 后必须 `xcodegen generate`。
-- 测试宿主会读用户真实的 `~/.config/quickterm/config.toml`，不要断言控制器上的默认值；`BrowserPaneView.settings` 用前保存、用后还原。
-- 跑测试：`xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug test -only-testing:QuickTermTests/<Class>` 必须 `nohup … &` 放后台并轮询日志（前台 Bash 10 分钟会被砍）；同一时刻只能有一个 xcodebuild。全套约 50s，115+ 用例，全绿才算完成；文件管理器子进程用例偶发超时，重跑一次即可。
-- 焦点真相 = 窗口 first responder；WKWebView 不能手动 `resignFirstResponder`；SwiftUI 托管的 pane 内部不能有必需的宽度约束（会反过来改 pane 宽度）；NSControl 的 mouseDown 不能在没有真实抬起时直接调用。详见 `docs/porting-notes.md`。
-- 不要 `screencapture` 全屏；不要改用户的 config.toml。
-- 提交信息用中文、`-F` 文件；结尾 `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`。**实现 agent 不提交**——改动留在工作区，由主会话提交。
+**Constraints (existing project rules, non-negotiable)**
+- Every config option has to appear in `ConfigStore.template` (a commented line + the default), `ConfigStore.parse`, the config tables and templates in both READMEs (English/Chinese), and the key list in `ConfigStoreTests`.
+- After adding a file under `Sources/`/`Tests/` you must run `xcodegen generate`.
+- The test host reads the user's real `~/.config/quickterm/config.toml`, so never assert against default values on the controller; save `BrowserPaneView.settings` before using it and restore it afterwards.
+- Running tests: `xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug test -only-testing:QuickTermTests/<Class>` must be backgrounded with `nohup … &` and polled from the log (a foreground Bash call gets killed at 10 minutes); only one xcodebuild at a time. The full suite takes about 50s and 115+ cases, and it all has to be green to count as done; the file-manager subprocess cases time out occasionally, just re-run once.
+- The truth about focus is the window's first responder; a WKWebView must never be sent `resignFirstResponder` by hand; a SwiftUI-hosted pane must not contain a required width constraint (it would resize the pane itself); an NSControl's mouseDown must not be called directly without a real mouse-up. Details in `docs/porting-notes.md`.
+- Do not `screencapture` the whole screen; do not modify the user's config.toml.
+- Write commit messages in Chinese, pass them with `-F`, and end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. **The implementing agent does not commit** — leave the changes in the working tree for the main session to commit.
 
-**部署目标**：`project.yml` `deploymentTarget.macOS` 15.0 → **15.4**（WKWebExtension 最低要求）。README 两处"macOS 15+" → "macOS 15.4+"。
+**Deployment target**: `project.yml` `deploymentTarget.macOS` 15.0 → **15.4** (the minimum for WKWebExtension). Both "macOS 15+" mentions in the READMEs → "macOS 15.4+".
 
 ---
 
-## Task A：WKWebExtension 支持
+## Task A: WKWebExtension support
 
-### A.1 WebKit API（本机 SDK 26.5 已核实，全部 macOS 15.4+）
-- `WKWebExtension(resourceBaseURL:)`（Swift async，目录或 ZIP，需含 manifest.json）；属性 `displayName / displayVersion / version / requestedPermissions / optionalPermissions / requestedPermissionMatchPatterns / optionalPermissionMatchPatterns / hasOptionsPage / icon(for:)`。
-- `WKWebExtensionContext(for: extension)`：`uniqueIdentifier`（我们设为扩展 id）、`isLoaded`、`grantedPermissions: [WKWebExtensionPermission: Date]`、`grantedPermissionMatchPatterns: [WKWebExtensionMatchPattern: Date]`、`setPermissionStatus(_:for:)`、`optionsPageURL`、`action(for: tab) -> WKWebExtensionAction?`、`performAction(for: tab)`、`menuItems(for: tab) -> [NSMenuItem]`、`loadBackgroundContent`、`inspectable`。
-- `WKWebExtensionController(configuration:)`：`WKWebExtensionControllerConfiguration(identifier: UUID)`（持久，扩展 storage 落盘）/ `.nonPersistent()`（测试用）；`configuration.defaultWebsiteDataStore = .default()`（扩展与标签共享 cookie）；`load(_:)`/`unload(_:)`、`extensionContexts`、`delegate`；标签事件：`didOpenWindow/didCloseWindow/didFocusWindow/didOpenTab/didCloseTab(_:windowIsClosing:)/didActivateTab(_:previousActiveTab:)/didSelectTabs/didDeselectTabs/didChangeTabProperties(_:for:)`。
-- `WKWebViewConfiguration.webExtensionController`：每个标签的 WebView 配置都要设；`createWebViewWith` 给的 configuration 也要设（window.open 的标签）。
-- 代理 `WKWebExtensionControllerDelegate`（全部可选）：`openWindows(for:)`、`focusedWindow(for:)`、`openNewWindow(using: WKWebExtensionWindowConfiguration, for:, completionHandler: (WKWebExtensionWindow?, Error?))`、`openNewTab(using: WKWebExtensionTabConfiguration{window,index,url,shouldBeActive,…}, for:, completionHandler: (WKWebExtensionTab?, Error?))`、`openOptionsPage(for:completionHandler:)`、`promptForPermissions(_:in:for:completionHandler: (Set<Permission>, Date?))`、`promptForPermissionToAccess(urls:…)`、`promptForPermissionMatchPatterns(…)`、`didUpdate(action, for:)`、`presentPopup(for action: WKWebExtensionAction, for:, completionHandler: (Error?))`、`sendMessage(…to applicationWithIdentifier…)` 与 `connectUsing(messagePort…)`（原生消息：回调 error，不支持）。
-- `WKWebExtensionAction`：`icon(for:)`、`label`、`badgeText`、`isEnabled`、`presentsPopup`、`popupPopover: NSPopover?`（WebKit 自带的 popup 弹出层，直接 `show(relativeTo:of:preferredEdge:)`）、`popupWebView`、`closePopup()`、`menuItems`。
-- 协议 `WKWebExtensionTab`（全部可选；对象须是 NSObject 子类）：`window(for:)`、`indexInWindow(for:)`、`webView(for:)`、`title(for:)`、`url(for:)`、`pendingURL(for:)`、`isLoadingComplete(for:)`、`isSelected(for:)`、`activate(for:completionHandler:)`、`setSelected(_:for:completionHandler:)`、`close(for:completionHandler:)`、`loadURL(_:for:completionHandler:)`、`reload(fromOrigin:for:completionHandler:)`、`goBack/goForward(for:completionHandler:)`、`zoomFactor(for:)`/`setZoomFactor`、`size(for:)`、`shouldGrantPermissionsOnUserGesture(for:)`（返回 true）。
-- 协议 `WKWebExtensionWindow`：`tabs(for:)`、`activeTab(for:)`、`windowType(for:)`（.normal）、`windowState(for:)`（.normal）、`isPrivate(for:)`（false）、`frame(for:)`/`screenFrame(for:)`、`focus(for:completionHandler:)`、`close(for:completionHandler:)`。
-- 权限常量：ActiveTab Alarms ClipboardWrite ContextMenus Cookies DeclarativeNetRequest(±Feedback/WithHostAccess) Menus NativeMessaging Scripting Storage Tabs UnlimitedStorage WebNavigation WebRequest。`WKWebExtensionMatchPattern(string:)`、`.allURLs()`、`.allHostsAndSchemes()`。
+### A.1 The WebKit API (verified against the local SDK 26.5, all macOS 15.4+)
+- `WKWebExtension(resourceBaseURL:)` (Swift async, a directory or a ZIP, must contain manifest.json); properties `displayName / displayVersion / version / requestedPermissions / optionalPermissions / requestedPermissionMatchPatterns / optionalPermissionMatchPatterns / hasOptionsPage / icon(for:)`.
+- `WKWebExtensionContext(for: extension)`: `uniqueIdentifier` (we set it to the extension id), `isLoaded`, `grantedPermissions: [WKWebExtensionPermission: Date]`, `grantedPermissionMatchPatterns: [WKWebExtensionMatchPattern: Date]`, `setPermissionStatus(_:for:)`, `optionsPageURL`, `action(for: tab) -> WKWebExtensionAction?`, `performAction(for: tab)`, `menuItems(for: tab) -> [NSMenuItem]`, `loadBackgroundContent`, `inspectable`.
+- `WKWebExtensionController(configuration:)`: `WKWebExtensionControllerConfiguration(identifier: UUID)` (persistent, extension storage hits disk) / `.nonPersistent()` (for tests); `configuration.defaultWebsiteDataStore = .default()` (extensions and tabs share cookies); `load(_:)`/`unload(_:)`, `extensionContexts`, `delegate`; tab events: `didOpenWindow/didCloseWindow/didFocusWindow/didOpenTab/didCloseTab(_:windowIsClosing:)/didActivateTab(_:previousActiveTab:)/didSelectTabs/didDeselectTabs/didChangeTabProperties(_:for:)`.
+- `WKWebViewConfiguration.webExtensionController`: set it on every tab's WebView configuration, and on the configuration handed to `createWebViewWith` too (the window.open tabs).
+- The `WKWebExtensionControllerDelegate` (everything optional): `openWindows(for:)`, `focusedWindow(for:)`, `openNewWindow(using: WKWebExtensionWindowConfiguration, for:, completionHandler: (WKWebExtensionWindow?, Error?))`, `openNewTab(using: WKWebExtensionTabConfiguration{window,index,url,shouldBeActive,…}, for:, completionHandler: (WKWebExtensionTab?, Error?))`, `openOptionsPage(for:completionHandler:)`, `promptForPermissions(_:in:for:completionHandler: (Set<Permission>, Date?))`, `promptForPermissionToAccess(urls:…)`, `promptForPermissionMatchPatterns(…)`, `didUpdate(action, for:)`, `presentPopup(for action: WKWebExtensionAction, for:, completionHandler: (Error?))`, plus `sendMessage(…to applicationWithIdentifier…)` and `connectUsing(messagePort…)` (native messaging: call back with an error, unsupported).
+- `WKWebExtensionAction`: `icon(for:)`, `label`, `badgeText`, `isEnabled`, `presentsPopup`, `popupPopover: NSPopover?` (WebKit's own popup container — just `show(relativeTo:of:preferredEdge:)` it), `popupWebView`, `closePopup()`, `menuItems`.
+- The `WKWebExtensionTab` protocol (everything optional; the object has to be an NSObject subclass): `window(for:)`, `indexInWindow(for:)`, `webView(for:)`, `title(for:)`, `url(for:)`, `pendingURL(for:)`, `isLoadingComplete(for:)`, `isSelected(for:)`, `activate(for:completionHandler:)`, `setSelected(_:for:completionHandler:)`, `close(for:completionHandler:)`, `loadURL(_:for:completionHandler:)`, `reload(fromOrigin:for:completionHandler:)`, `goBack/goForward(for:completionHandler:)`, `zoomFactor(for:)`/`setZoomFactor`, `size(for:)`, `shouldGrantPermissionsOnUserGesture(for:)` (return true).
+- The `WKWebExtensionWindow` protocol: `tabs(for:)`, `activeTab(for:)`, `windowType(for:)` (.normal), `windowState(for:)` (.normal), `isPrivate(for:)` (false), `frame(for:)`/`screenFrame(for:)`, `focus(for:completionHandler:)`, `close(for:completionHandler:)`.
+- Permission constants: ActiveTab Alarms ClipboardWrite ContextMenus Cookies DeclarativeNetRequest(±Feedback/WithHostAccess) Menus NativeMessaging Scripting Storage Tabs UnlimitedStorage WebNavigation WebRequest. Plus `WKWebExtensionMatchPattern(string:)`, `.allURLs()`, `.allHostsAndSchemes()`.
 
-### A.2 文件与职责
+### A.2 Files and responsibilities
 1. **`Sources/Panes/BrowserExtensions.swift`** — `@MainActor final class BrowserExtensionManager: NSObject, WKWebExtensionControllerDelegate`
-   - `static let shared`；测试可 `init(configuration: WKWebExtensionControllerConfiguration, storeDirectory: URL)`（shared 用 `configurationWithIdentifier(持久 UUID，存 `<store>/controller-id`)` 与 `~/Library/Application Support/QuickTerm/Extensions/`）。
-   - 数据：`struct Record: Codable { id, source: "webstore"|"chrome"|"local", version, installedAt, enabled }` 存 `<store>/state.json`；`final class Installed { record, extension: WKWebExtension, context: WKWebExtensionContext }`；`private(set) var installed: [Installed]`（按名字排序）。
-   - `var isEnabled: Bool`（config `browser-extensions`；false 时全部 unload、`controller` 不挂到 WebView 配置）。
-   - `func loadInstalled() async`：遍历 `<store>/<id>/`，`WKWebExtension(resourceBaseURL:)` → context（`uniqueIdentifier = id`）→ 授予 `requestedPermissions` 与 `requestedPermissionMatchPatterns`（全部，Date.distantFuture 不必，用 `Date()`）→ `enabled` 才 `controller.load`。坏扩展只记日志跳过。
-   - `func install(fromWebStore id: String, progress: @escaping (String) -> Void) async throws -> Installed`：`WebStore.downloadURL(id:)` = `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=131.0.0.0&x=id%3D<id>%26installsource%3Dondemand%26uc&acceptformat=crx2,crx3` → `URLSession` 下载 → `CRX.zipData(from:)` → 写临时 zip → `ditto -x -k`（Process，/usr/bin/ditto）解到临时目录 → 校验 manifest.json 存在 → 移到 `<store>/<id>/`（已存在先删 = 更新）→ 加载并记录。
-   - `func importFromChrome(profile: URL = ~/Library/Application Support/Google/Chrome/Default) async -> (imported: Int, skipped: Int, failed: [String])`：扫 `Extensions/<id>/<version>/manifest.json`，取最高版本目录（按语义化比较），跳过：已安装、manifest 有 `theme`、`app`、无 `name`；复制目录到 store，加载。
-   - `func setEnabled(_:for:)`、`func remove(_:)`（unload + 删目录 + 记录）、`func openOptions(for:)`（`context.optionsPageURL` 在焦点浏览器 pane 新标签打开）。
-   - 宿主接口 `protocol BrowserExtensionHost: AnyObject { var browserPanes: [BrowserPaneView] { get }; var focusedBrowserPane: BrowserPaneView? { get }; func openBrowserWindow(url: URL?) -> BrowserPaneView? }`；`weak var host`（MainWindowController 实现：browserPanes = 所有工作区的 BrowserPaneView（含浮动），focused = 持 FR 的，否则最近激活的；openBrowserWindow = openBrowserPane 并返回）。
-   - 代理实现：openWindows → host.browserPanes；focusedWindow → host.focusedBrowserPane；openNewTab → (configuration.window as? BrowserPaneView) ?? focused ?? first，`addTab(url: configuration.url ?? home, activate: configuration.shouldBeActive)`，回调 tab；openNewWindow → host.openBrowserWindow(url: configuration.tabURLs.first) 回调 pane；openOptionsPage → 新标签；三个 prompt → NSAlert（sheet 到 key window，否则 runModal）："扩展「X」请求权限：…" [允许][拒绝] → 回调全部或空集；didUpdate(action) → `NotificationCenter.default.post(name: .browserExtensionActionDidUpdate, object: context)`；presentPopup → 找 `action.associatedTab` 所属 pane（`(tab as? BrowserPaneView.Tab)?.pane`）或 focused，`pane.presentExtensionPopup(action)`；sendMessage/connect → `completionHandler(NSError(domain: "QuickTerm", code: 1, …不支持原生消息…))`。
-   - `static func extensionID(fromWebStoreURL:) -> String?`：`chromewebstore.google.com/detail/<slug>/<id>` 或 `chrome.google.com/webstore/detail/<slug>/<id>`，id = 32 个 a–p 字母。
-   - `enum CRX { static func zipData(from data: Data) -> Data? }`：magic "Cr24"；v2：header = 16 + publicKeyLength + signatureLength（两个 LE UInt32 在 offset 8/12）；v3：header = 12 + headerLength（LE UInt32 在 offset 8）；越界返回 nil。
-   - 通知名 `Notification.Name.browserExtensionsDidChange`（安装/移除/启停后 post）。
+   - `static let shared`; tests can use `init(configuration: WKWebExtensionControllerConfiguration, storeDirectory: URL)` (shared uses `configurationWithIdentifier(a persistent UUID, stored in <store>/controller-id)` and `~/Library/Application Support/QuickTerm/Extensions/`).
+   - Data: `struct Record: Codable { id, source: "webstore"|"chrome"|"local", version, installedAt, enabled }` stored in `<store>/state.json`; `final class Installed { record, extension: WKWebExtension, context: WKWebExtensionContext }`; `private(set) var installed: [Installed]` (sorted by name).
+   - `var isEnabled: Bool` (config `browser-extensions`; when false, unload everything and never attach `controller` to a WebView configuration).
+   - `func loadInstalled() async`: walk `<store>/<id>/`, `WKWebExtension(resourceBaseURL:)` → context (`uniqueIdentifier = id`) → grant `requestedPermissions` and `requestedPermissionMatchPatterns` (all of them; Date.distantFuture is unnecessary, use `Date()`) → `controller.load` only if `enabled`. A broken extension is logged and skipped.
+   - `func install(fromWebStore id: String, progress: @escaping (String) -> Void) async throws -> Installed`: `WebStore.downloadURL(id:)` = `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=131.0.0.0&x=id%3D<id>%26installsource%3Dondemand%26uc&acceptformat=crx2,crx3` → download with `URLSession` → `CRX.zipData(from:)` → write a temporary zip → `ditto -x -k` (Process, /usr/bin/ditto) into a temporary directory → check that manifest.json is there → move it to `<store>/<id>/` (deleting what is already there = an update) → load and record it.
+   - `func importFromChrome(profile: URL = ~/Library/Application Support/Google/Chrome/Default) async -> (imported: Int, skipped: Int, failed: [String])`: scan `Extensions/<id>/<version>/manifest.json`, take the highest version directory (semantic comparison), and skip: already installed, a manifest with `theme` or `app`, or one with no `name`. Copy the directory into the store and load it.
+   - `func setEnabled(_:for:)`, `func remove(_:)` (unload + delete the directory + drop the record), `func openOptions(for:)` (open `context.optionsPageURL` in a new tab of the focused browser pane).
+   - The host interface `protocol BrowserExtensionHost: AnyObject { var browserPanes: [BrowserPaneView] { get }; var focusedBrowserPane: BrowserPaneView? { get }; func openBrowserWindow(url: URL?) -> BrowserPaneView? }`; `weak var host` (implemented by MainWindowController: browserPanes = every BrowserPaneView across all workspaces, floating ones included; focused = the one holding the first responder, otherwise the most recently activated; openBrowserWindow = openBrowserPane, returning the pane).
+   - Delegate implementations: openWindows → host.browserPanes; focusedWindow → host.focusedBrowserPane; openNewTab → `(configuration.window as? BrowserPaneView) ?? focused ?? first`, then `addTab(url: configuration.url ?? home, activate: configuration.shouldBeActive)` and call back with the tab; openNewWindow → `host.openBrowserWindow(url: configuration.tabURLs.first)`, call back with the pane; openOptionsPage → a new tab; all three prompts → an NSAlert (as a sheet on the key window, otherwise runModal): "The extension "X" is requesting permissions: …" [Allow][Deny] → call back with everything or with an empty set; didUpdate(action) → `NotificationCenter.default.post(name: .browserExtensionActionDidUpdate, object: context)`; presentPopup → find the pane owning `action.associatedTab` (`(tab as? BrowserPaneView.Tab)?.pane`) or the focused one, then `pane.presentExtensionPopup(action)`; sendMessage/connect → `completionHandler(NSError(domain: "QuickTerm", code: 1, …native messaging is not supported…))`.
+   - `static func extensionID(fromWebStoreURL:) -> String?`: `chromewebstore.google.com/detail/<slug>/<id>` or `chrome.google.com/webstore/detail/<slug>/<id>`, where the id is 32 letters from a–p.
+   - `enum CRX { static func zipData(from data: Data) -> Data? }`: magic "Cr24"; v2: header = 16 + publicKeyLength + signatureLength (two LE UInt32s at offsets 8 and 12); v3: header = 12 + headerLength (an LE UInt32 at offset 8); out of bounds returns nil.
+   - The notification name `Notification.Name.browserExtensionsDidChange` (posted after an install, a removal, or an enable/disable).
 2. **`Sources/Panes/BrowserExtensionUI.swift`**
-   - `final class BrowserExtensionToolbar: NSView`：手工布局（无 Auto Layout 宽度约束！），每个已启用且 `context.action(for: tab) != nil` 的扩展一个 22×22 按钮（图标 `action.icon(for: 16)`，badge 小圆标签，`isEnabled`），点击 → `context.performAction(for: tab)`；末尾拼图按钮（`puzzlepiece.extension` SF Symbol）→ `NSMenu`：每个扩展一项（名字，✓ 表示启用；子菜单：启用/禁用、选项…（有 options 时）、移除…）；分隔；「从 Chrome 导入已安装扩展…」「打开 Chrome Web Store」「打开扩展文件夹」。`intrinsicContentSize` 宽 = 按钮数×24 + 拼图 24；无扩展时只剩拼图。监听两个通知重建。`reload(for tab:)`。
-   - `presentExtensionPopup(_ action:)` 在 BrowserPaneView：找到对应按钮（没有则用拼图按钮）→ `action.popupPopover?.show(relativeTo: btn.bounds, of: btn, preferredEdge: .maxY)`。
-   - Web Store 注入脚本（`WKUserScript`，documentEnd，主框架）：URL 含 `/detail/` 时在页面右下角加固定按钮「添加到 QuickTerm」，点击 `window.webkit.messageHandlers.quicktermExtension.postMessage({id})`（id 从 location.pathname 取）。BrowserPaneView 为每个标签的 `userContentController` 注册 handler 名 `quicktermExtension`（用弱代理对象避免循环引用）；收到后：先 `WKWebExtension(resourceBaseURL:)` 解包后的目录读 `requestedPermissions` → NSAlert「安装「X」？它将获得：…」[安装][取消] → 安装 → 成功后 alert「已安装」。安装中用 `progress` 回调更新地址栏占位文字或状态。
-3. **`Sources/Panes/BrowserPaneView.swift`** 改动
-   - `final class Tab: NSObject, WKWebExtensionTab`，加 `weak var pane: BrowserPaneView?`；实现 A.1 列出的方法。`indexInWindow` = pane.tabs 下标。
-   - `extension BrowserPaneView: WKWebExtensionWindow`。
-   - 建 WebView 配置处（`addTab` 里的 configuration 与 `createWebViewWith` 的 configuration）：`if BrowserExtensionManager.shared.isEnabled { configuration.webExtensionController = manager.controller }`；`userContentController.add(handler, name: "quicktermExtension")` + Web Store 用户脚本。
-   - 事件上报（仅 isEnabled）：init → `didOpenWindow(self)`；`tearDownAll`/pane 关闭（`viewWillMove(toWindow: nil)` 且 pane 被移除时——用 `controller.requestClosePane` 路径与 `deinit` 兜底）→ `didCloseWindow`；`paneDidBecomeFirstResponder` → `didFocusWindow(self)`；`addTab` → `didOpenTab`；`closeTab` → `didCloseTab(tab, windowIsClosing: false)`；`selectTab` → `didActivateTab(new, previousActiveTab: old)` + `didSelectTabs([new])`/`didDeselectTabs([old])`；KVO url/title/isLoading → `didChangeTabProperties([.url]/[.title]/[.loading], for: tab)`。
-   - 工具条：`extensionBar` 放在地址栏右侧：`addressField.trailing = extensionBar.leading - 6`，`extensionBar.trailing = toolbar.trailing - 6`，宽度由 intrinsicContentSize（hugging 高、compression 高）。**注意**：Task B 还要在同一区域放下载按钮——顺序：地址栏 | 下载按钮 | 扩展条。
-   - ~~`BrowserWebView.willOpenMenu(_:with:)` 覆写：追加分隔 + `context.menuItems(for: tab)`~~ **（实现时否掉）**：
-     WebKit 的 `WebContextMenuProxyMac` 见到 page 挂着 `webExtensionController` 就已经把各扩展的 `contextMenus`
-     项（含分隔线）加进页面右键菜单了，自己再加一遍是重复项；而且 `menuItems(for: tab)` 返回的是**标签条**
-     右键那一套（tab 上下文）。
-   - 扩展自己的页面（`webkit-extension://…`：选项页、`tabs.create(runtime.getURL(…))`）必须用
-     `context.webViewConfiguration` 建 WebView（普通配置的主帧加载会被 WebKit 拒成
-     `NSURLErrorResourceUnavailable`），且扩展页 ↔ 普通页跨界导航时要原地换掉标签的 WebView。
-4. **`Sources/Windowing/MainWindowController.swift`**：实现 `BrowserExtensionHost`；`applyConfig` 里 `BrowserExtensionManager.shared.isEnabled = settings.browserExtensions`；`openBrowserPane` 返回 pane（`@discardableResult`，Shims 的基类签名同步改）；WM 动作 `web-extensions`（`Cmd+Shift+E`，browserOnly，help「扩展菜单」）→ `browserPane?.showExtensionsMenu()`（弹拼图菜单）。KeybindingMap 默认键、WMAction、README 键位表、KeybindingMapTests 表都要加。
-5. **`Sources/App/AppDelegate.swift`**：`applicationDidFinishLaunching` 里配置加载后 `Task { await BrowserExtensionManager.shared.loadInstalled() }`。
-6. **`Sources/Config/ConfigStore.swift`**：`browser-extensions = true`（模板注释：`# browser-extensions = true   # 浏览器 pane 加载 WebExtensions（Chrome Web Store 安装 / 从 Chrome 导入；macOS 15.4+）`）。
-7. **`project.yml`** 部署目标 15.4；`xcodegen generate`。
-8. **文档**：README（英/中）：Features 里加一条；键位表加 `Cmd+Shift+E`；配置表加 `browser-extensions`；新小节「Browser extensions / 浏览器扩展」：怎么装（Web Store 页面的「添加到 QuickTerm」按钮；拼图菜单「从 Chrome 导入」）、存放位置、支持范围（WebKit 实现约 25 个 API 命名空间；不支持 webRequest 阻断、identity、history、downloads、management、proxy、nativeMessaging、debugger；storage.sync 不跨设备）；`docs/superpowers/specs/2026-08-31-quickterm-design.md` 的 Super+B 行补一句、配置表加键；`docs/porting-notes.md` 记录实现中踩到的 WebKit 坑。
+   - `final class BrowserExtensionToolbar: NSView`: laid out by hand (no Auto Layout width constraints!), one 22×22 button per extension that is enabled and has `context.action(for: tab) != nil` (icon from `action.icon(for: 16)`, a small round badge label, `isEnabled`), click → `context.performAction(for: tab)`; a puzzle button at the end (the `puzzlepiece.extension` SF Symbol) → an `NSMenu`: one item per extension (the name, ✓ when enabled; submenu: enable/disable, Options… (when it has one), Remove…); a separator; then "Import installed extensions from Chrome…", "Open the Chrome Web Store", "Open the extensions folder". `intrinsicContentSize` width = number of buttons × 24 + 24 for the puzzle; with no extensions only the puzzle is left. It listens to both notifications and rebuilds. `reload(for tab:)`.
+   - `presentExtensionPopup(_ action:)` on BrowserPaneView: find the matching button (falling back to the puzzle button) → `action.popupPopover?.show(relativeTo: btn.bounds, of: btn, preferredEdge: .maxY)`.
+   - The Web Store injection script (`WKUserScript`, documentEnd, main frame only): when the URL contains `/detail/`, add a fixed "Add to QuickTerm" button in the bottom-right corner of the page; clicking it posts `window.webkit.messageHandlers.quicktermExtension.postMessage({id})` (the id comes from location.pathname). BrowserPaneView registers the handler name `quicktermExtension` on every tab's `userContentController` (through a weak proxy object, to avoid a retain cycle); on receiving it: first read `requestedPermissions` from the unpacked directory via `WKWebExtension(resourceBaseURL:)` → an NSAlert "Install "X"? It will be granted: …" [Install][Cancel] → install → on success an alert saying it is installed. While installing, use the `progress` callback to update the address bar's placeholder text or a status line.
+3. **Changes to `Sources/Panes/BrowserPaneView.swift`**
+   - `final class Tab: NSObject, WKWebExtensionTab`, with a `weak var pane: BrowserPaneView?`; implement the methods listed in A.1. `indexInWindow` = the index in pane.tabs.
+   - `extension BrowserPaneView: WKWebExtensionWindow`.
+   - Wherever WebView configurations are built (the configuration inside `addTab` and the one from `createWebViewWith`): `if BrowserExtensionManager.shared.isEnabled { configuration.webExtensionController = manager.controller }`; plus `userContentController.add(handler, name: "quicktermExtension")` and the Web Store user script.
+   - Event reporting (only when isEnabled): init → `didOpenWindow(self)`; `tearDownAll`/the pane closing (`viewWillMove(toWindow: nil)` with the pane actually being removed — via the `controller.requestClosePane` path, with `deinit` as a backstop) → `didCloseWindow`; `paneDidBecomeFirstResponder` → `didFocusWindow(self)`; `addTab` → `didOpenTab`; `closeTab` → `didCloseTab(tab, windowIsClosing: false)`; `selectTab` → `didActivateTab(new, previousActiveTab: old)` + `didSelectTabs([new])`/`didDeselectTabs([old])`; KVO on url/title/isLoading → `didChangeTabProperties([.url]/[.title]/[.loading], for: tab)`.
+   - Toolbar: put `extensionBar` at the right of the address bar: `addressField.trailing = extensionBar.leading - 6`, `extensionBar.trailing = toolbar.trailing - 6`, width from intrinsicContentSize (high hugging, high compression resistance). **Note**: Task B needs room in the same area for the download button — the order is address bar | download button | extension bar.
+   - ~~Override `BrowserWebView.willOpenMenu(_:with:)`: append a separator + `context.menuItems(for: tab)`~~ **(rejected during implementation)**:
+     once WebKit's `WebContextMenuProxyMac` sees a `webExtensionController` on the page it has already added each extension's
+     `contextMenus` items (separator included) to the page context menu, so adding them again duplicates them; and what
+     `menuItems(for: tab)` returns is the **tab bar** right-click set (the tab context), not the page one.
+   - An extension's own pages (`webkit-extension://…`: the options page, `tabs.create(runtime.getURL(…))`) must be built with
+     `context.webViewConfiguration` (loading them in the main frame of an ordinary configuration gets rejected by WebKit as
+     `NSURLErrorResourceUnavailable`), and navigating across the extension-page ↔ ordinary-page boundary means swapping the tab's WebView in place.
+4. **`Sources/Windowing/MainWindowController.swift`**: implement `BrowserExtensionHost`; in `applyConfig`, `BrowserExtensionManager.shared.isEnabled = settings.browserExtensions`; `openBrowserPane` returns the pane (`@discardableResult`, with the base-class signature in Shims updated to match); the WM action `web-extensions` (`Cmd+Shift+E`, browserOnly, help text "Extensions menu") → `browserPane?.showExtensionsMenu()` (pops the puzzle menu). The default binding in KeybindingMap, the WMAction case, the README keybinding table and the KeybindingMapTests table all need the new entry.
+5. **`Sources/App/AppDelegate.swift`**: in `applicationDidFinishLaunching`, after the config is loaded, `Task { await BrowserExtensionManager.shared.loadInstalled() }`.
+6. **`Sources/Config/ConfigStore.swift`**: `browser-extensions = true` (template comment: `# browser-extensions = true   # browser panes load WebExtensions (install from the Chrome Web Store / import from Chrome; macOS 15.4+)`).
+7. **`project.yml`** deployment target 15.4; `xcodegen generate`.
+8. **Docs**: the READMEs (English/Chinese): one more line under Features; `Cmd+Shift+E` in the keybinding table; `browser-extensions` in the config table; a new section "Browser extensions": how to install (the "Add to QuickTerm" button on a Web Store page; "Import from Chrome" in the puzzle menu), where they are stored, what is supported (WebKit implements roughly 25 API namespaces; no blocking webRequest, no identity, history, downloads, management, proxy, nativeMessaging or debugger; storage.sync does not sync across devices); add a sentence to the Super+B row of `docs/superpowers/specs/2026-08-31-quickterm-design.md` and the key to its config table; record the WebKit traps hit during implementation in `docs/porting-notes.md`.
 
-### A.3 测试（`Tests/BrowserExtensionTests.swift`，新文件）
-- `CRX.zipData`：手工拼 CRX3（"Cr24" + v3 + headerLen + header + zip）与 CRX2 头 → 返回 zip 字节；坏 magic / 截断 → nil。
-- `extensionID(fromWebStoreURL:)`：两种域名、带 query、非 detail 页 → nil、id 长度不对 → nil。
-- Chrome 导入扫描：临时目录造 `<id>/1.0.0/manifest.json` 与 `<id>/1.2.0/manifest.json`、一个 theme 扩展、一个无 name → 选 1.2.0、跳过 theme 与无 name。
-- 管理器（`nonPersistent` 配置 + 临时 store）：本地装一个 fixture 扩展（MV3，`content_scripts` matches `http://example.test/*`，脚本 `document.title = "EXT-OK"`；`action` 带 default_popup）→ `installed.count == 1`、`context.isLoaded`、`controller.extensionContexts.count == 1`；`setEnabled(false)` → unloaded；`remove` → 目录删除、列表空。
-- 标签/窗口协议：pane 两个标签 → `tabs(for:)` 2、`activeTab(for:)` 正确、`tab.window(for:) === pane`、`indexInWindow`、`isSelected`；`activate` 切换 activeTabIndex。
-- 端到端（尽力，WebKit 应支持）：pane 的 WebView 配置挂了 controller 后 `webView.loadHTMLString("<html><body>x</body></html>", baseURL: URL(string: "http://example.test/"))`，等 ≤ 3s，断言 `webView.title == "EXT-OK"`（内容脚本注入成功）。若 WebKit 对 loadHTMLString 不注入，改用 `WKURLSchemeHandler` 自定义 scheme（`WKWebExtensionMatchPattern.registerCustomURLScheme`）或记录原因并保留其它断言。
-- 配置：`ConfigStoreTests` 加 `browser-extensions` 默认 true / 解析 false / 模板键清单；`KeybindingMapTests` 表加 `("e", [.command, .shift], .webExtensions)`。
+### A.3 Tests (`Tests/BrowserExtensionTests.swift`, a new file)
+- `CRX.zipData`: hand-assemble a CRX3 ("Cr24" + v3 + headerLen + header + zip) and a CRX2 header → the zip bytes come back; a bad magic or a truncated file → nil.
+- `extensionID(fromWebStoreURL:)`: both domains, with a query string, a non-detail page → nil, a wrong-length id → nil.
+- The Chrome import scan: build `<id>/1.0.0/manifest.json` and `<id>/1.2.0/manifest.json` in a temporary directory, plus a theme extension and one with no name → 1.2.0 is chosen, the theme and the nameless one are skipped.
+- The manager (a `nonPersistent` configuration + a temporary store): install a local fixture extension (MV3, `content_scripts` matching `http://example.test/*`, the script doing `document.title = "EXT-OK"`; an `action` with a default_popup) → `installed.count == 1`, `context.isLoaded`, `controller.extensionContexts.count == 1`; `setEnabled(false)` → unloaded; `remove` → the directory is gone and the list is empty.
+- The tab/window protocols: a pane with two tabs → `tabs(for:)` is 2, `activeTab(for:)` is right, `tab.window(for:) === pane`, `indexInWindow`, `isSelected`; `activate` changes activeTabIndex.
+- End to end (best effort, WebKit should support it): with the controller attached to the pane's WebView configuration, `webView.loadHTMLString("<html><body>x</body></html>", baseURL: URL(string: "http://example.test/"))`, wait ≤ 3s, assert `webView.title == "EXT-OK"` (the content script was injected). If WebKit does not inject into loadHTMLString, switch to a `WKURLSchemeHandler` custom scheme (`WKWebExtensionMatchPattern.registerCustomURLScheme`), or record why and keep the other assertions.
+- Config: add `browser-extensions` to `ConfigStoreTests` (default true / parses false / present in the template key list); add `("e", [.command, .shift], .webExtensions)` to the `KeybindingMapTests` table.
 
 ---
 
-## Task B：下载进度 UI
+## Task B: the download progress UI
 
-### B.1 文件与职责
+### B.1 Files and responsibilities
 1. **`Sources/Panes/BrowserDownloads.swift`**
-   - `final class BrowserDownloadItem: NSObject { let id: UUID; let filename: String; let destination: URL; let progress: Progress（= download.progress，WKDownload 遵守 NSProgressReporting）; var state: State（.downloading / .completed / .failed(String) / .cancelled）; let cancelHandler: () -> Void }`。测试可不带 WKDownload（传假 Progress 与假 cancel）。
-   - `final class BrowserDownloadList: NSObject { private(set) var items: [BrowserDownloadItem]; var onChange: (() -> Void)?; func add(_:)、cancel(_:)、remove(_:)、clearFinished()、markCompleted/markFailed；var activeCount; var aggregateFraction: Double?（活动项 completedUnitCount 之和 / totalUnitCount 之和；有任一 total 未知 → nil = 不确定）}`；用 KVO 观察每个 Progress 的 `fractionCompleted`，节流到 ≤ 10 Hz 触发 `onChange`。
-   - `final class BrowserDownloadButton: NSButton`：22×22，自绘：圆环进度（`aggregateFraction`，nil 时画旋转虚线或用 NSProgressIndicator spinning），中心向下箭头；全部完成且无活动 → 画勾；`items.isEmpty` → 隐藏。tooltip「下载（N 个进行中）」。点击 → popover。
-   - `final class BrowserDownloadPopover`（NSPopover + NSViewController）：`NSStackView` 纵向，每项一行（图标 + 文件名（byTruncatingMiddle）+ 状态文字「1.2 MB / 5.0 MB · 45%」/「已完成 · 5.0 MB」/「已取消」/「失败：…」+ 细进度条 NSProgressIndicator + 右侧按钮：进行中 = ✕ 取消；完成 = 「在 Finder 中显示」（`NSWorkspace.shared.activateFileViewerSelecting`）；完成/失败/取消 = ✕ 移除行）；底部「清除已完成」；宽 320；随列表变化重建行（复用行视图，避免闪烁）。`ByteCountFormatter` 格式化。
-2. **`BrowserPaneView`**：`let downloads = BrowserDownloadList()`；`WKDownloadDelegate`：`decideDestinationUsing` 里目录改用 `Settings.downloadDirectory`（config `browser-download-dir`，默认 `~/Downloads`，`~` 展开；不存在则回退 `~/Downloads`），创建 `BrowserDownloadItem(download:destination:)` 加入列表；`downloadDidFinish` → markCompleted；`didFailWithError` → `NSURLErrorCancelled` 视为 cancelled，否则 failed。工具条：`downloadButton` 放在地址栏与扩展条之间（隐藏时宽 0、间距 0）。
-3. **配置**：`browser-download-dir = "~/Downloads"`（模板、parse、README、ConfigStoreTests）；`BrowserPaneView.Settings.downloadDirectory: String`，MainWindowController.applyConfig 接线。
-4. **文档**：README（英/中）配置表 + 浏览器小节一句「下载进度显示在地址栏右侧，点击展开列表可取消 / 在 Finder 中显示」；spec 配置表。
+   - `final class BrowserDownloadItem: NSObject { let id: UUID; let filename: String; let destination: URL; let progress: Progress (= download.progress, WKDownload conforms to NSProgressReporting); var state: State (.downloading / .completed / .failed(String) / .cancelled); let cancelHandler: () -> Void }`. Tests can build one without a WKDownload (a fake Progress and a fake cancel).
+   - `final class BrowserDownloadList: NSObject { private(set) var items: [BrowserDownloadItem]; var onChange: (() -> Void)?; func add(_:), cancel(_:), remove(_:), clearFinished(), markCompleted/markFailed; var activeCount; var aggregateFraction: Double? (the sum of the active items' completedUnitCount over the sum of their totalUnitCount; if any total is unknown → nil = indeterminate) }`; observe each Progress's `fractionCompleted` with KVO, throttled to at most 10 Hz before firing `onChange`.
+   - `final class BrowserDownloadButton: NSButton`: 22×22, custom-drawn: a progress ring (`aggregateFraction`; when nil, draw a spinning dashed arc or use a spinning NSProgressIndicator) with a downward arrow in the middle; everything finished and nothing active → draw a checkmark; `items.isEmpty` → hidden. Tooltip "Downloads (N in progress)". Click → the popover.
+   - `final class BrowserDownloadPopover` (NSPopover + NSViewController): a vertical `NSStackView`, one row per item (icon + filename (byTruncatingMiddle) + status text "1.2 MB / 5.0 MB · 45%" / "Completed · 5.0 MB" / "Cancelled" / "Failed: …" + a thin NSProgressIndicator bar + a button on the right: in progress = ✕ cancel; completed = "Show in Finder" (`NSWorkspace.shared.activateFileViewerSelecting`); completed/failed/cancelled = ✕ remove the row); "Clear completed" at the bottom; 320 wide; rows are rebuilt as the list changes (reusing row views to avoid flicker). Format sizes with `ByteCountFormatter`.
+2. **`BrowserPaneView`**: `let downloads = BrowserDownloadList()`; `WKDownloadDelegate`: in `decideDestinationUsing`, take the directory from `Settings.downloadDirectory` (config `browser-download-dir`, default `~/Downloads`, with `~` expanded; a non-existent path falls back to `~/Downloads`) and add a `BrowserDownloadItem(download:destination:)` to the list; `downloadDidFinish` → markCompleted; `didFailWithError` → treat `NSURLErrorCancelled` as cancelled, otherwise failed. Toolbar: `downloadButton` sits between the address bar and the extension bar (zero width and zero spacing while hidden).
+3. **Config**: `browser-download-dir = "~/Downloads"` (template, parse, README, ConfigStoreTests); `BrowserPaneView.Settings.downloadDirectory: String`, wired up in MainWindowController.applyConfig.
+4. **Docs**: the READMEs (English/Chinese) config table + one line in the browser section, "download progress appears at the right of the address bar; click to expand the list and cancel / show in Finder"; the spec's config table.
 
-### B.2 测试（`Tests/BrowserDownloadTests.swift`）
-- 模型：两项（total 100 / 完成 50，total 200 / 完成 100）→ aggregate 0.5；一项 total 未知 → nil；cancel 调用 handler 且状态 .cancelled；clearFinished 只删完成/失败/取消；`onChange` 触发。
-- 按钮：空列表隐藏；加一项显示；全完成后仍显示（勾）直到清除。
-- 真实下载：pane 的 `downloadDirectory` 指到临时目录，`webView.startDownload(using: URLRequest(url: data:application/octet-stream;base64,…))`，等待 ≤ 3s → 列表 1 项、state == .completed、文件存在且内容一致；popover 行数 1。
-- 取消：`startDownload` 一个 `http://127.0.0.1:9/`（连接拒绝会失败 → failed）——验证失败状态；取消路径用假 item 覆盖。
-
----
-
-## 验收
-- 全套测试全绿（含新用例）；`xcodebuild … Debug build` 成功。
-- 手动冒烟（主会话做）：`open -a QuickTerm --args --open-browser https://chromewebstore.google.com/detail/…` 页面出现「添加到 QuickTerm」；拼图菜单可导入本机 Chrome 扩展；下载一个文件时地址栏右侧出现进度环。
+### B.2 Tests (`Tests/BrowserDownloadTests.swift`)
+- The model: two items (total 100 / done 50, total 200 / done 100) → aggregate 0.5; one item with an unknown total → nil; cancel calls the handler and sets state .cancelled; clearFinished only removes completed/failed/cancelled; `onChange` fires.
+- The button: hidden with an empty list; shown once an item is added; still shown (as a checkmark) after everything completes, until it is cleared.
+- A real download: point the pane's `downloadDirectory` at a temporary directory, `webView.startDownload(using: URLRequest(url: data:application/octet-stream;base64,…))`, wait ≤ 3s → one item in the list, state == .completed, the file exists with matching contents; the popover has one row.
+- Cancellation: `startDownload` against `http://127.0.0.1:9/` (connection refused → it fails) verifies the failure state; cover the cancel path with a fake item.
 
 ---
 
-## Task C：扩展"固定到工具条"（与 Chrome 一致）+ 地址栏保底宽度
+## Acceptance
+- The whole suite green (new cases included); `xcodebuild … Debug build` succeeds.
+- Manual smoke test (done by the main session): `open -a QuickTerm --args --open-browser https://chromewebstore.google.com/detail/…` shows "Add to QuickTerm" on the page; the puzzle menu can import the local Chrome's extensions; downloading a file makes the progress ring appear at the right of the address bar.
 
-**问题**：从 Chrome 导入几十个扩展后，工具条上的扩展按钮把地址栏挤到只剩几十 pt。Chrome 的做法：每个扩展可单独"固定到工具条"，未固定的只在拼图菜单里。
+---
 
-### C.1 数据
-- `BrowserExtensionManager.Record` 加 `var pinned: Bool`（默认 **false**）；自定义 `init(from:)` 用 `decodeIfPresent` 兼容旧 state.json（缺键 = false）。
-- `func setPinned(_:for:)` 写记录、存盘、post `.browserExtensionsDidChange`。
-- Web Store 安装（用户明确装的）→ `pinned = true`；`install(directory:id:source:)` 加参数 `pinned: Bool = false`。
-- Chrome 导入：读 `<profile>/Preferences`（JSON）里 `extensions.pinned_extensions`（字符串数组）——在 Chrome 里固定的导入后同样固定；文件缺失 / 解析失败 = 全部不固定。纯函数 `nonisolated static func chromePinnedExtensionIDs(preferences: URL) -> Set<String>`。
+## Task C: pinning extensions to the toolbar (matching Chrome) + a minimum width for the address bar
 
-### C.2 工具条（BrowserExtensionUI.swift）
-- `visibleActions` 只取 **enabled && pinned** 且对当前标签有动作的扩展。
-- **溢出保底**：pane 里 `addressField.widthAnchor >= 200`（priority `.defaultHigh`，非必需），`extensionBar` 的水平 compression resistance 降到 `.defaultLow`，hugging 保持 `.defaultHigh`。工具条被压到小于 intrinsic 宽时，`layout()` 只摆放放得下的按钮（从左到右），放不下的 `isHidden = true`；拼图按钮永远在最右且可见。放不下的固定扩展仍可从拼图菜单点开。
-- 菜单：每个扩展一行（标题 = 名字；停用的加后缀「（已停用）」并置灰图标），子菜单：「打开」（有动作时；`performAction(for: activeTab)`）、「固定到工具条」（`state = pinned ? .on : .off`，切换）、「启用」（`state = enabled ? .on : .off`，切换）、「选项…」（有 options 时）、分隔、「移除…」。菜单尾部的三条命令不变。
-- 扩展条右侧的拼图按钮 tooltip 不变。
+**The problem**: after importing a few dozen extensions from Chrome, the extension buttons squeeze the address bar down to a few dozen points. Chrome's answer: each extension can be pinned to the toolbar individually, and unpinned ones live only in the puzzle menu.
 
-### C.3 文档
-- README（英/中）「浏览器扩展」小节：固定/取消固定的说法（Chrome 语义；商店安装默认固定，导入沿用 Chrome 里的固定状态；地址栏最少保留 200pt，放不下的固定扩展在拼图菜单里）。spec Super+B 行补一句。
+### C.1 Data
+- Add `var pinned: Bool` to `BrowserExtensionManager.Record` (default **false**); a custom `init(from:)` uses `decodeIfPresent` so an old state.json still decodes (a missing key = false).
+- `func setPinned(_:for:)` writes the record, saves, and posts `.browserExtensionsDidChange`.
+- A Web Store install (something the user explicitly chose) → `pinned = true`; `install(directory:id:source:)` gains a `pinned: Bool = false` parameter.
+- Chrome import: read `extensions.pinned_extensions` (an array of strings) from `<profile>/Preferences` (JSON) — whatever was pinned in Chrome stays pinned after the import; a missing or unparsable file = nothing pinned. Pure function `nonisolated static func chromePinnedExtensionIDs(preferences: URL) -> Set<String>`.
 
-### C.4 测试（Tests/BrowserExtensionTests.swift 追加）
-- 旧 state.json（无 pinned 键）解码 → pinned false；setPinned 往返存盘。
-- 工具条：装两个有动作的 fixture 扩展，都启用、只固定一个 → 工具条 1 个按钮；取消固定 → 0；再固定两个后把工具条 frame 压到只够 1 个按钮 + 拼图 → 第二个按钮 isHidden。
-- 地址栏保底：pane 宽 600 时装 20 个固定扩展（或直接给工具条 20 个假动作）→ 地址栏宽 ≥ 200。
-- `chromePinnedExtensionIDs`：临时 Preferences JSON 里 `{"extensions":{"pinned_extensions":["a…","b…"]}}` → 集合；缺文件 → 空。
-- 菜单：子菜单含「固定到工具条」且 state 反映记录。
+### C.2 The toolbar (BrowserExtensionUI.swift)
+- `visibleActions` only takes extensions that are **enabled && pinned** and have an action for the current tab.
+- **Overflow floor**: in the pane, `addressField.widthAnchor >= 200` (priority `.defaultHigh`, not required), and `extensionBar`'s horizontal compression resistance drops to `.defaultLow` while hugging stays `.defaultHigh`. When the toolbar is squeezed below its intrinsic width, `layout()` places only the buttons that fit (left to right) and sets `isHidden = true` on the rest; the puzzle button is always last and always visible. A pinned extension that did not fit is still reachable from the puzzle menu.
+- The menu: one row per extension (title = the name; a disabled one gets the suffix "(disabled)" and a greyed-out icon), with a submenu: "Open" (when it has an action; `performAction(for: activeTab)`), "Pin to toolbar" (`state = pinned ? .on : .off`, toggles), "Enable" (`state = enabled ? .on : .off`, toggles), "Options…" (when it has an options page), a separator, "Remove…". The three commands at the end of the menu are unchanged.
+- The tooltip on the puzzle button at the right of the extension bar is unchanged.
+
+### C.3 Docs
+- The READMEs (English/Chinese), "Browser extensions" section: how pinning works (Chrome semantics; a store install is pinned by default, an import keeps Chrome's pinned state; the address bar keeps at least 200pt and pinned extensions that do not fit live in the puzzle menu). Add a sentence to the spec's Super+B row.
+
+### C.4 Tests (appended to Tests/BrowserExtensionTests.swift)
+- An old state.json (no pinned key) decodes → pinned false; setPinned round-trips to disk.
+- The toolbar: install two fixture extensions with actions, enable both, pin only one → one button on the toolbar; unpin it → zero; pin both, then squeeze the toolbar frame down to fit one button plus the puzzle → the second button is isHidden.
+- The address bar floor: with the pane 600 wide and 20 pinned extensions installed (or 20 fake actions handed straight to the toolbar) → the address bar is ≥ 200 wide.
+- `chromePinnedExtensionIDs`: a temporary Preferences JSON containing `{"extensions":{"pinned_extensions":["a…","b…"]}}` → that set; a missing file → empty.
+- The menu: the submenu contains "Pin to toolbar" and its state reflects the record.

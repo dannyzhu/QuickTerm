@@ -1,40 +1,40 @@
-# QuickTerm M2（工作区 + 顶栏）Implementation Plan
+# QuickTerm M2 (workspaces + status bar) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 默认 5 个工作区（`Cmd+1…5` 直达、`Cmd+Shift+1…5` 移动 pane 并跟随、瞬时切换）+ 26pt 仿 waybar 顶栏（logo/胶囊/时钟/CPU/Wi-Fi/音量/电池，`Cmd+Shift+Space` 隐藏）。
+**Goal:** 5 workspaces by default (`Cmd+1…5` to jump, `Cmd+Shift+1…5` to move a pane and follow it, switching is instant) + a 26pt waybar-style status bar (logo/pills/clock/CPU/Wi-Fi/volume/battery, hidden with `Cmd+Shift+Space`).
 
-**Architecture:** WorkspaceModel 升级为 5 棵 SplitTree + activeIndex（值语义切换 = 瞬时无动画，忠实 Omarchy）；顶栏为 RootView 顶部 26pt SwiftUI 条，SystemStatsService 以 2s 定时器发布系统状态；新 WM 动作并入既有 KeybindingMap/perform 框架。
+**Architecture:** WorkspaceModel grows into 5 SplitTrees + an activeIndex (value semantics make switching instant and animation-free, faithful to Omarchy); the status bar is a 26pt SwiftUI strip at the top of RootView, with SystemStatsService publishing system state from a 2s timer; the new WM actions slot into the existing KeybindingMap/perform framework.
 
-**Tech Stack:** 同 M1 + IOKit（电池）/ Network.framework（网络）/ CoreAudio（音量）。
+**Tech Stack:** as M1, plus IOKit (battery) / Network.framework (network) / CoreAudio (volume).
 
-**Spec:** `docs/superpowers/specs/2026-08-31-quickterm-design.md`（§4.4 顶栏、§5.2 工作区、§7 M2 行）
+**Spec:** `docs/superpowers/specs/2026-08-31-quickterm-design.md` (§4.4 the status bar, §5.2 workspaces, §7 the M2 row)
 
 ## Global Constraints
 
-- 分支 `m2-workspaces`；沿用 M1 全部视觉/键位约束
-- **默认 5 个工作区**（决策已确认）；空工作区显示底色，`Cmd+Return` 在其中开首个 pane
-- 顶栏：**26pt 高、主题 bg/fg 两色、Monaco 12pt、SF Symbols 单色图标、无圆角**；活动胶囊 `■`、空胶囊 50% 透明；时钟 `Sunday 14:32` 点击切完整格式；电池 ≤20% 变 `#a55555`
-- 简化决定（记录）：CPU 点击弹浮动 top 终端依赖 Scratchpad 基建 → 顺延 M4；顶栏音量点击=静音切换、电池/网络为展示
+- Branch `m2-workspaces`; every visual and keybinding constraint from M1 still applies
+- **5 workspaces by default** (decision confirmed); an empty workspace shows the background colour, and `Cmd+Return` opens the first pane in it
+- Status bar: **26pt tall, two theme colours (bg/fg), Monaco 12pt, monochrome SF Symbols icons, no rounded corners**; the active pill is `■`, empty pills are 50% transparent; the clock reads `Sunday 14:32` and clicking switches to the full format; the battery turns `#a55555` at ≤20%
+- Simplifications (recorded): clicking CPU to pop up a floating top terminal depends on the Scratchpad plumbing → deferred to M4; clicking the volume in the status bar toggles mute, while the battery and network are display-only
 
 ## Tasks
 
-### Task 1: WorkspaceStore（模型层）+ 单元测试
-- WorkspaceModel → 持有 `trees: [SplitTree<Ghostty.SurfaceView>]`（5 个）、`activeIndex`、`barVisible`；`var tree` 代理到活动树（兼容 M1 所有调用点）
-- 语义：`switchTo(i)`（越界忽略）；`moveFocusedPane(to: i)` = 从活动树摘除焦点 pane → 目标树按 dwindle 插入（目标空则成根）→ 跟随切换
-- 测试：切换保持各树独立；移动 pane 后源树回收/目标树含它；越界安全
+### Task 1: WorkspaceStore (model layer) + unit tests
+- WorkspaceModel holds `trees: [SplitTree<Ghostty.SurfaceView>]` (5 of them), `activeIndex` and `barVisible`; `var tree` proxies to the active tree (so every M1 call site keeps working)
+- Semantics: `switchTo(i)` (out of range is ignored); `moveFocusedPane(to: i)` = pull the focused pane out of the active tree → insert it into the target tree by the dwindle rule (it becomes the root if the target is empty) → switch and follow
+- Tests: switching keeps the trees independent; after a move the source tree has released the pane and the target contains it; out-of-range is safe
 
-### Task 2: 键位 + 控制器接线
-- WMAction 增 `goto-workspace-1…5`、`move-to-workspace-1…5`、`toggle-bar`；KeybindingMap 增 `cmd+1…5`、`cmd+shift+1…5`、`cmd+shift+space`
-- MainWindowController.perform 落地三类动作；测试断言新表项
+### Task 2: Keybindings + controller wiring
+- Add `goto-workspace-1…5`, `move-to-workspace-1…5` and `toggle-bar` to WMAction; add `cmd+1…5`, `cmd+shift+1…5` and `cmd+shift+space` to KeybindingMap
+- MainWindowController.perform implements all three kinds of action; the tests assert the new table entries
 
-### Task 3: 顶栏（StatusBarView + SystemStatsService）
-- SystemStatsService（ObservableObject，2s Timer）：cpuPercent（host_processor_info 差分）、batteryPercent/charging（IOPSCopyPowerSourcesInfo）、networkUp（NWPathMonitor）、volume/muted（CoreAudio 默认输出）+ `toggleMute()`
-- StatusBarView：左 `◆` logo + 胶囊 1–5（点击切换、区域滚轮循环）；中时钟（TimelineView 每分钟，点击切 `31 August W36 2026` 格式）；右 cpu/wifi/音量（点击静音）/电池图标
-- RootView：VStack { if barVisible { StatusBar } ; 树区 }；顶栏隐藏时内容占满
+### Task 3: The status bar (StatusBarView + SystemStatsService)
+- SystemStatsService (ObservableObject, 2s Timer): cpuPercent (differencing host_processor_info), batteryPercent/charging (IOPSCopyPowerSourcesInfo), networkUp (NWPathMonitor), volume/muted (the CoreAudio default output) + `toggleMute()`
+- StatusBarView: left, the `◆` logo + pills 1–5 (click to switch, scroll wheel over the area cycles); middle, the clock (TimelineView on the minute, click to switch to the `31 August W36 2026` format); right, cpu/wifi/volume (click to mute)/battery icons
+- RootView: VStack { if barVisible { StatusBar } ; the tree area }; with the bar hidden the content fills the window
 
-### Task 4: 验收 + 合并
-- 手验清单写入 docs/acceptance/m2.md；全量测试绿；merge main + tag `m2`
+### Task 4: Acceptance + merge
+- Write the manual checklist into docs/acceptance/m2.md; full suite green; merge into main + tag `m2`
 
-## Self-Review
-- §4.4/§5.2/§7-M2 全覆盖（CPU 点击弹终端顺延已显式记录）✅ 无占位符 ✅ 类型与 M1 接口一致（model.tree 代理保持兼容）✅
+## Self-review
+- §4.4/§5.2/§7-M2 fully covered (the deferral of click-CPU-for-a-terminal is recorded explicitly) ✅ no placeholders ✅ types match the M1 interfaces (the model.tree proxy keeps compatibility) ✅

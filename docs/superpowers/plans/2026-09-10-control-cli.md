@@ -1,95 +1,95 @@
-# QuickTerm 控制面（CLI + AI agent）实现计划 Phase 1–5
+# QuickTerm control plane (CLI + AI agent) implementation plan, Phases 1–5
 
-> 用户已确认三项决策：① **默认开启**，模式 `ask`（读免确认；改静默但可见、可撤销；破坏性与敏感操作按调用方确认一次）；
-> ② 主命令名 `quickterm`，另给可选短别名 `qt`，装到 `/usr/local/bin`（不可写则 `~/.local/bin` 并提示 PATH），**永不弹管理员密码**；
-> ③ **`send-text` 要做**（Phase 4，默认关配置项打开后可用；注入 `@self` 免确认，注入其它 pane 一律确认）。
+> Three decisions confirmed by the user: (1) **on by default**, mode `ask` (reads need no confirmation; mutations are silent but visible and undoable; destructive and sensitive operations ask once per caller);
+> (2) the main command is `quickterm`, with an optional short alias `qt`, installed into `/usr/local/bin` (or `~/.local/bin` with a PATH hint if that is not writable), and it **never prompts for an admin password**;
+> (3) **`send-text` is in scope** (Phase 4, available once the config option — off by default — is turned on; injecting into `@self` needs no confirmation, injecting into any other pane always does).
 >
-> 完整设计与调研原文（含 tmux/kitty/wezterm/zellij/hyprctl/iTerm2 逐条对照、JSON 样例、风险清单）见
+> The full design and research write-up (a point-by-point comparison against tmux/kitty/wezterm/zellij/hyprctl/iTerm2, JSON samples, the risk list) is in
 > `/private/tmp/claude-501/-Users-Danny-Documents-workspace-quickterm/e6fdbbbb-fb93-44bb-86da-29bcc5a0b0b0/scratchpad/control-design-full.md`
-> —— **实现前必须完整读一遍那份文件**，本文件只写决策与骨架。
+> — **read that file end to end before implementing**; this file only carries the decisions and the skeleton.
 
-## 0. 不变量（每个阶段都要守住）
+## 0. Invariants (hold these in every phase)
 
-- 现有全部测试保持通过；第一个窗口标题仍为 `QuickTerm`；焦点真相仍是窗口 first responder。
-- **一切从一张命令表生成**：`Sources/Control/CommandTable.swift` 同时产出 CLI 解析、`--help`、`describe --json`、
-  安全分级、Phase 5 的 MCP 工具表。命令表之外不得手写第二份命令描述。
-- **只给绝对设值，不给 toggle**（`--zoom on|off`、`set-layout dwindle`、`--width 0.33`）。agent 看不到状态，
-  重试一次 toggle 会把自己撤销。`action <wm-action>` 是唯一的例外（它就是快捷键语义的直通车）。
-- 目标匹配到多个 → **报错并列出候选**，绝不"取第一个"。
-- 所有 JSON 走 `JSONEncoder`，禁止手拼（yabai 曾因手拼出的尾逗号打断所有下游管道）。
-- 控制命令一律回到主线程执行；socket 回调线程不得直接碰 `@Published`。`perform()` 是可重入的
-  （引擎回调也会调它），串行化要用标志位而不是队列锁。
-- 破坏性命令前先 `flushPendingCloses()`；关闭是 0.28s 两段动画，焦点重试最长 0.75s。
+- The existing test suite keeps passing; the first window is still titled `QuickTerm`; the truth about focus is still the window's first responder.
+- **Everything is generated from one command table**: `Sources/Control/CommandTable.swift` (it landed as `Sources/Control/Wire/ControlCommandTable.swift`, shared with the CLI target) produces the CLI parser, `--help`, `describe --json`,
+  the safety classification and Phase 5's MCP tool table all at once. No second description of a command may be written by hand anywhere else.
+- **Absolute values only, never a toggle** (`--zoom on|off`, `set-layout dwindle`, `--width 0.33`). An agent cannot see state, and
+  retrying a toggle undoes itself. `action <wm-action>` is the single exception (it is the direct line to the keybinding semantics).
+- A target that matches more than one thing → **error out and list the candidates**, never "take the first".
+- All JSON goes through `JSONEncoder`; hand-assembling it is banned (yabai once broke every downstream pipe with a hand-written trailing comma).
+- Control commands always execute back on the main thread; the socket's callback thread must never touch `@Published` directly. `perform()` is reentrant
+  (engine callbacks call it too), so serialize it with a flag rather than a queue lock.
+- Run `flushPendingCloses()` before any destructive command; closing is a two-stage 0.28s animation, and the focus retry runs for up to 0.75s.
 
-## 1. 寻址
+## 1. Addressing
 
-`screen:workspace.pane`，每段可省，向右默认取上下文。
+`screen:workspace.pane`, with any segment omittable; what is omitted defaults rightwards from the context.
 
-- **screen**：1 起序号（与窗口标题一致）、`#uuid`（`MainWindowController.windowID`）、`@current`/`@primary`。
-- **workspace**：1 起序号（与 ⌘1..0 一致，内部 0 起绝不外泄）、`@active`/`@next`/`@prev`。
-- **pane**：短句柄 `t7`/`b3`（进程内稳定，类型前缀）、`#uuid` 或 ≥4 位前缀、关系式
-  `@focused`（默认）/`@left @right @up @down`/`@next @prev`/`@self`（读 `QUICKTERM_PANE`）、
-  谓词 `title:~<regex>`/`cwd:<prefix>`/`kind:terminal|browser`/`role:file-manager`。
-- 正在淡出（`model.closingPanes`）的 pane 不可寻址。
+- **screen**: a 1-based index (matching the window title), `#uuid` (`MainWindowController.windowID`), `@current`/`@primary`.
+- **workspace**: a 1-based index (matching ⌘1..0; the internal 0-based index must never leak out), `@active`/`@next`/`@prev`.
+- **pane**: a short handle `t7`/`b3` (stable within the process, prefixed by kind), `#uuid` or a prefix of at least 4 characters, a relation —
+  `@focused` (the default) / `@left @right @up @down` / `@next @prev` / `@self` (read from `QUICKTERM_PANE`) —
+  or a predicate `title:~<regex>` / `cwd:<prefix>` / `kind:terminal|browser` / `role:file-manager`.
+- A pane that is currently fading out (`model.closingPanes`) cannot be addressed.
 
-## 2. 传输
+## 2. Transport
 
-`~/Library/Application Support/QuickTerm/control.sock`，`AF_UNIX`/`SOCK_STREAM`，目录 `0700`、socket `0600`，
-绑定前检查符号链接与父目录权限，启动时探测后清理陈旧 socket。**注意 `sun_path` 只有 104 字节**：路径过长时
-回退到 `$TMPDIR/quickterm.sock` 并记日志。用 BSD socket + `DispatchSource`（不用 `NWListener`，因为需要
-`getsockopt(LOCAL_PEERCRED/LOCAL_PEERPID)`）。**绝不做转义序列通道**，绝不监听 TCP。
+`~/Library/Application Support/QuickTerm/control.sock`, `AF_UNIX`/`SOCK_STREAM`, the directory `0700` and the socket `0600`,
+checking for symlinks and the parent directory's permissions before binding, and probing then cleaning up a stale socket at launch. **Note that `sun_path` is only 104 bytes**: when the path is too long,
+fall back to `$TMPDIR/quickterm.sock` and log it. Use BSD sockets + `DispatchSource` (not `NWListener`, because we need
+`getsockopt(LOCAL_PEERCRED/LOCAL_PEERPID)`). **Never build an escape-sequence channel**, and never listen on TCP.
 
-协议：NDJSON，一行一个 JSON 对象，`id` 关联请求与响应，连接可复用（事件流就是保持打开的同一条连接）。
-`v` 不匹配 → 退出码 8 并同时报出两边版本。
+Protocol: NDJSON, one JSON object per line, with `id` correlating a request to its response; a connection can be reused (the event stream is just that same connection held open).
+A `v` mismatch → exit code 8, reporting both versions.
 
-CLI 目标：新目录 `CLI/`（因为 app target 的 `sources:` 是整个 `Sources`，再放一个 `main.swift` 会被编进 app）；
-线材类型放 `Sources/Control/Wire/`，两个 target 都列入。构建后拷进 `QuickTerm.app/Contents/MacOS/`。
+The CLI target: a new directory `CLI/` (because the app target's `sources:` is all of `Sources`, so another `main.swift` in there would be compiled into the app);
+the wire types live in `Sources/Control/Wire/` and are listed in both targets. The build copies the binary into `QuickTerm.app/Contents/SharedSupport/` — **not** `Contents/MacOS/`, as this plan originally said: APFS is case-insensitive by default, so `quickterm` there overwrites the app's own executable `QuickTerm`.
 
-## 3. 安全（默认开 + ask）
+## 3. Security (on by default + ask)
 
-- socket 权限 + `LOCAL_PEERCRED` 同 uid 校验（硬拒）。
-- `QUICKTERM_TOKEN`（每次启动重新生成）注入每个新建 pane 的环境：**这是来源证明，不是权限边界**，
-  代码注释必须写明，任何"有 token 就跳过确认"的写法都是错的。
-- 四级：`read` 静默（**无 token 的调用方读不到浏览器 URL/标题，一律 redacted**）·
-  `mutate` 静默但**状态栏闪一下**注明命令与来源 pane，并登记 `AppDelegate.undoManager`（⌘Z 可撤销）·
-  `destructive`（`pane close`/`screen close`/`workspace clear`/`spec apply --replace`）与
-  `sensitive`（`send-text`、读浏览器 URL）**按 (peer pid, 命令类) 确认一次**，对话框显示真实进程名与来源 pane。
-- 确认对话框不能用会卡死主线程的嵌套 runloop 方案（应用里已有多处 `runModal`）；主线程被卡住时
-  连确认框都弹不出来，因此要有限流与"忙时拒绝"。
+- Socket permissions + a `LOCAL_PEERCRED` same-uid check (a hard refusal).
+- `QUICKTERM_TOKEN` (regenerated on every launch) is injected into the environment of every new pane: **it is proof of origin, not a permission boundary**,
+  the code comments must say so, and any "has a token, so skip the confirmation" logic is wrong.
+- Four levels: `read` is silent (**a caller without a token cannot read browser URLs or titles — they are always redacted**) ·
+  `mutate` is silent but **flashes the status bar** with the command and the originating pane, and registers with `AppDelegate.undoManager` (⌘Z undoes it) ·
+  `destructive` (`pane close` / `screen close` / `workspace clear` / `spec apply --replace`) and
+  `sensitive` (`send-text`, reading browser URLs) **ask once per (peer pid, command class)**, with the dialog showing the real process name and the originating pane.
+- The confirmation dialog must not use a nested-runloop approach that can deadlock the main thread (the app already has several `runModal` sites); if the main thread is stuck
+  the dialog cannot even appear, so there has to be rate limiting and a "refuse while busy" path.
 
-## 4. 分阶段
+## 4. The phases
 
-### Phase 1 — socket + 查询 + 全动作直通 + describe
-socket 与线材、`quickterm`/`qt` 二进制与安装、`state`/`list`/`get`（扁平 pane 数组 + 引用句柄的工作区骨架）、
-`action <wm-action>`（全部 67 个；5 个模态面板类归 `interactive` 拒绝执行；破坏性的走确认）、`describe --json`、
-`--help`（每条子命令以示例结尾、查询类内嵌 JSON 样例）、环境变量注入、`[control]` 配置段、短句柄注册表。
+### Phase 1 — socket + queries + a direct line to every action + describe
+The socket and the wire types, the `quickterm`/`qt` binary and its installation, `state`/`list`/`get` (a flat pane array + a workspace skeleton of references),
+`action <wm-action>` (all 67 of them; the 5 modal-panel ones are classed `interactive` and refused; destructive ones go through confirmation), `describe --json`,
+`--help` (every subcommand ends with an example, and the query commands embed a JSON sample), environment variable injection, the `[control]` config section, and the short-handle registry.
 
-### Phase 2 — 名词-动词层 + 确认 UI + 撤销
-`pane new/close/focus/move/swap/set/resize`、`workspace goto/set-layout/equalize/clear/count`、
-`screen new/close/move/focus/set`、`app get/set`；每个 toggle 都补绝对设值；`--dry-run`、`--fail-if-noop`、
-状态栏可见性、控制日志、撤销登记、限流、模态忙时保护。
-需要把 `insertNewPane`/`removeFromAnyWorkspace`/`removeFromActiveLayout`/`clearZoom` 从 private 放宽到 internal
-（重新实现它们的不变量必然出 bug）。
+### Phase 2 — the noun-verb layer + the confirmation UI + undo
+`pane new/close/focus/move/swap/set/resize`, `workspace goto/set-layout/equalize/clear/count`,
+`screen new/close/move/focus/set`, `app get/set`; every toggle gets an absolute-value counterpart; `--dry-run`, `--fail-if-noop`,
+status-bar visibility, the control log, undo registration, rate limiting, and protection while a modal is up.
+This needs `insertNewPane`/`removeFromAnyWorkspace`/`removeFromActiveLayout`/`clearZoom` widened from private to internal
+(reimplementing their invariants would certainly introduce bugs).
 
-### Phase 3 — spec dump/apply（一次性组合）
-公开 schema `quickterm.workspace/1`（+ `quickterm.screen/1`、`quickterm.session/1`），与 v5 存档之间做投影对，
-**各自独立演进**；`spec dump/apply/validate`，`--into-empty`/`--replace`/`--reuse`/`--dry-run`（带可读 diff）。
-落地时一次性构造 `ScrollingStrip`/`SplitTree` 值再赋给 `model.layouts[i]`：一次重排、一次动画、一次存档。
-**不要走 `applyArchive`/`restore(from:)`**——那是整窗口、为新建窗口写的，会跳过 `BrowserPaneView.paneWillClose`。
+### Phase 3 — spec dump/apply (composing a whole layout in one shot)
+A public schema `quickterm.workspace/1` (plus `quickterm.screen/1` and `quickterm.session/1`), paired with the v5 archive by projection but
+**evolving independently of it**; `spec dump/apply/validate`, with `--into-empty`/`--replace`/`--reuse`/`--dry-run` (which prints a readable diff).
+Applying it builds the `ScrollingStrip`/`SplitTree` value in one go and then assigns it to `model.layouts[i]`: one re-layout, one animation, one save.
+**Do not go through `applyArchive`/`restore(from:)`** — those are whole-window paths written for creating a new window, and they skip `BrowserPaneView.paneWillClose`.
 
-### Phase 4 — 事件流 + send-text
-每次状态变更递增 `seq`（`state` 里返回，便于 agent 判断快照是否过期）；`events poll --since --timeout`（主形式）
-与 `events follow`（NDJSON 流）；类型化事件（pane.opened/closed、focus.changed、workspace.changed、layout.changed、
-screen.opened/closed、pane.title/cwd.changed）——**任何事件都不得携带 pane 的输出内容**。
-`send-text`：配置 `[control] send-text = true` 才可用，`sensitive` 级；注入 `@self` 免确认，其它 pane 每次确认；
-拒绝控制字符；换行只能通过显式 `--enter`。
+### Phase 4 — the event stream + send-text
+Every state change bumps `seq` (returned by `state`, so an agent can tell whether its snapshot is stale); `events poll --since --timeout` (the main form)
+and `events follow` (an NDJSON stream); typed events (pane.opened/closed, focus.changed, workspace.changed, layout.changed,
+screen.opened/closed, pane.title/cwd.changed) — **no event may ever carry a pane's output**.
+`send-text`: only available with `[control] send-text = true` in the config, classed `sensitive`; injecting into `@self` needs no confirmation, any other pane asks every time;
+control characters are refused; a newline can only be sent with an explicit `--enter`.
 
-### Phase 5 — MCP server + 文档
-`quickterm mcp`（stdio），9 个粗粒度工具，带 `readOnlyHint`/`destructiveHint`/`idempotentHint` 与 `outputSchema`，
-全部由同一张命令表生成（手写必然漂移，用例要钉死这一点）。补 67 个动作的 `helpEN`、
-`docs/agents/quickterm-cli.md`、README（英/中）小节。
+### Phase 5 — the MCP server + docs
+`quickterm mcp` (stdio), 9 coarse-grained tools carrying `readOnlyHint`/`destructiveHint`/`idempotentHint` and an `outputSchema`,
+all generated from that same command table (writing them by hand guarantees drift, and a test has to pin that down). Plus `helpEN` for all 67 actions,
+`docs/agents/quickterm-cli.md`, and a section in both READMEs.
 
-## 5. 交付
+## 5. Delivery
 
-每个 Phase：分支 → 实现 → 定向测试 → 全套 → 对抗评审 → 修正 → 全套 → 提交 → 合入 main。
-五个阶段全部完成后重新 Debug 构建并重启应用，README 与 porting-notes 补齐，再考虑发版。
+Every phase: branch → implement → targeted tests → the full suite → adversarial review → fix → the full suite → commit → merge into main.
+Once all five phases are done, rebuild Debug and restart the app, bring the README and porting-notes up to date, and only then consider a release.
