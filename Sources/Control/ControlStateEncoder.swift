@@ -32,6 +32,57 @@ struct ControlStateEncoder {
         }
     }
 
+    /// Whether a notice **body** is handed out (the title always is — the notification centre
+    /// composes it and it carries no payload).
+    ///
+    /// Deliberately the **same** switch as a browser URL, rather than a second rule keyed on the
+    /// token alone: both are "text some program produced that a caller without this launch's
+    /// token has no business reading", and one rule is one thing to remember when auditing.
+    /// Under the default `expose-browser = "token"` this is exactly "the caller carried
+    /// QUICKTERM_TOKEN", which is what the spec asks for; a user who has set `never` gets the
+    /// stricter answer for notices too, and one who has set `always` has said out loud that
+    /// content may leave this machine's token boundary. Changing that decision is this one line.
+    var exposesNoticeBody: Bool { exposesBrowser }
+
+    /// A pane's short handle, **allocating one if this pane has never been encoded**.
+    ///
+    /// `existingHandle(for:)` alone is not enough for a notice: a notice can be posted against a
+    /// pane in the same run-loop turn it was created in, before anything has encoded it (the event
+    /// bus allocates handles, but its scan is coalesced to the next turn). A record naming pane
+    /// `""` is a record an agent cannot act on. nil means the pane really is gone — a history entry
+    /// outliving its pane, which is the one case where there is nothing to name.
+    static func handle(forPane id: UUID, in screens: ScreenRegistry) -> String? {
+        if let existing = ControlHandleRegistry.shared.existingHandle(for: id) { return existing }
+        guard let entry = ControlResolver.addressablePanes(in: screens).first(where: { $0.pane.id == id })
+        else { return nil }
+        return ControlHandleRegistry.shared.handle(for: entry.pane)
+    }
+
+    /// One live or resolved notice as the wire sees it. **The only place `Notice` is translated**,
+    /// so `notices list`, the `notices[]` of a pane record and the event stream cannot disagree
+    /// about a spelling.
+    func noticeRecord(_ notice: Notice) -> ControlNoticeRecord {
+        let hide = notice.body != nil && !exposesNoticeBody
+        return ControlNoticeRecord(
+            id: notice.id.uuidString,
+            pane: Self.handle(forPane: notice.pane, in: screens) ?? "",
+            paneID: notice.pane.uuidString,
+            // A history entry can outlive its window; 0 says "that screen is gone" rather than
+            // pointing at whichever screen happens to hold that index now.
+            screen: screens.controller(id: notice.screen).map { $0.screenIndex + 1 } ?? 0,
+            screenID: notice.screen.uuidString,
+            workspace: notice.workspace + 1,
+            source: notice.source.id,
+            urgency: notice.urgency.rawValue,
+            evidence: notice.evidence.rawValue,
+            title: notice.title,
+            body: hide ? Self.redacted : notice.body,
+            redacted: hide ? true : nil,
+            postedAt: ControlEvent.stamp(notice.postedAt),
+            resolvedAt: notice.resolvedAt.map { ControlEvent.stamp($0) },
+            resolution: notice.resolution?.rawValue)
+    }
+
     func payload(scope: MainWindowController? = nil) -> ControlStatePayload {
         let controllers = scope.map { [$0] } ?? screens.controllers
         // **`screens.key` must not be used here**: that is `NSApp.keyWindow`, which is nil
@@ -139,6 +190,11 @@ struct ControlStateEncoder {
             zoom = ControlHandleRegistry.shared.handle(for: pane)
         }
 
+        // Panes waiting for a human in this workspace. Encoded only when non-zero, so a session
+        // with nothing pending returns the bytes it always did.
+        let needsUser = NoticeCenter.shared.needsUserCount(screen: controller.windowID,
+                                                           workspace: index)
+
         return .init(
             index: index + 1,
             title: model.title(at: index),
@@ -149,7 +205,8 @@ struct ControlStateEncoder {
             zoom: zoom,
             columns: columns,
             tree: tree,
-            floating: floating)
+            floating: floating,
+            needsUser: needsUser == 0 ? nil : needsUser)
     }
 
     /// The dwindle skeleton: `{split,ratio,a,b}`, leaves `{pane:"t1"}` — **word for word the
@@ -320,6 +377,8 @@ struct ControlStateEncoder {
                   float: Bool, zoomed: Bool) -> ControlStatePayload.PaneInfo {
         let browser = pane as? BrowserPaneView
         let hide = browser != nil && !exposesBrowser
+        let live = NoticeCenter.shared.live(pane: pane.id)
+        let urgency = NoticeCenter.shared.urgency(pane: pane.id)
         return .init(
             handle: ControlHandleRegistry.shared.handle(for: pane),
             id: pane.id.uuidString,
@@ -343,6 +402,12 @@ struct ControlStateEncoder {
             busy: pane.wantsConfirmClose,
             float: float,
             zoom: zoomed,
-            redacted: hide ? true : nil)
+            redacted: hide ? true : nil,
+            notices: live.isEmpty ? nil : live.map { noticeRecord($0) },
+            urgency: urgency?.rawValue,
+            // `urgency == .needsUser` in one boolean: the single question an agent asks before
+            // interrupting the user, and a jq filter on a bool is harder to get wrong than one on
+            // a string.
+            needsUser: urgency == .needsUser ? true : nil)
     }
 }

@@ -874,6 +874,7 @@ final class ControlCommandRunner {
                 case "app": result = try runApp(ctx)
                 case "spec": result = try runSpec(ctx)
                 case "input": result = try runInput(ctx)
+                case "notices": result = try runNotices(ctx)
                 case "browser": result = try runBrowser(ctx)
                 default:
                     throw ControlErrorBody(.unknownCommand, "Unknown command group \(group)",

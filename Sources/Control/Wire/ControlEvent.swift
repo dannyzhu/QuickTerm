@@ -8,7 +8,11 @@ import Foundation
 /// ssh sessions verbatim, and the flow-control complexity it drags in (tmux built `%pause` /
 /// `%extended-output` purely for this) is a price paid for nothing.
 /// Events carry **structure** only (what opened, what closed, where focus is, what the layout is)
-/// plus two pieces of metadata: title and cwd.
+/// plus three pieces of metadata: title, cwd, and a notice's body — which is a program's own short
+/// message (an OSC 777 body, a summary of the tool an agent is asking to run), capped at
+/// `Notice.maxBodyLength` by the notification centre and redacted for token-less callers exactly
+/// like a browser URL. It is **not** terminal output and never can be: nothing reads the screen to
+/// build it.
 enum ControlEventType: String, Codable, CaseIterable {
     case paneOpened = "pane.opened"
     case paneClosed = "pane.closed"
@@ -19,6 +23,16 @@ enum ControlEventType: String, Codable, CaseIterable {
     case screenClosed = "screen.closed"
     case paneTitleChanged = "pane.title.changed"
     case paneCwdChanged = "pane.cwd.changed"
+    case noticePosted = "notice.posted"
+    case noticeResolved = "notice.resolved"
+
+    /// The two types produced by the notification centre rather than by the snapshot diff.
+    /// They are the one exception to two rules and both exceptions live here, spelled once:
+    /// `ControlEventBus.emit` bypasses the diff for them, and `redact` leaves their `title` alone
+    /// (a notice title is payload-free by construction — the centre builds it, not a program).
+    static let noticeTypes: Set<String> = [noticePosted.rawValue, noticeResolved.rawValue]
+
+    static func isNotice(_ type: String) -> Bool { noticeTypes.contains(type) }
 
     var summary: String {
         switch self {
@@ -31,6 +45,8 @@ enum ControlEventType: String, Codable, CaseIterable {
         case .screenClosed: "a screen closed"
         case .paneTitleChanged: "a pane title changed (**not** its output)"
         case .paneCwdChanged: "the working directory of a terminal pane changed (OSC 7)"
+        case .noticePosted: "a notice was posted on a pane (urgency=needs-user means a human has to go and act there; info is information)"
+        case .noticeResolved: "a notice stopped being live (resolution says why: the user typed in that pane, acknowledged it, the state changed, it was superseded, the pane was focused, or the pane closed)"
         }
     }
 }
@@ -70,8 +86,21 @@ struct ControlEvent: Codable, Equatable {
     var titleSet: Bool?
     /// The working directory for pane.cwd.changed / pane.opened.
     var cwd: String?
-    /// The title / cwd in this event were redacted (the same rule `state` uses).
+    /// The title / cwd / body in this event were redacted (the same rule `state` uses).
     var redacted: Bool?
+    /// notice.posted / notice.resolved: the notice's id (`notices ack` works by pane, but the id
+    /// is what pairs a `resolved` with the `posted` that preceded it).
+    var noticeID: String?
+    /// notice.*: `info` | `needs-user`.
+    var urgency: String?
+    /// notice.*: `NoticeSource.id` (`agent:claude-code`, `terminal`, `command`, `bell`, …).
+    var source: String?
+    /// notice.*: the notice body — the program's own words. **Redacted for a caller without the
+    /// token**, like a browser URL; the notice `title` beside it never is, because the
+    /// notification centre composes it and it carries no payload.
+    var body: String?
+    /// notice.resolved: `NoticeResolution` (`user-acted`, `acknowledged`, `superseded`, …).
+    var resolution: String?
 
     static let redactedPlaceholder = "<redacted>"
 
@@ -79,7 +108,9 @@ struct ControlEvent: Codable, Equatable {
          screen: Int? = nil, screenID: String? = nil, workspace: Int? = nil,
          pane: String? = nil, paneID: String? = nil, kind: String? = nil,
          layout: String? = nil, title: String? = nil, titleSet: Bool? = nil,
-         cwd: String? = nil, redacted: Bool? = nil) {
+         cwd: String? = nil, redacted: Bool? = nil,
+         noticeID: String? = nil, urgency: String? = nil, source: String? = nil,
+         body: String? = nil, resolution: String? = nil) {
         self.seq = seq
         self.ts = ts
         self.type = type.rawValue
@@ -94,6 +125,11 @@ struct ControlEvent: Codable, Equatable {
         self.titleSet = titleSet
         self.cwd = cwd
         self.redacted = redacted
+        self.noticeID = noticeID
+        self.urgency = urgency
+        self.source = source
+        self.body = body
+        self.resolution = resolution
     }
 
     /// Timestamp: ISO8601 plus milliseconds (one per event; the formatter itself is static).

@@ -28,6 +28,9 @@ class BaseTerminalController: NSWindowController {
     /// May a pane that was detached from the window and then re-attached grab focus back? Denied
     /// while the controller already has an explicit pending focus target of its own.
     func paneMayReclaimFocus(_ pane: PaneView) -> Bool { true }
+    /// End a focus hold early (`MainWindowController` overrides it; see `NoticeRouting.hoverFocusHold`).
+    /// A pane reports the user's first keystroke here, and a controller with no hold ignores it.
+    func releaseFocusHold() {}
     /// Can this controller still accept pane operations? A controller whose screen is already gone
     /// cannot. This is the fallback used to resolve the controller for a pane that has left its
     /// window; see `PaneView.controller`.

@@ -10,6 +10,7 @@ enum Render {
         }
         if object["schema"]?.stringValue == "quickterm.state/1" { return state(object, reply: reply) }
         if object["schema"]?.stringValue == "quickterm.describe/1" { return describe(object) }
+        if object["schema"]?.stringValue == "quickterm.notices/1" { return notices(object) }
         // Capture has to be matched **first**: it carries a `pane` field, so if it falls through
         // to the paneDetail branch below, the body — the one thing the caller wanted — is dropped
         // wholesale.
@@ -53,6 +54,47 @@ enum Render {
         return head + "\n" + String(repeating: "─", count: 12) + "\n" + text
     }
 
+    /// `notices list`: one line per notice, in the order they were posted rather than sorted by
+    /// urgency — a person scanning this wants "what happened, in the order it happened", and the
+    /// marker in the first column already makes the ones that need them stand out. The last line
+    /// is the number to act on, spelled out in words, because it is the answer to the question
+    /// that brought anybody here.
+    static func notices(_ object: [String: JSONValue]) -> String {
+        let rows = (object["notices"]?.arrayValue ?? []).compactMap(\.objectValue)
+        var out: [String] = []
+        for n in rows {
+            let mark = n["urgency"]?.stringValue == needsUserUrgency ? needsUserMark : " "
+            var line = "\(mark) \(pad(n["pane"]?.stringValue ?? "?", 5))"
+                + "\(pad(n["source"]?.stringValue ?? "", 20))\(n["title"]?.stringValue ?? "")"
+            if let body = n["body"]?.stringValue, !body.isEmpty { line += "  — \(body)" }
+            if let resolution = n["resolution"]?.stringValue {
+                line += "  [\(resolution)]"
+            }
+            out.append(line)
+        }
+        if out.isEmpty { out.append("(no notices)") }
+        let waiting = object["panesNeedingUser"]?.intValue ?? 0
+        out.append(waiting == 0
+            ? "No pane is waiting for you."
+            : "\(marker(waiting)) \(ControlChange.count(waiting, "pane")) waiting for you"
+                + " — go and look, or quickterm notices ack -t <pane> once it is handled.")
+        return out.joined(separator: "\n")
+    }
+
+    /// The urgency that means "a human has to go there", spelled once.
+    static let needsUserUrgency = "needs-user"
+
+    /// The marker that stands for it, spelled once.
+    ///
+    /// **No ANSI colour**, however much a red one would suit it: `--plain` is perfectly often
+    /// redirected into a file or a pipe, and this side of the CLI has no colour vocabulary anywhere
+    /// else — a lone escape sequence here would surface as `\e[31m` in somebody's log. The filled
+    /// dot carries the same "something is pending" weight the red dot on the pane and the `●N` on
+    /// the workspace pill do.
+    static let needsUserMark = "●"
+
+    static func marker(_ count: Int) -> String { count > 0 ? "\(needsUserMark)\(count)" : "" }
+
     /// Human-readable output for `events poll`.
     static func events(_ object: [String: JSONValue], reply: ControlReply) -> String {
         var out = eventLines(reply)
@@ -86,7 +128,14 @@ enum Render {
             }
             if let pane = e["pane"]?.stringValue { line += ".\(pane)" }
             if let layout = e["layout"]?.stringValue { line += "  layout=\(layout)" }
+            // notice.* only: the urgency is the whole point of the line, so it goes in front of
+            // the title rather than trailing the structural fields.
+            if let urgency = e["urgency"]?.stringValue {
+                line += "  \(urgency == needsUserUrgency ? needsUserMark : "")\(urgency)"
+            }
             if let title = e["title"]?.stringValue { line += "  \"\(title)\"" }
+            if let body = e["body"]?.stringValue { line += "  — \(body)" }
+            if let resolution = e["resolution"]?.stringValue { line += "  [\(resolution)]" }
             if let cwd = e["cwd"]?.stringValue { line += "  \(cwd)" }
             return line
         }
@@ -130,7 +179,9 @@ enum Render {
                            + (w["title"]?.stringValue.map { "\"\($0)\"" } ?? "")
                            + "  \(w["layout"]?.stringValue ?? "")"
                            + "  \(handles.isEmpty ? "(empty)" : handles.joined(separator: " "))"
-                           + (w["zoom"]?.stringValue.map { "  zoom=\($0)" } ?? ""))
+                           + (w["zoom"]?.stringValue.map { "  zoom=\($0)" } ?? "")
+                           // Exactly what the workspace pill draws, and only when it draws it.
+                           + (w["needsUser"]?.intValue.map { "  \(marker($0))" } ?? ""))
             }
         }
         if let panes = object["panes"]?.arrayValue, !panes.isEmpty {
@@ -147,16 +198,25 @@ enum Render {
         // A projected response only carries the fields the user named.
         let present = Set(rows.flatMap { $0.keys })
         keys = keys.filter { present.contains($0) }
-        // `id` and `tabList` stay out of the table: one is a 36-character uuid, the other a
-        // structured array — forcing either into a column either blows the table apart or renders
-        // as a blank space. Tab detail goes through `get`'s per-item output instead.
-        for extra in present.sorted() where !keys.contains(extra) && !["id", "tabList"].contains(extra) {
+        // `id`, `tabList` and `notices` stay out of the table: one is a 36-character uuid, the
+        // other two are structured arrays — forcing either into a column either blows the table
+        // apart or renders as a blank space. Tab detail goes through `get`'s per-item output, and
+        // the notices through the `!` column below plus `quickterm notices list`.
+        for extra in present.sorted()
+        where !keys.contains(extra) && !["id", "tabList", "notices", "needsUser"].contains(extra) {
             keys.append(extra)
         }
+        // The marker column exists **only when there is something to mark**, so the table nobody
+        // is waiting on looks exactly as it always did. `!` is the header because it has to be one
+        // character wide: this column sits in front of the handle in every listing.
+        let waiting = rows.contains { $0["needsUser"]?.boolValue == true }
+        if waiting { keys.insert("!", at: 0) }
         var widths = keys.map { $0.count }
         let cells: [[String]] = rows.map { row in
             keys.enumerated().map { index, key in
-                let text = display(row[key])
+                let text = key == "!"
+                    ? (row["needsUser"]?.boolValue == true ? needsUserMark : "")
+                    : display(row[key])
                 widths[index] = max(widths[index], text.count)
                 return text
             }
@@ -186,8 +246,17 @@ enum Render {
     }
 
     static func paneDetail(_ pane: [String: JSONValue]) -> String {
-        var out = pane.keys.sorted().filter { $0 != "tabList" }
+        var out = pane.keys.sorted().filter { $0 != "tabList" && $0 != "notices" }
             .map { "\(pad($0, 12))\(display(pane[$0]))" }
+        // Notices are records, not a value: one line each, the same shape `notices list` prints,
+        // rather than an unreadable `{…}`.
+        for notice in pane["notices"]?.arrayValue ?? [] {
+            guard let n = notice.objectValue else { continue }
+            let mark = n["urgency"]?.stringValue == needsUserUrgency ? needsUserMark : " "
+            out.append(pad("notice", 12) + "\(mark) \(pad(n["source"]?.stringValue ?? "", 20))"
+                + (n["title"]?.stringValue ?? "")
+                + (n["body"]?.stringValue.map { "  — \($0)" } ?? ""))
+        }
         // Tabs are **addressable** (`--tab 2` / `--tab #<id>`), so list them one per line rather
         // than rendering an unusable `{…}`.
         for tab in pane["tabList"]?.arrayValue ?? [] {

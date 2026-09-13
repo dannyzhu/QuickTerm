@@ -112,6 +112,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 $0.isEmpty ? nil : ($0 as NSString).expandingTildeInPath
             })
         self.session = session
+        // The notification centre, before the config is loaded: `loadInitialConfig()` pushes
+        // `[notifications]` through `AppSession.applyGlobalConfig`, and a sink registered after
+        // that would start out with the defaults instead of the user's settings (contract §10.10).
+        Self.ensureNoticeInterfaceInstalled()
         // The order is a hard requirement: `loadInitialConfig()` first (which also binds the
         // control socket), then restore. Every pane the restore creates has to receive
         // QUICKTERM_SOCKET / TOKEN / PANE_TOKEN at the moment it spawns - bind one step later and

@@ -1,5 +1,4 @@
 import SwiftUI
-import UserNotifications
 import GhosttyKit
 
 protocol GhosttyAppDelegate: AnyObject {
@@ -8,6 +7,127 @@ protocol GhosttyAppDelegate: AnyObject {
     /// when the surface is no longer valid.
     func findSurface(forUUID uuid: UUID) -> Ghostty.SurfaceView?
     #endif
+}
+
+/// **Where the engine's own signals become notices** (spec §3.5 "Sources beyond agents in
+/// Phase 1", contract §10.6).
+///
+/// Three of Phase 1's notice sources come from libghostty rather than from an agent: a desktop
+/// notification (OSC 9 / 99 / 777), a finished command (OSC 133) and the bell. Until now the
+/// engine handed the first of those straight to `UNUserNotificationCenter` and kept its own
+/// delivered-identifier bookkeeping on the surface view. That path is deleted, and this type is
+/// what replaced it, because **one owner has to decide whether macOS is told**: with two owners,
+/// one prompt is announced twice (the engine's banner and the notice centre's), and neither half
+/// knows that the other already withdrew its own.
+///
+/// The three closures are the seam. In the app they are the singleton; a test replaces them and
+/// drives the Swift half of an engine callback with no window, no pane and no live
+/// `UNUserNotificationCenter` anywhere near it — which is the whole reason the three producers
+/// live here instead of being three `NoticeCenter.shared.post(…)` calls spread through the
+/// engine. `Tests/NoticeSourcesTests.swift` is the caller that pins them.
+@MainActor
+enum GhosttyNoticeProducer {
+    /// Where a notice goes. The outcome is dropped on purpose: a producer has nothing to do with
+    /// `.duplicate` or `.unknownPane` — a pane that is already fading out simply has nobody left
+    /// to tell.
+    static var post: (NoticeRequest) -> Void = { NoticeCenter.shared.post($0) }
+
+    /// `[notifications]`, read at the moment the signal arrives rather than cached: the two keys
+    /// these producers ask about are hot-reloadable, and a cached copy would keep answering with
+    /// the config the app launched with.
+    static var settings: () -> NoticeSettings = { NoticeCenter.shared.settings }
+
+    /// The pane's short handle (`t7`), used only to name a pane whose program sent a notification
+    /// with an empty title. Never allocates one: a pane nobody has addressed yet gets the
+    /// centre's own fallback title instead.
+    static var handle: (UUID) -> String? = { ControlHandleRegistry.shared.existingHandle(for: $0) }
+
+    // MARK: The three producers
+    //
+    // Each entry point is `nonisolated` and hops onto the main actor with `assumeIsolated`, the
+    // same shape as `NoticeCenter.noteKeyDown(in:)`: the callers are libghostty action callbacks
+    // and an `@objc` notification observer, none of which carries an actor annotation, and all of
+    // which run on the main thread (the engine's tick is dispatched there, and every one of them
+    // already touches view state).
+
+    /// A desktop notification from whatever runs in the pane — OSC 9, 99 or 777, parsed by the
+    /// engine. Always `info`: a program asking for attention is not the same as an agent saying
+    /// it cannot continue without the user, and **no Phase 1 producer posts `needsUser`**.
+    ///
+    /// The body is the program's own words, so it is sensitive by construction: redacted for
+    /// token-less control-plane callers, out of the OSLog mirror, and out of the system banner
+    /// unless `[notifications] system-body = "always"`.
+    nonisolated static func desktopNotification(pane: UUID, title: String, body: String) {
+        MainActor.assumeIsolated {
+            // A title of nothing but control characters is as empty as "" — the centre would
+            // sanitise it away and fall back to "Notice from terminal", which says less than the
+            // pane's handle does.
+            var text = title
+            if Notice.sanitizedTitle(text).isEmpty {
+                text = handle(pane).map { L("notice.terminal.title", $0) } ?? ""
+            }
+            post(NoticeRequest(source: .terminal, pane: pane, urgency: .info,
+                               evidence: .notification, title: text, body: body,
+                               bodySensitive: true))
+        }
+    }
+
+    /// A command finished (OSC 133). **`[notifications] command-finished` decides on its own** —
+    /// the engine's `notify-on-command-finish` gates and its bell action are not consulted, so
+    /// there is exactly one answer to "was I told about this command" and the config key's help
+    /// says so. `never` | `long` (over ten seconds) | `always`.
+    ///
+    /// The text is QuickTerm's own sentence, which is what `.composed` and `bodySensitive: false`
+    /// mean: it carries a duration and an exit code, never a command line, so it is the one body
+    /// a system banner may show under the default `system-body = "composed"`.
+    nonisolated static func commandFinished(pane: UUID, exitCode: Int, duration: Duration) {
+        MainActor.assumeIsolated {
+            guard settings().allowsCommandFinished(duration) else { return }
+            let formatted = duration.formatted(
+                .units(
+                    allowed: [.hours, .minutes, .seconds, .milliseconds],
+                    width: .abbreviated,
+                    fractionalPart: .hide
+                )
+            )
+            let title: String
+            let body: String
+            if exitCode < 0 {
+                // libghostty reports a negative code when the shell integration ended the command
+                // without one (a signal, or a prompt mark that never carried a status). Saying
+                // "exited with code -1" would be inventing a number the shell never reported.
+                title = L("notice.command.finished")
+                body = L("notice.command.took", formatted)
+            } else if exitCode == 0 {
+                title = L("notice.command.succeeded")
+                body = L("notice.command.took-exit", formatted, exitCode)
+            } else {
+                title = L("notice.command.failed")
+                body = L("notice.command.took-exit", formatted, exitCode)
+            }
+            post(NoticeRequest(source: .command, pane: pane, urgency: .info, evidence: .composed,
+                               title: title, body: body, bodySensitive: false))
+        }
+    }
+
+    /// BEL. Ignored unless `[notifications] bell = "info"` — a bare bell is not a notice
+    /// (the owner's decision, spec §7.4): shells ring it for a completion that found nothing.
+    /// The pane's own bell border still flashes either way; that is drawn by the surface view and
+    /// is not a notice at all.
+    nonisolated static func bell(pane: UUID) {
+        MainActor.assumeIsolated {
+            guard settings().allowsBell else { return }
+            post(NoticeRequest(source: .bell, pane: pane, urgency: .info, evidence: .notification,
+                               title: L("notice.bell.title")))
+        }
+    }
+
+    /// Tests only: put the seam back, so one test's recorder cannot leak into the next.
+    static func resetForTesting() {
+        post = { NoticeCenter.shared.post($0) }
+        settings = { NoticeCenter.shared.settings }
+        handle = { ControlHandleRegistry.shared.existingHandle(for: $0) }
+    }
 }
 
 extension Ghostty {
@@ -433,23 +553,6 @@ extension Ghostty {
             // to coalesce multiple ticks but I don't think it matters from a performance
             // standpoint since we don't do this much.
             DispatchQueue.main.async { state.appTick() }
-        }
-
-        /// Determine if a given notification should be presented to the user when Ghostty is running in the foreground.
-        func shouldPresentNotification(notification: UNNotification) -> Bool {
-            let userInfo = notification.request.content.userInfo
-
-            // We always require the notification to be attached to a surface.
-            guard let uuidString = userInfo["surface"] as? String,
-                  let uuid = UUID(uuidString: uuidString),
-                  let surface = delegate?.findSurface(forUUID: uuid),
-                  let window = surface.window else { return false }
-
-            // If we don't require focus then we're good!
-            let requireFocus = userInfo["requireFocus"] as? Bool ?? true
-            if !requireFocus { return true }
-
-            return !window.isKeyWindow || !surface.focused
         }
 
         /// Returns the GhosttyState from the given userdata value.
@@ -1447,6 +1550,14 @@ extension Ghostty {
             }
         }
 
+        /// OSC 9 / 99 / 777 from whatever runs in the pane.
+        ///
+        /// This used to ask `UNUserNotificationCenter` for authorization and post a banner itself,
+        /// with the surface view remembering the delivered identifiers so it could withdraw them
+        /// on focus. All of that now belongs to the notification centre's system sink, which is
+        /// the only place that knows whether the user is already looking at this pane, whether
+        /// `[notifications] system = "never"`, and whether some other source already announced the
+        /// same thing. The engine's job ends at "a program in this pane said this".
         private static func showDesktopNotification(
             _ app: ghostty_app_t,
             target: ghostty_target_s,
@@ -1461,35 +1572,22 @@ extension Ghostty {
                 guard let surfaceView = self.surfaceView(from: surface) else { return }
                 guard let title = String(cString: n.title!, encoding: .utf8) else { return }
                 guard let body = String(cString: n.body!, encoding: .utf8) else { return }
-                showDesktopNotification(surfaceView, title: title, body: body)
+                GhosttyNoticeProducer.desktopNotification(
+                    pane: surfaceView.id, title: title, body: body)
 
             default:
                 assertionFailure()
             }
         }
 
-        private static func showDesktopNotification(
-            _ surfaceView: SurfaceView,
-            title: String,
-            body: String,
-            requireFocus: Bool = true) {
-            let center = UNUserNotificationCenter.current()
-            center.requestAuthorization(options: [.alert, .sound]) { _, error in
-                if let error = error {
-                    Ghostty.logger.error("Error while requesting notification authorization: \(error)")
-                }
-            }
-
-            center.getNotificationSettings { settings in
-                guard settings.authorizationStatus == .authorized else { return }
-                surfaceView.showUserNotification(
-                    title: title,
-                    body: body,
-                    requireFocus: requireFocus
-                )
-            }
-        }
-
+        /// OSC 133 told us a command ended.
+        ///
+        /// Every finish is handed over: `[notifications] command-finished` is the only gate, and
+        /// the engine's own `notify-on-command-finish` (with its `unfocused` clause and its bell
+        /// action) is deliberately not consulted. Two gates for one signal would mean a user who
+        /// turns our key to `always` still hears nothing because a Ghostty key they never set is
+        /// `never` — and the notice centre, not the engine, is the thing that knows whether the
+        /// user is looking at the pane. The config key's help says exactly this.
         private static func commandFinished(
             _ app: ghostty_app_t,
             target: ghostty_target_s,
@@ -1503,64 +1601,12 @@ extension Ghostty {
             case GHOSTTY_TARGET_SURFACE:
                 guard let surface = target.target.surface else { return }
                 guard let surfaceView = self.surfaceView(from: surface) else { return }
-
-                // Determine if we even care about command finish notifications
-                guard let config = (NSApplication.shared.delegate as? AppDelegate)?.ghostty.config else { return }
-                switch config.notifyOnCommandFinish {
-                case .never:
-                    return
-
-                case .unfocused:
-                    if surfaceView.focused { return }
-
-                case .always:
-                    break
-                }
-
-                // Determine if the command was slow enough
-                let duration = Duration.nanoseconds(v.duration)
-                guard Duration.nanoseconds(v.duration) >= config.notifyOnCommandFinishAfter else { return }
-
-                let actions = config.notifyOnCommandFinishAction
-
-                if actions.contains(.bell) {
-                    NotificationCenter.default.post(
-                        name: .ghosttyBellDidRing,
-                        object: surfaceView
-                    )
-                }
-
-                if actions.contains(.notify) {
-                    let title: String
-                    if v.exit_code < 0 {
-                        title = "Command Finished"
-                    } else if v.exit_code == 0 {
-                        title = "Command Succeeded"
-                    } else {
-                        title = "Command Failed"
-                    }
-
-                    let body: String
-                    let formattedDuration = duration.formatted(
-                        .units(
-                            allowed: [.hours, .minutes, .seconds, .milliseconds],
-                            width: .abbreviated,
-                            fractionalPart: .hide
-                        )
-                    )
-                    if v.exit_code < 0 {
-                        body = "Command took \(formattedDuration)."
-                    } else {
-                        body = "Command took \(formattedDuration) and exited with code \(v.exit_code)."
-                    }
-
-                    showDesktopNotification(
-                        surfaceView,
-                        title: title,
-                        body: body,
-                        requireFocus: false
-                    )
-                }
+                GhosttyNoticeProducer.commandFinished(
+                    pane: surfaceView.id,
+                    // `int16_t` in the C action; widened once, here, so the producer and its
+                    // tests speak in plain Swift integers.
+                    exitCode: Int(v.exit_code),
+                    duration: Duration.nanoseconds(v.duration))
 
             default:
                 assertionFailure()
@@ -2326,26 +2372,15 @@ extension Ghostty {
                 }
         }
 
-        // MARK: User Notifications
-
-        /// Handle a received user notification. This is called when a user notification is clicked or dismissed by the user
-        func handleUserNotification(response: UNNotificationResponse) {
-            let userInfo = response.notification.request.content.userInfo
-            guard let uuidString = userInfo["surface"] as? String,
-                  let uuid = UUID(uuidString: uuidString),
-                  let surface = delegate?.findSurface(forUUID: uuid) else { return }
-
-            switch response.actionIdentifier {
-            case UNNotificationDefaultActionIdentifier, Ghostty.userNotificationActionShow:
-                // The user clicked on a notification
-                surface.handleUserNotification(notification: response.notification, focus: true)
-            case UNNotificationDismissActionIdentifier:
-                // The user dismissed the notification
-                surface.handleUserNotification(notification: response.notification, focus: false)
-            default:
-                break
-            }
-        }
+        // MARK: User notifications
+        //
+        // Nothing here any more, on purpose. The engine used to own a `UNUserNotificationCenter`
+        // path end to end: request authorization, post a banner per surface, keep the delivered
+        // identifiers on the surface view, withdraw them on focus, and route a click back to the
+        // surface through `handleUserNotification(response:)`. Every one of those jobs moved to
+        // the notification centre's system sink, which is also the `UNUserNotificationCenterDelegate`
+        // the app installs at launch — so a banner click now reveals the pane (activate, switch
+        // workspace, focus) and, deliberately, does **not** count as the user handling it.
 
         #endif
     }

@@ -306,6 +306,14 @@ enum MCPToolMap {
                 summary: "Long-poll for what happened since a `seq`: panes opened/closed, focus, workspace, "
                     + "layout, screens, titles and cwds. Events never carry pane output — titles and cwd only.",
                 commandNames: ["events.poll"]),
+        MCPTool(name: "quickterm_notices", title: "Read or acknowledge notices",
+                summary: "Ask what the panes are waiting for. `notices list --needs-user` names the panes "
+                    + "holding a prompt in front of the user — **call it before you interrupt them**: if "
+                    + "another pane is already asking them something, one more question is one too many. "
+                    + "`notices ack` clears one pane's notices once it has been dealt with. Titles are "
+                    + "composed by QuickTerm and always readable; a notice body is a program's own words "
+                    + "and reads <redacted> without QUICKTERM_TOKEN.",
+                commandNames: ["notices.list", "notices.ack"]),
         MCPTool(name: "quickterm_send_text", title: "Type text into a terminal pane",
                 summary: "Type text into a terminal pane as if it came from the keyboard. This is arbitrary "
                     + "code execution in whatever shell is there — possibly root, possibly a live ssh session. "
@@ -440,6 +448,10 @@ enum MCPToolMap {
             return schema(fromSample: MCPSamples.specValidate, description: "Validation report; nothing was changed.")
         case "events.poll":
             return schema(fromSample: MCPSamples.events, description: "quickterm.events/1 — never carries pane output.")
+        case "notices.list":
+            return schema(fromSample: MCPSamples.notices,
+                          description: "quickterm.notices/1 — `panesNeedingUser` counts panes waiting for "
+                              + "a human, not notices.")
         case "pane.capture-text":
             return schema(fromSample: MCPSamples.capture,
                           description: "`text` is what the pane shows right now (plus `scrollback` lines of "
@@ -525,6 +537,14 @@ enum MCPSamples {
                                         candidates: ["t2", "t7", "b1"],
                                         retryAfterMs: 800)
 
+    static let noticeRecord = ControlNoticeRecord(
+        id: "7C2E-…", pane: "t7", paneID: "C40D-…", screen: 1, screenID: "3F2A9C",
+        workspace: 2, source: "agent:claude-code", urgency: "needs-user", evidence: "hook",
+        title: "Claude Code · Awaiting approval · Bash", body: "<redacted>", redacted: true,
+        postedAt: ControlEvent.stamp(), resolvedAt: ControlEvent.stamp(), resolution: "acknowledged")
+
+    static let notices = ControlNoticesPayload(notices: [noticeRecord], panesNeedingUser: 1)
+
     static let paneInfo = ControlStatePayload.PaneInfo(
         handle: "t7", id: "C40D-…", kind: "terminal", role: "shell", screen: 1, workspace: 2,
         at: ControlStatePayload.PaneInfo.Position(column: 2, row: 0, path: "b.a"),
@@ -535,14 +555,15 @@ enum MCPSamples {
         tabList: [ControlStatePayload.PaneInfo.TabInfo(
             index: 1, id: "8A1F-…", active: true, title: "QuickTerm",
             url: "http://localhost:3000", loading: false)],
-        focused: false, busy: true, float: false, zoom: false, redacted: false)
+        focused: false, busy: true, float: false, zoom: false, redacted: false,
+        notices: [noticeRecord], urgency: "needs-user", needsUser: true)
 
     static let workspaceInfo = ControlStatePayload.WorkspaceInfo(
         index: 2, title: "dev", layout: "scrolling", empty: false, active: true,
         panes: ["t7", "b3"], zoom: "t7",
         columns: [ControlStatePayload.ColumnInfo(width: 0.485, panes: ["t7"])],
         tree: .split(.init(split: "vertical", ratio: 0.62, a: .leaf("t7"), b: .leaf("b3"))),
-        floating: ["t9"])
+        floating: ["t9"], needsUser: 1)
 
     static let screenInfo = ControlStatePayload.ScreenInfo(
         index: 1, id: "3F2A9C", title: "QuickTerm", key: true, activeWorkspace: 2,
@@ -600,7 +621,9 @@ enum MCPSamples {
         events: [ControlEvent(seq: 418, ts: ControlEvent.stamp(), type: .paneOpened,
                               screen: 1, screenID: "3F2A9C", workspace: 2, pane: "t9",
                               paneID: "C40D", kind: "terminal", layout: "scrolling",
-                              title: "zsh", cwd: "/Users/you/proj", redacted: false)],
+                              title: "zsh", cwd: "/Users/you/proj", redacted: false,
+                              noticeID: "7C2E", urgency: "needs-user", source: "agent:claude-code",
+                              body: "<redacted>", resolution: "acknowledged")],
         seq: 420, oldest: 301, missed: false, timedOut: false, truncated: false, follow: false)
 
     static let version = ControlVersionPayload(cli: "1.5.8", app: "1.5.8",

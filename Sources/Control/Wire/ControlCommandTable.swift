@@ -699,6 +699,45 @@ enum ControlCommandTable {
             ],
             outputSample: nil),
 
+        // MARK: - Notices: who is waiting for the human -
+        // The notification centre is a general service (agents are only its first customer), and
+        // this is its read side. **`notices list --needs-user` is the call an agent makes before
+        // interrupting the user**: if another pane is already holding a prompt in front of them,
+        // one more question is one too many.
+        // `ack` is an ordinary mutate command — a same-uid process can silence another pane's
+        // alarm, but never quietly: the status bar flashes, the activity log records it with the
+        // calling process's name and pid, and a notice.resolved event goes out on the stream.
+
+        ControlCommandSpec(
+            group: "notices", "list",
+            summary: "List what the panes are asking of the user — live notices, and which panes are waiting for a human",
+            cls: .read, idempotent: true, acceptsTarget: true,
+            args: [
+                ControlArgSpec("needs-user", .bool,
+                               help: "only the live needs-user notices (an approval prompt, a question): "
+                                   + "the panes that are actually waiting for a human"),
+                ControlArgSpec("history", .bool,
+                               help: "include resolved notices as well (the ring of recently resolved ones, oldest last); "
+                                   + "each carries resolvedAt and resolution"),
+            ],
+            examples: [
+                "quickterm notices list",
+                "quickterm notices list --needs-user       # ask this before interrupting the user",
+                "quickterm notices list --needs-user --json | jq -r '.data.notices[].pane'",
+                "quickterm notices list -t 1:2             # only this workspace",
+            ],
+            outputSample: noticesSample),
+        ControlCommandSpec(
+            group: "notices", "ack",
+            summary: "Acknowledge every live notice of one pane (absolute: the second call has nothing left to do)",
+            cls: .mutate, idempotent: true, acceptsTarget: true,
+            args: [],
+            examples: [
+                "quickterm notices ack -t t7",
+                "quickterm notices ack -t t7 --fail-if-noop   # exit 7 when nothing was live",
+            ],
+            outputSample: nil),
+
         // MARK: - Phase 4: injecting text into a pane -
         // This is the one command in the whole control plane that can make someone else's shell run
         // arbitrary commands. Off by default, and even once it is on, confirmed every single time
@@ -946,6 +985,21 @@ enum ControlCommandTable {
       {"seq":419,"ts":"2026-09-10T09:12:03.402Z","type":"focus.changed","pane":"t9","screen":1,"workspace":2},
       {"seq":420,"ts":"2026-09-10T09:12:07.118Z","type":"layout.changed","screen":1,"workspace":2,
        "layout":"dwindle"}]}}
+    """
+
+    /// `notices list`. `panesNeedingUser` counts **panes**, not notices: two prompts in one pane
+    /// are one thing for the human to go and handle.
+    static let noticesSample = """
+    {"ok":true,"seq":436,"data":{"schema":"quickterm.notices/1","panesNeedingUser":1,
+     "notices":[
+      {"id":"7C2E…","pane":"t7","paneID":"C40D…","screen":1,"screenID":"3F2A9C…","workspace":2,
+       "source":"agent:claude-code","urgency":"needs-user","evidence":"hook",
+       "title":"Claude Code · Awaiting approval · Bash","body":"<redacted>","redacted":true,
+       "postedAt":"2026-09-13T09:12:03.221Z"},
+      {"id":"11A0…","pane":"t2","paneID":"9C1B…","screen":1,"screenID":"3F2A9C…","workspace":2,
+       "source":"command","urgency":"info","evidence":"composed",
+       "title":"Command finished","body":"took 42s, exit 0",
+       "postedAt":"2026-09-13T09:11:40.004Z"}]}}
     """
 
     static let sendTextSample = """

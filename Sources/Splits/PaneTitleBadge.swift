@@ -86,17 +86,24 @@ enum PaneTitleBadge {
     /// The right edge of the gap = leading inset + text width + a little padding; what lies between
     /// it and the top-right corner is the stretch of line that has to survive, and that must be
     /// >= two characters wide - which leaves exactly this much for the text.
-    static func availableTextWidth(topEdgeWidth: CGFloat, metrics: Metrics = .standard) -> CGFloat {
+    ///
+    /// `mark`: a pane with a live `needsUser` notice draws a red dot in exactly that surviving
+    /// stretch of line (`markReserve`), so **the reserve has to grow by the dot** - measured
+    /// against the two characters alone, a title that "just fits" runs straight under the dot.
+    static func availableTextWidth(topEdgeWidth: CGFloat, mark: Bool = false,
+                                   metrics: Metrics = .standard) -> CGFloat {
         topEdgeWidth - metrics.leadingInset - metrics.sidePadding
             - CGFloat(metrics.reservedCharacters) * metrics.characterWidth
+            - (mark ? markReserve : 0)
     }
 
     /// Pure function: the string to draw on the top border this frame; nil when not a single
     /// character fits (or there was no title to begin with).
     /// nil means **draw the whole border unbroken**, not an empty notch or a lone ellipsis.
-    static func fit(title: String, topEdgeWidth: CGFloat, metrics: Metrics = .standard) -> String? {
+    static func fit(title: String, topEdgeWidth: CGFloat, mark: Bool = false,
+                    metrics: Metrics = .standard) -> String? {
         guard let capped = TitleRules.clamp(title, to: maxCharacters) else { return nil }
-        let available = availableTextWidth(topEdgeWidth: topEdgeWidth, metrics: metrics)
+        let available = availableTextWidth(topEdgeWidth: topEdgeWidth, mark: mark, metrics: metrics)
         guard available > 0 else { return nil }
         if metrics.width(of: capped) <= available { return capped }
 
@@ -142,13 +149,66 @@ enum PaneTitleBadge {
     /// The one entry point: text, placement and gap all computed in a single pass.
     /// Gap and text have to come out of the same decision - decided in two places you get "the
     /// border is bitten open, but the text was never drawn / dropped below the line".
-    static func place(title: String?, topEdgeWidth: CGFloat, overhang: CGFloat,
+    ///
+    /// `mark` says whether the red notice dot is drawn on this frame - pass what `markRect`
+    /// answered, never the raw "is there a notice", so the reserve and the dot are one decision.
+    static func place(title: String?, topEdgeWidth: CGFloat, overhang: CGFloat, mark: Bool = false,
                       metrics: Metrics = .standard) -> Placement? {
         guard let title,
               let offsetY = verticalOffset(overhang: overhang, metrics: metrics),
-              let text = fit(title: title, topEdgeWidth: topEdgeWidth, metrics: metrics)
+              let text = fit(title: title, topEdgeWidth: topEdgeWidth, mark: mark, metrics: metrics)
         else { return nil }
         let gap = gapRange(for: text, metrics: metrics)
         return Placement(text: text, offsetY: offsetY, gapStart: gap.start, gapEnd: gap.end)
+    }
+
+    // MARK: The notice mark (design §3.5 "Pane mark", contract §10.5)
+
+    /// Diameter of the dot drawn at the pane's top-right corner while the pane holds a live
+    /// `needsUser` notice. Small on purpose: it is an alarm, not a badge, and it sits on a 2px
+    /// line in the middle of the wallpaper.
+    static let markDiameter: CGFloat = 6
+    /// Border broken on each side of the dot, so the line does not grow out of it.
+    static let markGap: CGFloat = 2
+    /// From the pane's outer right edge to the dot's trailing edge.
+    static let markTrailingInset: CGFloat = 8
+    /// Side of the square hit target that carries the dot's tooltip. Bigger than the dot (a 6pt
+    /// target is not pointable), and still small enough that the terminal keeps every other click:
+    /// the frame itself never hit-tests, so this is the ONLY part of the chrome that takes a mouse.
+    static let markHitSize: CGFloat = 10
+
+    /// How much of the top edge the dot claims: the dot, its two gaps, and the inset that keeps it
+    /// off the corner. Subtracted from `availableTextWidth` whenever the dot is drawn.
+    static var markReserve: CGFloat { markDiameter + 2 * markGap + markTrailingInset }
+
+    /// Where the dot goes, relative to the pane's top-left corner (the outer edge of the border).
+    /// **nil = too narrow to draw it**, and then nothing else about the mark is drawn either -
+    /// never half a dot hanging over the corner.
+    ///
+    /// Vertically it is centred on the border line, exactly like the title, which puts 2pt of it
+    /// above the pane. That is borrowed from the same ring of pane-gap the title borrows from;
+    /// with gaps off the slot clips those 2pt and the remaining 4pt still read as a red dot, so -
+    /// unlike the title - the mark is drawn whatever the overhang. An alarm you can see is worth
+    /// more than a perfectly centred one.
+    static func markRect(topEdgeWidth: CGFloat) -> CGRect? {
+        guard topEdgeWidth >= markReserve else { return nil }
+        return CGRect(x: topEdgeWidth - markTrailingInset - markDiameter,
+                      y: lineWidth / 2 - markDiameter / 2,
+                      width: markDiameter, height: markDiameter)
+    }
+
+    /// The stretch bitten out of the top border for the dot (the title's gap is `gapRange`).
+    /// The two can never touch: the title's is capped by `availableTextWidth`, which subtracts
+    /// `markReserve` whenever this one exists.
+    static func markGapRange(topEdgeWidth: CGFloat) -> (start: CGFloat, end: CGFloat)? {
+        guard let rect = markRect(topEdgeWidth: topEdgeWidth) else { return nil }
+        return (max(0, rect.minX - markGap), min(topEdgeWidth, rect.maxX + markGap))
+    }
+
+    /// The tooltip target: `markHitSize` square, centred on the dot.
+    static func markHitRect(topEdgeWidth: CGFloat) -> CGRect? {
+        guard let rect = markRect(topEdgeWidth: topEdgeWidth) else { return nil }
+        return CGRect(x: rect.midX - markHitSize / 2, y: rect.midY - markHitSize / 2,
+                      width: markHitSize, height: markHitSize)
     }
 }

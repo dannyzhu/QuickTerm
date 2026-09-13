@@ -387,6 +387,15 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # download-dir = "~/Downloads"                   # 浏览器 pane 下载落盘目录（支持 ~；目录不存在时回退 ~/Downloads）
 # link-opener = "browser-pane"                   # 终端 ⌘+点击链接：browser-pane = 在浏览器 pane 打开（有则用最近激活的，无则新开）；system = 系统浏览器
 
+[notifications]              # 谁在等你；红点 / 角标 / 计数统计的是「需要你动手的 pane」，不是通知条数
+# system = "inactive"         # inactive = 只在你没在看那个 pane 时弹系统通知 | never = 从不弹
+# system-body = "composed"    # never | composed = 只放 QuickTerm 自己写的句子（默认） | always = 也放程序原文（通知中心会留存）
+# dock-badge = true           # Dock 图标上的红色数字
+# pane-mark = true            # pane 上边框右上角的红点（悬停显示通知标题）
+# workspace-count = true      # 工作区标签上的 ●N
+# bell = "ignore"             # ignore = 一声裸铃不算通知（默认） | info = 当成一条 info 通知
+# command-finished = "long"   # never | long = 只报超过 10 秒的（默认） | always —— 靠 OSC 133，需要 shell integration；取代引擎自己的 notify-on-command-finish 几个键，那些不再生效
+
 [keybinds]                  # 动作 = "修饰键+键"；"none" 解绑。动作 id 见 Cmd+K
 # new-terminal = "cmd+return"
 # toggle-float = "cmd+shift+t"

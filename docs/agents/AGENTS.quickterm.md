@@ -98,6 +98,22 @@ That name belongs to the **slot**, not to the panes inside it: `workspace clear`
 both leave it standing. Three things change it and nothing else does — this command, a right-click rename, and
 applying a spec that carries a `title` (the one `spec dump` writes does).
 
+## Before you interrupt the human
+
+```bash
+quickterm notices list --needs-user
+```
+
+QuickTerm knows which panes are **waiting for a human** — an agent asking for an approval, a program asking a
+question — and it will tell you before you add one more demand on top. If `panesNeedingUser` is not zero, somebody
+else is already holding a prompt in front of the user: say so and wait, rather than asking your own question into
+the same queue. When the thing your pane was waiting for has been dealt with, `quickterm notices ack -t <pane>`
+clears its marks (it must name a pane; it does not answer the prompt — only the person at that pane can).
+`state` carries the same answer inline (`needsUser` on a pane, `needsUser: <panes>` on a workspace), and
+`quickterm events poll --types notice.posted,notice.resolved` is the same thing as a stream.
+A notice's `title` is QuickTerm's own words and always readable; its `body` is the program's own and reads
+`<redacted>` without `QUICKTERM_TOKEN`.
+
 Build a whole workspace in one command (**the most efficient thing you can do here**):
 
 ```bash
@@ -190,3 +206,5 @@ quickterm spec apply -f /tmp/ws.json --dry-run   # look at what it would change 
 - Layout got messy: `quickterm spec dump -t <workspace> > /tmp/before.json`, and one command puts it back if your edit goes wrong.
 - Don't leave junk panes behind when you're done — but **closing a pane pops a confirmation**, so ask the user
   whether to close them rather than firing `pane close` yourself.
+- About to ask the user something? Run `quickterm notices list --needs-user` first. Another pane may already be
+  holding a prompt in front of them, and two questions at once is how a person stops answering either.

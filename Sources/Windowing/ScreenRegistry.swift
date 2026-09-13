@@ -106,6 +106,10 @@ final class ScreenRegistry {
     func remove(_ controller: MainWindowController) {
         controllers.removeAll { $0 === controller }
         ControlEventBus.noteChange()   // screen.closed
+        // Every pane of that screen has just become unlocatable: the notification centre's
+        // activity pass resolves whatever they were holding as `paneClosed`. Without this the
+        // Dock badge would keep counting panes that no longer exist.
+        NoticeCenter.noteActivityChange()
     }
 
     /// Screen title: the first one must be exactly `QuickTerm` (EngineSmokeTests finds the window

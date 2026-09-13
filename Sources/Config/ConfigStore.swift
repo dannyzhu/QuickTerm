@@ -294,6 +294,17 @@ enum ConfigStore {
         var controlExposeBrowser: String = "token"
         var controlSendText: Bool = false
         var controlCaptureText: Bool = false
+        /// `[notifications]` — the notification centre (spec §3.5). `NoticeSettings` is built
+        /// from these seven in `AppSession.applyGlobalConfig`; the centre never reads the config
+        /// itself.
+        var notificationsSystem: String = "inactive"
+        var notificationsSystemBody: String = "composed"
+        var notificationsDockBadge: Bool = true
+        var notificationsPaneMark: Bool = true
+        var notificationsWorkspaceCount: Bool = true
+        /// A bare bell is not a notice by default (owner's decision).
+        var notificationsBell: String = "ignore"
+        var notificationsCommandFinished: String = "long"
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
         var ghosttyPassthrough: String = ""
@@ -377,6 +388,13 @@ enum ConfigBindings {
         "control.expose-browser": { v, s in v.stringValue.map { s.controlExposeBrowser = $0 } },
         "control.send-text": { v, s in v.boolValue.map { s.controlSendText = $0 } },
         "control.capture-text": { v, s in v.boolValue.map { s.controlCaptureText = $0 } },
+        "notifications.system": { v, s in v.stringValue.map { s.notificationsSystem = $0 } },
+        "notifications.system-body": { v, s in v.stringValue.map { s.notificationsSystemBody = $0 } },
+        "notifications.dock-badge": { v, s in v.boolValue.map { s.notificationsDockBadge = $0 } },
+        "notifications.pane-mark": { v, s in v.boolValue.map { s.notificationsPaneMark = $0 } },
+        "notifications.workspace-count": { v, s in v.boolValue.map { s.notificationsWorkspaceCount = $0 } },
+        "notifications.bell": { v, s in v.stringValue.map { s.notificationsBell = $0 } },
+        "notifications.command-finished": { v, s in v.stringValue.map { s.notificationsCommandFinished = $0 } },
     ]
 }
 

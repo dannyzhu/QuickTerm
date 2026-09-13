@@ -318,11 +318,15 @@ final class ControlEventTests: XCTestCase {
                         "pane", "paneID", "kind", "layout", "title", "cwd", "redacted"],
                        "the event field list is closed: no field carrying pane output may appear")
 
-        // The type list is closed as well: no output / scrollback / bell kinds
+        // The type list is closed as well: no output / scrollback / bell kinds.
+        // notice.posted / notice.resolved are the notification centre's two (spec §10.9): they
+        // carry a `body`, which is a program's own short message (a notice, never a read of the
+        // screen), capped by the centre and redacted for token-less callers like a browser URL.
         XCTAssertEqual(Set(ControlEventType.allCases.map(\.rawValue)),
                        ["pane.opened", "pane.closed", "focus.changed", "workspace.changed",
                         "layout.changed", "screen.opened", "screen.closed",
-                        "pane.title.changed", "pane.cwd.changed"])
+                        "pane.title.changed", "pane.cwd.changed",
+                        "notice.posted", "notice.resolved"])
 
         // Now for real: create a pane, change the layout, switch workspaces — not one event may
         // contain a large blob of text

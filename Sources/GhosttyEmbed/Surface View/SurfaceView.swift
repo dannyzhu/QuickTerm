@@ -1,5 +1,4 @@
 import SwiftUI
-import UserNotifications
 import GhosttyKit
 
 extension Ghostty {

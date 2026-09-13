@@ -23,6 +23,7 @@ enum ConfigSection: String, CaseIterable, Codable {
     case terminal
     case browser
     case control
+    case notifications
     case keybinds
     case ghostty
 
@@ -34,6 +35,7 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .terminal: "终端"
         case .browser: "浏览器"
         case .control: "控制面"
+        case .notifications: "通知"
         case .keybinds: "快捷键"
         case .ghostty: "引擎透传"
         }
@@ -47,6 +49,7 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .terminal: "Terminal"
         case .browser: "Browser"
         case .control: "Control plane"
+        case .notifications: "Notifications"
         case .keybinds: "Keybinds"
         case .ghostty: "Ghostty passthrough"
         }
@@ -64,6 +67,10 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .control:
             """
             控制面（quickterm 命令行 / AI agent）。socket：~/Library/Application Support/QuickTerm/control.sock
+            """
+        case .notifications:
+            """
+            通知中心：谁在等你。红点 / Dock 角标 / 工作区计数只统计「需要你动手」的 pane，不是通知条数。
             """
         case .keybinds:
             """
@@ -83,6 +90,11 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .control:
             """
             Control plane (the quickterm CLI / AI agents). Socket: ~/Library/Application Support/QuickTerm/control.sock
+            """
+        case .notifications:
+            """
+            The notification centre: who is waiting for you. The pane mark, the Dock badge and the
+            workspace count all count PANES that need you, not notices.
             """
         case .keybinds:
             """
@@ -648,6 +660,66 @@ enum ConfigSchema {
                       而且每个调用进程要用户在 QuickTerm 里确认一次；正文不进任何日志
                       """,
                       helpEN: "reading a terminal pane's visible text on behalf of a caller; off by default"),
+
+        // MARK: [notifications]
+        // The notification centre (spec §3.5). `bell` and `command-finished` are read by the
+        // producers, not by the centre: they answer "should this signal become a notice at all".
+        ConfigKeySpec(.notifications, "system",
+                      .enumeration(values: ["inactive", "never"], strict: true),
+                      default: .string("inactive"),
+                      labelZH: "系统通知", labelEN: "System notification",
+                      helpZH: """
+                      inactive = 只在你没在看那个 pane 时弹（app 不在前台 / 那个屏幕不是 key / 工作区被挡住 / pane 没聚焦）
+                      never = 从不弹系统通知（红点、Dock 角标、工作区计数不受影响）
+                      每个 pane 最多一条，更新替换而不是叠加；点它只是导航到那个 pane，不算「已处理」
+                      """,
+                      helpEN: """
+                      inactive = only while you are not looking at that pane | never
+                      One banner per pane; clicking it navigates to the pane and does not acknowledge anything
+                      """),
+        ConfigKeySpec(.notifications, "system-body",
+                      .enumeration(values: ["never", "composed", "always"], strict: true),
+                      default: .string("composed"),
+                      labelZH: "系统通知正文", labelEN: "System notification body",
+                      helpZH: """
+                      never = 只有标题 | composed = 只放 QuickTerm 自己写的句子（默认） | always = 也放程序自己的原文
+                      默认不放原文：通知中心会把它存进自己的数据库、显示在锁屏上，QuickTerm 退出之后也还在
+                      标题永远是无载荷的（agent 名、状态、工具名），命令行只会出现在正文里
+                      """,
+                      helpEN: """
+                      never | composed (only text QuickTerm wrote itself) | always
+                      Notification Center persists the body in its own database, on the lock screen and after QuickTerm is gone
+                      """),
+        ConfigKeySpec(.notifications, "dock-badge", .bool, default: .bool(true),
+                      labelZH: "Dock 角标", labelEN: "Dock badge",
+                      helpZH: "Dock 图标上的红色数字 = 需要你动手的 pane 数（不是通知条数），为 0 时清空",
+                      helpEN: "the red number on the Dock icon: panes that need you, not notices; cleared at zero"),
+        ConfigKeySpec(.notifications, "pane-mark", .bool, default: .bool(true),
+                      labelZH: "pane 红点", labelEN: "Pane mark",
+                      helpZH: "pane 右上角边框上的红点，只给「需要你动手」画；悬停显示通知标题",
+                      helpEN: "the red dot on the pane's top border, drawn only for needs-user; hover shows the title"),
+        ConfigKeySpec(.notifications, "workspace-count", .bool, default: .bool(true),
+                      labelZH: "工作区计数", labelEN: "Workspace count",
+                      helpZH: "工作区标签上的 ●N = 该工作区里需要你动手的 pane 数",
+                      helpEN: "the ●N on a workspace pill: panes in that workspace that need you"),
+        ConfigKeySpec(.notifications, "bell",
+                      .enumeration(values: ["ignore", "info"], strict: true),
+                      default: .string("ignore"),
+                      labelZH: "响铃", labelEN: "Bell",
+                      helpZH: "ignore = 一声裸铃不算通知（默认） | info = 当成一条 info 通知",
+                      helpEN: "ignore (a bare bell is not a notice) | info"),
+        ConfigKeySpec(.notifications, "command-finished",
+                      .enumeration(values: ["never", "long", "always"], strict: true),
+                      default: .string("long"),
+                      labelZH: "命令跑完", labelEN: "Command finished",
+                      helpZH: """
+                      never | long = 只报超过 10 秒的（默认） | always —— 靠 OSC 133，shell 要装 shell integration
+                      这一条说了算：引擎自己的 notify-on-command-finish 与 bell 动作不再参与
+                      """,
+                      helpEN: """
+                      never | long (over 10 s, the default) | always — needs the shell's OSC 133 integration
+                      This key decides on its own: the engine's own notify-on-command-finish and bell action are not consulted
+                      """),
     ]
 
     /// `id` -> the setting.

@@ -91,6 +91,9 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
         // control plane's focus.changed hangs off this one place too: hanging it off requestFocus /
         // reconcileFocus would miss the keyboard and the mouse paths.
         ControlEventBus.noteChange()
+        // Same reason, for the notification centre: `focused` is one of the four clauses of
+        // `PaneActivity`, and an `info` notice resolves the moment the user looks at the pane.
+        NoticeCenter.noteActivityChange()
     }
 
     /// The window's first responder is this pane or one of its descendants.

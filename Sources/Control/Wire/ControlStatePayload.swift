@@ -57,6 +57,13 @@ struct ControlStatePayload: Codable, Equatable {
         /// dwindle: the split tree (`{split,ratio,a,b}`, with leaves `{pane:"t1"}`).
         var tree: TreeNode?
         var floating: [String]
+        /// How many **panes** in this workspace are waiting for the user (a live `needs-user`
+        /// notice), which is what the red `●N` on the workspace pill counts.
+        ///
+        /// Panes, not notices: two approval prompts in one pane are one thing for the human to go
+        /// and handle. Encoded only when non-zero, the same convention `zoom` / `titleSet` follow,
+        /// so every existing fixture stays byte-identical.
+        var needsUser: Int? = nil
     }
 
     struct ColumnInfo: Codable, Equatable {
@@ -161,6 +168,20 @@ struct ControlStatePayload: Codable, Equatable {
         var zoom: Bool
         /// Whether a browser pane's title / url were redacted (always, for a caller with no token).
         var redacted: Bool?
+        /// The notices **live on this pane right now** (post order), or nil when it has none.
+        ///
+        /// Encoded only when there is something to say, so a session with nothing pending returns
+        /// exactly the bytes it always did. `notices | length` is the live count; each record's
+        /// `body` follows the same token rule as a browser URL (see `ControlNoticeRecord`).
+        var notices: [ControlNoticeRecord]? = nil
+        /// The pane's **displayed** urgency: the maximum over its live notices (`info` |
+        /// `needs-user`), absent when nothing is live.
+        var urgency: String? = nil
+        /// This pane is waiting for a human (it holds at least one live `needs-user` notice).
+        /// Encoded only when true. It is `urgency == "needs-user"` said in one boolean, because
+        /// that is the single question an agent asks before interrupting the user — and a jq
+        /// filter on a bool is harder to get wrong than one on a string.
+        var needsUser: Bool? = nil
 
         struct Position: Codable, Equatable {
             var column: Int?
@@ -246,6 +267,66 @@ struct ControlStatePayload: Codable, Equatable {
             return .object(out)
         }
     }
+}
+
+/// One notice on the wire (`quickterm.notices/1`, and the `notices[]` of a pane record).
+///
+/// It is a flat record of strings on purpose: this directory is compiled into the `quickterm` tool
+/// as well, which knows nothing of `Notice` / `NoticeCenter` (those live in the app). The mapping
+/// lives in `ControlStateEncoder.noticeRecord(_:)`, in one place, so the two spellings of a source
+/// or a resolution cannot drift apart.
+///
+/// **Title and body are two fields with two rules** (spec §3.5). The title is payload-free by
+/// construction — the notification centre builds it from an agent id, a state and a tool *name* —
+/// so it is never redacted. The body carries the program's own words (an OSC 777 body, a summary of
+/// a tool's input) and follows exactly the rule a browser URL follows: a caller that did not
+/// inherit `QUICKTERM_TOKEN` reads `<redacted>` and `redacted: true`, never the text.
+struct ControlNoticeRecord: Codable, Equatable {
+    var id: String
+    /// The pane's short handle (`t7`). Empty only for a pane that never got one, which cannot
+    /// happen for a pane that was addressable when the notice was posted.
+    var pane: String
+    var paneID: String
+    /// One-based, as everywhere on the wire. `0` means that screen is gone — only reachable
+    /// through `--history`, where the record outlives the window it was posted on.
+    var screen: Int
+    var screenID: String
+    /// One-based, **as it was when the notice was posted** (a pane moved while an approval is
+    /// pending keeps the count where the alarm was raised; see `NoticeCenter.recomputeCounts`).
+    var workspace: Int
+    /// `NoticeSource.id`: `agent:<id>` | `terminal` | `command` | `bell` | `download` | `control` |
+    /// `custom:<name>`. Stable — branch on it.
+    var source: String
+    /// `info` | `needs-user`.
+    var urgency: String
+    /// `hook` | `report` | `notification` | `process` | `composed` — where the text came from.
+    /// `composed` is the only one that means QuickTerm wrote the sentence itself.
+    var evidence: String
+    var title: String
+    /// The program's own words, `<redacted>` for a caller with no token, absent when the notice
+    /// has no body at all.
+    var body: String?
+    /// A body exists and was withheld (say so, or the caller believes the body really reads
+    /// `<redacted>`).
+    var redacted: Bool?
+    /// ISO8601 with milliseconds, the same stamp the event stream uses.
+    var postedAt: String
+    /// Set only on a resolved notice (`notices list --history`).
+    var resolvedAt: String?
+    /// `state-changed` | `user-acted` | `acknowledged` | `superseded` | `pane-focused` |
+    /// `pane-closed`.
+    var resolution: String?
+}
+
+/// The payload for `notices list`.
+struct ControlNoticesPayload: Codable, Equatable {
+    var schema = "quickterm.notices/1"
+    /// Live notices first (post order), then the resolved ring (oldest first) when `--history`
+    /// asked for it. `resolvedAt` tells the two apart without counting.
+    var notices: [ControlNoticeRecord]
+    /// **How many panes** (not notices) are waiting for a human, within whatever the target
+    /// scoped this call to. This is the number an agent branches on before interrupting the user.
+    var panesNeedingUser: Int
 }
 
 /// The payload for `list` (exactly one of the three is non-nil).

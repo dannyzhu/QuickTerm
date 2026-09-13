@@ -2,7 +2,6 @@ import AppKit
 import Combine
 import SwiftUI
 import CoreText
-import UserNotifications
 import GhosttyKit
 
 extension Ghostty {
@@ -279,9 +278,6 @@ extension Ghostty {
         /// of the SwiftUI view hierarchy, for example when changing splits
         var scrollbar: Ghostty.Action.Scrollbar?
 
-        // Notification identifiers associated with this surface
-        var notificationIdentifiers: Set<String> = []
-
         private var markedText: NSMutableAttributedString
         // QuickTerm: `focused` lives on the base class PaneView, driven only by focusDidChange
         private var prevPressureStage: Int = 0
@@ -531,10 +527,6 @@ extension Ghostty {
             // Remove ourselves from secure input if we have to
             SecureInput.shared.removeScoped(ObjectIdentifier(self))
 
-            // Remove any notifications associated with this surface
-            let identifiers = Array(self.notificationIdentifiers)
-            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: identifiers)
-
             // Cancel progress report timer
             progressReportTimer?.invalidate()
         }
@@ -566,13 +558,11 @@ extension Ghostty {
                 // We unset our bell state if we gained focus
                 bell = false
 
-                // Remove any notifications for this surface once we gain focus.
-                if !notificationIdentifiers.isEmpty {
-                    UNUserNotificationCenter.current()
-                        .removeDeliveredNotifications(
-                            withIdentifiers: Array(notificationIdentifiers))
-                    self.notificationIdentifiers = []
-                }
+                // A delivered banner used to be withdrawn here, from a set of identifiers this
+                // view kept. Both are gone: the notification centre's system sink owns one
+                // identifier per pane and withdraws it when the pane becomes active, which it
+                // learns from the activity pass `super.focusDidChange` above kicks off. Doing it
+                // from here as well would race the sink for its own banner.
             }
         }
 
@@ -931,6 +921,11 @@ extension Ghostty {
         @objc private func ghosttyBellDidRing(_ notification: SwiftUI.Notification) {
             // Bell state goes to true
             bell = true
+
+            // And, only when `[notifications] bell = "info"`, one info notice. The border flash
+            // above is unconditional and is not a notice: a bare bell is not a notice by default
+            // (spec §7.4) — shells ring it for a completion that matched nothing.
+            GhosttyNoticeProducer.bell(pane: self.id)
         }
 
         @objc private func ghosttyDidChangeReadonly(_ notification: SwiftUI.Notification) {
@@ -1299,6 +1294,20 @@ extension Ghostty {
             // On any keyDown event we unset our bell state
             bell = false
 
+            // Rule 2 of the notification centre (spec §3.5): the user focused the pane and typed
+            // into it, so whatever was asking for them is answered. **This is the only road in**,
+            // and it is here rather than anywhere more convenient for one reason: a real NSEvent
+            // delivered to this view is the one thing a same-uid process cannot fake. Text pushed
+            // through `input send-text` reaches `Ghostty.Surface.sendText` and never this method,
+            // so it can add a notice but never silence one. Before any translation, so a dead key
+            // or a key the engine swallows still counts as the user acting.
+            NoticeCenter.noteKeyDown(in: self)
+
+            // And the other half of a banner click: the routing held focus on this pane against
+            // focus-follows-mouse (the cursor is parked where the banner was). The user typing
+            // is the proof they are where they meant to be, so the hold ends here.
+            controller?.releaseFocusHold()
+
             // We need to translate the mods (maybe) to handle configs such as option-as-alt
             let translationModsGhostty = Ghostty.eventModifierFlags(
                 mods: ghostty_surface_key_translation_mods(
@@ -1445,6 +1454,12 @@ extension Ghostty {
         var lastPerformKeyEvent: TimeInterval?
 
         /// Special case handling for some control keys
+        ///
+        /// Note for rule 2 of the notification centre (spec §3.5): nothing here reports "the user
+        /// typed into this pane", and nothing needs to. Every path that really delivers the key to
+        /// the terminal ends in `self.keyDown(with:)`, which is where the report lives; the paths
+        /// that return `false` hand the event back to AppKit, where it becomes a menu shortcut —
+        /// ⌘C, ⌘N — and a menu shortcut is not an answer typed into the pane.
         override func performKeyEquivalent(with event: NSEvent) -> Bool {
             // We only care about key down events. It might not even be possible
             // to receive any other event type here.
@@ -1916,62 +1931,6 @@ extension Ghostty {
 
         @IBAction func changeTitle(_ sender: Any) {
             promptTitle()
-        }
-
-        /// Show a user notification and associate it with this surface
-        func showUserNotification(title: String, body: String, requireFocus: Bool = true) {
-            let content = UNMutableNotificationContent()
-            content.title = title
-            content.subtitle = self.title
-            content.body = body
-            content.sound = UNNotificationSound.default
-            content.categoryIdentifier = Ghostty.userNotificationCategory
-            content.userInfo = [
-                "surface": self.id.uuidString,
-                "requireFocus": requireFocus,
-            ]
-
-            let uuid = UUID().uuidString
-            let request = UNNotificationRequest(
-                identifier: uuid,
-                content: content,
-                trigger: nil
-            )
-
-            // Note the callback may be executed on a background thread as documented
-            // so we need @MainActor since we're reading/writing view state.
-            UNUserNotificationCenter.current().add(request) { @MainActor error in
-                if let error = error {
-                    AppDelegate.logger.error("Error scheduling user notification: \(error)")
-                    return
-                }
-
-                // We need to keep track of this notification so we can remove it
-                // under certain circumstances
-                self.notificationIdentifiers.insert(uuid)
-
-                // If we're focused then we schedule to remove the notification
-                // after a few seconds. If we gain focus we automatically remove it
-                // in focusDidChange.
-                if self.focused {
-                    Task { @MainActor [weak self] in
-                        try await Task.sleep(for: .seconds(3))
-                        self?.notificationIdentifiers.remove(uuid)
-                        UNUserNotificationCenter.current()
-                            .removeDeliveredNotifications(withIdentifiers: [uuid])
-                    }
-                }
-            }
-        }
-
-        /// Handle a user notification click
-        func handleUserNotification(notification: UNNotification, focus: Bool) {
-            let id = notification.request.identifier
-            guard self.notificationIdentifiers.remove(id) != nil else { return }
-            if focus {
-                self.window?.makeKeyAndOrderFront(self)
-                Ghostty.moveFocus(to: self)
-            }
         }
 
         struct DerivedConfig {

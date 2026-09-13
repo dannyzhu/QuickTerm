@@ -52,11 +52,26 @@ enum WorkspacePill {
         title.flatMap { TitleRules.clamp($0, to: maxCharacters) }
     }
 
-    /// What gets drawn on this slot: the name, if the slot has one and the row is showing names;
-    /// otherwise the old look - `■` for the active one, the index for the rest.
-    static func label(title: String?, index: Int, active: Bool, showingTitles: Bool) -> String {
+    /// What gets drawn on this slot **before the notice count**: the name, if the slot has one and
+    /// the row is showing names; otherwise the old look - `■` for the active one, the index for the
+    /// rest.
+    static func baseLabel(title: String?, index: Int, active: Bool, showingTitles: Bool) -> String {
         if showingTitles, let name = clamped(title) { return name }
         return active ? "■" : "\(index + 1)"
+    }
+
+    /// The `●N` term: how many panes of this workspace hold a live `needsUser` notice (design
+    /// §3.5, "Workspace pill"). Empty at zero - a workspace nobody is waiting on says nothing.
+    ///
+    /// Not a localized string: it is a dot and a number, identical in both languages. What *is*
+    /// localized is the accessibility label (`StatusBarView`), because "●2" read aloud is noise.
+    static func countSuffix(_ count: Int) -> String { count > 0 ? " ●\(count)" : "" }
+
+    /// The whole label: `dev ●2` / `3 ●1` / `dev` / `3`.
+    static func label(title: String?, index: Int, active: Bool, showingTitles: Bool,
+                      count: Int = 0) -> String {
+        baseLabel(title: title, index: index, active: active, showingTitles: showingTitles)
+            + countSuffix(count)
     }
 
     /// How wide one pill is: a named pill is the text width plus padding on both sides, a numbered
@@ -68,9 +83,15 @@ enum WorkspacePill {
     /// like a single letter or a single CJK character under-count by up to 8pt per pill, while the
     /// whole row only has `clearance`'s 8pt of slack - five pills like that are enough to push the
     /// names onto the clock.
-    static func pillWidth(title: String?, index: Int, active: Bool, showingTitles: Bool) -> CGFloat {
-        let text = label(title: title, index: index, active: active, showingTitles: showingTitles)
-        guard showingTitles, clamped(title) != nil else { return plainWidth }
+    ///
+    /// A pill carrying a notice count is measured the same way a named one is, **even when the row
+    /// is drawing numbers**: `3 ●1` is wider than those 18pt, and a count that is not in the budget
+    /// is a count that shoves the last pill under the clock.
+    static func pillWidth(title: String?, index: Int, active: Bool, showingTitles: Bool,
+                          count: Int = 0) -> CGFloat {
+        let text = label(title: title, index: index, active: active,
+                         showingTitles: showingTitles, count: count)
+        guard (showingTitles && clamped(title) != nil) || count > 0 else { return plainWidth }
         return max(plainWidth, width(of: text)) + 2 * titlePadding
     }
 
@@ -80,9 +101,17 @@ enum WorkspacePill {
     /// equivalent modifier chain is one more chance for "measured and drawn disagree" - `pillWidth`
     /// corresponds to this one to one, and the test lays both out for real and compares them
     /// (`testPillWidthMatchesTheLaidOutPill`).
-    static func pill(title: String?, index: Int, active: Bool, showingTitles: Bool) -> some View {
+    ///
+    /// The `●N` is the one part with a colour of its own (`theme.alert`, passed in so this file
+    /// still measures and draws without an environment): the base keeps whatever the caller set,
+    /// so an active pill stays accent and an inactive one stays foreground. Concatenating two
+    /// `Text`s rather than stacking two views is what keeps the drawn width equal to
+    /// `width(of: label)` - an `HStack` would add its own spacing to one side of the budget only.
+    static func pill(title: String?, index: Int, active: Bool, showingTitles: Bool,
+                     count: Int = 0, countColor: Color = Palette.alert) -> some View {
         let named = showingTitles && clamped(title) != nil
-        return Text(label(title: title, index: index, active: active, showingTitles: showingTitles))
+        let base = baseLabel(title: title, index: index, active: active, showingTitles: showingTitles)
+        return (Text(base) + Text(countSuffix(count)).foregroundStyle(countColor))
             // If a newline gets into a name (pasted, or hand-edited into the saved state), `Text`
             // dutifully lays it out on two lines: the status bar's 26pt height is hard-coded, and
             // the second line pushes the text straight out past the background.
@@ -92,17 +121,21 @@ enum WorkspacePill {
             // is disabled, and the measured width proves nothing.
             .font(Font(font))
             .frame(minWidth: plainWidth, minHeight: 20)
-            .padding(.horizontal, named ? titlePadding : 0)
+            .padding(.horizontal, named || count > 0 ? titlePadding : 0)
     }
 
     /// How wide the whole left section is (logo + pills + control-plane flash).
+    ///
+    /// `counts` is indexed in parallel with `titles`; a short array simply means "no count there",
+    /// which is what lets every existing caller stay as it is.
     static func leftSectionWidth(titles: [String?], activeIndex: Int, showingTitles: Bool,
-                                 flash: String?) -> CGFloat {
+                                 flash: String?, counts: [Int] = []) -> CGFloat {
         var out = width(of: "◆")
         for index in titles.indices {
             out += (index == 0 ? sectionSpacing : spacing)
                 + pillWidth(title: titles[index], index: index,
-                            active: index == activeIndex, showingTitles: showingTitles)
+                            active: index == activeIndex, showingTitles: showingTitles,
+                            count: counts.indices.contains(index) ? counts[index] : 0)
         }
         if let flash { out += sectionSpacing + width(of: flash) + 2 * flashPadding }
         return out
@@ -119,11 +152,14 @@ enum WorkspacePill {
     /// When the content width has not been measured yet (the first frame's `GeometryReader` hands
     /// back 0) this answers "does not fit": better for the names to appear one frame late than to
     /// draw one broken frame first.
+    /// The counts are part of the budget, and deliberately so: they are drawn whether the row
+    /// shows names or numbers (an alarm is not decoration), so a workspace waiting on the user
+    /// makes the names give way one pill sooner. The row still falls back all together.
     static func showsTitles(contentWidth: CGFloat, titles: [String?], activeIndex: Int,
-                            clockWidth: CGFloat, flash: String?) -> Bool {
+                            clockWidth: CGFloat, flash: String?, counts: [Int] = []) -> Bool {
         guard contentWidth > 0, titles.contains(where: { clamped($0) != nil }) else { return false }
         let left = leftSectionWidth(titles: titles, activeIndex: activeIndex,
-                                    showingTitles: true, flash: flash)
+                                    showingTitles: true, flash: flash, counts: counts)
         return left <= contentWidth / 2 - clockWidth / 2 - clearance
     }
 }

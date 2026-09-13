@@ -69,6 +69,13 @@ quickterm events follow [--since <seq>] [--types a,b]
 quickterm input send-text <text> -t target [--enter]
 ```
 
+Who is waiting for the human:
+
+```
+quickterm notices list [--needs-user] [--history] [-t target]
+quickterm notices ack  -t target
+```
+
 MCP (Phase 5):
 
 ```
@@ -422,8 +429,9 @@ quickterm events poll --since "$seq" --timeout 30s     # one call answers "what 
   (`timedOut: true` is not an error).
 - The buffer is a ring: `missed: true` means events were pushed out in between, your snapshot is incomplete, so
   **read `state` again**.
-- Nine event types: `pane.opened` `pane.closed` `focus.changed` `workspace.changed` `layout.changed`
-  `screen.opened` `screen.closed` `pane.title.changed` `pane.cwd.changed`.
+- Eleven event types: `pane.opened` `pane.closed` `focus.changed` `workspace.changed` `layout.changed`
+  `screen.opened` `screen.closed` `pane.title.changed` `pane.cwd.changed`
+  `notice.posted` `notice.resolved` (the last two are the notification centre's — see **Notices** below).
   `workspace.changed` has two causes — a workspace switch, or a workspace being renamed — and the `title`
   field tells the three cases apart:
   **no `title` field at all** = a switch (the name was not touched) · **`title` with a name** = renamed to that
@@ -437,6 +445,44 @@ quickterm events poll --since "$seq" --timeout 30s     # one call answers "what 
   batch it only reaches the last event actually sent, and comes with `truncated: true` — see that and poll again
   immediately with that seq, don't wait for the next timeout. (`missed` is a different story: those events are out of
   the buffer for good, so re-read `state`.)
+
+## Notices: who is waiting for the human
+
+QuickTerm keeps a notification centre. A **notice** is one thing a pane wants to say to the user, and it has two
+urgencies: `needs-user` (an agent is waiting for an approval or an answer — a human has to go to that pane) and
+`info` (a command finished, a program sent a desktop notification). The user sees them as a red dot on the pane,
+a `●N` on the workspace pill and a count on the Dock icon; you see them here.
+
+```sh
+quickterm notices list --needs-user          # ask this BEFORE you interrupt the user
+quickterm notices list --needs-user --json | jq -r '.data.notices[].pane'
+quickterm notices ack -t t7                  # this one has been dealt with
+```
+
+**The one rule worth remembering: ask before you interrupt.** If `panesNeedingUser` is not zero, somebody is
+already holding a prompt in front of the user — say so and wait, instead of adding a second question on top of it.
+
+- `--needs-user` keeps only the live `needs-user` notices; without it you get everything live, and `--history`
+  adds the resolved ring (each of those carries `resolvedAt` and `resolution`).
+- `-t` scopes at the precision you write it: `-t 1` a screen, `-t 1:2` one workspace, `-t t7` one pane. No `-t` at
+  all means the **whole session**, which is the reading you want for "is anyone waiting, anywhere".
+- **`panesNeedingUser` counts panes, not notices** — two prompts in one pane are one thing for the user to handle.
+  The same number is in `state`: every pane carries `needsUser: true` / `urgency` / `notices[]` when it has
+  something live, and every workspace carries `needsUser: <panes>`. All of those fields are simply absent when
+  there is nothing pending.
+- A notice's **`title` is composed by QuickTerm** (the agent, the state, a tool *name*) and is always readable.
+  Its **`body` is the program's own words** — a command line, an OSC 777 message — and follows the browser-URL
+  rule: without `QUICKTERM_TOKEN` you read `<redacted>` and `redacted: true`, in `notices list`, in `state` and on
+  the event stream alike.
+- `notices ack` is an ordinary mutating command: **it must name a pane** (there is no "whatever has focus"
+  spelling — acknowledging is throwing an alarm away), it is idempotent (`--fail-if-noop` gives exit 7 when
+  nothing was live), the status bar flashes, the activity log records it, and a `notice.resolved` event goes out.
+  It does not answer the prompt — only the human at that pane can do that; it just stops the marks asking.
+- A notice also ends on its own: the user typing into that pane resolves it (`user-acted`), a newer notice for the
+  same pane and source supersedes it (`superseded`), an `info` resolves when the user looks at that pane
+  (`pane-focused`), and closing the pane resolves everything it held (`pane-closed`). There is **no timeout**: an
+  unanswered approval stays visible until it is answered.
+- Watch it as a stream instead of polling: `quickterm events poll --types notice.posted,notice.resolved --timeout 30s`.
 
 ## Typing into someone else's shell: `input send-text`
 
@@ -463,7 +509,7 @@ So:
 
 ## MCP: `quickterm mcp`
 
-The same command table also generates a stdio MCP server with **13 coarse-grained tools** (not one tool per command):
+The same command table also generates a stdio MCP server with **14 coarse-grained tools** (not one tool per command):
 
 ```sh
 claude mcp add quickterm -- /usr/local/bin/quickterm mcp     # Claude Code
@@ -474,7 +520,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'           # see what gets exp
 The tools: `quickterm_describe` `quickterm_state` `quickterm_action` `quickterm_new_pane`
 `quickterm_focus` `quickterm_arrange` `quickterm_close` `quickterm_browser`
 `quickterm_read_terminal` `quickterm_dump_spec` `quickterm_apply_spec`
-`quickterm_poll_events` `quickterm_send_text`.
+`quickterm_poll_events` `quickterm_notices` `quickterm_send_text`.
 
 - Which commands from the table sit behind each tool is written in its `description`, and in `mcpTools` in
   `quickterm describe --json`. The parameter names are identical to the CLI's (`target` / `dry-run` / …).
@@ -546,7 +592,9 @@ misspelled value just falls back to `ask`.
 
 - **read** is silent; but **a caller with no origin token cannot read a browser pane's URL or title** (`<redacted>`) —
   browser panes hold sessions the user is logged into, which makes `quickterm state` an exfiltration surface all by
-  itself.
+  itself. **A notice's `body` follows exactly the same rule** (it can carry a command line, or whatever text a
+  program put in an OSC 777): redacted in `notices list`, in `state` and on the event stream alike. Its `title` does
+  not — QuickTerm composes that one itself, and it is payload-free by construction.
 - **mutate** runs silently, but **visibly**: the status bar flashes (naming the command and the pane it claims to come
   from), and it is recorded in full under QuickTerm ▸ "Control Plane Activity…"; layout changes are registered with the
   UndoManager, so Edit ▸ Undo (⌘Z) rolls the whole thing back. (With focus in a terminal pane ⌘Z belongs to the
@@ -624,6 +672,9 @@ since version one.
     handles are recycled when a pane closes, names are not.
 15. Address browser tabs with `--tab #<id>` (copied from `tabList`), not by index: opening one new tab shifts every
     index.
-16. Mount `quickterm mcp` for interactive, one-off control (the host layer handles the confirmations for you);
+16. **Before you interrupt the human, run `quickterm notices list --needs-user`.** If another pane is already
+    waiting on them, tell the user that and wait — a second question asked on top of the first is how a person ends
+    up answering neither.
+17. Mount `quickterm mcp` for interactive, one-off control (the host layer handles the confirmations for you);
     compose in bulk straight from the CLI — the tool table is a context tax you pay every session, while the CLI costs
     you not one token until you call it.

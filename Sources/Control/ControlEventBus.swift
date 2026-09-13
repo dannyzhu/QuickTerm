@@ -112,6 +112,38 @@ final class ControlEventBus {
         if seq == mark { seq += 1 }
     }
 
+    /// Emit one event **directly**, without the snapshot diff — the single exception to the rule
+    /// this whole class is built on, and it is narrow on purpose.
+    ///
+    /// Everything else here is derived by subtracting snapshots, because a dozen hand-written call
+    /// sites drift and double-report. A notice is the one thing that has no snapshot to subtract:
+    /// it is an event by nature (it happened at an instant, it is not a property of the layout) and
+    /// it has exactly **one** producer — `ControlPlaneSink`, which the notification centre calls
+    /// once per change, having already coalesced duplicates and supersessions. Diffing a live list
+    /// against a previous copy of it would only rebuild, less reliably, what the centre already
+    /// guarantees.
+    ///
+    /// `redactable` is the same flag the ring already carries: pass true when the event holds a
+    /// notice body, so a caller without the token reads `<redacted>` instead of the program's own
+    /// words.
+    func emit(_ event: ControlEvent, redactable: Bool) {
+        // Settle the structural backlog first, so causality survives on the wire. A notice can be
+        // posted in the same run-loop turn its pane was created in, while the scan for that
+        // creation is still only *scheduled* — emitted straight away, `notice.posted` would arrive
+        // ahead of the `pane.opened` for the pane it names, and a subscriber would be told a pane
+        // it has never heard of is waiting for the user.
+        flush()
+        var record = Record(event: event, redactable: redactable)
+        seq += 1
+        record.event.seq = seq
+        record.event.ts = ControlEvent.stamp()
+        ring.append(record)
+        if ring.count > ControlEventLimits.ringCapacity {
+            ring.removeFirst(ring.count - ControlEventLimits.ringCapacity)
+        }
+        notify()
+    }
+
     private func rescan() {
         guard let screens else { return }
         let fresh = Snapshot.capture(screens)
@@ -187,8 +219,17 @@ final class ControlEventBus {
     /// ring is private
     static func redact(_ event: ControlEvent) -> ControlEvent {
         var out = event
-        if out.title != nil { out.title = ControlEvent.redactedPlaceholder }
-        if out.cwd != nil { out.cwd = ControlEvent.redactedPlaceholder }
+        // A notice **title** is the one piece of text here that QuickTerm composed itself: the
+        // notification centre builds it from an agent id, a state and a tool name, and refuses to
+        // put a payload in it (spec §3.5). Redacting it would hide "Claude Code · Awaiting
+        // approval" — the very sentence an agent needs in order to decide whether to interrupt the
+        // user — while protecting nothing. The `body` next to it is the program's own words, and
+        // that is what gets covered up.
+        if !ControlEventType.isNotice(out.type) {
+            if out.title != nil { out.title = ControlEvent.redactedPlaceholder }
+            if out.cwd != nil { out.cwd = ControlEvent.redactedPlaceholder }
+        }
+        if out.body != nil { out.body = ControlEvent.redactedPlaceholder }
         out.redacted = true
         return out
     }

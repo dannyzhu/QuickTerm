@@ -1,0 +1,38 @@
+/* QuickTerm — Simplified Chinese UI strings for the notification centre (Sources/Notices).
+ *
+ * A new table file must be added to BOTH .lproj folders and then `xcodegen generate` re-run,
+ * or it is never copied into the app bundle (the build refuses it).
+ *
+ * Same key set as en.lproj/Notices.strings (Tests/LocalizationTests.swift pins that).
+ *
+ * The positional arguments (%1$@, %2$@ …) may be reordered freely to fit Chinese word order;
+ * the SET of indices used must match the English value.
+ */
+
+/* MARK: - the centre (Sources/Notices/NoticeCenter.swift) */
+
+"notice.title.fallback" = "来自 %1$@ 的通知";
+
+/* MARK: - the engine's own sources (Sources/GhosttyEmbed) — OSC 9/99/777, OSC 133, bell */
+
+"notice.terminal.title" = "来自 %1$@ 的消息";
+"notice.command.succeeded" = "命令执行成功";
+"notice.command.failed" = "命令执行失败";
+"notice.command.finished" = "命令已结束";
+"notice.command.took" = "命令耗时 %1$@。";
+"notice.command.took-exit" = "命令耗时 %1$@，退出码 %2$@。";
+"notice.bell.title" = "终端响铃";
+
+/* MARK: - the workspace pill (Sources/StatusBar/StatusBarView.swift) */
+
+/* 中文不分单复数：.one 与 .other 是同一句话，这是对的，不是漏翻。 */
+"notice.workspace.label.one" = "工作区 %1$@，%2$@ 个 pane 在等你";
+"notice.workspace.label.other" = "工作区 %1$@，%2$@ 个 pane 在等你";
+
+"notice.workspace.label-with-name.one" = "工作区 %1$@：%2$@，%3$@ 个 pane 在等你";
+"notice.workspace.label-with-name.other" = "工作区 %1$@：%2$@，%3$@ 个 pane 在等你";
+
+/* MARK: - the system banner (Sources/Notices/Sinks/SystemNotificationSink.swift) */
+
+"notice.system.subtitle" = "来自 pane %1$@";
+"notice.system.subtitle-named" = "来自 pane %1$@「%2$@」";

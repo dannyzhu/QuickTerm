@@ -1,0 +1,77 @@
+/* QuickTerm — English (base) UI strings for the notification centre (Sources/Notices).
+ *
+ * ONE AREA = ONE TABLE. Every `<Area>.strings` inside a `.lproj` is loaded and merged at
+ * runtime; a key declared in two tables fails LocalizationTests.
+ *
+ * This table owns EVERY user-visible string of the notice feature — the centre, the sinks that
+ * draw, the system banner and the producers — so that the four sides of the Phase 1 build add
+ * their keys here and nowhere else. Keys are namespaced `notice.*`.
+ *
+ * A NEW table file must be added to BOTH .lproj folders and then `xcodegen generate` re-run:
+ * this project is generated from project.yml, and a table that is not in the project is simply
+ * never copied into the app bundle.
+ *
+ * Rules (enforced on every build by scripts/check-localization.py):
+ *   - one key = one WHOLE sentence or one whole label, never a fragment glued together in code;
+ *   - the only format specifier is %1$@, %2$@ … (positional); a literal percent sign is %%;
+ *   - a key nobody asks for is an error — add the key with the call site that needs it.
+ */
+
+/* MARK: - the centre (Sources/Notices/NoticeCenter.swift) */
+
+/* Shown when a poster hands in a title that is empty once control characters are filtered out.
+   %1$@ is the notice source's wire id ("terminal", "command", "agent:claude-code"), which is
+   payload-free by construction — the title is drawn on a pane tooltip and a system banner. */
+"notice.title.fallback" = "Notice from %1$@";
+
+/* MARK: - the engine's own sources (Sources/GhosttyEmbed/Ghostty.App.swift,
+   Surface View/SurfaceView_AppKit.swift) — OSC 9/99/777, OSC 133 and the bell */
+
+/* Title for a desktop notification (OSC 9 / 99 / 777) whose program left the title empty.
+   %1$@ is the pane's short handle ("t7"): payload-free, and the thing the user can act on. */
+"notice.terminal.title" = "Message from %1$@";
+
+/* Title: a command reported by the shell's OSC 133 integration ended with status 0. */
+"notice.command.succeeded" = "Command succeeded";
+
+/* Title: the same, with a non-zero status. The status itself is in the body. */
+"notice.command.failed" = "Command failed";
+
+/* Title: the same, when the shell reported no status at all (killed by a signal, or a prompt
+   mark that carried none). */
+"notice.command.finished" = "Command finished";
+
+/* Body for that last case. %1$@ is a formatted duration ("1 min, 4 sec"). QuickTerm's own
+   sentence, never the command line — which is why a system banner may show it by default. */
+"notice.command.took" = "Command took %1$@.";
+
+/* Body when the shell did report a status. %1$@ is the formatted duration, %2$@ the exit code. */
+"notice.command.took-exit" = "Command took %1$@ and exited with code %2$@.";
+
+/* Title for BEL, posted only with [notifications] bell = "info". There is no body: a bell says
+   nothing but that it rang. */
+"notice.bell.title" = "The terminal rang the bell";
+
+/* MARK: - the workspace pill (Sources/StatusBar/StatusBarView.swift) */
+
+/* VoiceOver reads this instead of the pill's plain label while the pill is drawing its `●N`.
+   A dot and a digit are noise read aloud, so the count is spelled out in words here.
+   Unnamed workspace: %1$@ is the workspace's number, %2$@ how many of its panes are waiting. */
+"notice.workspace.label.one" = "Workspace %1$@, %2$@ pane needs you";
+"notice.workspace.label.other" = "Workspace %1$@, %2$@ panes need you";
+
+/* The same, for a workspace that has been given a name: %1$@ is its number, %2$@ its name,
+   %3$@ how many of its panes are waiting. */
+"notice.workspace.label-with-name.one" = "Workspace %1$@ %2$@, %3$@ pane needs you";
+"notice.workspace.label-with-name.other" = "Workspace %1$@ %2$@, %3$@ panes need you";
+
+/* MARK: - the system banner (Sources/Notices/Sinks/SystemNotificationSink.swift) */
+
+/* Subtitle of the macOS banner: which pane is asking. %1$@ is the pane's short handle ("t7") —
+   what the user would type at `quickterm notices ack -t t7`. Used when the pane has no name of
+   its own. Deliberately never the terminal's own title: Notification Center keeps a subtitle in
+   its database and shows it on the lock screen. */
+"notice.system.subtitle" = "Pane %1$@";
+
+/* The same, for a pane the user has named: %1$@ is the handle, %2$@ the name they gave it. */
+"notice.system.subtitle-named" = "Pane %1$@ · %2$@";

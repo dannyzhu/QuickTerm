@@ -204,6 +204,9 @@ final class AppSession {
                                          tabWidth: settings.browserTabWidth, tabMinWidth: settings.browserTabMinWidth,
                                          downloadDirectory: settings.browserDownloadDir)
         BrowserExtensionManager.shared.isEnabled = settings.browserExtensions
+        // The notification centre reads its switches from here, never from the config file: one
+        // reload, one push, and every sink's `isEnabled` is re-derived in one place.
+        NoticeCenter.shared.settings = NoticeSettings(settings)
         // Control plane: a config hot reload starts or stops it (with enabled=false or
         // mode="off" nothing listens at all).
         var control = ControlCommandRunner.Config(settings)

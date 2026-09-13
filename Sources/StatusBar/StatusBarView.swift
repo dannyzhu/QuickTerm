@@ -10,6 +10,10 @@ struct StatusBarView: View {
     @EnvironmentObject private var i18n: Localization
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var stats: SystemStatsService
+    /// The notification centre feeds the `●N` on the pills. Observed rather than pushed onto the
+    /// model by a sink: the count is a pure function of the centre's live notices, and `live` is
+    /// `@Published`, so every post and every resolution redraws this bar by itself.
+    @ObservedObject private var notices = NoticeCenter.shared
     let onSelectWorkspace: (Int) -> Void
     /// Right-clicking a workspace pill names or renames that slot (left click still switches to
     /// the workspace).
@@ -61,14 +65,19 @@ struct StatusBarView: View {
         // and every name, and all the pills have to get the same answer (half names and half
         // numbers just reads as a bug).
         let titles = model.visibleTitles
-        let showingTitles = showsWorkspaceTitles(titles)
+        // Measured and drawn from ONE read of the counts, for the same reason the names are: the
+        // centre can post between two reads, and a row measured without a count it then draws is
+        // exactly the overflow this whole file exists to prevent.
+        let counts = workspaceNoticeCounts
+        let showingTitles = showsWorkspaceTitles(titles, counts: counts)
         return HStack(spacing: WorkspacePill.sectionSpacing) {
             Text("◆")
                 .foregroundStyle(theme.accent)
                 .accessibilityLabel("QuickTerm")
             HStack(spacing: WorkspacePill.spacing) {
                 ForEach(titles.indices, id: \.self) { i in
-                    workspacePill(i, title: titles[i], showingTitles: showingTitles)
+                    workspacePill(i, title: titles[i], showingTitles: showingTitles,
+                                  count: counts.indices.contains(i) ? counts[i] : 0)
                 }
             }
             controlFlash
@@ -80,11 +89,24 @@ struct StatusBarView: View {
     /// fitting before the clock's left edge all fall back to numbers.
     /// The names are passed in by the caller (exactly the row it draws), so what gets measured and
     /// what gets drawn cannot come from two different reads.
-    private func showsWorkspaceTitles(_ titles: [String?]) -> Bool {
+    private func showsWorkspaceTitles(_ titles: [String?], counts: [Int]) -> Bool {
         theme.workspaceTitleEnabled
             && WorkspacePill.showsTitles(contentWidth: contentWidth, titles: titles,
                                          activeIndex: model.activeIndex,
-                                         clockWidth: clockWidth, flash: model.controlFlash?.text)
+                                         clockWidth: clockWidth, flash: model.controlFlash?.text,
+                                         counts: counts)
+    }
+
+    /// Panes with a live `needsUser` notice, per workspace **of this screen** (design §3.5,
+    /// "Workspace pill"), indexed in parallel with `model.visibleTitles`.
+    ///
+    /// The bar does not know which screen it is drawn on - it only holds the model - so the
+    /// registry answers that (`AppDelegate.workspaceNoticeCounts(for:)`). An empty array means
+    /// "no counts": `[notifications] workspace-count = false`, or a model no screen claims (a
+    /// preview, a test fixture).
+    private var workspaceNoticeCounts: [Int] {
+        guard notices.settings.workspaceCount else { return [] }
+        return AppDelegate.workspaceNoticeCounts(for: model)
     }
 
     /// Control-plane activity indicator (control plane spec, §Security): `mutate` commands put up
@@ -107,7 +129,8 @@ struct StatusBarView: View {
         }
     }
 
-    private func workspacePill(_ i: Int, title: String?, showingTitles: Bool) -> some View {
+    private func workspacePill(_ i: Int, title: String?, showingTitles: Bool,
+                               count: Int) -> some View {
         let active = model.activeIndex == i
         return Button {
             onSelectWorkspace(i)
@@ -117,8 +140,12 @@ struct StatusBarView: View {
             // use the foreground color plus the half alpha of an empty workspace.
             // Layout (font size, minimum width, padding) lives in `WorkspacePill.pill` - the same
             // file that computes the width.
+            // The `●N` carries `theme.alert` of its own; the base keeps the pill's usual colour
+            // (accent when active, foreground otherwise) - an alarm reads as an alarm, and the
+            // active pill still reads as the active one.
             WorkspacePill.pill(title: title, index: i, active: active,
-                               showingTitles: showingTitles)
+                               showingTitles: showingTitles,
+                               count: count, countColor: theme.alert)
                 .foregroundStyle(active ? theme.accent : theme.foreground)
                 .opacity(active || !model.isEmpty(i) ? 1 : 0.5)
                 .contentShape(Rectangle())
@@ -127,8 +154,22 @@ struct StatusBarView: View {
         // Right-click renames. It still works when the names do not fit (or the config switch is
         // off): renaming is a property of the slot and has nothing to do with what is displayed.
         .overlay(RightClickCatcher { onRenameWorkspace(i) })
-        .accessibilityLabel(title.map { i18n("status.workspace.label-with-name", i + 1, $0) }
-                            ?? i18n("status.workspace.label", i + 1))
+        .accessibilityLabel(pillLabel(i, title: title, count: count))
+    }
+
+    /// What VoiceOver reads out for one pill. `●2` is a dot and a digit: read aloud it is noise,
+    /// so the count goes into the label **in words**, and the whole sentence is one key - four of
+    /// them, because "named or not" and "singular or plural" are two independent choices and a
+    /// sentence glued together from halves is the one shape that cannot be translated.
+    private func pillLabel(_ i: Int, title: String?, count: Int) -> String {
+        guard count > 0 else {
+            return title.map { i18n("status.workspace.label-with-name", i + 1, $0) }
+                ?? i18n("status.workspace.label", i + 1)
+        }
+        if let title {
+            return i18n.plural("notice.workspace.label-with-name", count: count, i + 1, title, count)
+        }
+        return i18n.plural("notice.workspace.label", count: count, i + 1, count)
     }
 
     private var clock: some View {

@@ -372,6 +372,19 @@ struct ControlDescribeDocument: Codable, Equatable {
                     + "ruler: polling with the seq a mutation returned never misses the events that command produced.",
                 "Events **never carry a pane's output** — only structure, titles and cwd, and a browser "
                     + "pane's title / cwd is redacted for callers without a token exactly as in `state`.",
+                "Notices say **who is waiting for the human**. `state` reports them twice over: a pane "
+                    + "carries `notices[]` (live only, absent when there are none), `urgency` "
+                    + "(info | needs-user) and `needsUser: true`, and a workspace carries `needsUser` = "
+                    + "how many of its PANES are waiting (panes, not notices: two prompts in one pane are "
+                    + "one thing for the user to handle). `notices list --needs-user` is the same answer in "
+                    + "one call, and the `notice.posted` / `notice.resolved` events are it as a stream. "
+                    + "**Before you interrupt the user, ask**: if a pane is already holding a prompt in "
+                    + "front of them, one more question is one too many.",
+                "A notice's `title` is composed by QuickTerm out of an agent id, a state and a tool name, "
+                    + "so it never carries a payload and is never redacted; its `body` is the program's own "
+                    + "words and follows the browser-URL rule — `<redacted>` with `redacted: true` for a "
+                    + "caller that did not inherit QUICKTERM_TOKEN, in `notices list`, in `state` and on "
+                    + "the event stream alike.",
                 "`events poll` is the form an agent should use (one request, one reply); `events follow` "
                     + "is an NDJSON stream for people and shell scripts. The buffer is a ring of "
                     + "\(ControlEventLimits.ringCapacity) events: `missed: true` means something was dropped "

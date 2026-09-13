@@ -203,8 +203,36 @@ final class MainWindowController: BaseTerminalController {
     /// the new pane.
     private var pendingFocusTarget: PaneView?
 
+    /// A focus hold with a deadline, set by `NoticeRouting.reveal` after a banner click. While it
+    /// lasts, no other pane may take focus - not the pending-target rule's few hundred
+    /// milliseconds, but seconds, because the thing it defends against is the user's own mouse
+    /// sitting where the banner was.
+    private var focusHold: (pane: PaneView, deadline: Date)?
+
     override func paneMayReclaimFocus(_ pane: PaneView) -> Bool {
-        pendingFocusTarget == nil || pendingFocusTarget === pane
+        // The hold outranks the pending target: it exists precisely for the window of time after
+        // `requestFocus` has finished and its own guard has lapsed.
+        // `window != nil`: a hold on a pane that has since been closed would go on denying focus
+        // to every other pane for the rest of its three seconds, for a pane nobody can see.
+        if let hold = focusHold, hold.deadline > Date(), hold.pane.window != nil {
+            return hold.pane === pane
+        }
+        return pendingFocusTarget == nil || pendingFocusTarget === pane
+    }
+
+    /// Keep focus on `pane` for `seconds`, against hover-to-focus (contract §10.7).
+    ///
+    /// Deliberately time-based rather than a flag somebody has to remember to clear: the two ways
+    /// out are the deadline and `releaseFocusHold`, and a missed release costs three seconds of
+    /// slightly stubborn focus rather than a window that never follows the mouse again.
+    func holdFocus(on pane: PaneView, for seconds: TimeInterval) {
+        focusHold = (pane, Date().addingTimeInterval(seconds))
+    }
+
+    /// The user typed into a pane, so they are clearly where they want to be.
+    /// Called from `SurfaceView.keyDown` - the first real keystroke ends the hold early.
+    override func releaseFocusHold() {
+        focusHold = nil
     }
 
     /// Every focus change the controller initiates goes through here: record the intent, call
@@ -309,7 +337,14 @@ final class MainWindowController: BaseTerminalController {
                           model.$titles.map { _ in () }.eraseToAnyPublisher(),
                           model.$activeIndex.map { _ in () }.eraseToAnyPublisher(),
                           model.$closingPanes.map { _ in () }.eraseToAnyPublisher()] {
-            publisher.dropFirst().sink { ControlEventBus.noteChange() }.store(in: &cancellables)
+            publisher.dropFirst().sink {
+                ControlEventBus.noteChange()
+                // The notification centre asks a narrower question of the same signal - "is the
+                // user looking at a pane that is holding a notice" - and a workspace switch or a
+                // zoom is exactly what changes the answer. Coalesced the same way, so a relayout
+                // that fires all five publishers still costs one pass.
+                NoticeCenter.noteActivityChange()
+            }.store(in: &cancellables)
         }
 
         window.contentView = NSHostingView(rootView: RootView(
@@ -2259,6 +2294,17 @@ extension MainWindowController: NSWindowDelegate {
         // extensions sending their messages to a pane on another display - the icon looks like
         // clicking it does nothing.
         focusedBrowserPane?.makeCurrentForExtensions()
+        // `screenKey` is one of the four clauses of `PaneActivity`.
+        NoticeCenter.noteActivityChange()
+    }
+
+    /// The mirror of `windowDidBecomeKey` for the notification centre, and the only reason this
+    /// method exists: a pane whose window just stopped being key is no longer being looked at, so
+    /// the system sink may present its banner again. Nothing else in the app cares, which is why
+    /// there was no `windowDidResignKey` before.
+    func windowDidResignKey(_ notification: Foundation.Notification) {
+        guard !isClosed else { return }
+        NoticeCenter.noteActivityChange()
     }
 
     /// The window finished moving or resizing: archive it. Nothing is written mid-drag, since a

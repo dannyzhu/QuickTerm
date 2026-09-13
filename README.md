@@ -387,6 +387,15 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 # download-dir = "~/Downloads"                   # where browser panes save downloads (~ expands; falls back to ~/Downloads)
 # link-opener = "browser-pane"                   # browser-pane | system — where ⌘-clicked terminal links open
 
+[notifications]              # who is waiting for you; the marks count PANES that need you, not notices
+# system = "inactive"         # inactive = banner only while you are not looking at that pane | never
+# system-body = "composed"    # never | composed (only text QuickTerm wrote itself) | always — Notification Center keeps the body
+# dock-badge = true           # the red number on the Dock icon
+# pane-mark = true            # the red dot on the pane's top border (hover shows the notice title)
+# workspace-count = true      # the ●N on a workspace pill
+# bell = "ignore"             # ignore (a bare bell is not a notice) | info
+# command-finished = "long"   # never | long (over 10 s, the default) | always — needs the shell's OSC 133 integration; replaces the engine's own notify-on-command-finish keys, which are no longer consulted
+
 [keybinds]                  # action = "modifiers+key"; "none" unbinds. Action ids: Cmd+K
 # new-terminal = "cmd+return"
 # toggle-float = "cmd+shift+t"
