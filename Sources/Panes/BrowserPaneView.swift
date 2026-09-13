@@ -212,7 +212,14 @@ final class BrowserPaneView: PaneView {
                 return
             }
             if pane.tabs.count > 1 {
-                pane.closeTab(self)
+                // A refused close (the page is in element fullscreen) has to reach the extension as
+                // an error: tabs.remove resolving successfully while the tab is still there is how an
+                // extension ends up looping on it.
+                guard pane.closeTab(self) else {
+                    completionHandler(BrowserExtensionManager.unsupported(
+                        "The tab cannot be closed while its page is in fullscreen."))
+                    return
+                }
             } else {
                 pane.requestPaneClose()
             }
@@ -659,11 +666,50 @@ final class BrowserPaneView: PaneView {
         webView.isHidden = true
     }
 
+    /// Is WebKit holding this tab's web view right now?
+    ///
+    /// When a page element goes fullscreen, -[WKFullScreenWindowController enterFullScreen:] drops a
+    /// WKFullScreenPlaceholderView where the web view sat and moves the real WKWebView into its own
+    /// WebCoreFullScreenWindow (see install() for the frame half of the same story). From that moment
+    /// the view is **not ours to touch**, and a live probe measured both halves of what that costs:
+    /// setting `isHidden` on it blanks the fullscreen window outright - an empty screen with the page
+    /// still running and the audio still playing, and the fullscreen window's first responder dropped
+    /// and never came back - and taking it out of its superview would tear it out of WebKit's window,
+    /// leaving our placeholder behind in webArea and an empty fullscreen window covering the screen
+    /// with no way out of it.
+    ///
+    /// The test is "whose window is it in". A web view in no window at all is nobody's: that is a tab
+    /// still being installed, or the whole pane parked in an inactive workspace, and those must stay
+    /// ordinary.
+    private func isLentToWebKit(_ tab: Tab) -> Bool {
+        guard let host = tab.webView.window else { return false }
+        return host !== window
+    }
+
+    /// Is WebKit holding this tab's web view in element fullscreen right now?
+    ///
+    /// The in-app paths answer a refusal by leaving things alone, which is the right outcome for a
+    /// keystroke. A control-plane caller needs the opposite: it has to hear that the close did not
+    /// happen, or `browser close` reports `applied: true` for a tab that is still open. So the
+    /// command layer asks this BEFORE it records any change and refuses the whole command.
+    func webKitHoldsFullscreen(_ tab: Tab) -> Bool { isLentToWebKit(tab) }
+
     /// Crossing the extension-page / ordinary-page boundary: swap the tab's WebView in place for one
     /// with the right configuration, keeping the tab's identity, its index and the tabId the extensions
     /// see. WebKit explicitly requires replacing a tab's web view when navigating between an extension
     /// URL and an ordinary one.
-    private func rebuildWebView(of tab: Tab, for context: WKWebExtensionContext?) {
+    /// Returns false when the swap was refused, which is only ever the fullscreen case.
+    @discardableResult
+    private func rebuildWebView(of tab: Tab, for context: WKWebExtensionContext?) -> Bool {
+        // Refuse rather than half-swap: `old.removeFromSuperview()` below would take the view out of
+        // WebKit's fullscreen window (see isLentToWebKit). The navigation that asked for the swap has
+        // already been cancelled by the caller, so the page just stays where it is until the user
+        // leaves fullscreen - which is the one outcome here that destroys nothing.
+        guard !isLentToWebKit(tab) else {
+            fputs("[quickterm] browser: not swapping a tab's web view while WebKit has it in element "
+                  + "fullscreen; the navigation across the extension-page boundary is dropped\n", stderr)
+            return false
+        }
         let wasActive = tab === activeTab
         let hadFocus = wasActive && (window.map { holdsFirstResponder(of: $0) } ?? false)
         let old = tab.webView
@@ -681,6 +727,7 @@ final class BrowserPaneView: PaneView {
             syncChromeToActiveTab()
             if hadFocus { window?.makeFirstResponder(webView) }
         }
+        return true
     }
 
     func newTab(url: URL? = nil) { addTab(url: url ?? Self.settings.homeURL, activate: true) }
@@ -700,7 +747,13 @@ final class BrowserPaneView: PaneView {
         guard tabs.indices.contains(index) else { return }
         let hadFocus = forceFocus || (window.map { holdsFirstResponder(of: $0) } ?? false)
         activeTabIndex = index
-        for (i, tab) in tabs.enumerated() { tab.webView.isHidden = i != index }
+        // Skip a tab WebKit is holding in element fullscreen: writing isHidden on that view blanks
+        // WebKit's fullscreen window (see isLentToWebKit). Deliberately a skipped write and not a
+        // refused switch - nothing here is destructive, the switch is honoured for every tab we do
+        // own, and refusing would break Ctrl+Tab, an extension's tabs.update and `browser goto --tab`
+        // for the *other* tabs while buying no safety. The write that was skipped is made good in
+        // webViewDidMoveToWindow, when WebKit hands the view back.
+        for (i, tab) in tabs.enumerated() where !isLentToWebKit(tab) { tab.webView.isHidden = i != index }
         rebuildTabBar()
         syncChromeToActiveTab()
         if let current = activeTab, current !== previous {
@@ -729,6 +782,17 @@ final class BrowserPaneView: PaneView {
     @discardableResult
     func closeTab(at index: Int) -> Bool {
         guard tabs.count > 1, tabs.indices.contains(index) else { return false }
+        // Refuse the whole close while WebKit has this tab's web view in element fullscreen. Unlike
+        // the tab switch above there is no "do the rest and skip one write" here: the
+        // removeFromSuperview below would tear the view out of WebKit's fullscreen window (see
+        // isLentToWebKit), and what the user would be left with is an empty fullscreen window over
+        // the whole screen. `false` is the same "nothing was closed" answer the last-tab guard gives,
+        // so every caller that already honours it keeps the pane and the tab intact.
+        guard !isLentToWebKit(tabs[index]) else {
+            fputs("[quickterm] browser: refusing to close a tab while WebKit has its web view in "
+                  + "element fullscreen; leave fullscreen first\n", stderr)
+            return false
+        }
         // Record focus first: when the closing tab's webView leaves the window, AppKit silently resets
         // the FR to the window without sending resign, so a later holdsFirstResponder reads false and
         // the surviving tab never gets focus.
@@ -753,8 +817,12 @@ final class BrowserPaneView: PaneView {
     @discardableResult
     func closeActiveTab() -> Bool { closeTab(at: activeTabIndex) }
 
-    func closeTab(_ tab: Tab) {
-        if let i = tabs.firstIndex(where: { $0 === tab }) { closeTab(at: i) }
+    /// Returns whether the tab was actually closed, so that a caller who has to answer someone else -
+    /// an extension's tabs.remove - can report the refusal instead of claiming success.
+    @discardableResult
+    func closeTab(_ tab: Tab) -> Bool {
+        guard let i = tabs.firstIndex(where: { $0 === tab }) else { return false }
+        return closeTab(at: i)
     }
 
     private func tab(for webView: WKWebView) -> Tab? {
@@ -767,6 +835,53 @@ final class BrowserPaneView: PaneView {
         tab.webView.uiDelegate = nil
         tab.webView.pane = nil
         tab.pane = nil
+    }
+
+    // MARK: Element fullscreen: the web view leaves the pane and comes back
+
+    /// A tab's web view is about to leave the window it is in. Record whether it is the first
+    /// responder **now**: when the first-responder view is taken out of a window, AppKit silently
+    /// resets the window's first responder and never calls resignFirstResponder (measured with a
+    /// standalone probe, docs/porting-notes.md), so once the move is over there is nothing left to
+    /// read back.
+    fileprivate func webViewWillMove(_ webView: BrowserWebView, to newWindow: NSWindow?) {
+        guard let host = webView.window, host !== newWindow else { return }
+        webView.heldFirstResponderBeforeMove = (host.firstResponder as? NSView)
+            .map { $0 === webView || $0.isDescendant(of: webView) } ?? false
+    }
+
+    /// A tab's web view finished moving between windows. Only element fullscreen gets here with a
+    /// window that is not ours; a pane being remounted by SwiftUI moves the whole subtree, web views
+    /// included, and never lands in a foreign window.
+    fileprivate func webViewDidMoveToWindow(_ webView: BrowserWebView) {
+        // No entry in `tabs` yet means install() is still running for a brand-new tab.
+        guard let tab = tab(for: webView), let host = webView.window else { return }
+        guard host === window else {
+            // WebKit just took it for fullscreen. Latch the focus it carried out of our window: the
+            // pane's own `focused` flag is the second witness, because it is still true here - the
+            // silent reset above is exactly the case where no resign ever arrives.
+            webView.wasFocusedWhenTakenForFullscreen =
+                webView.heldFirstResponderBeforeMove || (tab === activeTab && focused)
+            return
+        }
+        // Home again, where the web view is ours once more. Re-apply the visibility invariant that
+        // selectTab skipped while it was not: the user may have switched tabs in the meantime, and
+        // two visible web views stacked in webArea paint over each other.
+        webView.isHidden = tab !== activeTab
+        guard webView.wasFocusedWhenTakenForFullscreen else { return }
+        webView.wasFocusedWhenTakenForFullscreen = false
+        // Entering fullscreen reset this window's first responder to the window and leaving it never
+        // puts it back, so the pane sits on `focused == true` with no responder behind it - the
+        // stale-focus hazard docs/porting-notes.md describes, reached without the pane ever detaching
+        // from its window, so PaneView's own reclaim-on-attach never runs. Hand the first responder
+        // to the **active** tab's web view: the one coming back may be a background tab by now.
+        // Never steal it from a responder that took focus while we were away (the same rule as
+        // PaneView.viewDidMoveToWindow); the window itself, nothing at all, or the view that just
+        // came back all mean the detach dropped it.
+        if let fr = host.firstResponder, fr !== host, fr !== webView,
+           (fr as? NSView)?.window === host { return }
+        if let controller, !controller.paneMayReclaimFocus(self) { return }
+        host.makeFirstResponder(focusTarget)
     }
 
     // MARK: - Chrome
@@ -1328,8 +1443,10 @@ extension BrowserPaneView: WKNavigationDelegate {
             let target = extensionContext(for: url)
             if target !== tab.extensionContext {
                 decisionHandler(.cancel)
-                rebuildWebView(of: tab, for: target)
-                tab.webView.load(URLRequest(url: url))
+                // Only load when the swap really happened: with the old web view still in place the
+                // configuration is the wrong side of the boundary and WebKit would cancel the
+                // main-frame load anyway, leaving a half-dead tab behind.
+                if rebuildWebView(of: tab, for: target) { tab.webView.load(URLRequest(url: url)) }
                 return
             }
         }
@@ -1636,6 +1753,28 @@ final class BrowserAddressField: NSTextField {
 /// handles it (installsHoverTracking).
 final class BrowserWebView: WKWebView {
     weak var pane: BrowserPaneView?
+
+    /// Was this view the first responder just before it last changed windows? Written in
+    /// viewWillMove, because the move itself destroys the answer (AppKit resets the first responder
+    /// without a resign; see BrowserPaneView.webViewWillMove).
+    fileprivate var heldFirstResponderBeforeMove = false
+    /// ... and the latched version of it: the view held keyboard focus at the moment WebKit carried
+    /// it off into its fullscreen window, so focus is owed back to the pane when it returns.
+    fileprivate var wasFocusedWhenTakenForFullscreen = false
+
+    /// WebKit re-parents this view into its own window for element fullscreen and back again
+    /// afterwards, without telling us through any delegate - macOS WKUIDelegate has no fullscreen
+    /// hook at all (_WKFullscreenDelegate is SPI). These two are the only notice we get, so the
+    /// pane's visibility and focus invariants are re-established from here.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        pane?.webViewWillMove(self, to: newWindow)
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        pane?.webViewDidMoveToWindow(self)
+    }
 
     // We do not add the extensions' entries to the page context menu ourselves: WebKit's
     // WebContextMenuProxyMac sees the webExtensionController on the configuration and appends each

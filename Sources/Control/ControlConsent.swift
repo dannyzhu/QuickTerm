@@ -4,8 +4,11 @@ import OSLog
 /// The confirmation gate for destructive / sensitive commands.
 ///
 /// Three deliberate design choices:
-/// 1. **Cached once per (peer pid, command class)** (kitty's approach): agents send commands in
-///    batches, so asking about every single one amounts to asking about none;
+/// 1. **Cached once per calling pid and command class**, for the rest of this launch (kitty's
+///    approach): agents send commands in batches, so asking about every single one amounts to
+///    asking about none. `input send-text` into another pane opts out (`cacheable: false`) and
+///    `pane capture-text` narrows the key to one command (`scope`), so it is confirmed once per
+///    calling process;
 /// 2. **A sheet, never `runModal()`**: `runModal` spins a nested run loop that wedges the main
 ///    thread and the whole control server along with it, and QuickTerm already has several
 ///    `runModal` sites of its own (the quit confirmation, the close-screen confirmation, the

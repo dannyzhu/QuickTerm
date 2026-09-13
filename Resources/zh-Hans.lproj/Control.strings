@@ -9,6 +9,9 @@
  *
  * The positional arguments (%1$@, %2$@ …) may be reordered freely to fit Chinese word order;
  * the SET of indices used must match the English value.
+ *
+ * NSAlert renders these values VERBATIM: no Markdown, no ** **. Emphasis written that way
+ * reaches the user as literal asterisks — carry the weight in the wording instead.
  */
 
 /* MARK: - consent alert (Sources/Control/ControlConsent.swift) */
@@ -25,7 +28,7 @@
 "consent.alert.payload.no-enter" = "（不带回车 —— 只是把字留在命令行上，不会执行）";
 
 "consent.alert.scope.cacheable" = "允许之后，本次启动内该进程的同类命令不再询问。";
-"consent.alert.scope.once" = "**这一次**允许。向别的 pane 注入文本每次都会重新询问。";
+"consent.alert.scope.once" = "仅此一次允许。向别的 pane 注入文本每次都会重新询问。";
 
 "consent.alert.token.present" = "（该调用方带着 QuickTerm 注入的来源标记——这只说明它来自某个 pane，不代表被授权。）";
 "consent.alert.token.absent" = "（该调用方没有 QuickTerm 的来源标记。）";
@@ -55,9 +58,13 @@
 "consent.summary.spec-apply" = "用一份 spec 覆盖 %1$@ —— 对不上的那些 pane 会被关掉，其中的进程会被结束。";
 "consent.summary.browser-close-others.one" = "关掉 %1$@ 里除 %2$@ 之外的 %3$@ 个标签。";
 "consent.summary.browser-close-others.other" = "关掉 %1$@ 里除 %2$@ 之外的 %3$@ 个标签。";
-"consent.summary.browser-close-last" = "关掉 %1$@ 的最后一个标签 —— **整个 pane 会一起关掉**。";
+"consent.summary.browser-close-last" = "关掉 %1$@ 的最后一个标签 —— 整个 pane 会一起关掉。";
 "consent.summary.browser-close-tab.one" = "关掉 %1$@ 的标签 %2$@（还剩 %3$@ 个）。";
 "consent.summary.browser-close-tab.other" = "关掉 %1$@ 的标签 %2$@（还剩 %3$@ 个）。";
-"consent.summary.capture-text" = "**读取 %1$@ 屏幕上的全部文字**并交给这个调用方（其中可能有密码、token、私有代码）。";
+"consent.summary.capture-text" = "读取 %1$@ 屏幕上的全部文字并交给这个调用方（其中可能有密码、token、私有代码）。";
 "consent.summary.applies-to" = "作用于 %1$@。";
+/* close-pane 这个动作（Cmd+W 那条路）只关一个标签；quickterm pane close 这条命令关整个 pane。
+ * 两句话，因为是两种结果。 */
 "consent.summary.tab-only" = "只关当前标签。";
+"consent.summary.whole-pane.one" = "这个 pane 里有 %1$@ 个标签，会随 pane 一起关掉。";
+"consent.summary.whole-pane.other" = "这个 pane 里有 %1$@ 个标签，全部一起关掉。";

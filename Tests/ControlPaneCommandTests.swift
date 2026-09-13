@@ -548,13 +548,58 @@ final class ControlPaneCommandTests: XCTestCase {
         let clearedAgain = try harness.mutation(try harness.run("pane.set", target: handle(pane),
                                                                  args: ["title": .string("")]))
         XCTAssertEqual(clearedAgain["changed"]?.boolValue, false)
+
+        // 6. A **blank** value is the same answer as an empty one: hand it back, do not pin
+        // whitespace (`--title "   "` used to pin an invisible title the shell could never update
+        // again — a pane you can neither read nor address by name)
+        try harness.run("pane.set", target: handle(pane), args: ["title": .string(wanted)]).assertOK()
+        XCTAssertTrue(surface.hasControlTitle, "precondition: pinned again")
+        let blank = try harness.mutation(try harness.run("pane.set", target: handle(pane),
+                                                          args: ["title": .string("   ")]))
+        XCTAssertEqual(blank["changed"]?.boolValue, true)
+        XCTAssertFalse(surface.hasControlTitle, "a blank value hands the title back, it does not pin spaces")
+    }
+
+    /// `state` has to say **whether a title is pinned**, not just what it reads.
+    ///
+    /// Three separate rules stand on that bit: only a pinned title is drawn on the pane border,
+    /// `pane set --title` decides "changed or no-op" on "has it been taken over" rather than on the
+    /// string, and the advice to address a pane by `title:~` is only sound while the shell cannot
+    /// pull the name out from under you. Reading back `title` alone answered none of them.
+    func testStateSaysWhetherAPaneTitleIsPinned() throws {
+        let pane = try harness.newTerminal()
+        let surface = try XCTUnwrap(pane as? Ghostty.SurfaceView)
+        harness.spin(0.4)
+
+        let before = try harness.mutation(try harness.run("get", target: handle(pane)))
+        XCTAssertNil(before["pane"]?["titleSet"],
+                     "a title the shell reports is not pinned, and the field is omitted entirely")
+
+        let since = harness.seq
+        try harness.run("pane.set", target: handle(pane), args: ["title": .string("pinned-here")]).assertOK()
+        let after = try harness.mutation(try harness.run("get", target: handle(pane)))
+        XCTAssertEqual(after["pane"]?["titleSet"]?.boolValue, true)
+        XCTAssertEqual(after["pane"]?["title"]?.stringValue, "pinned-here")
+
+        // The event says so too: a subscriber must not have to call `get` to learn it
+        harness.spin(0.3)
+        let event = try XCTUnwrap(harness.events(since: since).first {
+            $0.type == ControlEventType.paneTitleChanged.rawValue && $0.paneID == pane.id.uuidString
+        }, "pinning a title must emit one pane.title.changed")
+        XCTAssertEqual(event.titleSet, true)
+
+        _ = try harness.run("pane.set", target: handle(pane), args: ["title": .string("")])
+        XCTAssertFalse(surface.hasControlTitle)
+        let handedBack = try harness.mutation(try harness.run("get", target: handle(pane)))
+        XCTAssertNil(handedBack["pane"]?["titleSet"],
+                     "handed back to the shell: absent again, the same convention `redacted` follows")
     }
 
     /// Titles belong to terminal panes only (a browser pane's title comes from the page), and
     /// control characters or an over-long string are always refused
     func testPaneSetTitleRefusesWhatItCannotHonour() throws {
         let pane = try harness.newTerminal()
-        for bad in [String(repeating: "x", count: ControlCommandRunner.maxTitleLength + 1), "a\u{1B}[31m"] {
+        for bad in [String(repeating: "x", count: TitleRules.maxLength + 1), "a\u{1B}[31m"] {
             let reply = try harness.run("pane.set", target: handle(pane), args: ["title": .string(bad)])
             XCTAssertFalse(reply.ok, "a title like this should be refused")
             XCTAssertEqual(reply.error?.code, ControlErrorCode.badRequest.rawValue)
@@ -680,7 +725,9 @@ final class ControlPaneCommandTests: XCTestCase {
         let reply = try harness.run("pane.new", args: ["cwd": .string(denied),
                                                         "require-cwd": .bool(true)])
         XCTAssertFalse(reply.ok)
-        XCTAssertEqual(reply.error?.code, ControlErrorCode.denied.rawValue)
+        // Spelled exactly like `ControlWarning.cwdDenied`: one condition, two reportings --
+        // a warning when the pane is made anyway, this error when --require-cwd says do not
+        XCTAssertEqual(reply.error?.code, ControlErrorCode.cwdDenied.rawValue)
         XCTAssertEqual(reply.error?.exit, ControlExit.denied.rawValue)
         XCTAssertTrue(reply.error?.message.contains(denied) ?? false)
         harness.spin(0.3)

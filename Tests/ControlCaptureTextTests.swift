@@ -44,7 +44,7 @@ final class ControlCaptureTextTests: XCTestCase {
         let reply = try harness.run("pane.capture-text", target: target(pane),
                                     token: ControlEnvironment.token)
         XCTAssertFalse(reply.ok)
-        XCTAssertEqual(reply.error?.code, ControlErrorCode.denied.rawValue)
+        XCTAssertEqual(reply.error?.code, ControlErrorCode.disabled.rawValue)
         XCTAssertTrue(reply.error?.hint?.contains("capture-text = true") ?? false,
                       "the refusal has to say how to turn it on: \(String(describing: reply.error?.hint))")
         XCTAssertEqual(prompts, 0, "with it off, not even the alert may come up")
@@ -62,7 +62,7 @@ final class ControlCaptureTextTests: XCTestCase {
         let captured = try harness.run("pane.capture-text", target: target(pane),
                                        token: ControlEnvironment.token)
         XCTAssertFalse(captured.ok, "send-text = true must not turn capture-text on as well")
-        XCTAssertEqual(captured.error?.code, ControlErrorCode.denied.rawValue)
+        XCTAssertEqual(captured.error?.code, ControlErrorCode.disabled.rawValue)
 
         var onlyCapture = ControlCommandRunner.Config()
         onlyCapture.captureText = true
@@ -71,7 +71,7 @@ final class ControlCaptureTextTests: XCTestCase {
                                     args: ["text": .string("echo hi")],
                                     token: ControlEnvironment.token)
         XCTAssertFalse(typed.ok, "capture-text = true must not turn send-text on as well")
-        XCTAssertEqual(typed.error?.code, ControlErrorCode.denied.rawValue)
+        XCTAssertEqual(typed.error?.code, ControlErrorCode.disabled.rawValue)
     }
 
     // MARK: Gate two: no origin token, no capture
@@ -89,7 +89,9 @@ final class ControlCaptureTextTests: XCTestCase {
         }
         let reply = try harness.run("pane.capture-text", target: target(pane))   // no token
         XCTAssertFalse(reply.ok)
-        XCTAssertEqual(reply.error?.code, ControlErrorCode.denied.rawValue)
+        // `disabled`, not `denied`: nobody was asked, so nobody refused. A caller with no token
+        // is in a state retrying cannot change, which is the whole line the split draws
+        XCTAssertEqual(reply.error?.code, ControlErrorCode.disabled.rawValue)
         XCTAssertEqual(reply.error?.exit, ControlExit.denied.rawValue)
         XCTAssertTrue(reply.error?.message.contains("QUICKTERM_TOKEN") ?? false,
                       "it has to say what is missing: \(String(describing: reply.error?.message))")
@@ -99,7 +101,7 @@ final class ControlCaptureTextTests: XCTestCase {
         // A mistyped token is refused the same way
         let wrong = try harness.run("pane.capture-text", target: target(pane), token: "not-the-token")
         XCTAssertFalse(wrong.ok)
-        XCTAssertEqual(wrong.error?.code, ControlErrorCode.denied.rawValue)
+        XCTAssertEqual(wrong.error?.code, ControlErrorCode.disabled.rawValue)
     }
 
     // MARK: Gate three: consent
@@ -147,6 +149,8 @@ final class ControlCaptureTextTests: XCTestCase {
         let denied = try harness.run("pane.capture-text", target: target(pane),
                                      token: ControlEnvironment.token)
         XCTAssertFalse(denied.ok)
+        // A real human pressed Deny -- the one thing `denied` still means. Do not re-point this
+        // one to `disabled` along with the switch cases above
         XCTAssertEqual(denied.error?.code, ControlErrorCode.denied.rawValue)
         XCTAssertNil(denied.data?["text"])
     }

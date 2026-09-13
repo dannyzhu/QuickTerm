@@ -21,14 +21,25 @@ func writeErr(_ text: String) {
     FileHandle.standardError.write(Data((text + "\n").utf8))
 }
 
-/// Errors are always JSON on stderr, carrying a stable `code`; in human mode we add one line of
-/// plain English after it.
+/// Errors are always JSON on stderr, carrying a stable `code`; in human mode the plain-English
+/// line goes **first**, and the envelope follows it.
+///
+/// Order, not content: a person at a terminal reads the top of what just scrolled past, and the
+/// envelope is a dozen pretty-printed lines, so the one sentence written for them used to end up
+/// below the JSON written for an agent. Both are still emitted, so anything already scraping this
+/// stderr keeps working — dropping the envelope in human mode would break `2>&1 | jq`, which is a
+/// perfectly reasonable thing to have in a script.
+/// When stdout is not a TTY (or `--json` was passed) this is an agent's channel and stays JSON
+/// only: one line of English in front of it is exactly what makes a parser fail.
 func fail(_ error: ControlErrorBody, plain: Bool) -> Never {
+    if plain {
+        writeErr("Error: \(error.message)")
+        if let hint = error.hint { writeErr("Hint: \(hint)") }
+    }
     if let data = try? ControlJSON.prettyEncoder.encode(ControlReply.errorEnvelope(error)),
        let text = String(data: data, encoding: .utf8) {
         writeErr(text)
     }
-    if plain { writeErr("Error: \(error.message)" + (error.hint.map { "\nHint: \($0)" } ?? "")) }
     exit(error.exit)
 }
 
@@ -108,7 +119,12 @@ let outcome: Args.Outcome
 do {
     outcome = try Args.parse(argv)
 } catch {
-    fail(ControlErrorBody(.badRequest, "\(error)", hint: "quickterm --help"), plain: plainMode)
+    // Point at the help of the command that was actually being typed: `quickterm --help` is the
+    // whole control plane, and someone who mistyped one flag of `pane set` has to find that
+    // command in it before they learn anything.
+    fail(ControlErrorBody(.badRequest, "\(error)",
+                          hint: (error as? ArgsError)?.helpHint ?? "quickterm --help"),
+         plain: plainMode)
 }
 
 switch outcome {

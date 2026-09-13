@@ -13,8 +13,10 @@ enum PaneTitleBadge {
     /// At most 20 characters, counted in **grapheme clusters**: one CJK ideograph, or one emoji
     /// (even a ZWJ sequence), each count as 1. The ellipsis added when truncating **counts against
     /// those 20**, so a 30-character title is drawn as 19 characters + `…`.
+    ///
+    /// This number is the border's own: a workspace pill stops at 12 (`WorkspacePill`). Only the
+    /// **counting rule** is shared, and it lives in `TitleRules.clamp`.
     static let maxCharacters = 20
-    static let ellipsis = "…"
 
     /// Border line width (the same on all four edges; vertically the title rides on the center of
     /// this line).
@@ -89,25 +91,11 @@ enum PaneTitleBadge {
             - CGFloat(metrics.reservedCharacters) * metrics.characterWidth
     }
 
-    /// The **character-counting** rule itself (the status bar's workspace pills count the same way,
-    /// only with a limit of 12): truncate to `limit` grapheme clusters with the ellipsis **counted
-    /// inside the limit** (20 → 19 characters + `…`); an empty or all-whitespace string gives
-    /// nil, meaning there is no title at all.
-    /// The pixel-width layer is not here: a pill grows to fit itself, and only the title on the
-    /// border has to shrink a second time by width.
-    static func clamp(_ title: String, to limit: Int = maxCharacters) -> String? {
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        let chars = Array(trimmed)   // Character = grapheme cluster; CJK and emoji count as one
-        guard chars.count > limit, limit >= 2 else { return chars.count <= limit ? trimmed : nil }
-        return String(chars.prefix(limit - 1)) + ellipsis
-    }
-
     /// Pure function: the string to draw on the top border this frame; nil when not a single
     /// character fits (or there was no title to begin with).
     /// nil means **draw the whole border unbroken**, not an empty notch or a lone ellipsis.
     static func fit(title: String, topEdgeWidth: CGFloat, metrics: Metrics = .standard) -> String? {
-        guard let capped = clamp(title, to: maxCharacters) else { return nil }
+        guard let capped = TitleRules.clamp(title, to: maxCharacters) else { return nil }
         let available = availableTextWidth(topEdgeWidth: topEdgeWidth, metrics: metrics)
         guard available > 0 else { return nil }
         if metrics.width(of: capped) <= available { return capped }
@@ -119,7 +107,7 @@ enum PaneTitleBadge {
         // line is better than that.
         let chars = Array(capped)   // already <= 20 clusters (truncation ellipsis included)
         for content in stride(from: chars.count - 1, through: 1, by: -1) {
-            let candidate = String(chars.prefix(content)) + ellipsis
+            let candidate = String(chars.prefix(content)) + TitleRules.ellipsis
             if metrics.width(of: candidate) <= available { return candidate }
         }
         return nil

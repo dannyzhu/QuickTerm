@@ -139,15 +139,25 @@ quickterm spec apply -f /tmp/ws.json --dry-run   # look at what it would change 
    from that code — never match on the message text:
    **1** a bad argument or a plain failure · **2** QuickTerm is not running · **3** a bad or ambiguous target
    (the body lists the candidates) · **4** `confirmation_required` — nobody answered the confirmation within ten
-   seconds, or `spec apply --into-empty` found the workspace non-empty · **5** `denied` — the user pressed Deny,
-   or policy refused it (an action that opens a panel) · **6** busy or rate-limited (the body carries
-   `retryAfterMs`) · **7** nothing changed, only ever with `--fail-if-noop` · **8** protocol version mismatch.
+   seconds, or `spec apply --into-empty` found the workspace non-empty · **5** refused · **6** busy or rate-limited
+   (the body carries `retryAfterMs`) · **7** nothing changed, only ever with `--fail-if-noop` ·
+   **8** protocol version mismatch.
+   **Exit 5 is four different codes, and they want opposite things from you** — read `code`:
+   `denied` = a human pressed Deny (ask the user, don't loop) · `disabled` = a switch is off
+   (`mode = "off"` / `"readonly"`, a sensitive command never enabled, `mcp = false`, or `capture-text` with no
+   `QUICKTERM_TOKEN`) and retrying will never help until the config changes — the `hint` names the switch ·
+   `cwd_denied` = `--require-cwd` hit a directory macOS won't hand over, and nothing was created ·
+   `limit` = a structural cap or floor (tabs per pane, panes per workspace, the last screen), so free something first.
+   `interactive_action` also lands on exit 5: the command opens a panel and can never run over the socket.
 
 ## What will get stopped
 
-- **Destructive operations** (`pane close`, `browser close`, `screen close`, `workspace clear`,
-  `spec apply --replace`) **pop a confirmation dialog** inside QuickTerm, counted once per (calling process,
-  command class). The user presses Deny → **exit code 5** (`denied`). Nobody answers within ten seconds → the
+- **Destructive operations** — the ones that **close something of the user's** (`pane close`, `browser close`,
+  `screen close`, `workspace clear`, `spec apply --replace`) — **pop a confirmation dialog** inside QuickTerm,
+  once per calling pid and command class, remembered for the rest of this launch.
+  `--force` does not skip it: `--force` skips QuickTerm's own "a process is still running" prompt, which is a
+  different prompt and the only thing it applies to.
+  The user presses Deny → **exit code 5**, `code` = `denied`. Nobody answers within ten seconds → the
   dialog goes away and you get **exit code 4** (`confirmation_required`); either way the command did not run.
   Don't retry; go ask the user.
 - **`input send-text` (typing into a pane) is off by default**; the user has to turn on `[control] send-text = true` in the config.

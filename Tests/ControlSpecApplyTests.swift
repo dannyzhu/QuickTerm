@@ -681,9 +681,3 @@ final class ControlSpecApplyTests: XCTestCase {
         XCTAssertFalse(live[1].closesOnChildExit, "hold explicitly asks for the pane to stay after the command exits")
     }
 }
-
-private extension ControlReply {
-    func assertOK(file: StaticString = #filePath, line: UInt = #line) {
-        XCTAssertTrue(ok, "command failed: \(String(describing: error))", file: file, line: line)
-    }
-}

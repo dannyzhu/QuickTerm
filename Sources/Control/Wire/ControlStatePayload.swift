@@ -133,6 +133,18 @@ struct ControlStatePayload: Codable, Equatable {
         /// How big this pane is (see `PaneSize`). Given for both floating and tiled panes.
         var size: PaneSize? = nil
         var title: String?
+        /// The title is **pinned**: somebody took it over (`pane set --title`, or "Change Terminal
+        /// Title" from the context menu) and the shell can no longer change it. Encoded only when
+        /// true, the same convention `redacted` follows - absent means "this is whatever the shell
+        /// last reported".
+        ///
+        /// Without this field `state` cannot answer a question three separate rules depend on:
+        /// the border only draws a pinned title, `pane set --title` decides "changed or no-op" on
+        /// "has it been taken over" rather than on the string, and the advice to address panes by
+        /// `title:~` is only sound for a title the shell cannot pull out from under you. Reading
+        /// back a `title` told you none of that.
+        /// A browser pane never has one: its title belongs to the page, nobody named it.
+        var titleSet: Bool? = nil
         var cwd: String?
         var url: String?
         /// The **number** of tabs in a browser pane (the shape never varies: always an integer).

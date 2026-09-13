@@ -56,8 +56,12 @@ extension ControlCommandRunner {
         let live = controller.model.layouts[workspace].paneList.count
             + controller.model.floatings[workspace].count
         guard live < ControlRateLimiter.maxPanesPerWorkspace else {
+            // `limit`, not `denied`: nothing about this caller was refused. The ceiling is a fixed
+            // number, and closing one pane makes the identical command succeed - an agent that
+            // reads `denied` stops and asks for permission it was never lacking, while `limit`
+            // tells it to make room and try again.
             throw ControlErrorBody(
-                .denied,
+                .limit,
                 "Workspace \(path(controller, workspace)) already holds \(live) panes (limit \(ControlRateLimiter.maxPanesPerWorkspace))",
                 hint: "Close a few first, or use another workspace.")
         }
@@ -81,8 +85,12 @@ extension ControlCommandRunner {
             ? cwd.flatMap { WorkingDirectoryGate.usable($0) == nil ? $0 : nil }
             : nil
         if let cwdDenied, ctx.flag("require-cwd") {
+            // The **same code as the warning** the non-strict path returns (`cwd_denied`): one
+            // situation, one name. `--require-cwd` only changes whether it arrives as a failure or
+            // as a warning on a successful reply, so a caller that handles "the directory was
+            // turned down" branches on one string either way.
             throw ControlErrorBody(
-                .denied,
+                .cwdDenied,
                 "--cwd \(cwdDenied) cannot be used: macOS counts it as a protected directory and QuickTerm has not "
                     + "been granted Files and Folders access. --require-cwd asks to fail rather than land somewhere "
                     + "else, so not a single pane was created",
@@ -142,11 +150,6 @@ extension ControlCommandRunner {
                                workspace: workspace + 1,
                                pane: handleName(pane), paneID: pane.id.uuidString), payload)
     }
-
-    /// The length ceiling for `pane set --title`. A title goes into the title bar, the status bar
-    /// and every single `state` response - an agent stuffing a whole log into a title is a thing
-    /// that really happens
-    static let maxTitleLength = 200
 
     /// `--env KEY=VALUE`. Control characters are always refused: they would ride all the way into
     /// the child process's environment
@@ -495,7 +498,15 @@ extension ControlCommandRunner {
         // Title: terminal panes only (a browser pane's title comes from the web page and is not
         // ours to set - setting it anyway would be overwritten by the page itself on the next
         // navigation, and that "set but never took effect" is the hardest kind to track down).
-        var surfaceForTitle: Ghostty.SurfaceView?
+        //
+        // The rules are `TitleRules`, the very same ones `workspace set --title` runs: the value is
+        // trimmed, and **a blank value hands the title back to the shell** exactly as an empty one
+        // does. Passed through unfiltered, `--title "   "` used to pin a pane to an invisible title
+        // that the shell could then never update again - a pane you can no longer read and no
+        // longer address by name.
+        // `surfaceForTitle` carries the **normalized** value (nil = hand it back), because the
+        // value that is compared has to be the value that is written.
+        var surfaceForTitle: (surface: Ghostty.SurfaceView, wanted: String?)?
         if let title {
             guard let surface = hit.pane as? Ghostty.SurfaceView else {
                 throw ControlErrorBody(
@@ -504,35 +515,41 @@ extension ControlCommandRunner {
                         + "(a browser pane's title comes from the web page)",
                     hint: "Only a kind=terminal pane can have its title set.")
             }
-            guard title.count <= Self.maxTitleLength else {
+            // The length is measured on what was **written**, before trimming: that is the number
+            // the caller can see in their own command line, and it is the same reading
+            // `workspace set --title` takes.
+            guard title.count <= TitleRules.maxLength else {
                 throw ControlErrorBody(.badRequest,
-                                       "--title is too long (\(title.count) characters, limit \(Self.maxTitleLength))")
+                                       "--title is too long (\(title.count) characters, limit \(TitleRules.maxLength))")
             }
-            guard title.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F
-                                                    && !(0x80...0x9F).contains($0.value) }) else {
+            guard TitleRules.isPrintable(title) else {
                 throw ControlErrorBody(.badRequest, "--title contains control characters",
                                        hint: "The title is drawn verbatim onto the pane's title bar and echoed in the title field of state.")
             }
-            surfaceForTitle = surface
+            let wanted = TitleRules.normalized(title)
+            surfaceForTitle = (surface, wanted)
             let now = surface.paneTitle
-            if title.isEmpty {
-                // Handing it back: it only counts as a change if the title really was taken over
-                // (a second run is a no-op, and that is what exit 7 rests on).
-                if surface.hasControlTitle {
-                    changes.append(ControlChange("\(base).title", from: now, to: "(handed back to the shell)",
-                                                 sensitive: true))
-                }
-            } else if !(surface.hasControlTitle && now == title) {
+            if let wanted {
                 // **The criterion is "has it been taken over", not "does it look the same".** When
                 // the title the shell reports happens to equal the one being set (very common when
                 // an agent uses the directory name as the pane name), a literal comparison makes
                 // this a no-op: `setControlTitle` is never called, the title is not pinned, and the
                 // shell's next OSC title report replaces it - while the caller was told success.
                 // Absolute assignment means "once this returns, that is what it is".
-                changes.append(ControlChange(
-                    "\(base).title",
-                    from: surface.hasControlTitle ? now : "\"\(now)\" (reported by the shell, not taken over)",
-                    to: title, sensitive: true))
+                // Both sides of the comparison are normalized: a pinned title was stored
+                // normalized, so ` dev ` really is the same title as `dev` and stays a no-op.
+                if !(surface.hasControlTitle && now == wanted) {
+                    changes.append(ControlChange(
+                        "\(base).title",
+                        from: surface.hasControlTitle ? now : "\"\(now)\" (reported by the shell, not taken over)",
+                        to: wanted, sensitive: true))
+                }
+            } else if surface.hasControlTitle {
+                // Handing it back (an empty **or blank** value): it only counts as a change if the
+                // title really was taken over - a second run is a no-op, and that is what exit 7
+                // rests on.
+                changes.append(ControlChange("\(base).title", from: now, to: "(handed back to the shell)",
+                                             sensitive: true))
             }
         }
 
@@ -540,7 +557,9 @@ extension ControlCommandRunner {
             command: ctx.spec.name, request: ctx.request, peer: ctx.peer, changes: changes,
             controllers: [controller], undoCommand: ctx.spec.cli, target: base)
         var payload = try commit(mutation) {
-            if let title, let surfaceForTitle { surfaceForTitle.setControlTitle(title) }
+            // `wanted` is the normalized value; nil means hand it back to the shell, which is
+            // precisely what `setControlTitle(nil)` does.
+            if let surfaceForTitle { surfaceForTitle.surface.setControlTitle(surfaceForTitle.wanted) }
             // **Settle the layer first**: float decides which layer the pane is in, and zoom /
             // width / ratio are all properties within a layer. Written the other way round,
             // `--float off --zoom on` would first write an orphan zoom in the floating layer, which

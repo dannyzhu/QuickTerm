@@ -190,6 +190,32 @@ final class PaneTitleTests: XCTestCase {
         XCTAssertLessThanOrEqual(badge.gapEnd + 2 * metrics.characterWidth, 400.001)
     }
 
+    // MARK: What a person types into the rename sheet
+
+    /// "Change Terminal Title" runs the typed string through `TitleRules.fromTypedInput` before it
+    /// ever reaches the pane — the same rulebook `pane set --title` enforces, only filtering where
+    /// the command line refuses.
+    ///
+    /// Regression: this sheet shipped passing the `NSTextField` string straight through, with no
+    /// filter and no cap, while the workspace rename sheet right next to it was fixed to do exactly
+    /// this. An `NSTextField` accepts a pasted escape sequence, a pasted newline and a pasted log
+    /// file without a word of complaint, and all three went onto the pane and into every `state`
+    /// response.
+    func testTypedPaneTitleIsFilteredBeforeItReachesThePane() {
+        let cleaned = TitleRules.fromTypedInput("build\u{1B}[31m\nweb\u{7F}")
+        XCTAssertTrue(TitleRules.isPrintable(cleaned), "no control character may survive into a pane title")
+        XCTAssertFalse(cleaned.contains("\n"))
+        XCTAssertEqual(TitleRules.fromTypedInput("  build  "), "build", "trimmed, exactly as --title is")
+        XCTAssertEqual(TitleRules.fromTypedInput("   "), "",
+                       "a blank rename means the same as --title \"\": hand the title back to the shell")
+        XCTAssertEqual(TitleRules.fromTypedInput(String(repeating: "字", count: 400)).count,
+                       TitleRules.maxLength, "a person gets a truncation, not an error sheet")
+        // And the border still has the last word on what it can draw: 20 characters.
+        let long = TitleRules.fromTypedInput(String(repeating: "字", count: 400))
+        XCTAssertEqual(PaneTitleBadge.fit(title: long, topEdgeWidth: roomy, metrics: metrics)?.count,
+                       PaneTitleBadge.maxCharacters)
+    }
+
     // MARK: Config
 
     func testPaneTitleConfigKey() {

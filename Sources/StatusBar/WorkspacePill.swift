@@ -13,7 +13,8 @@ import SwiftUI
 /// at once**: half names and half numbers just reads as a bug.
 enum WorkspacePill {
     /// A name is at most 12 grapheme clusters, with the truncating `…` counted inside those 12
-    /// (the same counting rule as pane titles, only with a different limit).
+    /// (`TitleRules.clamp`, the same counting rule pane titles use, only with a different limit:
+    /// a pill sits in a 26pt status bar next to a centered clock, a pane border does not).
     static let maxCharacters = 12
 
     /// The status bar's Monaco 12. Monaco ships with the system; if it really cannot be had (the
@@ -46,8 +47,9 @@ enum WorkspacePill {
     }
 
     /// Truncate to 12 characters; an unnamed slot (nil, empty, or all whitespace) gives nil.
+    /// The counting rule is the shared one (`TitleRules.clamp`); only the 12 is this surface's own.
     static func clamped(_ title: String?) -> String? {
-        title.flatMap { PaneTitleBadge.clamp($0, to: maxCharacters) }
+        title.flatMap { TitleRules.clamp($0, to: maxCharacters) }
     }
 
     /// What gets drawn on this slot: the name, if the slot has one and the row is showing names;

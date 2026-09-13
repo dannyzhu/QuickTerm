@@ -20,6 +20,13 @@ struct ControlDescribeDocument: Codable, Equatable {
     var classes: [ClassDoc]
     var exitCodes: [ExitCodeDoc]
     var errorCodes: [ErrorCodeDoc]
+    /// The `warnings[]` that can ride on a **successful** reply. Without this an agent only
+    /// learns that `cwd_denied` exists by hitting it, and the natural reading of `ok: true` is
+    /// that everything it asked for happened.
+    var warnings: WarningsDoc
+    /// The fields of the reply envelope every mutating noun-verb command returns. The four listed
+    /// here are the ones a caller branches on; anything else in the envelope is detail.
+    var mutationEnvelope: [EnvelopeFieldDoc]
     var actions: [ControlCommandTable.ActionDoc]
     /// The settings `app get/set` accepts (the enum is the list).
     var appSettings: [AppSettingDoc]
@@ -59,6 +66,23 @@ struct ControlDescribeDocument: Codable, Equatable {
     struct ErrorCodeDoc: Codable, Equatable {
         var code: String
         var exit: Int32
+        var summary: String
+    }
+
+    /// `warnings[]`: **the command succeeded and there is still something the caller has to know**.
+    struct WarningsDoc: Codable, Equatable {
+        var summary: String
+        var codes: [WarningCodeDoc]
+    }
+
+    struct WarningCodeDoc: Codable, Equatable {
+        var code: String
+        var summary: String
+    }
+
+    /// One field of the mutation envelope, with the one sentence a caller needs to branch on it.
+    struct EnvelopeFieldDoc: Codable, Equatable {
+        var field: String
         var summary: String
     }
 
@@ -250,6 +274,38 @@ struct ControlDescribeDocument: Codable, Equatable {
             errorCodes: ControlErrorCode.allCases.map {
                 ErrorCodeDoc(code: $0.rawValue, exit: $0.exit.rawValue, summary: $0.summary)
             },
+            warnings: WarningsDoc(
+                summary: "`warnings[]` rides on a SUCCESSFUL reply (ok: true, exit code 0): the command "
+                    + "landed, and something about it is not what the caller asked for. Branch on `code` "
+                    + "— it is stable; `message` and `hint` are prose and are not. An empty or absent "
+                    + "array means there is nothing to know.",
+                codes: [
+                    WarningCodeDoc(
+                        code: ControlWarning.cwdDenied,
+                        summary: "The working directory that was explicitly asked for could not be used: it "
+                            + "lies inside a macOS protected directory (~/Desktop ~/Documents ~/Downloads) "
+                            + "QuickTerm has no Files and Folders authorization for, so the shell started in "
+                            + "the engine's default directory instead. `path` is what was asked for, `used` "
+                            + "what was used when that is known. `pane new --require-cwd` / "
+                            + "`spec apply --require-cwd` turn this case into a plain failure."),
+                ]),
+            mutationEnvelope: [
+                EnvelopeFieldDoc(field: "applied",
+                                 summary: "It really landed in the UI — always false under --dry-run, and false "
+                                     + "while `confirmPending` is true."),
+                EnvelopeFieldDoc(field: "changed",
+                                 summary: "There was something to change at all; false means the target was "
+                                     + "already in the requested state, which --fail-if-noop turns into exit "
+                                     + "code 7 instead of a silent success."),
+                EnvelopeFieldDoc(field: "confirmPending",
+                                 summary: "QuickTerm has put up its own \"a process is still running\" prompt and "
+                                     + "is waiting for the user: nothing is closed yet, and no later reply "
+                                     + "announces the answer — read `state` again, or watch the event stream."),
+                EnvelopeFieldDoc(field: "note",
+                                 summary: "Prose for a human about this one call (for example, that the change "
+                                     + "lands through the config.toml watcher and is only readable shortly "
+                                     + "afterwards). Never branch on it — that is what `warnings[].code` is for."),
+            ],
             actions: ControlCommandTable.actionDocs,
             appSettings: ControlAppSetting.allCases.map {
                 AppSettingDoc(key: $0.rawValue, scope: $0.isPerScreen ? "screen" : "app", help: $0.help)
@@ -287,7 +343,10 @@ struct ControlDescribeDocument: Codable, Equatable {
                     + "same command twice leaves the same state.",
                 "Every mutating command in the noun-verb layer takes --dry-run (returns `changes` and "
                     + "changes nothing) and --fail-if-noop (exit code 7 when the target is already in the "
-                    + "requested state, instead of succeeding silently); the `action` passthrough takes neither.",
+                    + "requested state, instead of succeeding silently); the `action` passthrough takes neither, "
+                    + "and neither does `pane capture-text`, which changes nothing (there --dry-run would be a "
+                    + "way past the confirmation gate that still returns the whole screen). `readOnlyEffect: "
+                    + "true` on a row of `commands[]` is how you spot that case without asking.",
                 "`workspace set-layout` can act on an **inactive** workspace — which `action toggle-layout` cannot.",
                 "`workspace count N` rewrites config.toml and lands through the config watcher: the new "
                     + "count is only readable about 0.2s after the command returns.",

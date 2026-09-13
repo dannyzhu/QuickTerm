@@ -260,10 +260,13 @@ enum MCPToolMap {
                     + "forward. Idempotent: asking for the state it is already in changes nothing.",
                 commandNames: ["pane.focus", "workspace.goto", "screen.focus"]),
         MCPTool(name: "quickterm_arrange", title: "Arrange panes, workspaces and screens",
-                summary: "Absolute setters for everything geometric plus the process-level settings: zoom, "
-                    + "float, column width, split ratio, moving and swapping panes, workspace layout and "
-                    + "equalize, workspace name, workspace count, screen display / fullscreen / visible "
-                    + "columns, theme and background. Running the same call twice leaves the same state.",
+                summary: "Geometry plus the process-level settings: zoom, float, column width, split ratio, "
+                    + "moving and swapping panes, workspace layout and equalize, workspace name, workspace "
+                    + "count, screen display / fullscreen / visible columns, theme and background. Most of "
+                    + "these are absolute setters, where the same call twice leaves the same state — but "
+                    + "`pane resize` steps a divider relative to where it is now (a second call moves it "
+                    + "again, except at the boundary) and `pane move` / `pane swap` are positional, so none "
+                    + "of those three is safe to replay. This tool's idempotentHint is false for that reason.",
                 commandNames: ["pane.set", "pane.move", "pane.swap", "pane.resize",
                                "workspace.set", "workspace.set-layout", "workspace.equalize",
                                "workspace.count",

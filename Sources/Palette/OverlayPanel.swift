@@ -210,7 +210,12 @@ struct OverlayPanelView: View {
                 ForEach(model.keybindingRows, id: \.action) { entry in
                     HStack {
                         Text(entry.combo).frame(width: 110, alignment: .leading)
-                        Text(entry.action.help)
+                        // `localizedHelp`, never `help`: `help` is the Chinese wording, and it
+                        // stays that way because `describe --json` and the MCP tool table hand out
+                        // both wordings at once. Reading it here drew Chinese rows in the English
+                        // cheat sheet. `i18n` above is what re-renders this panel on a language
+                        // change — the accessor itself reads ConfigSchema.templateLanguage.
+                        Text(entry.action.localizedHelp)
                         Spacer()
                     }
                     .font(.custom("Monaco", size: 13))

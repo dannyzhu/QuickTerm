@@ -248,6 +248,8 @@ final class ControlServerTests: XCTestCase {
         let reply = try roundTrip(ControlRequest(id: "1", cmd: "action",
                                                  args: ["name": .string("close-pane")]), at: path)
         XCTAssertFalse(reply.ok)
+        // `denied` now means exactly one thing: a human pressed Deny. Everything that used to
+        // share the code (a switch that is off, a cap, a refused --cwd) has its own code now
         XCTAssertEqual(reply.error?.code, ControlErrorCode.denied.rawValue)
         XCTAssertEqual(reply.error?.exit, ControlExit.denied.rawValue)
     }
@@ -265,7 +267,7 @@ final class ControlServerTests: XCTestCase {
         for _ in 0..<3 {
             consent.evaluate(request) { XCTAssertEqual($0, .allow) }
         }
-        XCTAssertEqual(asked, 1, "ask once per (pid, class) -- agents send commands in batches, "
+        XCTAssertEqual(asked, 1, "ask once per calling pid and command class -- agents send commands in batches, "
                        + "and asking for every single one is the same as not asking")
         consent.evaluate(ControlConsent.Request(peerName: "node", peerPID: 9999, cls: .destructive,
                                                 summary: "close pane", originPane: nil,
@@ -298,7 +300,14 @@ final class ControlServerTests: XCTestCase {
         let write = try roundTrip(ControlRequest(id: "2", cmd: "action",
                                                  args: ["name": .string("new-terminal")]), at: path)
         XCTAssertFalse(write.ok)
-        XCTAssertEqual(write.error?.code, ControlErrorCode.denied.rawValue)
+        // **`disabled`, not `denied`**: nobody refused anything, a switch is off. The two want
+        // opposite things from a script — retrying a denial can succeed, retrying this one never
+        // will until the user edits the config — and it has to be able to tell them apart without
+        // reading the prose
+        XCTAssertEqual(write.error?.code, ControlErrorCode.disabled.rawValue)
+        XCTAssertEqual(write.error?.exit, ControlExit.denied.rawValue,
+                       "the exit code stays 5: exits are coarse by design, the JSON code is the fine one")
+        XCTAssertNotNil(write.error?.hint, "a switch that is off has to name the switch")
     }
 
     func testUnknownCommandAndActionListCandidates() throws {

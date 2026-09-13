@@ -173,10 +173,24 @@ When you compose a workspace, write the sizes straight into the spec (`columns[]
 quickterm pane set -t t7 --title 'build · web'   # = the right-click "Change Terminal Title"
 quickterm get -t 'title:~build'                  # and now you can address it by title
 quickterm pane set -t t7 --title ''              # empty string = hand it back to the shell
+quickterm pane set -t t7 --title '   '           # whitespace only = the same thing, hand it back
 ```
 
 An absolute setter: run it twice and you get the same result, the second time with `changed:false`
 (exit 7 with `--fail-if-noop`).
+**Whitespace is trimmed, and a value that is nothing but whitespace means the same as `''` — hand the title
+back to the shell.** It does not pin a blank title: that used to leave a pane you could neither read on the
+border nor address with `title:~`, and which the shell could never update again.
+Because of the trim, `--title 'dev'` after `--title ' dev '` is correctly a no-op rather than a reported change.
+
+"Did it change?" is decided by **whether the title has been taken over**, not by whether the string looks the
+same. A shell that happens to be printing `dev` in its own title has not pinned anything, so setting
+`--title dev` there is a real change (`changed:true`) — it takes the title away from the shell.
+`state` / `list` / `get` say which is which: a pane whose title is pinned carries **`titleSet: true`**, and a
+pane whose title still belongs to the shell **omits the field entirely** (the same convention `redacted`
+follows). Read `titleSet`, not the text, when what you need to know is "is this name going to stay put".
+`pane.title.changed` carries `titleSet` too, so a subscriber never has to call `get` to find out — and the
+event fires when the pin flips even if the text is identical.
 The title shows up in the `title` field of `state` / `list` / `get`, and **`title:~<regex>` is a first-class way to
 address things** — naming the few panes that stick around is far steadier than looking up a handle every time
 (handles are recycled when a pane closes).
@@ -410,7 +424,11 @@ quickterm events poll --since "$seq" --timeout 30s     # one call answers "what 
   **read `state` again**.
 - Nine event types: `pane.opened` `pane.closed` `focus.changed` `workspace.changed` `layout.changed`
   `screen.opened` `screen.closed` `pane.title.changed` `pane.cwd.changed`.
-  `workspace.changed` has two causes: a workspace switch, or a workspace being renamed (that one carries `title`).
+  `workspace.changed` has two causes — a workspace switch, or a workspace being renamed — and the `title`
+  field tells the three cases apart:
+  **no `title` field at all** = a switch (the name was not touched) · **`title` with a name** = renamed to that
+  name · **`title` as `""`** = the name was cleared, and the pill falls back to the index.
+  Absent and empty are deliberately different things here; do not collapse them.
 - **No event ever carries a pane's output** — only structure, titles and cwds, and for a caller without a token a
   browser pane's title / cwd are redacted exactly as in `state`. To see output, go look in that pane.
 - Some changes (`app set theme`, `screen set --fullscreen`) advance `seq` without a typed event of their own:
@@ -503,6 +521,20 @@ Every reply echoes `resolved`, so you know what you hit without sending a second
 - Errors are always **JSON on stderr**, carrying a stable `code` and `exit`. **Never match on the message text.**
 - Exit codes: 0 success · 1 failure · 2 not running · 3 bad or ambiguous target · 4 confirmation required ·
   5 denied · 6 busy / rate-limited · 7 no-op · 8 protocol version mismatch
+- **Exit codes are coarse on purpose; `error.code` is the fine signal.** Four different codes share exit 5,
+  and they want opposite things from you:
+
+  | `code` | what happened | retrying |
+  |---|---|---|
+  | `denied` | a human pressed **Deny** in QuickTerm's dialog | may well succeed next time — but ask the user first |
+  | `disabled` | a switch is **off**: `[control] mode = "off"` / `"readonly"`, a sensitive command never enabled, `[control] mcp = false`, or `pane capture-text` from a caller carrying no `QUICKTERM_TOKEN` | pointless until the user edits the config; the `hint` names the switch |
+  | `cwd_denied` | `--require-cwd` plus a directory macOS will not hand over — **nothing was created** | pointless until the Files-and-Folders grant is given |
+  | `limit` | a structural cap or floor: tabs per browser pane, panes per workspace, the last screen, shrinking a workspace below the panes in it | pointless until something is closed or freed |
+
+  `cwd_denied` is spelled **exactly** like the `cwd_denied` in `warnings[]`, and that is deliberate: it is one
+  condition with two reportings — a warning when the command goes ahead anyway, this error when `--require-cwd`
+  asks it not to — so you branch on the same string either way.
+  New codes are only ever appended. Branch on `code`, never on the message.
 
 ## Security
 
@@ -520,8 +552,9 @@ misspelled value just falls back to `ask`.
   UndoManager, so Edit ▸ Undo (⌘Z) rolls the whole thing back. (With focus in a terminal pane ⌘Z belongs to the
   terminal — use the menu item.)
   Mutating commands are rate-limited per origin; over the limit is exit code 6 with a `retryAfterMs`.
-- **destructive** (`close-pane`, `pane close`, `workspace clear`, `screen close`) is **confirmed once inside QuickTerm**
-  per (calling process pid, command class);
+- **destructive** — anything that **closes something of the user's** (`close-pane`, `pane close`, `browser close`,
+  `workspace clear`, `screen close`, `spec apply --replace`) — is **confirmed once per calling pid and command class**,
+  and that answer is remembered for the rest of this launch;
   the process name and pid the dialog shows come from the kernel (`LOCAL_PEERPID`), so stealing a token does not let
   you impersonate anyone;
   the line in the dialog saying "claims to come from pane t3" is **the caller's own claim**, which the server cannot
@@ -531,6 +564,9 @@ misspelled value just falls back to `ask`.
   the dialog was up, the whole thing comes back busy and nothing happens.
   10 seconds with nobody answering → exit code 4; approve it inside QuickTerm and retry.
   While another dialog is in front of the user, **every** mutating command returns `busy` (exit code 6).
+  **`--force` is not a way around any of this.** QuickTerm's own "a process is still running" prompt is a
+  *different* prompt — the one it shows when you close a pane by hand — and `--force` is the flag that skips
+  that one, and only that one. There is no flag that skips the control plane's confirmation.
 - **sensitive** (`input send-text`, `pane capture-text`) is **one switch per command, both off by default**,
   and the confirmation cache is per command as well — approving "read the screen" never quietly approves "type into
   the shell".
@@ -539,8 +575,8 @@ misspelled value just falls back to `ask`.
     count); writing to **any** other pane is confirmed every time (with the text in the dialog), and that approval is
     not cached.
   - `pane capture-text` (`[control] capture-text = true`): **no self-read exemption**;
-    the caller must also carry `QUICKTERM_TOKEN` (the same one browser redaction uses), and then each calling process
-    confirms once;
+    the caller must also carry `QUICKTERM_TOKEN` (the same one browser redaction uses), and then it is
+    **confirmed once per calling process**;
     it does not take `--dry-run` (that would become a back door around the confirmation); the text never enters any
     durable record.
 - **interactive** (`theme-picker` `next-background` `keybind-help` `main-menu` `open-settings`

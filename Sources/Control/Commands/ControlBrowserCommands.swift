@@ -109,8 +109,10 @@ extension ControlCommandRunner {
         let activate = try ctx.onOff("activate") ?? true
         let before = browser.tabs.count
         guard before < ControlBrowserLimits.maxTabs else {
+            // `limit`, not `denied`: a structural cap, not a policy and not a person. An agent
+            // that sees this has to close a tab, not ask the user to allow anything.
             throw ControlErrorBody(
-                .denied, "\(handleName(hit.pane)) already holds \(before) tabs (limit \(ControlBrowserLimits.maxTabs))",
+                .limit, "\(handleName(hit.pane)) already holds \(before) tabs (limit \(ControlBrowserLimits.maxTabs))",
                 hint: "Close a few first: quickterm browser close -t \(handleName(hit.pane)) --others")
         }
         let base = path(hit.controller, hit.workspace, hit.pane)
@@ -237,6 +239,22 @@ extension ControlCommandRunner {
                 from: browserVisible(ctx, browser.tabs[index].displayTitle),
                 to: closesPane ? "closed (last tab: the whole pane goes with it)" : "closed",
                 sensitive: true))
+        }
+
+        // **Refuse before recording anything.** `BrowserPaneView.closeTab` returns false for a tab
+        // whose web view WebKit currently holds in element fullscreen: tearing that view out would
+        // leave the user staring at an empty fullscreen window. In the app that refusal is invisible
+        // and correct - a keystroke that does nothing. Over the socket it must not be: swallowing it
+        // here would report `applied: true` and a "closed" change for a tab that is still open, which
+        // is the one answer a caller cannot recover from. Check every tab this command would destroy.
+        let doomed = others ? browser.tabs.indices.filter { $0 != index }
+                            : (closesPane ? Array(browser.tabs.indices) : [index])
+        if let held = doomed.first(where: { browser.webKitHoldsFullscreen(browser.tabs[$0]) }) {
+            throw ControlErrorBody(
+                .busy,
+                "\(handle) tab \(held + 1) is in element fullscreen, so WebKit owns its web view; "
+                    + "nothing was closed",
+                hint: "Leave fullscreen first (Esc in the page, or the video's own control), then run it again.")
         }
 
         let mutation = ControlMutationRequest(

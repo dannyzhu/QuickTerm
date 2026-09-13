@@ -25,7 +25,7 @@ enum ControlEventType: String, Codable, CaseIterable {
         case .paneOpened: "a pane was created (terminal / browser / file manager)"
         case .paneClosed: "a pane closed (reported as soon as the close animation starts, matching what state still counts as addressable)"
         case .focusChanged: "keyboard focus on a screen moved to another pane"
-        case .workspaceChanged: "a screen switched workspace, or a workspace was renamed (carries title)"
+        case .workspaceChanged: "a screen switched workspace (no title field), or a workspace was renamed (title = the new name, \"\" when the name was cleared)"
         case .layoutChanged: "the structure of a workspace changed (layout kind / column width / split ratio / zoom / floating layer)"
         case .screenOpened: "a screen (window) was created"
         case .screenClosed: "a screen closed"
@@ -55,9 +55,19 @@ struct ControlEvent: Codable, Equatable {
     var layout: String?
     /// The title for pane.title.changed / pane.opened; for a browser pane it is `<redacted>` to any
     /// caller without a token.
-    /// When workspace.changed carries it, it means **the workspace's name** (clearing the name
-    /// means that event has no title at all).
+    /// When workspace.changed carries it, it means **the workspace's name**: a switch between
+    /// workspaces has no title field at all, a rename carries the new name, and clearing the name
+    /// carries `""` - the same three-way convention pane.title.changed uses. Reading "no title
+    /// field" as "the name was cleared" is what this spells out; the two used to be the same event
+    /// on the wire.
     var title: String?
+    /// The pane's title is **pinned** (taken over by `pane set --title` or by the rename sheet), as
+    /// on pane.title.changed. Encoded only when true, the same convention `state`'s `titleSet`
+    /// follows: absent means the shell still owns it.
+    /// A title event carries it because the pin can flip without the text changing a character -
+    /// pinning a pane to the very title the shell is reporting is an ordinary thing for an agent to
+    /// do, and a subscriber that only watched `title` would never learn it happened.
+    var titleSet: Bool?
     /// The working directory for pane.cwd.changed / pane.opened.
     var cwd: String?
     /// The title / cwd in this event were redacted (the same rule `state` uses).
@@ -68,8 +78,8 @@ struct ControlEvent: Codable, Equatable {
     init(seq: Int = 0, ts: String = "", type: ControlEventType,
          screen: Int? = nil, screenID: String? = nil, workspace: Int? = nil,
          pane: String? = nil, paneID: String? = nil, kind: String? = nil,
-         layout: String? = nil, title: String? = nil, cwd: String? = nil,
-         redacted: Bool? = nil) {
+         layout: String? = nil, title: String? = nil, titleSet: Bool? = nil,
+         cwd: String? = nil, redacted: Bool? = nil) {
         self.seq = seq
         self.ts = ts
         self.type = type.rawValue
@@ -81,6 +91,7 @@ struct ControlEvent: Codable, Equatable {
         self.kind = kind
         self.layout = layout
         self.title = title
+        self.titleSet = titleSet
         self.cwd = cwd
         self.redacted = redacted
     }

@@ -53,7 +53,9 @@ enum ControlExit: Int32, Codable, CaseIterable {
         case .notRunning: "QuickTerm is not running"
         case .badTarget: "bad or ambiguous target (the response body lists the candidates)"
         case .confirmationRequired: "confirmation required"
-        case .denied: "denied by policy"
+        // Exit codes are coarse on purpose: five error codes share this one. A script that
+        // needs to tell "switched off" from "the user said no" reads `error.code`, never the exit.
+        case .denied: "refused — by a switch, by a cap, or by the user (the error code says which)"
         case .busy: "busy or rate-limited (carries retryAfterMs)"
         case .noop: "nothing changed, a no-op (only with --fail-if-noop)"
         case .protocolMismatch: "protocol version mismatch"
@@ -75,7 +77,26 @@ enum ControlErrorCode: String, Codable, CaseIterable {
     case interactiveAction = "interactive_action"
     case wrongPaneKind = "wrong_pane_kind"
     case confirmationRequired = "confirmation_required"
+    /// **Only a human pressing Deny** in QuickTerm's confirmation dialog. Everything else that
+    /// used to share this code now has its own: `disabled`, `cwd_denied`, `limit`. The split
+    /// matters because the four want opposite things from an agent — a denial may well be
+    /// allowed on the next try, a switched-off command never will be until the user edits a
+    /// config file.
     case denied = "denied"
+    /// Switched off, so retrying changes nothing: `[control] mode = "off"` / `"readonly"`, a
+    /// sensitive command the user never enabled, `[control] mcp = false`, or a command that
+    /// requires this launch's `QUICKTERM_TOKEN` from a caller carrying none. The message and the
+    /// hint name the switch, because that is the only way out of this state.
+    case disabled = "disabled"
+    /// `--require-cwd` plus a working directory macOS will not hand over. **Spelled exactly like
+    /// `ControlWarning.cwdDenied`, and that is the point**: it is one condition with two
+    /// reportings — a warning when the command goes ahead anyway, this error when `--require-cwd`
+    /// asks it not to — so an agent branches on the same string either way. Nothing was created.
+    case cwdDenied = "cwd_denied"
+    /// A structural cap or floor, not a policy and not a person: tabs per browser pane, panes per
+    /// workspace, workspaces that still hold panes, the last screen that may not be closed.
+    /// Retrying is pointless until something is closed or freed first.
+    case limit = "limit"
     case busy = "busy"
     case rateLimited = "rate_limited"
     case notRunning = "not_running"
@@ -95,7 +116,7 @@ enum ControlErrorCode: String, Codable, CaseIterable {
         case .failed, .badRequest, .unknownCommand, .unknownAction, .internalError, .partialApply: .failure
         case .protocolMismatch: .protocolMismatch
         case .badTarget, .ambiguousTarget, .notFound, .wrongPaneKind: .badTarget
-        case .interactiveAction, .denied: .denied
+        case .interactiveAction, .denied, .disabled, .cwdDenied, .limit: .denied
         case .confirmationRequired: .confirmationRequired
         case .busy, .rateLimited: .busy
         case .notRunning: .notRunning
@@ -116,7 +137,10 @@ enum ControlErrorCode: String, Codable, CaseIterable {
         case .interactiveAction: "this action opens a panel that needs keyboard interaction, so it cannot run over the socket"
         case .wrongPaneKind: "the target pane's kind does not support this action"
         case .confirmationRequired: "needs confirmation inside QuickTerm"
-        case .denied: "refused by the [control] config or by the user"
+        case .denied: "the user pressed Deny in QuickTerm's confirmation dialog"
+        case .disabled: "switched off: [control] mode / mcp, a sensitive command that was never enabled, or a missing QUICKTERM_TOKEN"
+        case .cwdDenied: "--require-cwd, and the working directory cannot be used; nothing was created (same code as the cwd_denied warning)"
+        case .limit: "a cap or a floor was hit (tabs in a pane, panes in a workspace, the last screen)"
         case .busy: "the main thread is busy (a modal dialog, or another command is running)"
         case .rateLimited: "over the rate limit"
         case .notRunning: "QuickTerm is not running"

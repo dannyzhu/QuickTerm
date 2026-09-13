@@ -20,6 +20,9 @@
  *   - a key that varies with a count comes as a ".one"/".other" pair, read through Lp(_:count:_:);
  *   - keys are lowercase, dot separated, area first: <area>.<subject>.<detail>.
  *
+ * These values are drawn by NSAlert, which renders them VERBATIM: no Markdown, no ** **.
+ * Asterisks put in for emphasis reach the user as asterisks on screen.
+ *
  * Not localized, by policy: the quickterm CLI, OSLog messages, wire identifiers, config keys,
  * pane handles, and the AppKit "undo"/"redo" selector names.
  */
@@ -73,4 +76,8 @@
 "consent.summary.browser-close-tab.other" = "Close tab %2$@ of %1$@ (%3$@ tabs left).";
 "consent.summary.capture-text" = "Read every character on the screen of %1$@ and hand it to this caller (it may hold passwords, tokens, private source).";
 "consent.summary.applies-to" = "Applies to %1$@.";
+/* close-pane the ACTION (the Cmd+W path) closes one tab; `quickterm pane close` the COMMAND
+ * closes the whole pane. Two sentences, because they are two different outcomes. */
 "consent.summary.tab-only" = "Only the current tab is closed.";
+"consent.summary.whole-pane.one" = "The pane holds %1$@ tab; it closes along with the pane.";
+"consent.summary.whole-pane.other" = "The pane holds %1$@ tabs; all of them close.";

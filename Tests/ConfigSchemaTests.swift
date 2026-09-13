@@ -381,7 +381,7 @@ final class ControlSwitchConfigTests: XCTestCase {
         XCTAssertNil(MCPServer.configRefusal(gate: ControlConfigGate()), "on by default means no refusal")
         let refusal = try XCTUnwrap(MCPServer.configRefusal(gate: ControlConfigGate(socket: true, mcp: false)),
                                     "mcp = false has to refuse")
-        XCTAssertEqual(refusal.code, ControlErrorCode.denied.rawValue)
+        XCTAssertEqual(refusal.code, ControlErrorCode.disabled.rawValue)
         XCTAssertEqual(refusal.exit, ControlExit.denied.rawValue)
         XCTAssertTrue(refusal.message.contains("[control]") && refusal.message.contains("mcp"),
                       "the error has to name the config key: \(refusal.message)")

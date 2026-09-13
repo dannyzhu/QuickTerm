@@ -419,12 +419,48 @@ final class BrowserPaneTests: XCTestCase {
         XCTAssertGreaterThan(webArea.bounds.width, 600, "sanity: the pane really did grow")
     }
 
-    /// Replay what -[WKFullScreenWindowController enterFullScreen:] does to our view tree - a
-    /// placeholder takes the web view's place in webArea, the real web view moves into WebKit's own
-    /// window and is given the screen rect by hand - and then run layout passes in both windows, the
-    /// way a title change (pause -> play on a video site) or a SwiftUI update does. The fullscreen
-    /// frame has to survive; when the pane owned it, the web view was resized back to the pane's
-    /// inline size, which is the "sound but a black picture" bug.
+    /// Replay what -[WKFullScreenWindowController enterFullScreen:] does to our view tree: a
+    /// WKFullScreenPlaceholderView takes the web view's place in webArea, the real web view moves
+    /// into WebKit's own window and is given the screen rect by hand.
+    ///
+    /// This is the **only** stand-in for fullscreen in these tests - every fullscreen case below
+    /// drives it - because the real thing has no hook we could call: macOS WKUIDelegate has no
+    /// fullscreen callback at all (_WKFullscreenDelegate is SPI).
+    /// Returns WebKit's window and the placeholder, which `exitElementFullscreen` needs to put the
+    /// view back exactly where WebKit puts it back.
+    @MainActor
+    private func enterElementFullscreen(_ webView: NSView,
+                                        of pane: BrowserPaneView) -> (NSWindow, NSView) {
+        // Stand-in for WebKit's WebCoreFullScreenWindow.
+        let fsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
+                                styleMask: [.borderless], backing: .buffered, defer: false)
+        // Programmatically created NSWindows are released when closed; in ARC that is a double free.
+        fsWindow.isReleasedWhenClosed = false
+        let fsContent = fsWindow.contentView!
+        // WebKit's replaceViewWithView(): placeholder in, web view out, then into the fullscreen window.
+        let placeholder = NSView(frame: webView.frame)
+        placeholder.autoresizingMask = webView.autoresizingMask
+        pane.webAreaForTesting.addSubview(placeholder, positioned: .above, relativeTo: webView)
+        webView.removeFromSuperview()
+        fsContent.addSubview(webView)
+        webView.frame = fsContent.bounds
+        return (fsWindow, placeholder)
+    }
+
+    /// Coming back out: WebKit puts the web view back where the placeholder is and removes it.
+    @MainActor
+    private func exitElementFullscreen(_ webView: NSView, of pane: BrowserPaneView,
+                                       placeholder: NSView) {
+        webView.removeFromSuperview()
+        webView.frame = placeholder.frame
+        pane.webAreaForTesting.addSubview(webView, positioned: .above, relativeTo: placeholder)
+        placeholder.removeFromSuperview()
+    }
+
+    /// Reparent for fullscreen and then run layout passes in both windows, the way a title change
+    /// (pause -> play on a video site) or a SwiftUI update does. The fullscreen frame has to survive;
+    /// when the pane owned it, the web view was resized back to the pane's inline size, which is the
+    /// "sound but a black picture" bug.
     @MainActor
     func testFullscreenReparentingSurvivesLayoutPasses() throws {
         let (pane, window) = makeLaidOutPane(size: NSSize(width: 600, height: 400))
@@ -432,19 +468,8 @@ final class BrowserPaneTests: XCTestCase {
         let webArea = pane.webAreaForTesting
         let webView = pane.webView
 
-        // Stand-in for WebKit's WebCoreFullScreenWindow.
-        let fsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
-                                styleMask: [.borderless], backing: .buffered, defer: false)
-        fsWindow.isReleasedWhenClosed = false
+        let (fsWindow, placeholder) = enterElementFullscreen(webView, of: pane)
         let fsContent = fsWindow.contentView!
-
-        // WebKit's replaceViewWithView(): placeholder in, web view out, then into the fullscreen window.
-        let placeholder = NSView(frame: webView.frame)
-        placeholder.autoresizingMask = webView.autoresizingMask
-        webArea.addSubview(placeholder, positioned: .above, relativeTo: webView)
-        webView.removeFromSuperview()
-        fsContent.addSubview(webView)
-        webView.frame = fsContent.bounds
 
         XCTAssertFalse(webView.hasAmbiguousLayout,
                        "in WebKit's window nothing of ours constrains it, so it must not be layout-managed")
@@ -464,14 +489,114 @@ final class BrowserPaneTests: XCTestCase {
                        "the fullscreen frame must survive layout in both windows")
         XCTAssertFalse(webView.hasAmbiguousLayout, "and it must not have become layout-ambiguous")
 
-        // Coming back out: WebKit puts the web view back where the placeholder is and removes it.
-        webView.removeFromSuperview()
-        webView.frame = placeholder.frame
-        webArea.addSubview(webView, positioned: .above, relativeTo: placeholder)
-        placeholder.removeFromSuperview()
+        exitElementFullscreen(webView, of: pane, placeholder: placeholder)
         window.setContentSize(NSSize(width: 700, height: 500))
         window.contentView!.layoutSubtreeIfNeeded()
         XCTAssertEqual(webView.frame, webArea.bounds, "back inline, it fills the pane again and tracks resizes")
+    }
+
+    /// A pane in a window with two tabs, the first one active and handed to WebKit for fullscreen.
+    @MainActor
+    private func makePaneWithFullscreenTab() -> (BrowserPaneView, NSWindow, NSWindow, NSView) {
+        let (pane, window) = makeLaidOutPane(size: NSSize(width: 600, height: 400))
+        pane.newTab(url: URL(string: "about:blank"))
+        pane.selectTab(at: 0)
+        let (fsWindow, placeholder) = enterElementFullscreen(pane.tabs[0].webView, of: pane)
+        return (pane, window, fsWindow, placeholder)
+    }
+
+    /// Switching tabs while WebKit holds one of them in element fullscreen.
+    ///
+    /// A live probe measured what the visibility loop in selectTab does to that tab: setting
+    /// `isHidden` on a web view WebKit has re-parented blanks its fullscreen window completely - an
+    /// empty screen, the page and the audio still running, and the first responder gone. It is
+    /// reachable from Ctrl+Tab, from an extension and from `browser goto --tab`, so the loop has to
+    /// leave that one view alone while still switching everything it does own; and the write it
+    /// skipped has to be made good when WebKit hands the view back, or two visible web views end up
+    /// stacked in webArea.
+    @MainActor
+    func testSelectTabLeavesAFullscreenWebViewAlone() throws {
+        let prev = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = prev }
+        BrowserPaneView.settings.home = "about:blank"
+        let (pane, window, fsWindow, placeholder) = makePaneWithFullscreenTab()
+        defer { pane.removeFromSuperview() }
+        let fullscreen = pane.tabs[0].webView
+        let other = pane.tabs[1].webView
+        XCTAssertTrue(pane.window === window, "sanity: the pane is still in its own window")
+        XCTAssertFalse(fullscreen.isHidden, "sanity: it was the visible tab when WebKit took it")
+
+        pane.selectTab(at: 1)
+        XCTAssertEqual(pane.activeTabIndex, 1, "the switch itself still happens")
+        XCTAssertFalse(other.isHidden, "the tab we do own becomes visible")
+        XCTAssertFalse(fullscreen.isHidden,
+                       "hiding the view WebKit holds blanks its fullscreen window: skip that one write")
+        XCTAssertTrue(fullscreen.window === fsWindow, "and it is still WebKit's")
+
+        exitElementFullscreen(fullscreen, of: pane, placeholder: placeholder)
+        XCTAssertTrue(fullscreen.window === window, "sanity: WebKit handed it back to the pane's window")
+        XCTAssertTrue(fsWindow.contentView!.subviews.isEmpty, "sanity: and gave it up on its side")
+        XCTAssertTrue(fullscreen.isHidden,
+                      "back in the pane the skipped write is made good: it is a background tab now")
+        XCTAssertFalse(other.isHidden, "and the active tab stays visible")
+    }
+
+    /// Closing a tab whose web view is in element fullscreen. `closeTab` would take the view out of
+    /// its superview - which is WebKit's fullscreen window, not webArea - destroying WebKit's scene
+    /// and leaving both our placeholder behind and an empty fullscreen window over the whole screen.
+    /// There is no half-measure here as there is for a tab switch, so the whole close is refused, and
+    /// the refusal is reported the same way the last-tab guard reports it: `false`, nothing closed.
+    @MainActor
+    func testClosingAFullscreenTabIsRefused() throws {
+        let prev = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = prev }
+        BrowserPaneView.settings.home = "about:blank"
+        let (pane, window, fsWindow, placeholder) = makePaneWithFullscreenTab()
+        defer { pane.removeFromSuperview() }
+        let fullscreen = pane.tabs[0].webView
+        XCTAssertTrue(pane.window === window, "sanity: the pane is still in its own window")
+
+        XCTAssertFalse(pane.closeActiveTab(), "a tab WebKit is holding must not be torn out from under it")
+        XCTAssertEqual(pane.tabs.count, 2, "nothing was closed")
+        XCTAssertTrue(fullscreen.window === fsWindow, "the web view is still in WebKit's window")
+        XCTAssertNotNil(fullscreen.superview, "and still in WebKit's view tree")
+
+        // Out of fullscreen the very same close goes through: this refuses the moment, not the tab.
+        exitElementFullscreen(fullscreen, of: pane, placeholder: placeholder)
+        XCTAssertTrue(fsWindow.contentView!.subviews.isEmpty, "sanity: WebKit gave the view up")
+        XCTAssertTrue(pane.closeActiveTab(), "once the view is ours again the close is an ordinary one")
+        XCTAssertEqual(pane.tabs.count, 1)
+    }
+
+    /// Element fullscreen takes the web view out of the pane's window, and AppKit silently resets
+    /// that window's first responder without ever sending resignFirstResponder (the probe in
+    /// docs/porting-notes.md): the pane is left on `focused == true` with no responder behind it.
+    /// The pane itself never detached, so PaneView's own reclaim-on-attach never runs - coming back
+    /// out of fullscreen has to put the first responder back on the active tab's web view.
+    @MainActor
+    func testExitingFullscreenRestoresFirstResponder() throws {
+        let prev = BrowserPaneView.settings
+        defer { BrowserPaneView.settings = prev }
+        BrowserPaneView.settings.home = "about:blank"
+        let (pane, window) = makeLaidOutPane(size: NSSize(width: 600, height: 400))
+        defer { pane.removeFromSuperview() }
+        let webView = pane.webView
+        XCTAssertTrue(window.makeFirstResponder(webView), "the page takes keyboard focus")
+        XCTAssertTrue(pane.holdsFirstResponder(of: window), "sanity: the first responder is the page")
+        XCTAssertTrue(pane.focused, "and the pane knows it")
+
+        let (fsWindow, placeholder) = enterElementFullscreen(webView, of: pane)
+        XCTAssertTrue(webView.window === fsWindow, "sanity: WebKit's window has it")
+        XCTAssertFalse(pane.holdsFirstResponder(of: window),
+                       "the view left the window, so AppKit reset the first responder")
+        XCTAssertTrue(pane.focused,
+                      "and it did so with no resign: the flag is stale, which is the whole hazard")
+
+        exitElementFullscreen(webView, of: pane, placeholder: placeholder)
+        XCTAssertTrue(fsWindow.contentView!.subviews.isEmpty, "sanity: WebKit gave the view up")
+        XCTAssertTrue(pane.holdsFirstResponder(of: window),
+                      "coming back out, focus returns to the active tab's page")
+        XCTAssertTrue(pane.focused, "and the flag has something behind it again")
     }
 }
 

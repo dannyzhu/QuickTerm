@@ -18,7 +18,7 @@
 
 /* MARK: - clock (Unicode date patterns, not sentences — see the English table) */
 
-/* same-as-english: UTS #35 日期骨架，星期名本身就跟着界面语言走，顺序两种语言一致。 */
+/* same-as-english: a UTS #35 date skeleton; the weekday name already follows the UI language, and the field order is the same in both. */
 "status.clock.format" = "EEEE HH:mm";
 "status.clock.format-alt" = "yyyy年M月d日 'W'ww";
 

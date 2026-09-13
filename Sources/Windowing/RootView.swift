@@ -64,34 +64,10 @@ final class WorkspaceModel: ObservableObject {
 
     // MARK: Workspace names
 
-    /// The canonical form: leading and trailing whitespace stripped, an empty string meaning no
-    /// name.
-    /// The length cap and control characters are each entry point's own business - the control
-    /// plane has to **fail with an error**, while the dialog filters and then truncates (see
-    /// `titleFromInput`). Handling it uniformly here would make `workspace set --title` silently
-    /// accept a value it is supposed to reject.
-    static func normalizedTitle(_ raw: String?) -> String? {
-        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !trimmed.isEmpty else { return nil }
-        return trimmed
-    }
-
-    /// Control characters (newline, tab, DEL, C1) are not part of a name.
-    /// The command line and spec files **fail with an error** on them: a program is calling in from
-    /// there, and it should be told it got it wrong.
-    /// The dialog can only **filter them out**: a person pasting in a newline does not deserve an
-    /// error alert, but keeping it would wreck the status bar - the bar height of 26pt is
-    /// hard-coded, and one extra line of `Text` pushes straight out of the background.
-    static func isTitleScalar(_ scalar: Unicode.Scalar) -> Bool {
-        scalar.value >= 0x20 && scalar.value != 0x7F && !(0x80...0x9F).contains(scalar.value)
-    }
-
-    /// Turn what a person typed or pasted into the dialog into a name: drop the control characters,
-    /// then truncate to the same cap the command line uses.
-    static func titleFromInput(_ raw: String) -> String {
-        let printable = String(String.UnicodeScalarView(raw.unicodeScalars.filter(isTitleScalar)))
-        return String(printable.prefix(ControlCommandRunner.maxTitleLength))
-    }
+    // The rules themselves - trimming, the printable-scalar test, the 200-character cap and what a
+    // rename dialog does to a typed string - are **not** written here: they are `TitleRules`, one
+    // copy shared with pane titles, the control plane and the spec validator. This model only
+    // decides what a slot holds.
 
     /// The names for the row the status bar actually draws: **only the slots that exist**.
     /// `titles` is never trimmed when the count shrinks (the name belongs to the slot and has to
@@ -109,13 +85,15 @@ final class WorkspaceModel: ObservableObject {
         return titles[index]
     }
 
-    /// Name, rename or clear (nil or an empty string clears it). Returns whether anything actually
-    /// changed - that is what lets an idempotent command exit 7.
+    /// Name, rename or clear (nil, an empty string, or nothing but whitespace all clear it -
+    /// `TitleRules.normalized`). Returns whether anything actually changed - that is what lets an
+    /// idempotent command exit 7, and why the comparison happens on the **normalized** value: a
+    /// name re-set with different padding is the same name.
     @discardableResult
     func setTitle(_ raw: String?, at index: Int) -> Bool {
         guard layouts.indices.contains(index) else { return false }
         alignTitles()
-        let next = Self.normalizedTitle(raw)
+        let next = TitleRules.normalized(raw)
         guard titles[index] != next else { return false }
         titles[index] = next
         return true

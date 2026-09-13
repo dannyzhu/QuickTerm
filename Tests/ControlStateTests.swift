@@ -465,3 +465,145 @@ extension ControlSecurityTests {
                        "a timeout maps to exit code 4, not to denied's 5")
     }
 }
+
+/// The refusal taxonomy. Exit code 5 used to mean four different things at once, and the JSON
+/// `code` said `denied` for all of them — so a script could not tell "the user clicked Deny"
+/// (retrying may well work) from "a switch in the config is off" (retrying never will).
+extension ControlSecurityTests {
+    func testTheDeniedFamilyIsFourCodesBehindOneExit() {
+        // Exits are coarse **by design**: one number for the whole family, and the fine
+        // distinction lives in the code. Widening the exit set instead would break every script
+        // that already branches on 5
+        for code in [ControlErrorCode.denied, .disabled, .cwdDenied, .limit] {
+            XCTAssertEqual(code.exit, .denied,
+                           "\(code.rawValue) has to keep exit 5: scripts branch on the code, not the exit")
+            XCTAssertEqual(ControlErrorBody(code, "x").exit, ControlExit.denied.rawValue,
+                           "the body carries the same mapping the CLI uses as its process exit code")
+        }
+        XCTAssertEqual(Set([ControlErrorCode.denied, .disabled, .cwdDenied, .limit].map(\.rawValue)).count, 4,
+                       "four distinct strings, or the split bought nothing")
+
+        // **One spelling, two reportings.** `--require-cwd` turns the warning into an error; the
+        // condition is identical, so the string an agent branches on has to be identical too
+        XCTAssertEqual(ControlErrorCode.cwdDenied.rawValue, ControlWarning.cwdDenied,
+                       "the error code and the warning code are the same condition and must stay "
+                       + "spelled the same — an agent matches one string either way")
+
+        // `denied` now means exactly one thing, and the generated documentation has to say so:
+        // this summary is what `quickterm describe --json` hands the model
+        let denied = ControlErrorCode.denied.summary.lowercased()
+        XCTAssertTrue(denied.contains("deny") || denied.contains("user"),
+                      "denied's summary has to name the human pressing Deny: \(ControlErrorCode.denied.summary)")
+        XCTAssertFalse(ControlErrorCode.disabled.summary.isEmpty)
+        XCTAssertFalse(ControlErrorCode.limit.summary.isEmpty)
+    }
+
+    /// A switch that is off is not a refusal. Driven through the runner rather than the socket:
+    /// `ControlServer.apply` takes the listener down for `mode = "off"`, so the socket can never
+    /// deliver this particular answer.
+    func testSwitchedOffCommandsReportDisabledNotDenied() throws {
+        let harness = try ControlHarness()
+        defer { harness.cleanup() }
+
+        harness.runner.config.mode = "off"
+        let off = try harness.run("state")
+        XCTAssertEqual(off.error?.code, ControlErrorCode.disabled.rawValue,
+                       "mode = off is a switch, not somebody refusing")
+        XCTAssertEqual(off.error?.exit, ControlExit.denied.rawValue)
+
+        harness.runner.config.mode = "readonly"
+        let readOnly = try harness.run("action", args: ["name": .string("new-terminal")])
+        XCTAssertEqual(readOnly.error?.code, ControlErrorCode.disabled.rawValue)
+
+        // A sensitive command the user never switched on is the same story, and the hint has to
+        // point at the switch — that is the only way out of this state
+        harness.runner.config.mode = "ask"
+        harness.runner.config.sendText = false
+        let sensitive = try harness.run("input.send-text", args: ["text": .string("hi")])
+        XCTAssertEqual(sensitive.error?.code, ControlErrorCode.disabled.rawValue)
+        XCTAssertNotNil(sensitive.error?.hint)
+        XCTAssertTrue(sensitive.error?.hint?.contains("send-text") ?? false,
+                      "the hint has to name the config key: \(sensitive.error?.hint ?? "nil")")
+    }
+
+    /// The consent alert is drawn in QuickTerm's own window, so it follows the UI language.
+    /// It used to read `WMAction.help`, which is the Chinese wording and nothing else — an
+    /// English user was asked to approve a sentence half of which was in Chinese. (The Cmd+K
+    /// cheat sheet read the same property; both now go through `localizedHelp`.)
+    func testConsentSummaryDrawsActionHelpInTheUILanguage() throws {
+        let previous = ConfigSchema.templateLanguage
+        defer { _ = Localization.shared.setLanguage(previous) }
+
+        let spec = try XCTUnwrap(ControlCommandTable.command("action"))
+        let request = ControlRequest(id: "1", cmd: "action", args: ["name": .string("close-pane")])
+        func summary() -> String {
+            ControlCommandRunner.consentSummary(request, spec: spec, action: .closePane,
+                                                target: nil, subject: nil)
+        }
+        let cjk = CharacterSet(charactersIn: "\u{4E00}"..."\u{9FFF}")
+
+        _ = Localization.shared.setLanguage(.en)
+        XCTAssertTrue(summary().contains(WMAction.closePane.helpEN))
+        XCTAssertNil(summary().rangeOfCharacter(from: cjk),
+                     "the English alert must not draw Chinese: \(summary())")
+        XCTAssertEqual(WMAction.closePane.localizedHelp, WMAction.closePane.helpEN,
+                       "the accessor the cheat sheet and the alert share has to follow the language")
+
+        _ = Localization.shared.setLanguage(.zh)
+        XCTAssertTrue(summary().contains(WMAction.closePane.help))
+        XCTAssertEqual(WMAction.closePane.localizedHelp, WMAction.closePane.help)
+    }
+}
+
+/// ITEM 4 regression: the consent alert promised "only the current tab is closed" for
+/// `quickterm pane close` as well, and that command closes the **whole pane, tabs and all**. The
+/// user read the reassuring sentence and lost every tab in the pane.
+///
+/// The pane is a **real** one built through the harness (so its teardown is the real one), and
+/// both tabs point at `127.0.0.1:1`, where the connection is refused at once — no DNS, nothing
+/// leaves the machine. `consentSummary` only ever reads the pane's kind and its tab count.
+extension ControlSecurityTests {
+    func testPaneCloseConsentDoesNotPromiseTheTabOnlyWayOut() throws {
+        let harness = try ControlHarness()
+        defer { harness.cleanup() }
+        let controller = try harness.controller
+        controller.model.switchTo(0)
+        let before = Set(controller.model.allPanes.map(\.id))
+        _ = try harness.mutation(try harness.run("pane.new", args: [
+            "kind": .string("browser"), "url": .string("http://127.0.0.1:1/a"),
+        ]))
+        harness.spin(0.35)
+        let made = try XCTUnwrap(harness.app.screens.allPanes.first { !before.contains($0.id) },
+                                 "pane new --kind browser did not create a pane")
+        harness.track(made)
+        let browser = try XCTUnwrap(made as? BrowserPaneView)
+        browser.addTab(url: URL(string: "http://127.0.0.1:1/b"), activate: false)
+        XCTAssertEqual(browser.tabs.count, 2, "precondition: the split only exists above one tab")
+
+        let subject = ControlCommandRunner.PinnedSubject(
+            controller: controller, workspace: controller.model.activeIndex,
+            pane: browser, handle: "w1", paneIDs: nil,
+            description: "w1 \"probe\"", consentText: "w1 “probe”")
+        let tabOnly = L("consent.summary.tab-only")
+        let wholePane = Lp("consent.summary.whole-pane", count: 2, 2)
+
+        // The COMMAND: the whole pane goes
+        let close = try XCTUnwrap(ControlCommandTable.command("pane.close"))
+        let command = ControlCommandRunner.consentSummary(
+            ControlRequest(id: "1", cmd: "pane.close"), spec: close, action: nil,
+            target: nil, subject: subject)
+        XCTAssertFalse(command.contains(tabOnly),
+                       "quickterm pane close closes the pane, tabs and all — this sentence is a "
+                       + "promise it does not keep: \(command)")
+        XCTAssertTrue(command.contains(wholePane),
+                      "and it has to say how many tabs go with it: \(command)")
+
+        // The ACTION (the Cmd+W path): Chrome's semantics, one tab, and the sentence is true
+        let action = try XCTUnwrap(ControlCommandTable.command("action"))
+        let viaAction = ControlCommandRunner.consentSummary(
+            ControlRequest(id: "2", cmd: "action", args: ["name": .string("close-pane")]),
+            spec: action, action: .closePane, target: nil, subject: subject)
+        XCTAssertTrue(viaAction.contains(tabOnly), "close-pane really does close only the tab: \(viaAction)")
+        XCTAssertFalse(viaAction.contains(wholePane))
+    }
+}

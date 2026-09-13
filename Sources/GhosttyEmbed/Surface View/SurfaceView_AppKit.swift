@@ -691,8 +691,15 @@ extension Ghostty {
                 // Check if the user clicked "OK"
                 guard response == .alertFirstButtonReturn  else { return }
 
-                // Get the input text
-                let newTitle = textField.stringValue
+                // QuickTerm: run it through the one title rulebook first (`TitleRules`), the same
+                // one `pane set --title` and the workspace rename sheet use. This `NSTextField`
+                // takes a pasted newline, a pasted escape sequence and a pasted log file without
+                // complaint, and upstream wrote every character of it straight onto the pane: an
+                // ESC lands in the window title bar, and 4000 characters go into every `state`
+                // response. A dialog filters where the command line refuses - and a value that
+                // filters down to nothing is the same answer as `--title ""`: hand it back to the
+                // shell (the branch below).
+                let newTitle = TitleRules.fromTypedInput(textField.stringValue)
                 if newTitle.isEmpty {
                     // Empty means that user wants the title to be set automatically
                     // We also need to reload the config for the "title" property to be

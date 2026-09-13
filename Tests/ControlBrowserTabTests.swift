@@ -375,6 +375,8 @@ final class ControlBrowserTabTests: XCTestCase {
         harness.consent.decisionStub = { _, reply in reply(.deny) }
         let denied = try run("browser.close", target: handle(browser2))
         XCTAssertFalse(denied.ok)
+        // A real human pressed Deny -- `denied` means that and nothing else now; the tab cap in
+        // this same file is `limit`
         XCTAssertEqual(denied.error?.code, ControlErrorCode.denied.rawValue)
         XCTAssertEqual(browser2.tabs.count, 1)
         XCTAssertTrue(try harness.controller.model.allPanes.contains { $0 === browser2 })
@@ -464,6 +466,45 @@ final class ControlBrowserTabTests: XCTestCase {
                                   ControlCommandTable.Flag.failIfNoop: .bool(true)])
         XCTAssertFalse(noop.ok, "a caller that can read the URL still gets idempotence")
         XCTAssertEqual(noop.error?.code, ControlErrorCode.noop.rawValue)
+    }
+
+    // MARK: A tab WebKit has taken for fullscreen
+
+    /// Closing a tab whose web view WebKit currently holds in element fullscreen must be REFUSED,
+    /// not silently skipped.
+    ///
+    /// `BrowserPaneView.closeTab` returns false for such a tab, because tearing that view out of
+    /// WebKit's fullscreen window would leave an empty fullscreen window on the screen. In the app
+    /// that refusal is invisible and right - a keystroke that does nothing. Over the socket the same
+    /// silence is the one answer a caller cannot recover from: it would read `applied: true` with a
+    /// "closed" change for a tab that is still open.
+    func testClosingATabWebKitHoldsInFullscreenIsRefusedNotSwallowed() throws {
+        let browser = try newBrowser()
+        _ = try run("browser.open", target: handle(browser),
+                    args: ["url": .string("http://127.0.0.1:1/b")])
+        harness.spin(0.3)
+        XCTAssertEqual(browser.tabs.count, 2)
+
+        // Stand in for WKFullScreenWindowController: the real web view moves into WebKit's own
+        // window (it also leaves a placeholder behind, which this test does not need).
+        let fsWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
+                                styleMask: [.borderless], backing: .buffered, defer: false)
+        fsWindow.isReleasedWhenClosed = false
+        let victim = browser.tabs[1]
+        victim.webView.removeFromSuperview()
+        fsWindow.contentView!.addSubview(victim.webView)
+        defer {
+            victim.webView.removeFromSuperview()
+            fsWindow.close()
+        }
+
+        harness.consent.decisionStub = { _, reply in reply(.allow) }
+        let reply = try run("browser.close", target: handle(browser), args: ["tab": .string("2")])
+        XCTAssertFalse(reply.ok, "the close must not report success")
+        XCTAssertEqual(reply.error?.code, ControlErrorCode.busy.rawValue)
+        XCTAssertNotNil(reply.error?.hint, "the caller has to be told to leave fullscreen first")
+        XCTAssertEqual(browser.tabs.count, 2, "and nothing may actually close")
+        XCTAssertTrue(browser.tabs.contains { $0 === victim })
     }
 
     // MARK: The trailing slash people leave off

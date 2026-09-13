@@ -79,11 +79,11 @@ final class WorkspaceTitleControlTests: XCTestCase {
         XCTAssertFalse(control.ok)
         XCTAssertEqual(control.error?.code, ControlErrorCode.badRequest.rawValue)
 
-        let long = String(repeating: "a", count: ControlCommandRunner.maxTitleLength + 1)
+        let long = String(repeating: "a", count: TitleRules.maxLength + 1)
         let tooLong = try harness.run("workspace.set", target: ":2", args: ["title": .string(long)])
         XCTAssertFalse(tooLong.ok)
 
-        let exact = String(repeating: "a", count: ControlCommandRunner.maxTitleLength)
+        let exact = String(repeating: "a", count: TitleRules.maxLength)
         try harness.run("workspace.set", target: ":2", args: ["title": .string(exact)]).assertOK()
 
         let nothing = try harness.run("workspace.set", target: ":2", args: [:])
@@ -126,6 +126,77 @@ final class WorkspaceTitleControlTests: XCTestCase {
         let renamed = try XCTUnwrap(events.first, "a rename must emit one workspace.changed")
         XCTAssertEqual(renamed.title, "dev")
         XCTAssertNil(renamed.redacted, "the user typed it themselves, so it is not redacted")
+    }
+
+    /// One event type, three readings — and the title field is what separates them.
+    ///
+    /// A switch and a cleared name used to arrive as the identical bytes
+    /// (`{type:"workspace.changed", workspace:N}`), so a subscriber holding a cached name had no
+    /// way to tell "we moved to workspace 2" from "workspace 2 lost its name". A rename carries the
+    /// name, clearing carries `""`, and a switch carries no title field at all.
+    func testWorkspaceChangedTellsASwitchFromAClearedName() throws {
+        let controller = try harness.controller
+        try harness.run("workspace.set", target: ":2", args: ["title": .string("dev")]).assertOK()
+        harness.spin(0.3)
+
+        let sinceClear = harness.seq
+        try harness.run("workspace.set", target: ":2", args: ["title": .string("")]).assertOK()
+        harness.spin(0.3)
+        let cleared = try XCTUnwrap(harness.events(since: sinceClear).first {
+            $0.type == ControlEventType.workspaceChanged.rawValue && $0.workspace == 2
+        }, "clearing a name must emit one workspace.changed")
+        XCTAssertEqual(cleared.title, "", "an empty string is how \"the name is gone\" is said")
+
+        // Start from a known workspace, or "switch to 2" might be a no-op and emit nothing.
+        controller.switchWorkspace(0)
+        harness.spin(0.2)
+        let sinceSwitch = harness.seq
+        controller.switchWorkspace(1)
+        harness.spin(0.3)
+        let switched = try XCTUnwrap(harness.events(since: sinceSwitch).first {
+            $0.type == ControlEventType.workspaceChanged.rawValue
+        }, "switching workspace must emit one workspace.changed")
+        XCTAssertNil(switched.title, "a switch says nothing about any name, so it carries no title field")
+        controller.switchWorkspace(0)
+        harness.spin(0.2)
+    }
+
+    // MARK: Parity with `pane set --title`
+
+    /// Both `--title` commands run the same `TitleRules`, so a **padded** value and a **blank** one
+    /// have to mean the same thing on both.
+    ///
+    /// Blank is the one that used to differ: `pane set --title "   "` pinned the pane to an
+    /// invisible title that the shell could then never update again — a pane you can neither read
+    /// nor address by name, and no way back except knowing to pass `""`.
+    func testPaddedAndBlankTitlesBehaveTheSameOnBothCommands() throws {
+        // workspace set --title
+        try harness.run("workspace.set", target: ":2", args: ["title": .string("  dev  ")]).assertOK()
+        XCTAssertEqual(try title(of: 2), "dev", "the name is stored trimmed")
+        let paddedAgain = try harness.mutation(try harness.run(
+            "workspace.set", target: ":2", args: ["title": .string(" dev ")]))
+        XCTAssertEqual(paddedAgain["changed"]?.boolValue, false,
+                       "the same name, differently padded, is the same name: no change")
+        let blanked = try harness.mutation(try harness.run(
+            "workspace.set", target: ":2", args: ["title": .string("   ")]))
+        XCTAssertEqual(blanked["changed"]?.boolValue, true)
+        XCTAssertNil(try title(of: 2), "a blank value clears the name, exactly as \"\" does")
+
+        // pane set --title, point for point
+        let pane = try harness.newTerminal()
+        let surface = try XCTUnwrap(pane as? Ghostty.SurfaceView)
+        let handle = ControlHandleRegistry.shared.handle(for: pane)
+        try harness.run("pane.set", target: handle, args: ["title": .string("  dev  ")]).assertOK()
+        XCTAssertEqual(surface.paneTitle, "dev", "the title is pinned trimmed")
+        XCTAssertTrue(surface.hasControlTitle)
+        let panePadded = try harness.mutation(try harness.run(
+            "pane.set", target: handle, args: ["title": .string(" dev ")]))
+        XCTAssertEqual(panePadded["changed"]?.boolValue, false)
+        let paneBlank = try harness.mutation(try harness.run(
+            "pane.set", target: handle, args: ["title": .string("   ")]))
+        XCTAssertEqual(paneBlank["changed"]?.boolValue, true)
+        XCTAssertFalse(surface.hasControlTitle,
+                       "a blank value hands the title back to the shell; it never pins whitespace")
     }
 
     // MARK: A name belongs to the slot
@@ -273,11 +344,5 @@ final class WorkspaceTitleControlTests: XCTestCase {
         XCTAssertNil(controller.windowState().workspaceTitles)
         controller.model.setTitle("dev", at: 0)
         XCTAssertNotNil(controller.windowState().workspaceTitles)
-    }
-}
-
-private extension ControlReply {
-    func assertOK(file: StaticString = #filePath, line: UInt = #line) {
-        XCTAssertTrue(ok, "command failed: \(String(describing: error))", file: file, line: line)
     }
 }

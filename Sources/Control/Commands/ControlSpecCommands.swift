@@ -279,8 +279,11 @@ extension ControlCommandRunner {
             if !$0.contains($1) { $0.append($1) }
         }
         if !deniedDirectories.isEmpty, ctx.flag("require-cwd") {
+            // `cwd_denied` — **the same string the warning carries** when the spec is applied
+            // anyway. One condition, two reportings: an agent branches on that one code and does
+            // not have to know whether --require-cwd was passed.
             throw ControlErrorBody(
-                .denied,
+                .cwdDenied,
                 "\(deniedDirectories.count) directories in this spec are unusable (macOS "
                     + "protected directories, and the Files and Folders permission is missing): "
                     + deniedDirectories.joined(separator: ", ")

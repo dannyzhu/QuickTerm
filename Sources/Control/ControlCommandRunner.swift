@@ -183,7 +183,11 @@ final class ControlCommandRunner {
             return
         }
         guard config.isListening else {
-            fail(ControlErrorBody(.denied, "The control plane is off ([control] mode = \(config.mode))"))
+            // `disabled`, not `denied`: nobody refused anything, a switch is off. Retrying gets
+            // the same answer until the user edits the config, and an agent has to be able to
+            // tell that from "the human clicked Deny this once".
+            fail(ControlErrorBody(.disabled, "The control plane is off ([control] mode = \(config.mode))",
+                                  hint: "Set mode = \"ask\" under [control] in ~/.config/quickterm/config.toml."))
             return
         }
 
@@ -238,7 +242,7 @@ final class ControlCommandRunner {
             return
         }
         if cls == .sensitive, !config.allowsSensitive(spec.name) {
-            fail(ControlErrorBody(.denied, "Sensitive commands are off by default (\(spec.cli))",
+            fail(ControlErrorBody(.disabled, "Sensitive commands are off by default (\(spec.cli))",
                                   hint: config.sensitiveHint(spec.name)))
             return
         }
@@ -249,15 +253,15 @@ final class ControlCommandRunner {
         // This gate comes **before** the confirmation gate: a command that is going to be refused
         // anyway must not first drag the user over to click "Allow"
         if spec.name == "pane.capture-text", request.token != ControlEnvironment.token {
-            logRefusal(request.cmd, peer: peer, request: request, code: .denied, message: "no token")
+            logRefusal(request.cmd, peer: peer, request: request, code: .disabled, message: "no token")
             fail(ControlErrorBody(
-                .denied, "capture-text requires the caller to carry this launch's origin token (QUICKTERM_TOKEN)",
+                .disabled, "capture-text requires the caller to carry this launch's origin token (QUICKTERM_TOKEN)",
                 hint: "Run this command inside a QuickTerm pane, where the environment variable is injected for you; "
                     + "an external process has to inherit QUICKTERM_TOKEN from a pane."))
             return
         }
         if cls.isMutation, !config.allowsMutation {
-            fail(ControlErrorBody(.denied, "The control plane is read-only ([control] mode = \(config.mode))",
+            fail(ControlErrorBody(.disabled, "The control plane is read-only ([control] mode = \(config.mode))",
                                   hint: "Set mode = \"ask\" to allow mutations."))
             return
         }
@@ -409,8 +413,9 @@ final class ControlCommandRunner {
                                tokenPresent: request.token == ControlEnvironment.token,
                                // A send-text grant is **never cached**: typing into somebody
                                // else's tty is asked about every single time. Destructive
-                               // commands are cached once per (pid, class) because closing a
-                               // pane is something the user can see, whereas injected text runs
+                               // commands are cached once per calling pid and command class
+                               // because closing a pane is something the user can see, whereas
+                               // injected text runs
                                // whatever it likes in that shell and can differ completely
                                // from one call to the next
                                cacheable: spec.name != "input.send-text",
@@ -620,7 +625,7 @@ final class ControlCommandRunner {
         // One line = one whole sentence. **Never glue fragments together** ("applies to X" +
         // "· screen 1 · workspace 2"): word order differs between the two languages, so that
         // shape cannot be translated. The location is its own line, and so is "tab only".
-        var lines = [action.map { L("consent.summary.action", $0.rawValue, $0.help) }
+        var lines = [action.map { L("consent.summary.action", $0.rawValue, $0.localizedHelp) }
             ?? L("consent.summary.command", spec.cli, spec.summary)]
         if let subject {
             let controller = subject.controller
@@ -657,11 +662,22 @@ final class ControlCommandRunner {
                 lines.append(L("consent.summary.applies-to", subject.consentText))
                 lines.append(L("consent.summary.location",
                                controller.screenIndex + 1, subject.workspace + 1))
-                // When a browser pane has other tabs, close-pane closes the current tab rather
-                // than the whole pane (Chrome's semantics)
-                let tabOnly = (subject.pane as? BrowserPaneView).map { $0.tabs.count > 1 } ?? false
-                if action == .closePane || spec.name == "pane.close", tabOnly {
-                    lines.append(L("consent.summary.tab-only"))
+                // A browser pane holding more than one tab is the one place where the action
+                // and the command part ways, and the alert has to say which one the user is
+                // looking at:
+                //   `action close-pane` is the Cmd+W path — it closes the current TAB only
+                //     (Chrome's semantics), so the reassuring sentence is true there;
+                //   `quickterm pane close` means "close this pane": the whole thing goes, tabs
+                //     and all (the recorded decision in ControlPaneCommands.paneClose).
+                // Both used to print "only the current tab is closed", which is a promise the
+                // command line does not keep — the user read it and lost every tab in the pane.
+                if let browser = subject.pane as? BrowserPaneView, browser.tabs.count > 1 {
+                    if action == .closePane {
+                        lines.append(L("consent.summary.tab-only"))
+                    } else if spec.name == "pane.close" {
+                        lines.append(Lp("consent.summary.whole-pane", count: browser.tabs.count,
+                                        browser.tabs.count))
+                    }
                 }
             }
         } else if let target, !target.isEmpty {

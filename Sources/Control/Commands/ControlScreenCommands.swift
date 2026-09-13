@@ -95,8 +95,10 @@ extension ControlCommandRunner {
         let controller = scope.controller
         try verifyPinned(ctx, controller: controller)
         guard screens.controllers.count > 1 else {
+            // `limit`: the floor of the screen count, the same structural family as the tab cap.
+            // Nobody refused this — there is simply no screen left to close.
             throw ControlErrorBody(
-                .denied, "This is the last screen: closing it would quit QuickTerm, and the "
+                .limit, "This is the last screen: closing it would quit QuickTerm, and the "
                     + "control surface does not do that",
                 hint: "Quit from QuickTerm's own menu instead: that path asks the user first.")
         }

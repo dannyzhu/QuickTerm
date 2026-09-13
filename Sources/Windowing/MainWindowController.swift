@@ -848,12 +848,12 @@ final class MainWindowController: BaseTerminalController {
         alert.window.initialFirstResponder = field
         let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
-            // The cap comes from the same place as the control-plane command's, but a person is
-            // typing here, so anything over it is truncated instead of raising an error.
-            // Control characters have to be filtered here as well: this `NSTextField` happily
-            // accepts a pasted newline, and a name with a newline lays the pill out over two lines
-            // and bursts through the 26pt status bar.
-            self.model.setTitle(WorkspaceModel.titleFromInput(field.stringValue), at: index)
+            // One rulebook (`TitleRules`), two manners: the command line refuses a bad value, a
+            // dialog filters it. A person is typing here, so anything over the cap is truncated
+            // instead of raising an error, and control characters are dropped - this `NSTextField`
+            // happily accepts a pasted newline, and a name with a newline lays the pill out over
+            // two lines and bursts through the 26pt status bar.
+            self.model.setTitle(TitleRules.fromTypedInput(field.stringValue), at: index)
         }
         // With a window, use a sheet, as "Change Terminal Title" does: a modal floating on some
         // other screen is a dialog the user cannot find.

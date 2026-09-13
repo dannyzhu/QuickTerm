@@ -6,14 +6,14 @@ import XCTest
 /// Workspace names: the truncation rule (a pure function), the status bar's "if it does not fit, the whole
 /// row falls back to numbers", and the slot semantics on the model side.
 ///
-/// This group deliberately stays off a live screen: `WorkspacePill` / `PaneTitleBadge.clamp` are pure
+/// This group deliberately stays off a live screen: `WorkspacePill` and `TitleRules` are pure
 /// functions, and "it does not fit" is precisely the thing a view cannot measure for you, so it has to be
 /// testable at this level.
 final class WorkspaceTitleTests: XCTestCase {
     // MARK: Truncation (the same counting rule as pane titles, capped at 12)
 
     func testShortNamePassesThrough() {
-        XCTAssertEqual(PaneTitleBadge.clamp("dev", to: WorkspacePill.maxCharacters), "dev")
+        XCTAssertEqual(TitleRules.clamp("dev", to: WorkspacePill.maxCharacters), "dev")
         XCTAssertEqual(WorkspacePill.clamped("  dev  "), "dev", "leading and trailing whitespace is not part of the name")
     }
 
@@ -53,8 +53,8 @@ final class WorkspaceTitleTests: XCTestCase {
     /// because of this change.
     func testPaneTitleKeepsItsOwnLimitOnTheSharedRule() {
         let long = String(repeating: "a", count: 40)
-        XCTAssertEqual(PaneTitleBadge.clamp(long)?.count, 20)
-        XCTAssertEqual(PaneTitleBadge.clamp(long, to: WorkspacePill.maxCharacters)?.count, 12)
+        XCTAssertEqual(TitleRules.clamp(long, to: PaneTitleBadge.maxCharacters)?.count, 20)
+        XCTAssertEqual(TitleRules.clamp(long, to: WorkspacePill.maxCharacters)?.count, 12)
         XCTAssertEqual(PaneTitleBadge.fit(title: long, topEdgeWidth: 4000),
                        String(repeating: "a", count: 19) + "…", "the 20-character rule on the border is unchanged")
     }
@@ -276,13 +276,6 @@ final class WorkspaceTitleTests: XCTestCase {
         XCTAssertEqual(model.title(at: 1), "web")
     }
 
-    /// The spec's name cap is the same number as the control-plane command's (Wire cannot reach
-    /// `ControlCommandRunner`, so it is pinned here instead).
-    @MainActor
-    func testSpecTitleLimitMatchesTheCommand() {
-        XCTAssertEqual(SpecLimits.maxTitleCharacters, ControlCommandRunner.maxTitleLength)
-    }
-
     // MARK: The budget versus the pill that is actually laid out
 
     /// A pill's budgeted width has to equal the width SwiftUI actually lays out.
@@ -330,16 +323,61 @@ final class WorkspaceTitleTests: XCTestCase {
     /// Newlines, tabs and DEL pasted into the dialog are filtered out (the CLI errors on them; for a human,
     /// filtering is the only option).
     func testTypedNameLosesControlCharacters() {
-        XCTAssertEqual(WorkspaceModel.titleFromInput("dev\n日志"), "dev日志")
-        XCTAssertEqual(WorkspaceModel.titleFromInput("a\tb\u{7}c\u{7F}"), "abc")
-        XCTAssertEqual(WorkspaceModel.titleFromInput("开发"), "开发", "ordinary characters are left alone")
+        XCTAssertEqual(TitleRules.fromTypedInput("dev\n日志"), "dev日志")
+        XCTAssertEqual(TitleRules.fromTypedInput("a\tb\u{7}c\u{7F}"), "abc")
+        XCTAssertEqual(TitleRules.fromTypedInput("开发"), "开发", "ordinary characters are left alone")
         XCTAssertEqual(
-            WorkspaceModel.titleFromInput(String(repeating: "a", count: 500)).count,
-            ControlCommandRunner.maxTitleLength, "over the limit it truncates rather than erroring")
+            TitleRules.fromTypedInput(String(repeating: "a", count: 500)).count,
+            TitleRules.maxLength, "over the limit it truncates rather than erroring")
         // Filter first, hand it to the model after, and the status bar is left with a single line.
         let model = WorkspaceModel()
-        model.setTitle(WorkspaceModel.titleFromInput("a\nb"), at: 0)
+        model.setTitle(TitleRules.fromTypedInput("a\nb"), at: 0)
         XCTAssertEqual(model.title(at: 0), "ab")
+    }
+
+    // MARK: One rulebook (`TitleRules`)
+
+    /// Both rename sheets hand a typed string to the same function, and what comes out is already
+    /// in the form the command line would have insisted on: trimmed, printable, within the cap.
+    /// **A value that filters down to nothing is a real answer** — it means "hand it back", exactly
+    /// what `--title ""` means, which is what lets the sheet and the command agree.
+    func testTypedInputIsTrimmedAndBlankMeansNoTitle() {
+        XCTAssertEqual(TitleRules.fromTypedInput("  dev  "), "dev")
+        XCTAssertEqual(TitleRules.fromTypedInput("   "), "", "all whitespace is no title at all")
+        XCTAssertEqual(TitleRules.fromTypedInput("\n\t"), "", "and so is a paste of nothing but control characters")
+        XCTAssertEqual(TitleRules.fromTypedInput(""), "")
+        // The cut lands exactly on a space here (199 a's, then a space, then more): what comes out
+        // must not end in whitespace, or the next idempotency check reads it as a difference.
+        let cutOnASpace = TitleRules.fromTypedInput(String(repeating: "a", count: 199) + " more")
+        XCTAssertEqual(cutOnASpace, String(repeating: "a", count: 199))
+    }
+
+    /// The printable rule is one predicate, not three copies of an inequality: C0 (newline and tab
+    /// included), DEL and C1 are all out, everything else is in.
+    func testPrintableRuleCoversC0DelAndC1() {
+        XCTAssertTrue(TitleRules.isPrintable("dev 开发 🧪"))
+        for bad in ["a\nb", "a\tb", "a\u{7}b", "a\u{1B}[31m", "a\u{7F}b", "a\u{85}b", "a\u{9B}b"] {
+            XCTAssertFalse(TitleRules.isPrintable(bad), "\(bad.debugDescription) must not be allowed in a title")
+        }
+        XCTAssertTrue(TitleRules.isPrintable(""), "an empty string has nothing unprintable in it; emptiness is normalized, not refused")
+    }
+
+    /// Trimming is the shared idea behind "a blank value is no value": both `--title` commands and
+    /// both rename sheets go through this one function.
+    func testNormalizedTrimsAndTreatsBlankAsNothing() {
+        XCTAssertEqual(TitleRules.normalized("  dev  "), "dev")
+        XCTAssertNil(TitleRules.normalized("   "))
+        XCTAssertNil(TitleRules.normalized("\n"))
+        XCTAssertNil(TitleRules.normalized(""))
+        XCTAssertNil(TitleRules.normalized(nil))
+    }
+
+    /// The two display caps are **two surfaces, correctly different**, and the rulebook holds no
+    /// default that either could drift onto.
+    func testTheTwoDisplayCapsStayDifferent() {
+        XCTAssertEqual(PaneTitleBadge.maxCharacters, 20)
+        XCTAssertEqual(WorkspacePill.maxCharacters, 12)
+        XCTAssertEqual(TitleRules.maxLength, 200, "what may be stored is a different question from what is drawn")
     }
 
     /// Once the workspace count shrinks, what gets measured is still **the row that is drawn**.

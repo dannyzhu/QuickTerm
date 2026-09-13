@@ -44,7 +44,7 @@
 /* MARK: - downloads (Sources/Panes/BrowserDownloads.swift) */
 
 "browser.download.default-filename" = "下载中的文件";
-/* same-as-english: 纯格式（已下载 / 总量 · 百分比），没有可译的词。 */
+/* same-as-english: pure format (downloaded / total · percent) — there is no word in it to translate. */
 "browser.download.status.progress" = "%1$@ / %2$@ · %3$@%%";
 "browser.download.status.downloading" = "%1$@ · 下载中";
 "browser.download.status.completed" = "已完成 · %1$@";

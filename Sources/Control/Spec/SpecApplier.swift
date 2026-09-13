@@ -175,8 +175,12 @@ final class SpecApplier {
             built.append(Slot(key: item.key, spec: item.pane, request: request, rect: item.rect))
         }
         guard built.count <= ControlRateLimiter.maxPanesPerWorkspace else {
+            // `limit`, not `denied`: nobody refused this caller anything. The number is a fixed
+            // ceiling, so closing a pane makes the very same request succeed - a caller that can
+            // tell the two apart retries, while one that reads `denied` gives up or asks for
+            // permission it does not need.
             throw ControlErrorBody(
-                .denied,
+                .limit,
                 "This spec asks for \(built.count) panes, over the per-workspace limit of \(ControlRateLimiter.maxPanesPerWorkspace)")
         }
         if let columns = spec.visibleColumns, !SpecLimits.visibleColumns.contains(columns) {
@@ -184,15 +188,16 @@ final class SpecApplier {
                                    "visibleColumns must be between \(SpecLimits.visibleColumns.lowerBound) and "
                                        + "\(SpecLimits.visibleColumns.upperBound), got \(columns)")
         }
-        // The name: measured with the same ruler as `workspace set --title` (`SpecParser` already
-        // screens it once, but the applier can also be handed a `WorkspaceSpec` directly - only
-        // screening in both places earns the claim "if it cannot land, nothing is touched").
+        // The name: measured with the same ruler as `workspace set --title` - literally the same
+        // one, `TitleRules` (`SpecParser` already screens it once, but the applier can also be
+        // handed a `WorkspaceSpec` directly - only screening in both places earns the claim "if it
+        // cannot land, nothing is touched").
         if let title = spec.title {
-            guard title.count <= SpecLimits.maxTitleCharacters else {
+            guard title.count <= TitleRules.maxLength else {
                 throw ControlErrorBody(.badRequest,
-                                       "title is too long (\(title.count) characters, limit \(SpecLimits.maxTitleCharacters))")
+                                       "title is too long (\(title.count) characters, limit \(TitleRules.maxLength))")
             }
-            guard title.unicodeScalars.allSatisfy(WorkspaceModel.isTitleScalar) else {
+            guard TitleRules.isPrintable(title) else {
                 throw ControlErrorBody(.badRequest, "title contains control characters")
             }
         }
@@ -416,7 +421,7 @@ final class SpecApplier {
     /// it alone); an inner nil (an empty string was written) = clear the name
     nonisolated static func wantedTitle(_ spec: WorkspaceSpec) -> String?? {
         guard let title = spec.title else { return nil }
-        return .some(WorkspaceModel.normalizedTitle(title))
+        return .some(TitleRules.normalized(title))
     }
 
     // MARK: Assembly (pure value computation)

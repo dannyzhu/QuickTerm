@@ -10,7 +10,7 @@ enum ControlCommandClass: String, Codable, CaseIterable {
     /// Executed silently, but visibly (the Phase 2 status-bar flash plus an undo registration).
     case mutate
     /// Destroys something of the user's (closing a pane or a screen): confirmed once per
-    /// (peer, class).
+    /// calling pid and command class, for the rest of this launch.
     case destructive
     /// Opens a panel or pop-up menu that needs the keyboard: **always refused over the socket**.
     case interactive
@@ -251,7 +251,8 @@ enum ControlCommandTable {
             outputSample: paneMutationSample),
         ControlCommandSpec(
             group: "pane", "close",
-            summary: "Close a pane, killing the processes inside it (destructive; confirmed once per caller)",
+            summary: "Close a pane, killing the processes inside it (destructive; confirmed once per "
+                + "calling pid and command class)",
             cls: .destructive, idempotent: false, acceptsTarget: true,
             args: [
                 ControlArgSpec("force", .bool, help: "skip QuickTerm's own \"a process is still running\" prompt"),
@@ -303,7 +304,8 @@ enum ControlCommandTable {
             outputSample: nil),
         ControlCommandSpec(
             group: "pane", "set",
-            summary: "Absolute setters: zoom / float / column width (the same command twice lands the same result)",
+            summary: "Absolute setters: zoom / float / column width / dwindle split ratio / title "
+                + "(the same command twice lands the same result)",
             cls: .mutate, idempotent: true, acceptsTarget: true,
             args: [
                 ControlArgSpec("zoom", .enumeration, help: "whether this pane fills the content area", values: ["on", "off"]),
@@ -325,8 +327,10 @@ enum ControlCommandTable {
             outputSample: nil),
         ControlCommandSpec(
             group: "pane", "resize",
-            summary: "Resize, the way dragging a divider or a column edge and ⌘⌃arrows do: "
-                + "by ratio, by points, by column width factor; at the boundary it is a no-op (exit 7)",
+            summary: "Resize by ratio, by points or by column width factor, the way dragging a divider or a "
+                + "column edge and ⌘⌃arrows do. **A signed value (+0.05 / +120) is relative to where the "
+                + "divider is now, so a second call moves it again** — only at the boundary is it a no-op "
+                + "(exit 7); a bare value (0.33) is absolute",
             cls: .mutate, idempotent: false, acceptsTarget: true,
             args: [
                 ControlArgSpec("width", .string, help: "scrolling column width factor: a delta (+0.05) or an absolute value (0.33)"),
@@ -382,7 +386,12 @@ enum ControlCommandTable {
             args: [
                 ControlArgSpec("url", .string, help: "URL to open (omit it for the browser home page)"),
                 ControlArgSpec("activate", .enumeration,
-                               help: "whether the new tab becomes the active tab right away", values: ["on", "off"],
+                               help: "a creation option for **the new tab**, not a setter: on opens it in front, "
+                                   + "off opens it behind the current one. It decides nothing about any tab that "
+                                   + "already exists — browser goto navigates a tab without activating it, and "
+                                   + "`action web-next-tab` / `web-prev-tab` are the only way to change which tab "
+                                   + "is active",
+                               values: ["on", "off"],
                                defaultValue: "on"),
             ],
             examples: [
@@ -419,7 +428,8 @@ enum ControlCommandTable {
             outputSample: nil),
         ControlCommandSpec(
             group: "browser", "close",
-            summary: "Close a tab (destructive). **Closing the last tab closes the whole pane** — exactly what ⌘W does",
+            summary: "-t names the pane; --tab picks the tab (default: the active one). Closes that one tab "
+                + "(destructive). **Closing the last tab closes the whole pane** — exactly what ⌘W does",
             cls: .destructive, idempotent: false, acceptsTarget: true,
             args: [
                 ControlArgSpec("tab", .string, help: ControlTabRef.help, defaultValue: "@active"),
@@ -758,6 +768,8 @@ enum ControlCommandTable {
         ControlArgSpec("help", .bool, help: "help (every subcommand's help ends with EXAMPLES)"),
         ControlArgSpec("dry-run", .bool, help: "report what would change and change nothing (mutating commands only)"),
         ControlArgSpec("fail-if-noop", .bool, help: "exit 7 when already in the requested state instead of succeeding silently"),
+        ControlArgSpec("start", .bool,
+                       help: "launch QuickTerm first if it is not running, then wait (up to 10s)"),
     ]
 
     /// The keys of the two global flags every mutating command accepts (the server branches on

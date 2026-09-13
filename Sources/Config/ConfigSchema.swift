@@ -314,6 +314,18 @@ struct ConfigKeySpec {
     var defaultValue: ConfigValue
     /// Takes effect the moment the file is saved.
     var hotReload: Bool
+    /// The label and the help text, both languages, **hard-coded here as a pair** rather than
+    /// looked up in the `.lproj` catalog like every other user-visible string.
+    ///
+    /// This registry is not only what a settings window would draw. It is also the source of the
+    /// `config.toml` template (the comments in a user's own config file), the source of the
+    /// `quickterm` CLI's English help, and what `ConfigSchemaTests.testEveryKeyIsDocumented` reads
+    /// when it checks both READMEs. Two of those three run in the CLI target, which has neither
+    /// AppKit nor the `.lproj` directories compiled into it, so a catalog lookup here would not
+    /// resolve at all.
+    /// The consequence is deliberate and worth stating: a third UI language is a folder drop for
+    /// the catalog (`fr.lproj`), and a rewrite of this file — every key gains a wording, or the
+    /// pair becomes a dictionary. Do that as its own change, not as a side effect of adding a key.
     var labelZH: String
     var labelEN: String
     var helpZH: String
@@ -453,10 +465,12 @@ enum ConfigSchema {
                       helpZH: """
                       auto = 跟随系统 | en = English | zh = 简体中文
                       只管**界面**：程序日志与 quickterm 命令行始终是英文
+                      系统自己画的文字（隐私授权提示、AppKit 与 WebKit 的标准对话框）跟随 macOS，不受这个键控制
                       """,
                       helpEN: """
                       auto (follow the system) | en | zh
                       UI only: the logs and the quickterm CLI are English in both languages
+                      Text macOS draws itself — privacy prompts, standard AppKit and WebKit dialogs — follows macOS, not this key
                       """,
                       valueAliases: ["zh-hans": "zh", "zh-cn": "zh", "zh_cn": "zh",
                                      "zh-hant": "zh", "zh-tw": "zh",

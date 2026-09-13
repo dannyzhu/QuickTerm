@@ -136,3 +136,15 @@ final class ControlHarness {
         spin(0.2)
     }
 }
+
+/// `assertOK` used to be copy-pasted, `fileprivate`, at the bottom of two test files; a third file
+/// reaching for it is what turned "harmless duplication" into a build failure. It lives here
+/// because `ControlHarness.swift` is the one file every control-plane case already links against.
+extension ControlReply {
+    /// Assert the command succeeded, and put the *error* in the failure message — the whole point
+    /// of the helper. `XCTAssertTrue(reply.ok)` on its own reports "XCTAssertTrue failed", which
+    /// tells you nothing about which of the twenty commands in the case broke or why.
+    func assertOK(file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(ok, "command failed: \(String(describing: error))", file: file, line: line)
+    }
+}

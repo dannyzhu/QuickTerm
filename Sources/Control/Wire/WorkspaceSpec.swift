@@ -54,9 +54,10 @@ enum SpecLimits {
     /// The byte ceiling on one spec (a single NDJSON line caps at 1 MiB, and escaping needs
     /// headroom on top of that).
     static let maxBytes = 256 * 1024
-    /// == `ControlCommandRunner.maxTitleLength` (the workspace name; Wire cannot reach that side,
-    /// so the tests lock the two values together).
-    static let maxTitleCharacters = 200
+    // The workspace name's ceiling is **not** here: it is `TitleRules.maxLength`, the same constant
+    // the command layer enforces. It used to be a second 200 in this file, tied to the first one by
+    // a test that asserted the two numbers were equal - which is not a rule, it is a copy with a
+    // guard on it.
 }
 
 /// One pane inside a spec. **Every field may be omitted**, and each one's default when omitted is
@@ -502,20 +503,18 @@ enum SpecValidator {
             intInRange(columns, SpecLimits.visibleColumns, at: join(path, "visibleColumns"), into: &issues)
         }
         if let title = object["title"], title != .null {
-            // Validation lines up item for item with `workspace set --title`: length, control
-            // characters.
-            // If the spec side were the laxer of the two, the result would be "validate passed, but
-            // apply was rejected by the command layer"
+            // Validation is `workspace set --title`'s, literally: the same `TitleRules` the command
+            // layer calls, not a second reading of it. If the spec side were the laxer of the two,
+            // the result would be "validate passed, but apply was rejected by the command layer"
             guard let text = title.stringValue else {
                 issues.append(.init(path: join(path, "title"), message: "must be a string (an empty string clears the name)"))
                 return
             }
-            if text.count > SpecLimits.maxTitleCharacters {
+            if text.count > TitleRules.maxLength {
                 issues.append(.init(path: join(path, "title"),
-                                    message: "at most \(SpecLimits.maxTitleCharacters) characters, this one has \(text.count)"))
+                                    message: "at most \(TitleRules.maxLength) characters, this one has \(text.count)"))
             }
-            if text.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F
-                                                     || (0x80...0x9F).contains($0.value) }) {
+            if !TitleRules.isPrintable(text) {
                 issues.append(.init(path: join(path, "title"), message: "must not contain control characters"))
             }
         }

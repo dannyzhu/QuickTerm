@@ -27,7 +27,7 @@
 "menu.edit.paste" = "粘贴";
 "menu.edit.select-all" = "全选";
 
-/* same-as-english: 中文界面里 Shell 就叫 Shell。 */
+/* same-as-english: the Chinese UI calls a shell "Shell" too. */
 "menu.shell" = "Shell";
 "menu.shell.new-terminal" = "新建终端";
 "menu.shell.file-manager" = "文件管理器";
@@ -35,7 +35,7 @@
 "menu.shell.clear-terminal" = "清屏";
 "menu.shell.close-pane" = "关闭 Pane";
 
-/* same-as-english: 全 app 的中文都把一个格子叫 pane（「关闭 Pane」「Pane 缩放」），不译。 */
+/* same-as-english: the Chinese UI calls one cell of the grid a "pane" everywhere else as well, so the noun itself stays English. */
 "menu.pane" = "Pane";
 "menu.pane.focus-left" = "焦点左移";
 "menu.pane.focus-right" = "焦点右移";

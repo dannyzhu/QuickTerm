@@ -295,15 +295,28 @@ Every boolean key in the config (here and everywhere else) accepts `true` / `1` 
 
 - Reads are silent — but **browser pane URLs and titles are redacted** for callers that did not inherit `QUICKTERM_TOKEN`. Browser panes hold logged-in sessions, so `quickterm state` is itself a disclosure surface.
 - Mutations are silent but **visible**: the status bar flashes the command and its claimed origin pane, everything is recorded in QuickTerm's control activity log, and layout changes register an undo entry (`Cmd+Z`). Mutations are rate-limited per caller, and every mutating command is refused while a modal dialog is up.
-- Destructive commands (`pane close`, `workspace clear`, `screen close`, `spec apply --replace`) ask the user **inside QuickTerm**, once per (calling pid, command class). The process name and pid in the dialog come from the kernel (`LOCAL_PEERPID`), so a copied token cannot fake them.
+- Destructive commands — the ones that **close something of the user's** (`pane close`, `browser close`, `workspace clear`, `screen close`, `spec apply --replace`) — ask the user **inside QuickTerm**, once per calling pid and command class, and that answer is remembered for the rest of this launch. The process name and pid in the dialog come from the kernel (`LOCAL_PEERPID`), so a copied token cannot fake them. `--force` does **not** skip this: it skips QuickTerm's own "a process is still running" prompt, a different prompt and the only one it applies to.
 - **Browser tabs and terminal screens.** `browser open | goto | reload | close` drive the tabs of a browser pane: `-t` picks the pane, `--tab` picks the tab inside it (1-based index, `#<id prefix>`, `@active`, `@last` — all of them visible in the `tabList` that `state` and `get` now report). Navigating is an absolute setter, closing the last tab closes the pane exactly like `Cmd+W`, and per-tab titles and URLs are redacted for a caller without `QUICKTERM_TOKEN`, exactly like the pane-level ones (for that caller `goto` always navigates rather than reporting a no-op, so "did it change?" cannot become a yes/no oracle for a URL it is not allowed to read). URLs and titles reach the in-app activity log but never the system-wide unified log, which only records the path that changed. `pane capture-text` returns what a terminal pane shows right now — see below for why it is gated harder than a read.
 - `input send-text` and `pane capture-text` are **separate opt-ins, both off by default**, and a grant for one is never a grant for the other. `input send-text` is off by default and is arbitrary code execution in whatever shell is there — possibly root, possibly a live ssh session. Once enabled, writing into the caller's own pane needs no prompt (that tty is already its own), and the caller has to *prove* that with the per-pane `QUICKTERM_PANE_TOKEN` it inherited — the self-reported `QUICKTERM_PANE` buys nothing, because the server cannot verify it. **Every other pane prompts every single time**, and the dialog shows the exact text that would be typed and whether a newline follows. Control characters are refused, and a newline requires an explicit `--enter`.
-- `pane capture-text` is classified `sensitive`, not `read`: a shell screen can hold a token, a password typed at a prompt, private source. It needs `[control] capture-text = true`, the caller must carry `QUICKTERM_TOKEN` (the same one browser redaction turns on), and the user confirms once per calling process — there is no "reading your own pane" exemption, because a process cannot normally read its own tty's scrollback either. It refuses `--dry-run` (elsewhere that flag also means "do not prompt", which here would be a way around the gate), and the captured text is returned once and written to no log.
+- `pane capture-text` is classified `sensitive`, not `read`: a shell screen can hold a token, a password typed at a prompt, private source. It needs `[control] capture-text = true`, the caller must carry `QUICKTERM_TOKEN` (the same one browser redaction turns on), and it is confirmed once per calling process — there is no "reading your own pane" exemption, because a process cannot normally read its own tty's scrollback either. It refuses `--dry-run` (elsewhere that flag also means "do not prompt", which here would be a way around the gate), and the captured text is returned once and written to no log.
 - A `--cwd` that macOS privacy rules refuse (the protected `~/Desktop` / `~/Documents` / `~/Downloads` without a Files-and-Folders grant) no longer succeeds silently: the response carries a `cwd_denied` warning naming the path, the reason and how to grant access, and `--require-cwd` turns it into an error that creates nothing at all. `spec apply` reports the same thing. Browser panes never consume `--cwd`, so neither the warning nor `--require-cwd` applies to them.
 - Connections must come from the same uid (`LOCAL_PEERCRED`); the socket is `0600` inside a `0700` directory. There is no TCP listener and no escape-sequence channel, ever.
 - **`QUICKTERM_TOKEN` is proof of origin, not a permission boundary.** There is one per app launch, injected into every pane, so it answers "this came from *some* QuickTerm pane" and never skips a confirmation. `QUICKTERM_PANE_TOKEN` is one per pane (`HMAC(per-launch key, paneID)`) and answers the question the first one cannot — *which* pane — but it too is not a boundary: it is used in exactly one place, the `send-text` self-write exemption.
 
 The real threat is not another user on the machine — it is a **confused deputy**: an agent running in a pane reads a poisoned web page, README or CI log and is told to run `quickterm` commands. That is why the gate ships in the first version rather than a later one.
+
+### Errors: read `code`, not the exit and not the prose
+
+Errors come back as JSON on stderr with a stable `code` and an `exit`. **Exit codes are coarse on purpose** — five codes share exit 5 (`denied`), and they ask for opposite things:
+
+| `code` | what happened | is retrying worth it |
+|---|---|---|
+| `denied` | a human pressed **Deny** in QuickTerm's dialog | possibly — but ask the user, do not loop |
+| `disabled` | a switch is off: `mode = "off"` / `"readonly"`, a sensitive command never enabled, `mcp = false`, or `pane capture-text` from a caller with no `QUICKTERM_TOKEN` | no, not until the config changes; the `hint` names the switch |
+| `cwd_denied` | `--require-cwd` plus a directory macOS will not hand over — nothing was created | no, not until the Files-and-Folders grant is given |
+| `limit` | a structural cap or floor: tabs per browser pane, panes per workspace, the last screen | no, not until something is closed or freed |
+
+`cwd_denied` is spelled exactly like the `cwd_denied` that appears in `warnings[]` on a *successful* reply, and deliberately so: one condition, two reportings — a warning when the command proceeds anyway, an error when `--require-cwd` says it must not. New codes are only ever appended.
 
 ### MCP
 
@@ -320,6 +333,8 @@ Tool annotations (`readOnlyHint` / `destructiveHint` / `idempotentHint`) are map
 ### Honest limits
 
 - Short handles (`t7`, `b3`) are stable only for one run of QuickTerm; the only identity that survives a restart is the pane `id` (a UUID).
+- A pane title you set is **pinned**: `state` / `list` / `get` mark it `titleSet: true`, and a pane whose title still belongs to the shell omits the field entirely (the convention `redacted` follows). `pane set --title` trims whitespace, and a blank value means the same as an empty one — hand the title back — rather than pinning an invisible name the shell could never update again. Whether it "changed" is decided by whether the title has been **taken over**, not by whether the string happens to match.
+- `workspace.changed` covers both a switch and a rename, and its `title` field separates them three ways: **absent** = a switch · **a name** = renamed · **`""`** = the name was cleared. Absent and empty are not the same thing.
 - Events carry structure, titles and cwd — **never pane output**. To read what is on a terminal's screen there is one deliberate, opt-in, per-process-confirmed door: `pane capture-text`.
 - Some changes bump `seq` without a typed event (`app set theme`, `screen set --fullscreen`): you learn your snapshot is stale, then re-read `state`.
 - `events follow` is a stream for humans and shell scripts; agents should long-poll with `events poll --since`.
@@ -339,7 +354,7 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 # Keys are grouped by function — one group = one tab in the settings UI.
 
 [general]
-# language = "auto"  # auto (follow the system) | en | zh — the UI only; logs and the CLI are always English
+# language = "auto"  # auto (follow the system) | en | zh — the UI only; logs and the CLI are always English, and text macOS draws itself follows macOS
 
 [appearance]
 # theme = "tokyo-night"  # or "ghostty": don't touch colours, follow ~/.config/ghostty/config entirely

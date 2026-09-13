@@ -333,6 +333,11 @@ final class ControlEventBus {
         var screenID: UUID
         var workspace: Int
         var title: String
+        /// Has the title been taken over (`pane set --title`, or the rename sheet)? It is part of
+        /// the snapshot, not a decoration on the event: pinning a pane to the exact title the shell
+        /// is already reporting changes no text at all, and without this the stream would go silent
+        /// on a change `state` does report.
+        var titleSet: Bool
         var cwd: String?
         /// A browser pane: title / cwd have to be redacted according to `expose-browser`
         var redactable: Bool
@@ -345,7 +350,9 @@ final class ControlEventBus {
         var signature: String
         /// The slot's name: a change here reports one workspace.changed (**no new event type** —
         /// "something about this workspace changed" is exactly what that event already means, and
-        /// another type would only make subscribers write another branch)
+        /// another type would only make subscribers write another branch). What tells a rename
+        /// apart from a switch is the title field: absent = a switch, `""` = the name was cleared
+        /// (see `diff`)
         var title: String?
     }
 
@@ -411,6 +418,7 @@ final class ControlEventBus {
                 screenID: controller.windowID,
                 workspace: workspace + 1,
                 title: pane.paneTitle,
+                titleSet: pane.customTitle != nil,
                 cwd: pane.workingDirectory,
                 redactable: pane is BrowserPaneView)
             paneOrder.append(pane.id)
@@ -488,11 +496,20 @@ final class ControlEventBus {
                     let a = before.workspaces[index]
                     let b = now.workspaces[index]
                     // Renaming: words the user wrote themselves, the same class as a pane
-                    // title — not redacted
+                    // title — not redacted.
+                    // **`?? ""` is the whole point of this line.** One event type covers both "the
+                    // screen switched workspace" and "this workspace was renamed" (deliberately:
+                    // "something about this workspace changed" is what the type already means, and
+                    // a second type would only make every subscriber write a second branch). With
+                    // a nil title the two are the same bytes on the wire — a switch and a cleared
+                    // name both arrive as `{type:"workspace.changed", workspace:N}`. An empty
+                    // string separates them: no title field = a switch, `""` = the name was
+                    // cleared, any other string = the new name. That is the convention
+                    // pane.title.changed already follows.
                     if a.title != b.title {
                         out.append(Record(event: ControlEvent(
                             type: .workspaceChanged, screen: now.index, screenID: id.uuidString,
-                            workspace: index + 1, title: b.title), redactable: false))
+                            workspace: index + 1, title: b.title ?? ""), redactable: false))
                     }
                     guard a.layout != b.layout || a.signature != b.signature else { continue }
                     out.append(Record(event: ControlEvent(
@@ -503,11 +520,12 @@ final class ControlEventBus {
             // 4) Titles / cwd
             for id in new.paneOrder {
                 guard let now = new.panes[id], let before = old.panes[id] else { continue }
-                if before.title != now.title {
+                if before.title != now.title || before.titleSet != now.titleSet {
                     out.append(Record(event: ControlEvent(
                         type: .paneTitleChanged, screen: now.screenIndex,
                         screenID: now.screenID.uuidString, workspace: now.workspace,
-                        pane: now.handle, paneID: id.uuidString, kind: now.kind, title: now.title),
+                        pane: now.handle, paneID: id.uuidString, kind: now.kind, title: now.title,
+                        titleSet: now.titleSet ? true : nil),
                         redactable: now.redactable))
                 }
                 if before.cwd != now.cwd, let cwd = now.cwd {

@@ -548,6 +548,59 @@ final class MCPToolMapTests: XCTestCase {
                       "the action table in describe carries both the Chinese and the English help")
     }
 
+    /// **What an agent has to be able to branch on after reading describe once.**
+    ///
+    /// `ok: true` reads as "everything you asked for happened", and `cwd_denied` is the case where
+    /// it did not: the pane opened somewhere other than the directory that was asked for. Same for
+    /// `confirmPending` — the call succeeded and the pane is still open, because a human has not
+    /// answered yet. Neither is discoverable from `commands[]`, so describe has to say it outright
+    /// or the agent only learns it by being wrong once.
+    func testDescribeCarriesTheWarningsAndEnvelopeAnAgentBranchesOn() throws {
+        let document = ControlDescribeDocument.make(cliVersion: "1.5.9", appVersion: "1.5.9",
+                                                    socket: "/tmp/x.sock", mode: "ask")
+        XCTAssertEqual(document.warnings.codes.map(\.code), [ControlWarning.cwdDenied],
+                       "cwd_denied is the only warning code today; a new one has to be described here too")
+        XCTAssertTrue(document.warnings.summary.contains("SUCCESSFUL"),
+                      "the point of the section is that a warning rides on a reply that succeeded: "
+                          + document.warnings.summary)
+        XCTAssertEqual(Set(document.mutationEnvelope.map(\.field)),
+                       ["applied", "changed", "confirmPending", "note"])
+        XCTAssertTrue(document.mutationEnvelope.allSatisfy { !$0.summary.isEmpty })
+        // `--start` used to be appended by hand to the text help only, which left the one flag
+        // that makes a command work when QuickTerm is not running out of the machine-readable side
+        XCTAssertTrue(document.globalFlags.contains { $0.name == "start" },
+                      "--start has to be a row of globalFlags, not a line hand-written into --help")
+
+        // Through the encoder: describe is read as JSON, and a section that only exists in the
+        // Swift type is of no use to the caller it was written for
+        let data = try ControlJSON.encoder.encode(document)
+        let raw = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let warnings = try XCTUnwrap(raw["warnings"] as? [String: Any])
+        let codes = try XCTUnwrap(warnings["codes"] as? [[String: Any]])
+        XCTAssertEqual(codes.first?["code"] as? String, ControlWarning.cwdDenied)
+        XCTAssertEqual((raw["mutationEnvelope"] as? [[String: Any]])?.count, 4)
+    }
+
+    /// A tool whose `idempotentHint` is false must not promise repeat safety **in its own summary**
+    /// either. `safetyLine` is already pinned, but the summary is the half a model reads first, the
+    /// two sit inside one tool object, and when they contradict each other the prose wins.
+    /// Regression: `quickterm_arrange` ended with "Running the same call twice leaves the same
+    /// state" while backing `pane resize` (a relative step), `pane move` and `pane swap`.
+    func testNoToolSummaryPromisesRepeatSafetyItsAnnotationDenies() throws {
+        for tool in MCPToolMap.tools where !tool.idempotentHint {
+            XCTAssertFalse(tool.summary.contains("Running the same call twice leaves the same state"),
+                           "\(tool.name) is annotated idempotentHint=false, so its summary must not tell "
+                               + "the model a resend is free: \(tool.summary)")
+        }
+        let arrange = try XCTUnwrap(MCPToolMap.tool(named: "quickterm_arrange"))
+        XCTAssertFalse(arrange.idempotentHint)
+        for spec in arrange.commands where !spec.idempotent {
+            XCTAssertTrue(arrange.summary.contains(spec.cli),
+                          "\(spec.cli) is not replayable, so the summary that groups it with the absolute "
+                              + "setters has to name it: \(arrange.summary)")
+        }
+    }
+
     /// `mcp` is a local command: sent over the socket it has to be refused explicitly, not fall
     /// into "not implemented in this phase yet"
     func testLocalCommandsAreRefusedOverTheSocket() throws {

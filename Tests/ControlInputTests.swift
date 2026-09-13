@@ -55,7 +55,7 @@ final class ControlInputTests: XCTestCase {
                                     target: "#\(pane.id.uuidString)",
                                     args: ["text": .string("echo hi")])
         XCTAssertFalse(reply.ok)
-        XCTAssertEqual(reply.error?.code, ControlErrorCode.denied.rawValue)
+        XCTAssertEqual(reply.error?.code, ControlErrorCode.disabled.rawValue)
         XCTAssertEqual(reply.error?.exit, ControlExit.denied.rawValue)
         XCTAssertTrue(reply.error?.hint?.contains("send-text = true") ?? false,
                       "the refusal has to say how to turn it on")
@@ -92,7 +92,7 @@ final class ControlInputTests: XCTestCase {
         let reply = try harness.run("input.send-text", target: "#\(pane.id.uuidString)",
                                     args: ["text": .string("echo hi")])
         XCTAssertFalse(reply.ok)
-        XCTAssertEqual(reply.error?.code, ControlErrorCode.denied.rawValue)
+        XCTAssertEqual(reply.error?.code, ControlErrorCode.disabled.rawValue)
     }
 
     // MARK: Gate three: consent
@@ -151,6 +151,8 @@ final class ControlInputTests: XCTestCase {
                                      args: ["text": .string("echo nope")],
                                      token: ControlEnvironment.token, origin: mineOrigin)
         XCTAssertFalse(denied.ok)
+        // A real human pressed Deny -- the one thing `denied` still means (the switch-off cases
+        // in this same file assert `disabled`)
         XCTAssertEqual(denied.error?.code, ControlErrorCode.denied.rawValue)
     }
 

@@ -330,6 +330,11 @@ struct ControlStateEncoder {
             at: position,
             size: Self.paneSize(pane, controller: controller, workspace: workspace, float: float),
             title: hide ? Self.redacted : pane.paneTitle,
+            // "Has it been taken over" - `customTitle` is the base class's hook onto exactly that
+            // (a terminal pane's `hasControlTitle`; a browser pane has no such thing, its title is
+            // the page's). Encoded only when true, the same way `redacted` is: an absent field
+            // means the shell still owns the title.
+            titleSet: pane.customTitle != nil ? true : nil,
             cwd: pane.workingDirectory,
             url: browser.map { hide ? Self.redacted : ($0.currentURL?.absoluteString ?? "") },
             tabs: browser?.tabs.count,

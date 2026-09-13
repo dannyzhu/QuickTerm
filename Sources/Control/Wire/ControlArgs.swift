@@ -19,10 +19,10 @@ enum ArgsError: Error, CustomStringConvertible {
     case missingVerb(group: String, verbs: [String])
     case unknownVerb(group: String, verb: String, verbs: [String])
     case unknownFlag(String, command: String?)
-    case missingValue(String)
+    case missingValue(String, command: String)
     case missingPositional(String, command: String)
-    case tooManyPositionals(String)
-    case badEnum(flag: String, value: String, allowed: [String])
+    case tooManyPositionals(String, command: String)
+    case badEnum(flag: String, value: String, allowed: [String], command: String)
 
     var description: String {
         switch self {
@@ -34,14 +34,34 @@ enum ArgsError: Error, CustomStringConvertible {
             "quickterm \(group) has no \(verb) verb; available: \(verbs.joined(separator: " | "))"
         case .unknownFlag(let flag, let command):
             "Unknown option \(flag)\(command.map { " (quickterm \($0) --help)" } ?? "")"
-        case .missingValue(let flag):
+        case .missingValue(let flag, _):
             "\(flag) needs a value"
         case .missingPositional(let name, let command):
             "quickterm \(command) is missing the argument <\(name)>"
-        case .tooManyPositionals(let value):
+        case .tooManyPositionals(let value, _):
             "Unexpected extra argument: \(value)"
-        case .badEnum(let flag, let value, let allowed):
+        case .badEnum(let flag, let value, let allowed, _):
             "\(flag) does not accept \(value); allowed values: \(allowed.joined(separator: " | "))"
+        }
+    }
+
+    /// The `hint` the CLI puts on the error envelope.
+    ///
+    /// `quickterm --help` is ~100 lines aimed at a model reading the whole control plane in one
+    /// go. Someone who mistyped one flag of one command wants that command's own help, which ends
+    /// with EXAMPLES — so whenever the parse got far enough to know the noun (and the verb),
+    /// point at that. Falling back to the root help only for the cases where nothing is known.
+    var helpHint: String {
+        switch self {
+        case .unknownFlag(_, let command):
+            command.map { "quickterm \($0) --help" } ?? "quickterm --help"
+        case .missingValue(_, let command), .missingPositional(_, let command),
+             .badEnum(_, _, _, let command), .tooManyPositionals(_, let command):
+            "quickterm \(command) --help"
+        case .missingVerb(let group, _), .unknownVerb(let group, _, _):
+            "quickterm \(group) --help"
+        case .unknownCommand:
+            "quickterm --help"
         }
     }
 }
@@ -140,7 +160,7 @@ enum Args {
             }
             func value() throws -> String {
                 if let inlineValue { return inlineValue }
-                guard index < tokens.count else { throw ArgsError.missingValue(name) }
+                guard index < tokens.count else { throw ArgsError.missingValue(name, command: spec.cli) }
                 let v = tokens[index]
                 index += 1
                 return v
@@ -167,7 +187,7 @@ enum Args {
                 // "unknown option" — a shorthand should not quietly turn into a global flag that
                 // exists everywhere.
                 guard spec.args.contains(where: { $0.name == "file" }) else {
-                    throw ArgsError.unknownFlag(token, command: spec.name)
+                    throw ArgsError.unknownFlag(token, command: spec.cli)
                 }
                 parsed.args["file"] = .string(try value())
             case "-h", "--help":
@@ -175,7 +195,7 @@ enum Args {
             default:
                 let long = name.hasPrefix("--") ? String(name.dropFirst(2)) : String(name.dropFirst())
                 guard let arg = spec.args.first(where: { $0.name == long && !$0.positional }) else {
-                    throw ArgsError.unknownFlag(token, command: spec.name)
+                    throw ArgsError.unknownFlag(token, command: spec.cli)
                 }
                 switch arg.kind {
                 case .bool:
@@ -196,7 +216,8 @@ enum Args {
                 case .enumeration:
                     let v = try value()
                     guard arg.values?.contains(v) ?? true else {
-                        throw ArgsError.badEnum(flag: name, value: v, allowed: arg.values ?? [])
+                        throw ArgsError.badEnum(flag: name, value: v, allowed: arg.values ?? [],
+                                                command: spec.cli)
                     }
                     parsed.args[arg.name] = .string(v)
                 }
@@ -215,10 +236,13 @@ enum Args {
 
     private static func takePositional(_ value: String, into parsed: inout ParsedCommand,
                                        remaining: inout [ControlArgSpec]) throws {
-        guard !remaining.isEmpty else { throw ArgsError.tooManyPositionals(value) }
+        guard !remaining.isEmpty else {
+            throw ArgsError.tooManyPositionals(value, command: parsed.spec.cli)
+        }
         let arg = remaining.removeFirst()
         if arg.kind == .enumeration, let allowed = arg.values, !allowed.contains(value) {
-            throw ArgsError.badEnum(flag: arg.name, value: value, allowed: allowed)
+            throw ArgsError.badEnum(flag: arg.name, value: value, allowed: allowed,
+                                    command: parsed.spec.cli)
         }
         parsed.args[arg.name] = .string(value)
     }

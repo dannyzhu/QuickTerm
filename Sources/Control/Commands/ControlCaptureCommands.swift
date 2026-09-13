@@ -15,7 +15,7 @@ import GhosttyKit
 /// 2. **This launch's token is mandatory**: a caller without `QUICKTERM_TOKEN` is always refused -
 ///    that is the very same token that gates browser-URL redaction. Whoever cannot read a browser
 ///    URL certainly should not be reading someone else's tty;
-/// 3. **One confirmation per calling process** (at `(pid, command)` granularity, see
+/// 3. **Confirmed once per calling process** (at `(pid, command)` granularity, see
 ///    `ControlConsent`): there is a first time only after the user has seen "such-and-such process
 ///    wants to read the screen contents of t7" inside QuickTerm and clicked "allow";
 /// 4. **The body leaves no trace anywhere**: not in the activity log (read commands are not logged

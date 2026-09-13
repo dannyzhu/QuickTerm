@@ -153,6 +153,18 @@ extension Localization {
         string(Self.pluralKey(base, count: count), arguments)
     }
 
+    /// `<base>.one` when `count == 1`, `<base>.other` for every other count — **and those two
+    /// categories are the entire rule table**.
+    ///
+    /// That holds for exactly the two languages QuickTerm ships: English separates 1 from
+    /// everything else, and Chinese separates nothing (both keys carry the same sentence there,
+    /// which is correct rather than an untranslated duplicate). CLDR has six categories — zero,
+    /// one, two, few, many, other — and Russian, Polish or Arabic pick between them with
+    /// `count % 10` / `count % 100` arithmetic this line cannot express; `0` is its own category
+    /// in some, and `2` in others.
+    /// So a third language of that kind is not an extra branch here. It needs a real rule table
+    /// (or the job handed to `.stringsdict`, which is where the system keeps CLDR's): one more
+    /// `if` would be right for the language it was added for and quietly wrong for the rest.
     static func pluralKey(_ base: String, count: Int) -> String {
         "\(base).\(count == 1 ? "one" : "other")"
     }

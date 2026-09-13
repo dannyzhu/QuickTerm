@@ -52,8 +52,9 @@ extension ControlCommandRunner {
     }
 
     /// `workspace set --title`: name the **slot**. Lined up point by point with
-    /// `pane set --title` - an empty string is a meaningful value (clear the name), a 200-character
-    /// ceiling, control characters always refused, the change treated as sensitive. The name
+    /// `pane set --title`, because both run the same `TitleRules` - an empty *or blank* string is a
+    /// meaningful value (clear the name), the value is trimmed, `TitleRules.maxLength` is the
+    /// ceiling, control characters are always refused, the change is treated as sensitive. The name
     /// **does not describe the contents**: neither `workspace clear` nor `spec apply --replace`
     /// touches it, which makes this command (together with rename from the context menu) the only
     /// entry point that can change it
@@ -68,18 +69,20 @@ extension ControlCommandRunner {
                                    "workspace set needs at least one value to set (--title)",
                                    hint: "quickterm workspace set --help")
         }
-        guard title.count <= ControlCommandRunner.maxTitleLength else {
+        guard title.count <= TitleRules.maxLength else {
             throw ControlErrorBody(
                 .badRequest,
                 "--title is too long (\(title.count) characters, limit "
-                    + "\(ControlCommandRunner.maxTitleLength))")
+                    + "\(TitleRules.maxLength))")
         }
-        guard title.unicodeScalars.allSatisfy(WorkspaceModel.isTitleScalar) else {
+        guard TitleRules.isPrintable(title) else {
             throw ControlErrorBody(.badRequest, "--title contains control characters",
                                    hint: "The name is drawn verbatim into the workspace pill in "
                                        + "the status bar and into the title field in state.")
         }
-        let wanted = WorkspaceModel.normalizedTitle(title)
+        // Trim before comparing: `--title " dev "` after `--title "dev"` is the same name, and an
+        // idempotency check that missed that would report a change nobody can see.
+        let wanted = TitleRules.normalized(title)
         let now = controller.model.title(at: index)
         // The value is text the user wrote, so treat it as sensitive: same rule as pane titles,
         // it never reaches OSLog.
@@ -264,8 +267,12 @@ extension ControlCommandRunner {
                 (0..<controller.model.layouts.count).last { !controller.model.isEmpty($0) }.map { $0 + 1 }
             }.max() ?? 0
             if wanted < highest {
+                // `limit`, not `denied`: this is a structural ceiling ("you still have panes down
+                // there"), not a policy refusal. Clear that workspace and the identical command
+                // goes through - which is exactly the difference a caller has to be able to read
+                // off the code without parsing the prose.
                 throw ControlErrorBody(
-                    .denied, "Cannot shrink to \(wanted): workspace \(highest) still has panes "
+                    .limit, "Cannot shrink to \(wanted): workspace \(highest) still has panes "
                         + "in it",
                     hint: "Clear it first with quickterm workspace clear -t :\(highest) (that "
                         + "kills the processes inside).")

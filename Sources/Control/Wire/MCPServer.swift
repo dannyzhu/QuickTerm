@@ -348,7 +348,9 @@ final class MCPServer {
     static func configRefusal(gate: ControlConfigGate = .load(),
                               path: String = ConfigPaths.configURL().path) -> ControlErrorBody? {
         guard !gate.mcp else { return nil }
-        return ControlErrorBody(.denied, ControlConfigGate.mcpDisabledMessage(path: path),
+        // `disabled`: the host will only report "the server would not start", so the code has to
+        // say *why* — a switch in the config file, not a person clicking Deny.
+        return ControlErrorBody(.disabled, ControlConfigGate.mcpDisabledMessage(path: path),
                                 hint: ControlConfigGate.mcpDisabledHint)
     }
 
