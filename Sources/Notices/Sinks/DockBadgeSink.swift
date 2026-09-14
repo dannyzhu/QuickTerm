@@ -7,17 +7,22 @@ import AppKit
 /// go to, and a badge that read `2` for a single pane would send them looking for a second one.
 /// `NoticeCounts` already counts that way, which is why this sink is four lines long.
 ///
-/// **`interrupting`, not `total`** (plan §2.8, owner decisions Q1(b) and Q6). The badge is one of
-/// the two *interrupting* sinks: it is there to pull somebody out of another app. The moment they
-/// focus the pane and type into it, that job is done — the alarm is quieted, this number drops it,
-/// and the banner goes away with it — while the pane mark and the workspace pill keep reading
-/// `needsUser` and stay up until the agent or its process confirms. A badge that kept counting a
-/// pane the user is sitting in front of is a red number you learn to ignore.
+/// **`total`, not `interrupting`** (owner decision, superseding the plan §2.8 / Q6 reading). The
+/// badge is a *passive* indicator, the same kind as the pane mark and the workspace pill: it counts
+/// every pane that needs the user, and it keeps counting one whether or not the user has glanced at
+/// it or typed into it. The first sessions with it showed why: an approval prompt is answered by
+/// pressing Tab or an arrow to move between the options, and a badge that dropped on that first
+/// keystroke vanished before the user had decided anything — so the one signal they were watching
+/// for was gone exactly when they still needed it. Quieting is now the *banner's* business alone
+/// (the banner is the interrupting sink — it pulls somebody out of another app, and it should stay
+/// quiet while they sit in the pane); the badge tracks `needsUser` and clears only when the pane
+/// stops needing the user (answered, acknowledged, or the agent moved on).
 ///
 /// Only `.countsChanged` is acted on. Every post, every resolution **and every quieting** that
-/// moves the number is followed by exactly one of those (the centre recomputes `counts` and only
+/// moves either number is followed by exactly one of those (the centre recomputes `counts` and only
 /// dispatches when they really moved), so reacting to `.posted` or `.quieted` as well would set
-/// the same label twice per notice.
+/// the same label twice per notice. A quieting moves `interrupting` but not `total`, so it lands
+/// here as a `.countsChanged` that leaves the badge exactly where it was — which is the point.
 @MainActor
 final class DockBadgeSink: NoticeSink {
     let sinkID = NoticeSinkID.dockBadge
@@ -48,8 +53,10 @@ final class DockBadgeSink: NoticeSink {
 
     func apply(_ change: NoticeChange) {
         guard case .countsChanged(let counts) = change else { return }
-        // `nil`, not "0": an empty string still draws the red pill, and `0` draws a zero in it.
-        setBadge(counts.interrupting == 0 ? nil : String(counts.interrupting))
+        // `counts.total` — panes that need the user, quieted or not, matching the pane mark and the
+        // workspace pill. `nil`, not "0": an empty string still draws the red pill, and `0` draws a
+        // zero in it.
+        setBadge(counts.total == 0 ? nil : String(counts.total))
     }
 
     func clearAll() {

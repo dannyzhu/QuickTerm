@@ -431,10 +431,11 @@ final class NoticeSystemSinkTests: XCTestCase {
         XCTAssertEqual(labels.last, .some(nil))
     }
 
-    /// The badge is an **interrupting** sink: it counts the panes nobody has gone to yet. The pane
-    /// mark and the workspace pill are not, and keep counting every live alarm (owner decision Q6)
-    /// — which is why `counts.needsUser` stays at two throughout.
-    func testDockBadgeShowsOnlyWhatIsStillInterrupting() throws {
+    /// The badge is a **passive** indicator like the pane mark and the pill: it counts every pane
+    /// that needs the user, and a keystroke — which quiets the *banner* — must not drop it. Answering
+    /// an approval means pressing Tab/arrows to pick an option, and a badge that vanished on that
+    /// first keystroke was gone before the user had decided (owner decision, superseding Q6).
+    func testDockBadgeCountsEveryPaneThatNeedsYouEvenAfterAKeystroke() throws {
         var labels: [String?] = []
         center.addSink(DockBadgeSink(setBadge: { labels.append($0) }))
 
@@ -445,14 +446,15 @@ final class NoticeSystemSinkTests: XCTestCase {
         XCTAssertEqual(labels.last, "2")
 
         center.userDidType(in: a)
-        XCTAssertEqual(labels.last, "1", "one pane has been picked up; the other has not")
+        XCTAssertEqual(labels.last, "2", "a keystroke quiets the banner, not the badge — both still need you")
         XCTAssertEqual(center.urgency(pane: a), .needsUser, "the quieted pane still draws its mark")
-        XCTAssertEqual(center.counts.needsUser.count, 2, "and the pill still counts both")
+        XCTAssertEqual(center.counts.interrupting, 1, "the banner let go of the pane the user is in")
 
-        center.userDidType(in: b)
-        XCTAssertEqual(labels.last, .some(nil), "nothing is interrupting: no red pill at all")
-        XCTAssertEqual(center.counts.needsUser.count, 2,
-                       "two prompts are still pending, and two marks are still drawn")
+        // Only answering (or ack, or the agent moving on) clears the badge.
+        center.resolveAll(pane: a, .acknowledged)
+        XCTAssertEqual(labels.last, "1", "one pane answered; the other still needs you")
+        center.resolveAll(pane: b, .acknowledged)
+        XCTAssertEqual(labels.last, .some(nil), "both answered: no red pill")
     }
 
     /// A notification-evidenced alarm has no hook behind it: nothing will ever come to say it is
