@@ -474,6 +474,7 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 # bell = "ignore"             # ignore (a bare bell is not a notice) | info
 # command-finished = "long"   # never | long (over 10 s, the default) | always — needs the shell's OSC 133 integration; replaces the engine's own notify-on-command-finish keys, which are no longer consulted
 # done = true                 # a finished agent turn posts an info notice when the pane is not active; never counts toward the Dock badge
+# diagnostic-log = false      # write every notification/agent-state step to ~/Library/Logs/QuickTerm/diagnostics.log (titles only, never bodies), for debugging why a banner or badge did not appear
 
 [keybinds]                  # action = "modifiers+key"; "none" unbinds. Action ids: Cmd+K
 # new-terminal = "cmd+return"

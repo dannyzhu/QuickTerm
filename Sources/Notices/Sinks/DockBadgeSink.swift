@@ -56,7 +56,9 @@ final class DockBadgeSink: NoticeSink {
         // `counts.total` — panes that need the user, quieted or not, matching the pane mark and the
         // workspace pill. `nil`, not "0": an empty string still draws the red pill, and `0` draws a
         // zero in it.
-        setBadge(counts.total == 0 ? nil : String(counts.total))
+        let label = counts.total == 0 ? nil : String(counts.total)
+        DiagnosticLog.shared.note("badge", "Dock badge → \(label ?? "<cleared>") (needsUser panes=\(counts.total))")
+        setBadge(label)
     }
 
     func clearAll() {

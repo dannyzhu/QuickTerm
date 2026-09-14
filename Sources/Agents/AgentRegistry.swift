@@ -378,6 +378,10 @@ final class AgentRegistry: NoticeSink {
         let wasNeedsUser = before?.needsUser ?? false
         let isNeedsUser = after?.needsUser ?? false
 
+        DiagnosticLog.shared.note(
+            "agent",
+            "\(rules.id) signal=\(signal.label) state=\(before?.state.rawValue ?? "none")→\(after?.state.rawValue ?? "none") needsUser=\(wasNeedsUser)→\(isNeedsUser)")
+
         if isNeedsUser, !wasNeedsUser, let status = after {
             let request = NoticeRequest(
                 source: .agent(status.agent), pane: pane, urgency: .needsUser,

@@ -348,6 +348,34 @@ struct ControlAppNoticeRecord: Codable, Equatable {
     var postedAt: String
 }
 
+/// The payload for `notices test` — a self-test that raises a synthetic needs-user alarm on the
+/// caller's pane and reports what each surface should now show, so a human (or the assistant reading
+/// the JSON) can tell "the alarm fired but macOS is not delivering it" from "nothing fired at all".
+struct ControlNoticeTestPayload: Codable, Equatable {
+    var schema = "quickterm.notices-test/1"
+    /// Whether the synthetic notice was posted (false only if the pane vanished mid-call).
+    var posted: Bool
+    /// The pane it was raised on, by the handle the user would type.
+    var pane: String
+    /// Whether that pane is the one the user is looking at right now. The banner is held for an
+    /// active pane by design, so this explains a missing banner that is not a bug.
+    var paneActive: Bool
+    /// **What the Dock badge should read now** — panes needing the user (`counts.total`). If the
+    /// badge on screen does not match this, the badge plumbing, not the notice, is the problem.
+    var badgeExpected: Int
+    /// Panes still interrupting (not quieted) — what the banner counts.
+    var interruptingPanes: Int
+    /// macOS authorization for banners: `authorized` | `denied` | `notDetermined` | `unavailable`.
+    var systemNotifications: String
+    /// Whether a banner should appear for this test (posted, system not `never`, authorized, and the
+    /// pane not active).
+    var bannerExpected: Bool
+    /// A sentence saying what to expect, and if no banner, why.
+    var banner: String
+    /// The self-test alarm clears itself after this many seconds, so it never leaves a stuck badge.
+    var autoResolvesInSeconds: Int
+}
+
 /// The payload for `notices list`.
 struct ControlNoticesPayload: Codable, Equatable {
     var schema = "quickterm.notices/1"

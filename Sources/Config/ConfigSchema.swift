@@ -850,6 +850,10 @@ enum ConfigSchema {
                       labelZH: "agent 跑完一轮", labelEN: "Agent turn finished",
                       helpZH: "agent 跑完一轮时，若那个 pane 不在你眼前，发一条 info 通知；info 从不计入 Dock 角标",
                       helpEN: "a finished turn posts an info notice when the pane is not active; never counts toward the Dock badge"),
+        ConfigKeySpec(.notifications, "diagnostic-log", .bool, default: .bool(false),
+                      labelZH: "诊断日志", labelEN: "Diagnostic log",
+                      helpZH: "为排查通知/角标问题，把通知与 agent 状态的每一步写到 ~/Library/Logs/QuickTerm/diagnostics.log（只记标题不记正文）；默认关",
+                      helpEN: "for debugging notifications and the Dock badge, write every notification and agent-state step to ~/Library/Logs/QuickTerm/diagnostics.log (titles only, never bodies); off by default"),
     ]
 
     /// `id` -> the setting.

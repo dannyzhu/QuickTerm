@@ -462,6 +462,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # bell = "ignore"             # ignore = 一声裸铃不算通知（默认） | info = 当成一条 info 通知
 # command-finished = "long"   # never | long = 只报超过 10 秒的（默认） | always —— 靠 OSC 133，需要 shell integration；取代引擎自己的 notify-on-command-finish 几个键，那些不再生效
 # done = true                 # agent 跑完一轮时，若那个 pane 不在你眼前，发一条 info 通知；info 从不计入 Dock 角标
+# diagnostic-log = false      # 把通知/agent 状态的每一步写到 ~/Library/Logs/QuickTerm/diagnostics.log（只记标题不记正文），用于排查横幅/角标为何不出现
 
 [keybinds]                  # 动作 = "修饰键+键"；"none" 解绑。动作 id 见 Cmd+K
 # new-terminal = "cmd+return"

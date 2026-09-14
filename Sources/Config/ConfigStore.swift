@@ -318,6 +318,8 @@ enum ConfigStore {
         var notificationsCommandFinished: String = "long"
         /// A finished agent turn posts an info notice when the pane is not active.
         var notificationsDone: Bool = true
+        /// Off by default: writes the notification/agent-state decision path to a file for debugging.
+        var notificationsDiagnosticLog: Bool = false
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
         var ghosttyPassthrough: String = ""
@@ -409,6 +411,7 @@ enum ConfigBindings {
         "notifications.bell": { v, s in v.stringValue.map { s.notificationsBell = $0 } },
         "notifications.command-finished": { v, s in v.stringValue.map { s.notificationsCommandFinished = $0 } },
         "notifications.done": { v, s in v.boolValue.map { s.notificationsDone = $0 } },
+        "notifications.diagnostic-log": { v, s in v.boolValue.map { s.notificationsDiagnosticLog = $0 } },
         "agents.detect": { v, s in v.boolValue.map { s.agentsDetect = $0 } },
         "agents.enabled": { v, s in v.stringsValue.map { s.agentsEnabled = $0 } },
         "agents.hook-detail": { v, s in v.stringValue.map { s.agentsHookDetail = $0 } },

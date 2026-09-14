@@ -494,6 +494,11 @@ final class NoticeCenter: ObservableObject {
         return NoticeLocation(screen: located.controller.windowID, workspace: located.workspace)
     }
 
+    /// Whether the user is looking at this pane right now — the same reading the banner gates on.
+    /// Exposed for the `notices test` self-test, which reports it so the human knows why a banner
+    /// did or did not appear.
+    func activity(of pane: UUID) -> PaneActivity? { locator.activity(pane) }
+
     func live(pane: UUID) -> [Notice] {
         live.filter { $0.pane == pane }
     }
@@ -543,7 +548,38 @@ final class NoticeCenter: ObservableObject {
     var systemSink: SystemNotificationSink?
 
     private func dispatch(_ change: NoticeChange) {
+        // One chokepoint every notice change flows through — so one diagnostic line here records the
+        // whole life of an alarm (posted, quieted, re-armed, resolved) and the counts each sink then
+        // reads. Costs nothing when the log is off (the message is built lazily).
+        DiagnosticLog.shared.note("notice", describe(change))
         for sink in sinks where sink.isEnabled { sink.apply(change) }
+    }
+
+    /// One diagnostic line for a change: what happened, which pane (by the handle the user would
+    /// type), and the fields that decide whether a banner or a badge fires. Titles only — a title is
+    /// payload-free by construction; a notice body is never written to the log.
+    private func describe(_ change: NoticeChange) -> String {
+        func pane(_ id: UUID) -> String { locator.handle(id) ?? String(id.uuidString.prefix(8)) }
+        func act(_ a: PaneActivity?) -> String {
+            guard let a else { return "activity=gone" }
+            return "active=\(a.isActive)[app=\(a.appActive),key=\(a.screenKey),ws=\(a.workspaceVisible),focus=\(a.focused)]"
+        }
+        switch change {
+        case .posted(let n, let t, let a):
+            return "posted pane=\(pane(n.pane)) urgency=\(n.urgency.rawValue) evidence=\(n.evidence.rawValue) title=\"\(n.title)\" raised=\(t.raised) \(act(a))"
+        case .superseded(let old, let new, let t, let a):
+            return "superseded pane=\(pane(new.pane)) \"\(old.title)\"→\"\(new.title)\" urgency=\(new.urgency.rawValue) raised=\(t.raised) \(act(a))"
+        case .resolved(let n, let t, _):
+            return "resolved pane=\(pane(n.pane)) urgency=\(n.urgency.rawValue) resolution=\(n.resolution?.rawValue ?? "?") after=\(t.after?.rawValue ?? "none")"
+        case .quieted(let n, let a):
+            return "quieted pane=\(pane(n.pane)) urgency=\(n.urgency.rawValue) evidence=\(n.evidence.rawValue) \(act(a))"
+        case .rearmed(let n, let a):
+            return "rearmed pane=\(pane(n.pane)) urgency=\(n.urgency.rawValue) \(act(a))"
+        case .activityChanged(let p, let a):
+            return "activity pane=\(pane(p)) \(act(a))"
+        case .countsChanged(let c):
+            return "counts needsUser(badge/total)=\(c.total) interrupting(banner)=\(c.interrupting)"
+        }
     }
 
     /// One config reload -> each sink's switch. A sink that was just switched **off** is told to

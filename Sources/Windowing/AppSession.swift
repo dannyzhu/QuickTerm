@@ -207,6 +207,10 @@ final class AppSession {
         // The notification centre reads its switches from here, never from the config file: one
         // reload, one push, and every sink's `isEnabled` is re-derived in one place.
         NoticeCenter.shared.settings = NoticeSettings(settings)
+        // The diagnostic log follows `[notifications] diagnostic-log`: turning it on opens the file
+        // and writes a launch marker, turning it off closes it. Pushed here for the same reason as
+        // the centre's switches — one reload, one place.
+        DiagnosticLog.shared.isEnabled = settings.notificationsDiagnosticLog
         // The agent registry reads its switches from here too, and never from the config file.
         var agents = AgentSettings(settings)
         // A test host must not edit anybody's ~/.claude/settings.json, so the one setting that

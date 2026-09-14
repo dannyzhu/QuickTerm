@@ -170,6 +170,7 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
 
     /// Record what macOS said, and say it out loud the first time the answer is "never".
     func noteAuthorization(_ status: SystemNotificationStatus) {
+        DiagnosticLog.shared.note("auth", "system notifications = \(status.rawValue)")
         authorizationStatus = status
         guard status == .denied, !deniedHintPosted else { return }
         deniedHintPosted = true
@@ -297,9 +298,20 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
     /// different things: `never` switches the sink off (and `clearAll`s it), while `inactive` -
     /// the only other value - still has to ask whether the user is looking right now.
     private func present(_ notice: Notice, activity: PaneActivity?, sound: Bool) {
-        guard settings().system == "inactive" else { return }
+        let who = locator.handle(notice.pane) ?? String(notice.pane.uuidString.prefix(8))
+        guard settings().system == "inactive" else {
+            DiagnosticLog.shared.note("banner", "skip pane=\(who) reason=system=\(settings().system)")
+            return
+        }
         // An unknown activity means the pane is gone: nothing to tell the user to go and look at.
-        guard let activity, !activity.isActive else { return }
+        guard let activity, !activity.isActive else {
+            DiagnosticLog.shared.note(
+                "banner",
+                "skip pane=\(who) reason=\(activity == nil ? "pane-gone" : "pane-active") auth=\(authorizationStatus.rawValue)")
+            return
+        }
+        DiagnosticLog.shared.note(
+            "banner", "present pane=\(who) sound=\(sound) auth=\(authorizationStatus.rawValue)")
 
         requestAuthorizationIfNeeded()
 
@@ -321,6 +333,9 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
             // `privacy: .public`: every one of these strings comes from the OS, carries nothing
             // of the user's, and is useless in a bug report when it reads `<private>`.
             AppDelegate.logger.error("notice banner refused: \(error.localizedDescription, privacy: .public)")
+            Self.onMain {
+                DiagnosticLog.shared.note("banner", "refused pane=\(who) error=\(error.localizedDescription)")
+            }
             // The second road to the denial hint. The probe at launch normally gets there first,
             // but a permission revoked *while* the app runs arrives only here — and a refusal the
             // user is never told about is the whole bug.

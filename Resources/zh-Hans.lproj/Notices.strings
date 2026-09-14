@@ -49,3 +49,11 @@
 "notice.agent.error" = "%1$@ · 失败 · %2$@";
 "notice.agent.error.no-type" = "%1$@ · 失败";
 "notice.agent.done" = "%1$@ · 已跑完";
+
+/* MARK: - self-test (Sources/Control/Commands/ControlNoticeCommands.swift, `notices test`) */
+
+/* Title of the `notices test` self-test alarm; plain and payload-free like every other title. */
+"notice.selftest.title" = "QuickTerm 通知自测";
+
+/* Body of the self-test alarm — QuickTerm's own words, so it is not sensitive. */
+"notice.selftest.body" = "看到这条就说明通知能送达。它过一会儿会自动消失。";

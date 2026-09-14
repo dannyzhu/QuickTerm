@@ -67,4 +67,15 @@ enum PaneSignal: Equatable {
     case processes(AgentPresence)
     /// The pane's child process exited.
     case childExited
+
+    /// A short, payload-free tag for the diagnostic log.
+    var label: String {
+        switch self {
+        case .hook: "hook"
+        case .report: "report"
+        case .notification: "notification"
+        case .processes: "processes"
+        case .childExited: "child-exited"
+        }
+    }
 }

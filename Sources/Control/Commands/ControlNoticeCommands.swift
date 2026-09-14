@@ -21,6 +21,7 @@ extension ControlCommandRunner {
         switch ctx.spec.verb {
         case "list": return try noticesList(ctx)
         case "ack": return try noticesAck(ctx)
+        case "test": return try noticesTest(ctx)
         default:
             throw ControlErrorBody(.unknownCommand, "notices has no verb \(ctx.spec.verb)",
                                    candidates: ControlCommandTable.commands(inGroup: "notices").map(\.verb))
@@ -154,5 +155,63 @@ extension ControlCommandRunner {
         }
         payload.pane = paneInfo(hit, encoder: ctx.encoder)
         return (hit.echo, payload)
+    }
+
+    // MARK: test
+
+    /// A self-test: raise a synthetic needs-user alarm on the caller's own pane, then report what
+    /// every surface should now show. It exists because "no banner and no badge" has two very
+    /// different causes — the alarm never fired, or macOS is not delivering it — and this is the one
+    /// call that tells them apart without waiting for a real agent to block.
+    ///
+    /// `report` class, like `agent-event`: no `-t`, the pane is the caller's own, proven by the
+    /// per-pane token the runner already checked. It clears itself after a few seconds so a test
+    /// never leaves the badge stuck.
+    private func noticesTest(_ ctx: ControlContext) throws -> (ResolvedTarget?, any Encodable) {
+        guard let raw = ctx.request.origin?.pane, let paneID = UUID(uuidString: raw) else {
+            throw ControlErrorBody(
+                .badRequest,
+                "notices test needs QUICKTERM_PANE and QUICKTERM_PANE_TOKEN in the environment "
+                    + "(run it inside a QuickTerm pane)")
+        }
+        guard let entry = ControlResolver.addressablePanes(in: screens).first(where: { $0.pane.id == paneID })
+        else {
+            throw ControlErrorBody(.notFound, "That pane is not addressable any more")
+        }
+        let center = NoticeCenter.shared
+        let handle = handleName(entry.pane)
+        let active = center.activity(of: paneID)?.isActive ?? false
+
+        let posted: Bool
+        switch center.post(NoticeRequest(
+            source: .custom("selftest"), pane: paneID, urgency: .needsUser, evidence: .composed,
+            title: L("notice.selftest.title"), body: L("notice.selftest.body"), bodySensitive: false)) {
+        case .posted, .superseded, .duplicate: posted = true
+        case .unknownPane: posted = false
+        }
+
+        // Clear it on a timer so the self-test never leaves a red badge behind. `ack` is the same
+        // resolution the user would reach for; a real agent alarm is untouched (different key).
+        let seconds = 15
+        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(seconds)) {
+            _ = NoticeCenter.shared.resolveAll(pane: paneID, .acknowledged)
+        }
+
+        let auth = Self.systemNotificationStatus().rawValue
+        let systemOn = center.settings.system != "never"
+        let bannerExpected = posted && systemOn && auth == "authorized" && !active
+        let banner: String
+        if !posted { banner = "The notice could not be posted (the pane went away)." }
+        else if !systemOn { banner = "Banners are off: [notifications] system = \"never\"." }
+        else if auth == "denied" { banner = "macOS has notifications denied for QuickTerm — turn them on in System Settings ▸ Notifications ▸ QuickTerm." }
+        else if auth != "authorized" { banner = "macOS authorization is \(auth); the first banner this launch will ask." }
+        else if active { banner = "This pane is the one you're looking at, so the banner is held. Switch to another pane and it appears; the Dock badge shows regardless." }
+        else { banner = "A banner should appear now." }
+
+        return (nil, ControlNoticeTestPayload(
+            posted: posted, pane: handle, paneActive: active,
+            badgeExpected: center.counts.total, interruptingPanes: center.counts.interrupting,
+            systemNotifications: auth, bannerExpected: bannerExpected, banner: banner,
+            autoResolvesInSeconds: seconds))
     }
 }

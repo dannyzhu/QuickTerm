@@ -747,6 +747,16 @@ enum ControlCommandTable {
                 "quickterm notices ack -t t7 --fail-if-noop   # exit 7 when nothing was live",
             ],
             outputSample: nil),
+        ControlCommandSpec(
+            group: "notices", "test",
+            summary: "Fire a self-test alarm on this pane — the Dock badge, the pane mark, the workspace count, and (when this pane is not the one you are looking at) a banner — exactly as an agent would raise them, then report what each should show",
+            cls: .report, idempotent: false, acceptsTarget: false,
+            args: [],
+            examples: [
+                "quickterm notices test        # run it in the pane to light up, then look at the Dock",
+                "quickterm notices test --json # the snapshot: badge count, macOS authorization, what to expect",
+            ],
+            outputSample: nil),
 
         // MARK: - Agent awareness: what each pane's agent is doing -
         // `agent-event` is the hook's road in. It is class `report`, not `mutate`: it reports a

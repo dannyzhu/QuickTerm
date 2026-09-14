@@ -342,6 +342,8 @@ enum MCPToolMap {
         "mcp": "This server itself",
         "agent-event": "Run by the hook script from inside a pane; it reports about the caller's own pane "
             + "and is meaningless from an MCP host",
+        "notices.test": "A human diagnostic: it lights up the caller's own pane and Dock to check that "
+            + "notifications reach the user, which is meaningless from an MCP host",
         "hooks.install": "Edits the user's other tools' config files; a human runs quickterm hooks install "
             + "or uses the menu",
         "hooks.uninstall": "same as hooks.install",
