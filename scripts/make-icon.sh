@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 生成 Resources/AppIcon.icns（程序化，无需设计资产）
+# Generate Resources/AppIcon.icns (in code, no design assets needed)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"

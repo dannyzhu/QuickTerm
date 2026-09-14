@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 从 omarchy 官方仓库同步主题资产（MIT）：
-#   colors.toml（进 git）+ 每主题全部背景图（不进 git，构建期打入 bundle）。
+# Sync theme assets from the official omarchy repository (MIT):
+#   colors.toml (checked into git) + all per-theme backgrounds (not in git, bundled at build time).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -13,9 +13,9 @@ for dir in "$TMP/omarchy/themes"/*/; do
   name="$(basename "$dir")"
   mkdir -p "$ROOT/Themes/$name/backgrounds"
   cp "$dir/colors.toml" "$ROOT/Themes/$name/"
-  # 全部背景图（用户在背景面板中可选；不进 git，构建期打入 bundle）
+  # All background images (selectable in the background panel; not in git, bundled at build time)
   if [ -d "$dir/backgrounds" ]; then
     cp "$dir/backgrounds/"* "$ROOT/Themes/$name/backgrounds/" 2>/dev/null || true
   fi
 done
-echo "OK: $(ls "$ROOT/Themes" | wc -l | tr -d ' ') 个主题已同步到 Themes/"
+echo "OK: $(ls "$ROOT/Themes" | wc -l | tr -d ' ') themes synced to Themes/"

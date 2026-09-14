@@ -1,7 +1,8 @@
-// QuickTerm 图标 1024×1024（程序化，无外部资产）
-// 设计：Apple 风格——单一符号（提示符 ❯ + 光标块），无场景细节；
-// 立体感来自 圆角方渐变体 + 顶缘轮廓光 + 顶部球面高光 + 底部反光 + 符号投影。
-// 用法：swift scripts/make-icon.swift <输出.png>
+// QuickTerm icon, 1024×1024 (generated in code, no external assets)
+// Design: Apple style — a single symbol (the ❯ prompt plus a cursor block), no scene detail;
+// the sense of depth comes from the squircle body gradient + top rim light + top spherical sheen
+// + bottom bounce light + glyph shadow.
+// Usage: swift scripts/make-icon.swift <output.png>
 import AppKit
 
 let size: CGFloat = 1024
@@ -13,7 +14,8 @@ func rgb(_ hex: UInt32, _ a: CGFloat = 1) -> NSColor {
             blue: CGFloat(hex & 0xff) / 255, alpha: a)
 }
 
-// Tokyo Night 夜空：上浅下深（光源在上，Apple 图标惯例）
+// Tokyo Night night sky: lighter at the top, darker at the bottom (light from above, the Apple
+// icon convention)
 let bodyTop = rgb(0x39456f)
 let bodyBottom = rgb(0x11131d)
 let accent = rgb(0x7aa2f7)
@@ -23,12 +25,12 @@ let image = NSImage(size: NSSize(width: size, height: size))
 image.lockFocus()
 guard let ctx = NSGraphicsContext.current?.cgContext else { fatalError("no context") }
 
-// ── 圆角方（824×824 居中，半径 185——macOS 图标网格）
+// ── Squircle (824×824, centered, radius 185 — the macOS icon grid)
 let inset: CGFloat = 100
 let rect = NSRect(x: inset, y: inset, width: size - inset * 2, height: size - inset * 2)
 let squircle = NSBezierPath(roundedRect: rect, xRadius: 185, yRadius: 185)
 
-// 落地投影（图标浮在桌面之上）
+// Drop shadow (the icon floats above the desktop)
 NSGraphicsContext.current?.saveGraphicsState()
 let shadow = NSShadow()
 shadow.shadowColor = NSColor.black.withAlphaComponent(0.4)
@@ -42,10 +44,10 @@ NSGraphicsContext.current?.restoreGraphicsState()
 NSGraphicsContext.current?.saveGraphicsState()
 squircle.addClip()
 
-// 体渐变（垂直，上浅下深 = 体积感）
+// Body gradient (vertical, light at the top to dark at the bottom = volume)
 NSGradient(colors: [bodyTop, bodyBottom])?.draw(in: rect, angle: -90)
 
-// 顶部球面高光（大半径径向渐变，模拟上方光源打在弧面上）
+// Top spherical sheen (wide radial gradient, mimicking a light above hitting a curved surface)
 if let sheen = NSGradient(colors: [NSColor.white.withAlphaComponent(0.16),
                                    NSColor.white.withAlphaComponent(0)]) {
     sheen.draw(fromCenter: NSPoint(x: rect.midX, y: rect.maxY + rect.height * 0.12),
@@ -55,7 +57,7 @@ if let sheen = NSGradient(colors: [NSColor.white.withAlphaComponent(0.16),
                options: [])
 }
 
-// 底部反光（环境光从桌面反弹上来，压住"贴纸感"）
+// Bottom bounce light (ambient light reflected up off the desk, killing the "sticker" look)
 if let bounce = NSGradient(colors: [accent.withAlphaComponent(0.14),
                                     accent.withAlphaComponent(0)]) {
     bounce.draw(fromCenter: NSPoint(x: rect.midX, y: rect.minY),
@@ -66,7 +68,7 @@ if let bounce = NSGradient(colors: [accent.withAlphaComponent(0.14),
 }
 NSGraphicsContext.current?.restoreGraphicsState()
 
-// 轮廓光：沿边缘的一圈细描边，上亮下暗（玻璃边缘的折射）
+// Rim light: a thin stroke around the edge, bright on top and dark below (glass-edge refraction)
 NSGraphicsContext.current?.saveGraphicsState()
 let rim = NSBezierPath(roundedRect: rect.insetBy(dx: 2, dy: 2), xRadius: 183, yRadius: 183)
 ctx.addPath(rim.cgPath)
@@ -78,7 +80,7 @@ NSGradient(colors: [NSColor.white.withAlphaComponent(0.42),
                     NSColor.black.withAlphaComponent(0.22)])?.draw(in: rect, angle: -90)
 NSGraphicsContext.current?.restoreGraphicsState()
 
-// ── 符号：❯ + 光标块（唯一内容；圆头笔画，SF Symbols 语感）
+// ── Symbol: ❯ + cursor block (the only content; round caps, an SF Symbols feel)
 NSGraphicsContext.current?.saveGraphicsState()
 squircle.addClip()
 
@@ -92,7 +94,7 @@ let groupW = (spanX + stroke) + pairGap + cursorW
 let gx = rect.midX - groupW / 2 + stroke / 2
 let cy = rect.midY
 
-// 符号投影：与体渐变分离，产生"浮在面上"的层次
+// Glyph shadow: separates the symbol from the body gradient so it reads as floating above the face
 let glyphShadow = NSShadow()
 glyphShadow.shadowColor = NSColor.black.withAlphaComponent(0.45)
 glyphShadow.shadowOffset = NSSize(width: 0, height: -10)

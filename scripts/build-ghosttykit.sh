@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# 构建 GhosttyKit.xcframework。Zig 版本严格跟随 vendor/ghostty 的 pin。
-#   GHOSTTYKIT_TARGET=native     本机架构（默认；开发迭代快）
-#   GHOSTTYKIT_TARGET=universal  arm64 + x86_64 通用库（发布 DMG 用；Zig 交叉编译，无需 Rosetta）
+# Build GhosttyKit.xcframework. The Zig version strictly follows the pin in vendor/ghostty.
+#   GHOSTTYKIT_TARGET=native     Native arch (default; fast for development)
+#   GHOSTTYKIT_TARGET=universal  arm64 + x86_64 universal library (for the release DMG; Zig
+#                                cross-compiles, no Rosetta needed)
 set -euo pipefail
 TARGET="${GHOSTTYKIT_TARGET:-native}"
-case "$TARGET" in native|universal) ;; *) echo "error: GHOSTTYKIT_TARGET 须为 native|universal" >&2; exit 2 ;; esac
+case "$TARGET" in native|universal) ;; *) echo "error: GHOSTTYKIT_TARGET must be native|universal" >&2; exit 2 ;; esac
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GHOSTTY="$ROOT/vendor/ghostty"
@@ -12,7 +13,7 @@ TOOLS="$ROOT/.tools"
 OUT="$GHOSTTY/macos/GhosttyKit.xcframework"
 
 ZIG_VERSION="$(sed -n 's/.*minimum_zig_version = "\([^"]*\)".*/\1/p' "$GHOSTTY/build.zig.zon")"
-[ -n "$ZIG_VERSION" ] || { echo "error: 无法从 build.zig.zon 解析 Zig 版本"; exit 1; }
+[ -n "$ZIG_VERSION" ] || { echo "error: cannot parse the Zig version from build.zig.zon"; exit 1; }
 
 case "$(uname -m)" in
   arm64) ZARCH=aarch64 ;;
@@ -22,10 +23,10 @@ esac
 ZIG="$TOOLS/zig-$ZIG_VERSION/zig"
 if [ ! -x "$ZIG" ]; then
   mkdir -p "$TOOLS"
-  # 0.14.1 起命名为 zig-<arch>-macos-<ver>，更早为 zig-macos-<arch>-<ver>；两种都试
+  # Since 0.14.1 the name is zig-<arch>-macos-<ver>, earlier it was zig-macos-<arch>-<ver>; try both
   for NAME in "zig-$ZARCH-macos-$ZIG_VERSION" "zig-macos-$ZARCH-$ZIG_VERSION"; do
     URL="https://ziglang.org/download/$ZIG_VERSION/$NAME.tar.xz"
-    echo "尝试下载 $URL"
+    echo "trying to download $URL"
     if curl -fL "$URL" -o "$TOOLS/zig.tar.xz"; then
       tar -xJf "$TOOLS/zig.tar.xz" -C "$TOOLS"
       mv "$TOOLS/$NAME" "$TOOLS/zig-$ZIG_VERSION"
@@ -33,13 +34,14 @@ if [ ! -x "$ZIG" ]; then
       break
     fi
   done
-  [ -x "$ZIG" ] || { echo "error: Zig $ZIG_VERSION 下载失败"; exit 1; }
+  [ -x "$ZIG" ] || { echo "error: failed to download Zig $ZIG_VERSION"; exit 1; }
 fi
 echo "using zig: $("$ZIG" version)"
 
-# --- SDK overlay：Xcode 26.x SDK 的 tbd 主文档缺 arm64-macos target，
-# --- Zig 0.15 链接器不做 arm64→arm64e 回退，导致全部符号 undefined。
-# --- 做一个符号链接 overlay，仅拷贝并修补 usr/lib 的 tbd；用 xcrun shim 指向它。
+# --- SDK overlay: the main tbd documents of the Xcode 26.x SDK lack an arm64-macos target, and
+# --- the Zig 0.15 linker does not fall back from arm64 to arm64e, so every symbol ends up
+# --- undefined. Build a symlink overlay that copies and patches only the tbd files under
+# --- usr/lib, and point an xcrun shim at it.
 SDK="$(/usr/bin/xcrun --show-sdk-path)"
 OV="$TOOLS/sdk-arm64fix"
 if [ ! -f "$OV/usr/lib/libSystem.tbd" ] || ! grep -q 'arm64-macos' "$OV/usr/lib/libSystem.tbd"; then
@@ -75,12 +77,13 @@ echo "building GhosttyKit ($TARGET)…"
 "$ZIG" build -Doptimize=ReleaseFast \
   -Demit-xcframework=true -Demit-macos-app=false -Dxcframework-target="$TARGET"
 
-test -d "$OUT" || { echo "error: 未找到 $OUT"; exit 1; }
+test -d "$OUT" || { echo "error: $OUT not found"; exit 1; }
 
-# --- 归档修复：Xcode 26.6 的 libtool 会因对齐问题丢弃 Zig 生成的归档成员
-# --- （libghostty_zcu.o 等），导致 _ghostty_init/ImGui 符号缺失。
-# --- 按架构分别检查；缺失的架构从缓存中该架构的全部组成档案重打，再 lipo 回通用归档。
-# 切换 native/universal 后可能残留旧切片：只保留最新的一份
+# --- Archive fix: libtool in Xcode 26.6 drops archive members produced by Zig
+# --- (libghostty_zcu.o and friends) over alignment issues, which loses the _ghostty_init/ImGui
+# --- symbols. Check each arch separately; a missing arch is repacked from every component
+# --- archive of that arch in the cache, then lipo'd back into the universal archive.
+# Switching between native/universal can leave a stale slice behind: keep only the newest one
 SLICE="$(ls -dt "$OUT"/macos-* | head -1)"
 for d in "$OUT"/macos-*; do [ "$d" = "$SLICE" ] || { echo "removing stale slice $(basename "$d")"; rm -rf "$d"; }; done
 FAT="$(ls "$SLICE"/*.a | head -1)"
@@ -93,8 +96,8 @@ def archs(path):
 def has_init(path):
     return " T _ghostty_init" in subprocess.run(["nm", path], capture_output=True, text=True).stdout
 def platform(path):
-    # Mach-O LC_BUILD_VERSION 的 platform：1 = macOS，2 = iOS，7 = iOS 模拟器…；
-    # universal 目标还会编 iOS 切片，其 arm64 归档与 macOS 同名，必须按平台过滤
+    # Mach-O LC_BUILD_VERSION platform: 1 = macOS, 2 = iOS, 7 = iOS simulator, ...; the universal
+    # target also builds iOS slices whose arm64 archives share macOS names, so filter by platform
     out = subprocess.run(["otool", "-l", path], capture_output=True, text=True).stdout
     i = out.find("LC_BUILD_VERSION")
     if i < 0:
@@ -105,7 +108,7 @@ def platform(path):
             except ValueError: return 0
     return 0
 fat_archs = archs(fat)
-assert fat_archs, f"无法识别架构: {fat}"
+assert fat_archs, f"cannot determine archs: {fat}"
 with tempfile.TemporaryDirectory() as tmp:
     thins = {}
     for a in fat_archs:
@@ -120,14 +123,14 @@ with tempfile.TemporaryDirectory() as tmp:
         print("archive ok:", fat_archs); sys.exit(0)
     print("repacking archs (libtool dropped members):", need)
     cache = os.path.join(ghostty, ".zig-cache")
-    newest = {}   # (档案名, 架构) → 最新一份（缓存可能残留多优化级别/多目标副本）
+    newest = {}   # (archive name, arch) → newest (cache may keep several opt-level/target copies)
     for root, _, files in os.walk(cache):
         for f in files:
             if f.endswith(".a") and "ghostty-fat" not in f:
                 p = os.path.join(root, f)
                 pa = archs(p)
-                if len(pa) != 1: continue   # 跳过通用（lipo 合成）归档，只取单架构组成档案
-                if platform(p) != 1: continue   # 只取 macOS 平台（排除 iOS / 模拟器切片的同名归档）
+                if len(pa) != 1: continue   # skip universal (lipo) archives, take single-arch ones
+                if platform(p) != 1: continue   # macOS only (iOS/simulator slices share names)
                 for a in pa:
                     k = (f, a)
                     if k not in newest or os.path.getmtime(p) > os.path.getmtime(newest[k]):
@@ -146,7 +149,7 @@ with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, f"re-{a}.a")
         subprocess.run(["ar", "qc", out] + objs, check=True)
         subprocess.run(["ranlib", out], check=True)
-        assert has_init(out), f"{a}: repack 后仍缺 _ghostty_init"
+        assert has_init(out), f"{a}: _ghostty_init still missing after repack"
         thins[a] = out
     if len(thins) > 1:
         subprocess.run(["lipo", "-create"] + [thins[a] for a in fat_archs] + ["-output", fat], check=True)
@@ -157,4 +160,4 @@ PYEOF
 echo "archs: $(lipo -archs "$FAT")"
 
 echo "OK: $OUT"
-echo "resources: $GHOSTTY/zig-out/share/ghostty （打包进 app bundle）"
+echo "resources: $GHOSTTY/zig-out/share/ghostty (bundled into the app)"
