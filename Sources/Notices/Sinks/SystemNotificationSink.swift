@@ -95,6 +95,15 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
     /// every other withdrawal knows its own pane.
     private var presented: Set<UUID> = []
 
+    /// Panes that have been **audibly** announced while their `needsUser` alarm is still live. It is
+    /// what a re-arm consults to keep the "one sound per pane" rule (spec §3.5 rule 5): a pane can
+    /// hold several `needsUser` notices from different sources — all coalesced to one banner — so the
+    /// sound decision is per *pane*, not per notice id. Set when a `needsUser` banner actually plays
+    /// a sound; **kept across a withdrawal** (a glance does not reset it) and cleared only when the
+    /// pane stops needing the user (`.resolved` to nothing or to `info`), which is when the next
+    /// alarm becomes a fresh one that may ping again. Bounded by the live-needsUser panes.
+    private var pingedPanes: Set<UUID> = []
+
     /// Authorization is asked for once, lazily, at the first banner - exactly as the engine did.
     /// Not at launch: an app that asks the moment it starts gets denied by people who have no idea
     /// yet what it wants to tell them.
@@ -232,8 +241,12 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
             present(new, activity: activity, sound: transition.raised)
 
         case .resolved(let notice, let transition, _):
-            // Only when the pane has nothing left to say. With two notices live, resolving one
-            // must not take down the banner that describes the other.
+            // The pane no longer needs the user (resolved to nothing, or downgraded to `info`): the
+            // next `needsUser` alarm on it is a fresh one and may ping again, so drop the "already
+            // announced" mark. Kept only while the pane genuinely still holds a live approval.
+            if transition.after != .needsUser { pingedPanes.remove(notice.pane) }
+            // Only take the banner down when the pane has nothing left to say. With two notices
+            // live, resolving one must not take down the banner that describes the other.
             guard transition.after == nil else { return }
             withdraw(pane: notice.pane)
 
@@ -254,6 +267,18 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
             // arrives as `.superseded` above and presents silently — the pane was already loud.
             withdraw(pane: notice.pane)
 
+        case .rearmed(let notice, let activity):
+            // The mirror of `.quieted`: the user left a pane that still needs them. Present now —
+            // this is the one road by which an alarm raised while the pane was being watched (and so
+            // never presented) reaches the screen, and the road back for one a keystroke had quieted.
+            // The pane is inactive by construction here, so `present`'s own guard passes. Sound only
+            // if this pane has not already been announced audibly (per pane, not per notice id: one
+            // pane can hold several sources' `needsUser` notices coalesced to one banner, spec §3.5
+            // rule 5). So the alarm raised while the pane was watched pings on first delivery, while
+            // one you were already alerted about — by this or any source — returns silently.
+            guard let activity else { return }
+            present(notice, activity: activity, sound: !pingedPanes.contains(notice.pane))
+
         case .countsChanged:
             // The badge's business, not the banner's.
             break
@@ -263,6 +288,7 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
     func clearAll() {
         for pane in presented { withdraw(pane: pane) }
         presented.removeAll()
+        pingedPanes.removeAll()
     }
 
     // MARK: Presenting
@@ -284,6 +310,9 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
         content.categoryIdentifier = Self.category
         content.userInfo = ["pane": notice.pane.uuidString, "notice": notice.id.uuidString]
         if sound { content.sound = .default }
+        // A sound actually played for a live approval: this pane is now "already announced", so a
+        // re-arm of it (however many sources describe the prompt) stays silent until it resolves.
+        if sound, notice.urgency == .needsUser { pingedPanes.insert(notice.pane) }
 
         presented.insert(notice.pane)
         center.add(UNNotificationRequest(identifier: Self.identifier(pane: notice.pane),

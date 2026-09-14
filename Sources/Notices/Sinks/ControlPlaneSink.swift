@@ -44,11 +44,12 @@ final class ControlPlaneSink: NoticeSink {
             emit(new, type: .noticePosted)
         case .resolved(let notice, _, _):
             emit(notice, type: .noticeResolved)
-        case .quieted, .activityChanged, .countsChanged:
+        case .quieted, .rearmed, .activityChanged, .countsChanged:
             // None of them is an event: activity is "is the user looking at this pane", which the
             // focus / workspace events already describe, the counts are a function of the posts
-            // and resolutions that were just emitted, and a quieting changes nothing an agent can
-            // act on — the notice is still live and still in `state`, with `quietedAt` on it.
+            // and resolutions that were just emitted, and a quieting — or its re-arm when the user
+            // walks away — changes nothing an agent can act on: the notice is still live and still
+            // in `state`, only its `quietedAt` moved.
             break
         }
     }

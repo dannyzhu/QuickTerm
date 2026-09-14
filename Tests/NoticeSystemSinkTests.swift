@@ -169,6 +169,111 @@ final class NoticeSystemSinkTests: XCTestCase {
                        "switching the sink off has to take its banners with it")
     }
 
+    // MARK: Re-arm — the banner an active pane never got, delivered when the user looks away
+
+    /// The screenshot bug. An alarm raised while the user is looking straight at the pane gets no
+    /// banner then (rule 2). When they switch away with it still pending, the banner is presented at
+    /// last — with sound, because it has never been on screen.
+    func testLeavingAWatchedPanePresentsTheBannerItNeverGot() throws {
+        let pane = try addPane(active: true)
+        center.post(request(pane, title: "Approve Bash", evidence: .hook))
+        XCTAssertTrue(recorder.added.isEmpty, "watched: no banner while the user is looking")
+
+        setActivity(pane, active: false)
+        center.flushActivityPass()
+
+        XCTAssertEqual(recorder.added.count, 1, "looked away: the banner appears at last")
+        XCTAssertEqual(recorder.added[0].identifier, SystemNotificationSink.identifier(pane: pane))
+        XCTAssertNotNil(recorder.added.last?.content.sound, "first time on screen, so it pings")
+    }
+
+    /// The re-armed banner does not ping a second time: the user tabs away (first ping), tabs back
+    /// (banner withdrawn), and away again. The second presentation is silent **not** because a banner
+    /// is still up — it was withdrawn on focus, so `present` genuinely re-adds — but because the pane
+    /// is already in `pingedPanes` and stays there across the withdrawal.
+    func testReArmedBannerDoesNotPingWhileAlreadyAnnounced() throws {
+        let pane = try addPane(active: true)
+        center.post(request(pane, title: "Approve Bash", evidence: .hook))
+        setActivity(pane, active: false)
+        center.flushActivityPass()
+        XCTAssertEqual(recorder.added.count, 1)
+        XCTAssertNotNil(recorder.added.last?.content.sound, "first delivery pings")
+        recorder.reset()
+
+        // Back to the pane (banner withdrawn on active), then away again with the prompt still up.
+        setActivity(pane, active: true)
+        center.flushActivityPass()
+        setActivity(pane, active: false)
+        center.flushActivityPass()
+
+        XCTAssertEqual(recorder.added.count, 1, "presented again once")
+        XCTAssertNil(recorder.added.last?.content.sound, "the pane was already announced — silent")
+    }
+
+    /// Spec §3.5 rule 5: one audible alert per pane, however many sources describe the prompt. A
+    /// second source's `needsUser` is coalesced away (no banner of its own), but it is the newest
+    /// notice and so becomes the re-arm representative — the sound must still be keyed on the pane
+    /// having been announced, not on that notice's own id.
+    func testReArmDoesNotDoublePingAPaneAlreadyAnnouncedByAnotherSource() throws {
+        let pane = try addPane(active: false)
+        center.post(request(pane, source: .agent("claude-code"), title: "Approve Bash", evidence: .hook))
+        XCTAssertEqual(recorder.added.count, 1)
+        XCTAssertNotNil(recorder.added.last?.content.sound, "the first source announces the pane")
+        // A second source describes the same pane while it is already loud: coalesced, no banner.
+        center.post(request(pane, source: .terminal, title: "Something else"))
+        XCTAssertEqual(recorder.added.count, 1, "one banner per pane")
+        recorder.reset()
+
+        // The user glances at the pane (banner withdrawn) and leaves again without answering.
+        setActivity(pane, active: true)
+        center.flushActivityPass()
+        setActivity(pane, active: false)
+        center.flushActivityPass()
+
+        XCTAssertEqual(recorder.added.count, 1, "re-presented once")
+        XCTAssertNil(recorder.added.last?.content.sound,
+                     "the pane was already announced by the first source — no second ping")
+    }
+
+    /// A genuinely fresh alarm, after the pane's approval fully resolved, pings again: `pingedPanes`
+    /// is cleared when the pane stops needing the user.
+    func testAFreshAlarmAfterResolutionPingsAgain() throws {
+        let pane = try addPane(active: false)
+        center.post(request(pane, source: .agent("claude-code"), title: "Approve Bash", evidence: .hook))
+        XCTAssertNotNil(recorder.added.last?.content.sound)
+        XCTAssertEqual(center.resolveAll(pane: pane, .acknowledged), 1)   // the pane no longer needs you
+        recorder.reset()
+
+        // A new prompt arrives while the user is watching the pane (no banner then)…
+        setActivity(pane, active: true)
+        center.flushActivityPass()
+        center.post(request(pane, source: .agent("claude-code"), title: "Approve Edit", evidence: .hook))
+        XCTAssertTrue(recorder.added.isEmpty, "watched: no banner yet")
+        // …then they leave.
+        setActivity(pane, active: false)
+        center.flushActivityPass()
+        XCTAssertEqual(recorder.added.count, 1)
+        XCTAssertNotNil(recorder.added.last?.content.sound, "a fresh alarm after resolution pings again")
+    }
+
+    /// The pre-existing stale-banner bug (confirmed in review): focusing a pane whose `info`
+    /// resolves in the same pass must still withdraw the pane's approval banner. The info's own
+    /// resolution cannot (the pane still needs the user), so the `.activityChanged` on focus has to.
+    func testFocusingAPaneWhoseInfoResolvesInTheSamePassStillWithdrawsTheBanner() throws {
+        let pane = try addPane(active: false)
+        center.post(request(pane, source: .agent("claude-code"), title: "Approve Bash", evidence: .hook))
+        center.post(request(pane, urgency: .info, source: .command, title: "Command finished"))
+        XCTAssertEqual(recorder.added.count, 1, "one banner per pane")
+        recorder.reset()
+
+        setActivity(pane, active: true)
+        center.flushActivityPass()
+
+        XCTAssertEqual(recorder.removedDelivered, [SystemNotificationSink.identifier(pane: pane)],
+                       "opening the pane withdraws its banner, even though an info resolved in the same pass")
+        XCTAssertEqual(center.urgency(pane: pane), .needsUser, "the approval prompt is still live")
+    }
+
     // MARK: Quieting — the interrupting half of Q1(b)
     //
     // Every case here leaves the pane **inactive** in the locator stub, so the only road that can

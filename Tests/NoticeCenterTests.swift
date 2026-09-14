@@ -725,6 +725,94 @@ final class NoticeCenterTests: XCTestCase {
         XCTAssertEqual(center.counts.total, 0)
     }
 
+    // MARK: Q6 — leaving a pane that still needs you re-arms the interrupting sinks
+
+    private func rearmed(_ sink: NoticeRecordingSink) -> [Notice] {
+        sink.changes.compactMap { if case .rearmed(let notice, _) = $0 { notice } else { nil } }
+    }
+
+    /// The screenshot bug: an alarm was quieted while the user sat in the pane; when they switch
+    /// away with it still pending, the quieting is taken back — the Dock badge counts the pane
+    /// again and the interrupting sinks are told (`.rearmed`).
+    func testLeavingAQuietedPaneReArmsTheInterruptingSinks() throws {
+        let pane = try addPane(active: true)
+        center.userActedPolicy = .clearInterruptingSinks
+        center.post(NoticeRequest(source: .agent("claude-code"), pane: pane, urgency: .needsUser,
+                                  evidence: .hook, title: "Awaiting approval"))
+        center.userDidType(in: pane)
+        XCTAssertEqual(center.counts.interrupting, 0, "quieted while the user is in the pane")
+        sink.reset()
+
+        locator.entries[pane]?.activity = Self.activity(false)   // the user switched away
+        center.flushActivityPass()
+
+        XCTAssertNil(center.live.first?.quietedAt, "leaving un-quiets it")
+        XCTAssertEqual(center.counts.interrupting, 1, "the Dock badge takes the pane back")
+        XCTAssertEqual(center.counts.total, 1, "and it never stopped needing the user")
+        XCTAssertEqual(rearmed(sink).count, 1)
+        XCTAssertTrue(sink.changes.contains { if case .countsChanged = $0 { true } else { false } },
+                      "the badge is driven by the recomputed counts")
+    }
+
+    /// An alarm raised while the user was **looking at** the pane never quieted (no keystroke) and
+    /// so is already interrupting — leaving still tells the banner, which post never presented.
+    func testLeavingAWatchedButNeverQuietedPaneStillReArmsTheBanner() throws {
+        let pane = try addPane(active: true)
+        center.post(NoticeRequest(source: .agent("claude-code"), pane: pane, urgency: .needsUser,
+                                  evidence: .hook, title: "Awaiting approval"))
+        XCTAssertEqual(center.counts.interrupting, 1, "posted while watched is already interrupting")
+        sink.reset()
+
+        locator.entries[pane]?.activity = Self.activity(false)
+        center.flushActivityPass()
+
+        XCTAssertEqual(rearmed(sink).count, 1, "the banner is told even though the badge never moved")
+    }
+
+    /// Re-arm is the crossing, not the state: a pane already left, then merely moved between two
+    /// unwatched workspaces, does not ping a second time.
+    func testStayingAwayDoesNotReArmAgain() throws {
+        let pane = try addPane(active: true)
+        center.userActedPolicy = .clearInterruptingSinks
+        center.post(NoticeRequest(source: .agent("claude-code"), pane: pane, urgency: .needsUser,
+                                  evidence: .hook, title: "Awaiting approval"))
+        center.userDidType(in: pane)
+        locator.entries[pane]?.activity = Self.activity(false)
+        center.flushActivityPass()
+        sink.reset()
+
+        // Still away, only the workspace under it changed.
+        locator.entries[pane]?.activity = PaneActivity(appActive: false, screenKey: false,
+                                                       workspaceVisible: true, focused: false)
+        center.flushActivityPass()
+        XCTAssertTrue(rearmed(sink).isEmpty, "already away — no second ping")
+    }
+
+    /// Coming back and typing re-quiets, and leaving re-arms again: the mirror runs both ways.
+    func testReturningReQuietsAndLeavingReArmsAgain() throws {
+        let pane = try addPane(active: true)
+        center.userActedPolicy = .clearInterruptingSinks
+        center.post(NoticeRequest(source: .agent("claude-code"), pane: pane, urgency: .needsUser,
+                                  evidence: .hook, title: "Awaiting approval"))
+        center.userDidType(in: pane)
+        locator.entries[pane]?.activity = Self.activity(false)
+        center.flushActivityPass()
+        XCTAssertEqual(center.counts.interrupting, 1)
+
+        // Back into the pane, and a keystroke quiets it once more.
+        locator.entries[pane]?.activity = Self.activity(true)
+        center.flushActivityPass()
+        center.userDidType(in: pane)
+        XCTAssertEqual(center.counts.interrupting, 0, "re-quieted on return")
+        sink.reset()
+
+        // Away again.
+        locator.entries[pane]?.activity = Self.activity(false)
+        center.flushActivityPass()
+        XCTAssertEqual(center.counts.interrupting, 1, "re-armed on leaving again")
+        XCTAssertEqual(rearmed(sink).count, 1)
+    }
+
     /// The redraw bound of §1.5: a duplicate post publishes nothing at all.
     func testDuplicatePostNeverPublishes() throws {
         let pane = try addPane()

@@ -415,6 +415,12 @@ final class NoticeCenter: ObservableObject {
     /// for everything else — one walk over the panes that actually hold something live.
     private func runActivityPass() {
         for pane in panesWithLiveNotices() {
+            // Read **before** any resolution below. Resolving an `info` on focus calls
+            // `noteActivity`, which would otherwise overwrite `recordedActivity[pane]` with the new
+            // (active) activity before the comparison — so a pane holding both an `info` and a
+            // `needsUser` would look unchanged, the `.activityChanged` would never fire, and the
+            // approval prompt's banner would linger after the user opened the pane.
+            let previous = recordedActivity[pane]
             guard let activity = locator.activity(pane) else {
                 // The pane is gone. Rule 4: everything it held resolves.
                 resolveAll(pane: pane, .paneClosed)
@@ -429,14 +435,39 @@ final class NoticeCenter: ObservableObject {
                 recordedActivity[pane] = nil
                 continue
             }
-            guard recordedActivity[pane] != activity else { continue }
+            guard previous != activity else { continue }
+            // The user just looked away from a pane that still needs them: re-assert the
+            // interrupting sinks (owner decision Q6, and the re-arm the first real session asked
+            // for — a glance and a keystroke had silenced the banner and the badge for good). Only
+            // on the active -> inactive crossing, so a pane that merely moves between two unwatched
+            // workspaces does not ping again.
+            let lookedAway = (previous?.isActive ?? false) && !activity.isActive
             recordedActivity[pane] = activity
             dispatch(.activityChanged(pane: pane, activity))
+            if lookedAway { rearmInterrupting(pane: pane, activity: activity) }
         }
         // A pane that **moved** changes no notice and resolves nothing, so nothing above would
         // have recomputed the counts — and the pill on the workspace it left would keep the
         // number. The pass already runs on every layout change, so this is where a move lands.
+        // A re-arm that un-quieted a pane also surfaces here: the badge is the recomputed count.
         if recomputeCounts() { dispatch(.countsChanged(counts)) }
+    }
+
+    /// Un-quiet every `needsUser` alarm of a pane the user has just left, and tell the interrupting
+    /// sinks to assert it again (`.rearmed`, the mirror of `.quieted`). The Dock badge follows from
+    /// the recomputed counts at the end of the pass; the banner follows from `.rearmed`, which is
+    /// also the only way an alarm raised while the pane was being watched — and so never
+    /// presented — finally reaches the screen. One `.rearmed` per pane, carrying the newest live
+    /// `needsUser` notice, because there is one banner per pane.
+    private func rearmInterrupting(pane: UUID, activity: PaneActivity) {
+        var representative: Notice?
+        for index in live.indices
+        where live[index].pane == pane && live[index].urgency == .needsUser {
+            live[index].quietedAt = nil
+            representative = live[index]
+        }
+        guard let representative else { return }
+        dispatch(.rearmed(representative, activity))
     }
 
     /// Panes holding at least one live notice, in post order, deduplicated. A snapshot: the walk

@@ -106,7 +106,7 @@ final class AgentRegistry: NoticeSink {
             default:
                 break
             }
-        case .posted, .superseded, .quieted, .activityChanged, .countsChanged:
+        case .posted, .superseded, .quieted, .rearmed, .activityChanged, .countsChanged:
             break
         }
     }

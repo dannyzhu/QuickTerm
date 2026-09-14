@@ -401,6 +401,14 @@ enum NoticeChange {
     /// (plan §2.8). Only the interrupting sinks react: the banner is withdrawn, the badge drops
     /// this pane. The notice is still live.
     case quieted(Notice, PaneActivity?)
+    /// **The mirror of `.quieted`**: the user's attention left a pane that still needs them, so the
+    /// interrupting sinks assert the alarm again. The banner is presented — this is the one road by
+    /// which an alarm raised *while the pane was being watched* (which post never presented, because
+    /// the user was looking straight at it) reaches the screen, and the road back for one a keystroke
+    /// quieted. The badge follows from the recomputed counts, not from this. Sent once per
+    /// active -> inactive crossing, never while the pane merely stays away. The notice is (still) live
+    /// and no longer quieted.
+    case rearmed(Notice, PaneActivity?)
     case superseded(old: Notice, new: Notice, PaneTransition, PaneActivity?)
     case resolved(Notice, PaneTransition, PaneActivity?)
     /// Only for panes holding a live notice, and only when the activity really changed — the
