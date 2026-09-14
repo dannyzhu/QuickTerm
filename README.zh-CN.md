@@ -247,6 +247,9 @@ quickterm screen    new | close | move | focus | set
 quickterm app       get | set
 quickterm spec      dump | validate | apply
 quickterm events    poll | follow
+quickterm notices   list | ack
+quickterm agents    list
+quickterm hooks     install | uninstall | status
 quickterm input     send-text
 quickterm mcp
 ```
@@ -291,6 +294,36 @@ quickterm spec apply -f dev.json -t :4            # 默认 --into-empty：非空
 
 配置里**所有布尔键**（这一段以及别处）都认 `true` / `1` / `yes` / `on` 与 `false` / `0` / `no` / `off`（大小写无所谓）。表外的写法一律**不猜**：那一行不生效，保留声明的默认值，并在日志里写一条点名键与值的告警——所以 `socket = off` 是真的关掉监听，而不是悄悄留在"开"上。
 
+### pane 里的 agent，以及背后的钩子
+
+QuickTerm 能看出一个 pane 里的 AI agent 在干什么——在想、在跑工具、**在等你**、跑完了、失败了——并且用三种方式说出来：
+画在 pane 自己上内边距里的一行状态、原本就有的红点与工作区小药丸，以及 `quickterm agents list`，好让另一个 agent
+在打断你之前先读一眼。
+
+```sh
+quickterm hooks status                 # 装了什么、装在哪
+quickterm hooks install claude-code    # 和其它写操作一样，在 QuickTerm 里确认
+quickterm agents list                  # 每个 pane 的 agent 在干什么
+```
+
+**安装器会写什么。** 一个小小的 `sh` 脚本放在 `~/.config/quickterm/hooks/quickterm-agent-state.sh`，外加在 agent
+**自己**的配置文件里每个生命周期事件一条条目——Claude Code 是 `~/.claude/settings.json`，Codex 是
+`~/.codex/hooks.json`，Gemini 是 `~/.gemini/settings.json`。每条都带 QuickTerm 的标记，`hooks uninstall` 只删带标记
+的那些：你自己写的钩子一根手指都不碰。脚本里 `quickterm` 二进制的路径是**安装时写死的，绝不从环境变量里读**——钩子每
+次提问都会跑，让项目的 `.envrc` 或者 Makefile 来决定跑的是哪个二进制，等于给任意代码开了一扇门。不在 QuickTerm 里时
+（环境里没有控制 socket），脚本立刻 exit 0 什么也不做，所以同一条配置在 Terminal.app、VS Code、tmux 或 CI 里都无害。
+也不会背着你装：`[agents] auto-install-hooks` 默认是 `ask`，而且每个 agent 每次启动只问一次。
+
+**进程扫描会读什么。** 某个 agent 没装钩子时，QuickTerm 退而去"找"它——而这个兜底是故意近乎瞎的。它只走
+**QuickTerm 自己的子孙进程**，留下一个 pid 和一个可执行文件名，拿这个名字去比对规则文件里的 `process` 列表，并在同一次
+调用里把参数缓冲区丢掉。不读命令行，不读环境变量，不看别人的进程，不碰这个 app 进程树以外的任何东西。它至多只能得出
+"这个 pane 里跑着一个叫这个名字的东西"，于是报的状态就是 `unknown`——这是诚实的答案。精确的状态只可能来自 agent 自己。
+
+**规则文件是什么。** 哪个事件对应哪个状态、工具名和消息在钩子载荷的哪个字段，都写在 TOML 规则文件里——app 内置三份
+（`claude-code`、`codex`、`gemini`），`~/.config/quickterm/agents/*.toml` 里的会与它们一起加载，所以支持一个新 agent
+是加一个文件，不是发一个版本。从钩子进到 QuickTerm 的字段只有一张白名单（事件名、session id、工具名、错误类型、消息，
+以及 `tool_input` 里取值为字符串的条目），每个都截到 200 字符——绝不包括 transcript 路径、工作目录或文件内容。
+
 ### 安全姿态
 
 - 读是静默的——但**没有继承 `QUICKTERM_TOKEN` 的调用方读不到浏览器 pane 的网址与标题**（`<redacted>`）。浏览器 pane 里装着用户已登录的会话，`quickterm state` 本身就是一个外泄面。
@@ -320,7 +353,7 @@ quickterm spec apply -f dev.json -t :4            # 默认 --into-empty：非空
 
 ### MCP
 
-`quickterm mcp` 是一个 stdio MCP 服务，13 个粗粒度工具**由同一张命令表生成**（手写的那份两个版本之内必然漂移）。
+`quickterm mcp` 是一个 stdio MCP 服务，15 个粗粒度工具**由同一张命令表生成**（手写的那份两个版本之内必然漂移）。
 
 ```sh
 claude mcp add quickterm -- /usr/local/bin/quickterm mcp
@@ -387,6 +420,13 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # download-dir = "~/Downloads"                   # 浏览器 pane 下载落盘目录（支持 ~；目录不存在时回退 ~/Downloads）
 # link-opener = "browser-pane"                   # 终端 ⌘+点击链接：browser-pane = 在浏览器 pane 打开（有则用最近激活的，无则新开）；system = 系统浏览器
 
+[agents]                    # 识别 pane 里的 AI agent；进程扫描只看 QuickTerm 自己的子进程
+# detect = true                                  # 识别终端 pane 里的 AI agent（钩子、OSC 回退、进程扫描）
+# enabled = ["claude-code", "codex", "gemini"]   # 要用的规则 id 列表（内置三个；~/.config/quickterm/agents/*.toml 可覆盖或新增）
+# hook-detail = "lifecycle"                      # tools 会多装 Pre/PostToolUse（每次工具调用多一个进程），并把已装的钩子改写成同一档
+# auto-install-hooks = "ask"                     # 某个 pane 第一次跑起一个还没装钩子的 agent 时：ask = 每个 agent 问一次 | always = 直接装 | never = 不装
+# info-strip = true                              # 画在 pane 上内边距里的状态行（不会改终端尺寸；内边距小于 14 时不画）
+
 [notifications]              # 谁在等你；红点 / 角标 / 计数统计的是「需要你动手的 pane」，不是通知条数
 # system = "inactive"         # inactive = 只在你没在看那个 pane 时弹系统通知 | never = 从不弹
 # system-body = "composed"    # never | composed = 只放 QuickTerm 自己写的句子（默认） | always = 也放程序原文（通知中心会留存）
@@ -395,6 +435,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # workspace-count = true      # 工作区标签上的 ●N
 # bell = "ignore"             # ignore = 一声裸铃不算通知（默认） | info = 当成一条 info 通知
 # command-finished = "long"   # never | long = 只报超过 10 秒的（默认） | always —— 靠 OSC 133，需要 shell integration；取代引擎自己的 notify-on-command-finish 几个键，那些不再生效
+# done = true                 # agent 跑完一轮时，若那个 pane 不在你眼前，发一条 info 通知；info 从不计入 Dock 角标
 
 [keybinds]                  # 动作 = "修饰键+键"；"none" 解绑。动作 id 见 Cmd+K
 # new-terminal = "cmd+return"

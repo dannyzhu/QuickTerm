@@ -294,6 +294,13 @@ enum ConfigStore {
         var controlExposeBrowser: String = "token"
         var controlSendText: Bool = false
         var controlCaptureText: Bool = false
+        /// `[agents]` — agent awareness (plan §2.10). `AgentSettings` is built from these five in
+        /// `AppSession.applyGlobalConfig`; the registry never reads the config itself.
+        var agentsDetect: Bool = true
+        var agentsEnabled: [String] = ["claude-code", "codex", "gemini"]
+        var agentsHookDetail: String = "lifecycle"
+        var agentsAutoInstallHooks: String = "ask"
+        var agentsInfoStrip: Bool = true
         /// `[notifications]` — the notification centre (spec §3.5). `NoticeSettings` is built
         /// from these seven in `AppSession.applyGlobalConfig`; the centre never reads the config
         /// itself.
@@ -305,6 +312,8 @@ enum ConfigStore {
         /// A bare bell is not a notice by default (owner's decision).
         var notificationsBell: String = "ignore"
         var notificationsCommandFinished: String = "long"
+        /// A finished agent turn posts an info notice when the pane is not active.
+        var notificationsDone: Bool = true
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
         var ghosttyPassthrough: String = ""
@@ -395,6 +404,12 @@ enum ConfigBindings {
         "notifications.workspace-count": { v, s in v.boolValue.map { s.notificationsWorkspaceCount = $0 } },
         "notifications.bell": { v, s in v.stringValue.map { s.notificationsBell = $0 } },
         "notifications.command-finished": { v, s in v.stringValue.map { s.notificationsCommandFinished = $0 } },
+        "notifications.done": { v, s in v.boolValue.map { s.notificationsDone = $0 } },
+        "agents.detect": { v, s in v.boolValue.map { s.agentsDetect = $0 } },
+        "agents.enabled": { v, s in v.stringsValue.map { s.agentsEnabled = $0 } },
+        "agents.hook-detail": { v, s in v.stringValue.map { s.agentsHookDetail = $0 } },
+        "agents.auto-install-hooks": { v, s in v.stringValue.map { s.agentsAutoInstallHooks = $0 } },
+        "agents.info-strip": { v, s in v.boolValue.map { s.agentsInfoStrip = $0 } },
     ]
 }
 

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import XCTest
 @testable import QuickTerm
 
@@ -338,8 +339,15 @@ final class NoticeCenterTests: XCTestCase {
                             origin: origin))
         center.post(request(pane, .info, source: .command, title: "Command finished"))
 
-        XCTAssertEqual(center.agentStateLeftNeedsUser(pane: pane, origin: NoticeOrigin(lineageRoot: 8)), 0)
-        XCTAssertEqual(center.agentStateLeftNeedsUser(pane: pane, origin: origin), 1)
+        // The refusal is **reported**, not silently counted as "nothing was live": that is the
+        // one case the lineage rule exists to catch, and `agent-event` answers origin_mismatch
+        // from exactly this (plan §1.4).
+        let refused = center.agentStateLeftNeedsUser(pane: pane, origin: NoticeOrigin(lineageRoot: 8))
+        XCTAssertEqual(refused.resolved, 0)
+        XCTAssertEqual(refused.refused.count, 1)
+        let allowed = center.agentStateLeftNeedsUser(pane: pane, origin: origin)
+        XCTAssertEqual(allowed.resolved, 1)
+        XCTAssertTrue(allowed.refused.isEmpty)
         XCTAssertEqual(center.urgency(pane: pane), .info, "the info notice is not an alarm and stays")
     }
 
@@ -623,6 +631,110 @@ final class NoticeCenterTests: XCTestCase {
         XCTAssertTrue(settings.isEnabled(sinkID: NoticeSinkID.activityLog))
         XCTAssertEqual(NoticeSettings(ConfigStore.Settings()), NoticeSettings(),
                        "the registry defaults and the type's own defaults have to agree")
+    }
+
+    // MARK: Where a notice is (plan §1.1)
+
+    /// A pane moved to another workspace takes its alarm's count with it. Phase 1 read the pair
+    /// recorded at post time, and Phase 2 makes approval notices live for minutes while
+    /// `pane move --to 1:3` by the very agent arranging the work is routine — so the pill would
+    /// have counted on the workspace the pane left.
+    func testCountsFollowThePaneWhenItMoves() throws {
+        let controller = try XCTUnwrap(app.screens.primary)
+        let pane = try addPane(workspace: 0)
+        center.post(request(pane, source: .agent("claude-code"), title: "Awaiting approval"))
+        XCTAssertEqual(center.counts.count(screen: controller.windowID, workspace: 0), 1)
+        sink.reset()
+
+        locator.entries[pane]?.workspace = 2
+        center.flushActivityPass()
+
+        XCTAssertEqual(center.counts.count(screen: controller.windowID, workspace: 0), 0)
+        XCTAssertEqual(center.counts.count(screen: controller.windowID, workspace: 2), 1)
+        XCTAssertEqual(sink.countsChanges.count, 1, "the move is reported exactly once")
+        let notice = try XCTUnwrap(center.live.first)
+        XCTAssertEqual(center.location(of: notice).workspace, 2)
+        XCTAssertEqual(notice.workspace, 0, "the stored pair stays: a history entry needs it")
+    }
+
+    /// A history entry can outlive its pane, and then the pair recorded at post time is all
+    /// there is.
+    func testLocationFallsBackToThePostedPairWhenThePaneIsGone() throws {
+        let pane = try addPane(workspace: 1)
+        center.post(request(pane, title: "Awaiting approval"))
+        let notice = try XCTUnwrap(center.live.first)
+        locator.entries[pane] = nil
+        XCTAssertEqual(center.location(of: notice).workspace, 1)
+    }
+
+    // MARK: Q1 — what a keystroke does (plan §2.8)
+
+    /// The default, (b): a hook-evidenced alarm is **quieted** — the interrupting sinks let go,
+    /// the alarm stays live — while everything else resolves, because no later signal will come
+    /// for it.
+    func testClearInterruptingSinksQuietsHooksAndResolvesTheRest() throws {
+        let pane = try addPane()
+        center.userActedPolicy = .clearInterruptingSinks
+        center.post(NoticeRequest(source: .agent("claude-code"), pane: pane, urgency: .needsUser,
+                                  evidence: .hook, title: "Awaiting approval"))
+        center.post(NoticeRequest(source: .terminal, pane: pane, urgency: .needsUser,
+                                  evidence: .notification, title: "Something else"))
+        center.post(request(pane, .info, source: .command, title: "Command finished"))
+        XCTAssertEqual(center.counts.interrupting, 1)
+        sink.reset()
+
+        center.userDidType(in: pane)
+
+        XCTAssertEqual(center.live.count, 1, "the hook-evidenced alarm is still live")
+        XCTAssertEqual(center.live.first?.evidence, .hook)
+        XCTAssertNotNil(center.live.first?.quietedAt)
+        XCTAssertFalse(center.live.first?.isInterrupting ?? true)
+        XCTAssertEqual(center.counts.total, 1, "the pane mark and the pill still count it")
+        XCTAssertEqual(center.counts.interrupting, 0, "the banner and the Dock badge let go")
+        XCTAssertEqual(sink.changes.compactMap { if case .quieted(let n, _) = $0 { n } else { nil } }.count, 1)
+        XCTAssertEqual(Set(center.history.compactMap(\.resolution)), [.userActed])
+
+        // Typing again changes nothing: a notice is quieted once.
+        sink.reset()
+        center.userDidType(in: pane)
+        XCTAssertTrue(sink.changes.isEmpty)
+    }
+
+    /// The other two answers, driven through the same switch.
+    func testResolveFullyAndRearmPoliciesResolveEverything() throws {
+        for policy in [AgentPolicy.UserActed.resolveFully, .resolveFullyAndRearm(seconds: 30)] {
+            let pane = try addPane()
+            center.userActedPolicy = policy
+            center.post(NoticeRequest(source: .agent("claude-code"), pane: pane, urgency: .needsUser,
+                                      evidence: .hook, title: "Awaiting approval"))
+            center.userDidType(in: pane)
+            XCTAssertTrue(center.live(pane: pane).isEmpty, "\(policy) has to resolve outright")
+            XCTAssertEqual(center.history.last?.resolution, .userActed)
+        }
+    }
+
+    /// `notices ack` and rule 4 pay no attention to a quieting: an alarm that was quieted is
+    /// still an alarm, and both of those really do take it away.
+    func testAcknowledgeAndPaneCloseStillResolveAQuietedNotice() throws {
+        let pane = try addPane()
+        center.userActedPolicy = .clearInterruptingSinks
+        center.post(NoticeRequest(source: .agent("claude-code"), pane: pane, urgency: .needsUser,
+                                  evidence: .hook, title: "Awaiting approval"))
+        center.userDidType(in: pane)
+        XCTAssertEqual(center.resolveAll(pane: pane, .acknowledged), 1)
+        XCTAssertEqual(center.counts.total, 0)
+    }
+
+    /// The redraw bound of §1.5: a duplicate post publishes nothing at all.
+    func testDuplicatePostNeverPublishes() throws {
+        let pane = try addPane()
+        center.post(request(pane, title: "Awaiting approval"))
+        var published = 0
+        let token = center.objectWillChange.sink { _ in published += 1 }
+        defer { token.cancel() }
+        for _ in 0..<100 { center.post(request(pane, title: "Awaiting approval")) }
+        XCTAssertEqual(published, 0, "100 duplicates must not publish once")
+        XCTAssertEqual(center.live.count, 1)
     }
 }
 

@@ -11,6 +11,8 @@ enum Render {
         if object["schema"]?.stringValue == "quickterm.state/1" { return state(object, reply: reply) }
         if object["schema"]?.stringValue == "quickterm.describe/1" { return describe(object) }
         if object["schema"]?.stringValue == "quickterm.notices/1" { return notices(object) }
+        if object["schema"]?.stringValue == "quickterm.agents/1" { return agents(object) }
+        if object["schema"]?.stringValue == "quickterm.hooks/1" { return hooks(object) }
         // Capture has to be matched **first**: it carries a `pane` field, so if it falls through
         // to the paneDetail branch below, the body — the one thing the caller wanted — is dropped
         // wholesale.
@@ -78,6 +80,99 @@ enum Render {
             ? "No pane is waiting for you."
             : "\(marker(waiting)) \(ControlChange.count(waiting, "pane")) waiting for you"
                 + " — go and look, or quickterm notices ack -t <pane> once it is handled.")
+        return out.joined(separator: "\n")
+    }
+
+    /// `agents list`: one row per pane that has an agent.
+    ///
+    /// The columns are the questions in the order a person asks them — *which pane, which agent,
+    /// what is it doing, what with, for how long, saying what* — and the last one is the only one
+    /// that can be `<redacted>`. As in `paneTable`, the leading marker column exists **only when
+    /// something is waiting**, so a screen where everything is busy looks calm.
+    static func agents(_ object: [String: JSONValue]) -> String {
+        let rows = (object["agents"]?.arrayValue ?? []).compactMap(\.objectValue)
+        guard !rows.isEmpty else { return "(no agents)" }
+        let waiting = rows.contains { $0["agent"]?["needsUser"]?.boolValue == true }
+        var headers = ["PANE", "AGENT", "STATE", "DETAIL", "SINCE", "MESSAGE"]
+        if waiting { headers.insert("!", at: 0) }
+        var widths = headers.map { $0.count }
+        let cells: [[String]] = rows.map { row in
+            let agent = row["agent"]?.objectValue ?? [:]
+            var values = [
+                row["pane"]?.stringValue ?? "?",
+                agent["id"]?.stringValue ?? "?",
+                agent["state"]?.stringValue ?? "?",
+                agent["detail"]?.stringValue ?? "",
+                since(agent["since"]?.stringValue),
+                agent["message"]?.stringValue ?? "",
+            ]
+            if waiting {
+                values.insert(agent["needsUser"]?.boolValue == true ? needsUserMark : "", at: 0)
+            }
+            for (index, text) in values.enumerated() { widths[index] = max(widths[index], text.count) }
+            return values
+        }
+        // The message is last precisely so it may run over the column width without pushing
+        // anything sideways; every other column is padded.
+        var out = [zip(headers, widths).map { pad($0, $1) }.joined(separator: "  ")]
+        for row in cells { out.append(zip(row, widths).map { pad($0, $1) }.joined(separator: "  ")) }
+        let pending = rows.filter { $0["agent"]?["needsUser"]?.boolValue == true }.count
+        if pending > 0 {
+            out.append("\(marker(pending)) \(ControlChange.count(pending, "pane")) waiting for the human"
+                + " — do not interrupt with a question of your own.")
+        }
+        return out.joined(separator: "\n")
+    }
+
+    /// An ISO timestamp read as "how long ago", which is the only form anybody wants in a table.
+    /// An unparseable stamp is printed verbatim rather than swallowed: a wrong-looking string in
+    /// the column is a bug report, a blank cell is not.
+    static func since(_ stamp: String?) -> String {
+        guard let stamp, !stamp.isEmpty else { return "" }
+        guard let date = isoParser.date(from: stamp) else { return stamp }
+        let seconds = max(0, Int(Date().timeIntervalSince(date)))
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m\(seconds % 60)s" }
+        return "\(seconds / 3600)h\((seconds % 3600) / 60)m"
+    }
+
+    private static let isoParser: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    /// `hooks status`: the script first — it is the thing every agent's entry points at, so a
+    /// broken script explains every "installed but nothing happens" at once — then one line per
+    /// agent, with the event list and any problem indented underneath.
+    static func hooks(_ object: [String: JSONValue]) -> String {
+        var out: [String] = []
+        if let script = object["script"]?.objectValue {
+            let ok = script["ok"]?.boolValue == true
+            out.append("script   \(ok ? "ok" : "not ready")   \(script["path"]?.stringValue ?? "")")
+            if let binary = script["bakedBinary"]?.stringValue {
+                out.append("         → \(binary)"
+                    + (script["bakedBinaryExists"]?.boolValue == true ? "" : "  (missing)"))
+            }
+            if script["isSymlink"]?.boolValue == true {
+                out.append("         ⚠️ the path is a symlink; QuickTerm will not write through one")
+            }
+        }
+        for entry in object["agents"]?.arrayValue ?? [] {
+            guard let agent = entry.objectValue else { continue }
+            let installed = agent["installed"]?.boolValue == true
+            out.append(pad(agent["id"]?.stringValue ?? "?", 14)
+                + pad(installed ? "installed" : "not installed", 15)
+                + pad(agent["detail"]?.stringValue ?? "", 10)
+                + (agent["configPath"]?.stringValue ?? "")
+                + (agent["configExists"]?.boolValue == true ? "" : "  (no config file)"))
+            let events = (agent["entries"]?.arrayValue ?? []).compactMap(\.stringValue)
+            if !events.isEmpty { out.append("              \(events.joined(separator: " "))") }
+            if let issue = agent["issue"]?.stringValue, !issue.isEmpty {
+                out.append("              ⚠️ \(issue)")
+            }
+        }
+        if out.isEmpty { out.append("(no agents)") }
         return out.joined(separator: "\n")
     }
 

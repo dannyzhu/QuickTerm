@@ -54,10 +54,14 @@ final class NoticeSystemSinkTests: XCTestCase {
             appActive: active, screenKey: active, workspaceVisible: active, focused: active)
     }
 
+    /// `evidence` matters from Phase 2 on: only a **hook or report** alarm is quieted by a
+    /// keystroke (plan §2.8) — a notification-evidenced one resolves outright, because no later
+    /// signal will ever come for it.
     private func request(_ pane: UUID, urgency: NoticeUrgency = .needsUser,
                          source: NoticeSource = .terminal, title: String = "Needs you",
-                         body: String? = nil, sensitive: Bool = true) -> NoticeRequest {
-        NoticeRequest(source: source, pane: pane, urgency: urgency, evidence: .notification,
+                         body: String? = nil, sensitive: Bool = true,
+                         evidence: NoticeEvidence = .notification) -> NoticeRequest {
+        NoticeRequest(source: source, pane: pane, urgency: urgency, evidence: evidence,
                       title: title, body: body, bodySensitive: sensitive)
     }
 
@@ -165,6 +169,76 @@ final class NoticeSystemSinkTests: XCTestCase {
                        "switching the sink off has to take its banners with it")
     }
 
+    // MARK: Quieting — the interrupting half of Q1(b)
+    //
+    // Every case here leaves the pane **inactive** in the locator stub, so the only road that can
+    // take a banner down is `.quieted`. If any of them started passing because the pane went
+    // active, `testWithdrawsWhenThePaneBecomesActive` would be the case asserting it.
+
+    /// The user focused the pane and typed into it. The banner exists to fetch somebody out of
+    /// another app, and that job is now done — but the prompt has not been answered, so the notice
+    /// is still live and the pane mark still draws (owner decision Q1(b)).
+    func testTypingInThePaneWithdrawsTheBannerAndLeavesTheNoticeLive() throws {
+        let pane = try addPane(active: false)
+        center.post(request(pane, title: "Approve Bash", evidence: .hook))
+        XCTAssertEqual(recorder.added.count, 1)
+
+        center.userDidType(in: pane)
+
+        XCTAssertEqual(recorder.removedDelivered, [SystemNotificationSink.identifier(pane: pane)])
+        XCTAssertEqual(recorder.removedPending, recorder.removedDelivered,
+                       "pending as well: a banner not shown yet is just as stale")
+        XCTAssertEqual(center.urgency(pane: pane), .needsUser, "the pane mark stays up")
+        XCTAssertEqual(center.live(pane: pane).count, 1)
+        XCTAssertNotNil(center.live(pane: pane).first?.quietedAt)
+    }
+
+    /// Quieted is not resolved, and the one thing that puts the banner back is the agent asking
+    /// about something else. It returns **silently**: the pane was already loud, so a second ping
+    /// would be the same alarm ringing twice.
+    func testASupersedingAlarmPutsTheBannerBackAfterAQuieting() throws {
+        let pane = try addPane(active: false)
+        center.post(request(pane, title: "Approve Bash", evidence: .hook))
+        center.userDidType(in: pane)
+        recorder.reset()
+
+        center.post(request(pane, title: "Approve Edit", evidence: .hook))
+
+        XCTAssertEqual(recorder.added.count, 1)
+        XCTAssertEqual(recorder.lastContent?.title, "Approve Edit")
+        XCTAssertNil(recorder.added.last?.content.sound)
+        XCTAssertNil(try XCTUnwrap(center.live(pane: pane).first).quietedAt,
+                     "a fresh prompt is a fresh alarm")
+    }
+
+    /// Nothing *else* brings it back. An `info` arriving while the quieted alarm is still live is
+    /// not a raise, so the banner stays down.
+    func testAQuietedAlarmIsNotRePresentedByAnInfoNotice() throws {
+        let pane = try addPane(active: false)
+        center.post(request(pane, title: "Approve Bash", evidence: .hook))
+        center.userDidType(in: pane)
+        recorder.reset()
+
+        center.post(request(pane, urgency: .info, source: .command, title: "Command finished"))
+
+        XCTAssertTrue(recorder.added.isEmpty)
+    }
+
+    /// The sink withdraws; it never resolves. `notices ack` still answers a quieted alarm, and
+    /// that is what finally clears the pane mark. (A click on a banner is the same shape —
+    /// `didReceive` reveals and withdraws, leaving a quieted notice live — and is exercised in the
+    /// live smoke for the reason the "NOT TESTED HERE" note below gives.)
+    func testAckStillResolvesAQuietedAlarm() throws {
+        let pane = try addPane(active: false)
+        center.post(request(pane, title: "Approve Bash", evidence: .hook))
+        center.userDidType(in: pane)
+
+        center.resolveAll(pane: pane, .acknowledged)
+
+        XCTAssertTrue(center.live(pane: pane).isEmpty)
+        XCTAssertNil(center.urgency(pane: pane))
+    }
+
     // MARK: The body rule
 
     /// `system-body` x `bodySensitive`, all six answers. The default is `composed`: only text
@@ -250,6 +324,47 @@ final class NoticeSystemSinkTests: XCTestCase {
 
         badge.clearAll()
         XCTAssertEqual(labels.last, .some(nil))
+    }
+
+    /// The badge is an **interrupting** sink: it counts the panes nobody has gone to yet. The pane
+    /// mark and the workspace pill are not, and keep counting every live alarm (owner decision Q6)
+    /// — which is why `counts.needsUser` stays at two throughout.
+    func testDockBadgeShowsOnlyWhatIsStillInterrupting() throws {
+        var labels: [String?] = []
+        center.addSink(DockBadgeSink(setBadge: { labels.append($0) }))
+
+        let a = try addPane(active: false)
+        let b = try addPane(active: false)
+        center.post(request(a, title: "Approve Bash", evidence: .hook))
+        center.post(request(b, title: "Approve Edit", evidence: .hook))
+        XCTAssertEqual(labels.last, "2")
+
+        center.userDidType(in: a)
+        XCTAssertEqual(labels.last, "1", "one pane has been picked up; the other has not")
+        XCTAssertEqual(center.urgency(pane: a), .needsUser, "the quieted pane still draws its mark")
+        XCTAssertEqual(center.counts.needsUser.count, 2, "and the pill still counts both")
+
+        center.userDidType(in: b)
+        XCTAssertEqual(labels.last, .some(nil), "nothing is interrupting: no red pill at all")
+        XCTAssertEqual(center.counts.needsUser.count, 2,
+                       "two prompts are still pending, and two marks are still drawn")
+    }
+
+    /// A notification-evidenced alarm has no hook behind it: nothing will ever come to say it is
+    /// over, so a keystroke resolves it outright rather than quieting it — badge and mark together.
+    func testANotificationEvidencedAlarmResolvesOnAKeystrokeInsteadOfQuieting() throws {
+        var labels: [String?] = []
+        center.addSink(DockBadgeSink(setBadge: { labels.append($0) }))
+
+        let pane = try addPane(active: false)
+        center.post(request(pane, evidence: .notification))
+        XCTAssertEqual(labels.last, "1")
+
+        center.userDidType(in: pane)
+
+        XCTAssertEqual(labels.last, .some(nil))
+        XCTAssertTrue(center.live(pane: pane).isEmpty)
+        XCTAssertNil(center.urgency(pane: pane), "the mark goes with it")
     }
 
     // MARK: Click routing

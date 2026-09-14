@@ -253,6 +253,15 @@ final class ConfigSchemaTests: XCTestCase {
                 } else {
                     XCTAssertNil(spec.coerce(""), "an empty value for \(spec.id) must not override the default")
                 }
+            case .stringList:
+                // Only the array form counts. A bare word is far more likely to be somebody
+                // reaching for a comma-separated list than a list of one, and reading it as a
+                // list of one would switch off every other entry without saying so.
+                XCTAssertEqual(spec.coerce("[\"a\", \"b\"]"), .strings(["a", "b"]))
+                XCTAssertEqual(spec.coerce("[]"), .strings([]), "an empty list is a legal value: none")
+                XCTAssertNil(spec.coerce("a, b"), "\(spec.id) takes an array, not a comma list")
+                XCTAssertNil(spec.coerce("[a]"), "the items of a list are quoted")
+                XCTAssertEqual(spec.outOfRange, .reject)
             case .bool:
                 // Booleans know only that table of literals; anything outside it is rejected, which means
                 // keeping the default and leaving a diagnostic.
@@ -292,6 +301,10 @@ final class ConfigSchemaTests: XCTestCase {
             return "\"\(values.first { $0 != spec.defaultValue.stringValue } ?? values[0])\""
         case .string, .path:
             return "\"qt-\(spec.key)\""
+        case .stringList:
+            // Deliberately not the default list: this is the value a hot-reload case writes to
+            // prove the key really reached its consumer.
+            return "[\"qt-\(spec.key)\"]"
         }
     }
 }

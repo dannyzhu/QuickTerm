@@ -1,0 +1,35 @@
+# QuickTerm agent rules — Gemini CLI.
+# Known limitation: an agent that runs as an interpreter (`node …/gemini.js`) is not found by the
+# process scan — its executable basename is `node`. Its identity then comes from SessionStart and
+# its release from SessionEnd.
+id = "gemini"
+name = "Gemini CLI"
+process = ["gemini"]
+
+[fields]
+session = "$.session_id"
+message = "$.message"
+tool    = "$.tool_name"
+summary = ["$.details.command", "$.details.text", "$.message"]
+
+[hooks]
+SessionStart = "idle"
+BeforeAgent  = "working:thinking"
+AfterAgent   = "done"
+BeforeTool   = "working:tool"
+AfterTool    = "working:thinking"
+SessionEnd   = "released"
+
+[hooks.Notification]
+field = "$.notification_type"
+
+[hooks.Notification.values]
+ToolPermission = "blocked:approval"
+
+# [notifications] empty for the same reason as Codex (Gemini's OSC 9 wording is not in the spec).
+
+[install]
+shape     = "gemini"
+config    = "~/.gemini/settings.json"
+lifecycle = ["SessionStart", "SessionEnd", "BeforeAgent", "AfterAgent", "Notification"]
+tools     = ["BeforeTool", "AfterTool"]

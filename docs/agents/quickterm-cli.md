@@ -76,6 +76,15 @@ quickterm notices list [--needs-user] [--history] [-t target]
 quickterm notices ack  -t target
 ```
 
+Agents in panes:
+
+```
+quickterm agents list   [-t target]
+quickterm hooks  status [<agent>] [--config-dir dir]
+quickterm hooks  install|uninstall <agent> [--config-dir dir]
+quickterm agent-event --agent <id> [--event JSON]   # run by the installed hook script, not by you
+```
+
 MCP (Phase 5):
 
 ```
@@ -484,6 +493,92 @@ already holding a prompt in front of the user — say so and wait, instead of ad
   unanswered approval stays visible until it is answered.
 - Watch it as a stream instead of polling: `quickterm events poll --types notice.posted,notice.resolved --timeout 30s`.
 
+## Agents: what the other panes are doing
+
+`notices list` answers "is somebody being asked something right now". `agents list` answers the question one
+step earlier — **is that pane busy at all, with what, and since when** — which is what you actually need
+before you type into somebody else's workspace or add a second question on top of the one already on screen.
+
+```sh
+quickterm agents list                                    # every pane that has an agent in it
+quickterm agents list -t 1:2                             # only this workspace
+quickterm agents list --json | jq -r '.data.agents[] | select(.agent.needsUser) | .pane'
+```
+
+QuickTerm recognises an agent three ways, and the record says which one it is using (`evidence`):
+
+- **`hook`** — the agent itself reported a lifecycle event through the hook QuickTerm installs. Exact.
+- **`notification`** — an OSC desktop notification whose text a rule file recognises. A guess, and it is
+  never allowed to overwrite a hook that was heard in the last five seconds.
+- **`process`** — the process scan found a program a rule file names, running as a descendant of QuickTerm.
+  That is presence and nothing more: the state is `unknown`, which means "it is there and it has told us
+  nothing".
+
+One row per pane, and **a pane with no agent is simply not listed** — "no agent here" is the absence of a
+row, never a row full of nulls. Each row carries the pane, where it is, and:
+
+| field | what it is |
+|---|---|
+| `id` / `name` | the rule id (`claude-code`) and its display name |
+| `state` | `idle` \| `working` \| `blocked` \| `done` \| `error` \| `unknown` — **branch on this** |
+| `detail` | what kind: `thinking` \| `tool` \| `approval` \| `input` \| `choice` |
+| `tool` | a tool **name** (`Bash`), never a command line |
+| `message` | the agent's own words — the one redacted field (see below) |
+| `evidence` | `hook` \| `report` \| `notification` \| `process` — how sure this is |
+| `since` | when the state last changed (ISO8601, the stamp events use) |
+| `needsUser` | present and `true` when the pane is waiting for a human (`blocked` or `error`) |
+
+**`needsUser` is the field to read before you interrupt.** `blocked` means a human is being waited for;
+`error` means the turn stopped and somebody has to look. Both mean the same thing to you: that pane already
+has the user's attention pending, so say so and wait rather than asking a second question.
+
+- **The state is free, the message is not.** Everything above except `message` is composed vocabulary that
+  carries no payload, so it is readable by every caller. `message` is the agent's own text — the command it
+  wants to run, the question it is asking — and follows the browser-URL rule exactly: without
+  `QUICKTERM_TOKEN` you read `<redacted>` and `redacted: true`, in `agents list`, in `state` and on the
+  event stream alike.
+- The same record rides along inside `state`: every pane carries `agent` when QuickTerm recognises one, and
+  the field is **absent** otherwise — a session with no agents in it returns exactly the bytes it always did.
+- Watch it instead of polling: `quickterm events poll --types agent.state.changed --timeout 30s`. The event
+  carries `agent`, `state`, `detail`, `tool`, `evidence` and `message` (redacted by the same rule), and it
+  fires on **transitions only** — a tool call replacing another tool call moves the pane's strip, not the
+  event stream's idea of what changed. An agent leaving the pane reports `state: "released"`.
+- `agents list` scopes with `-t` at the precision you write it, exactly like `notices list`: `-t 1` a screen,
+  `-t 1:2` one workspace, `-t t7` one pane, and nothing at all means the whole session.
+
+### Hooks: `quickterm hooks`
+
+The precise signal comes from a small hook script QuickTerm installs into the agent's **own** config file
+(Claude Code's `settings.json`, Codex's `hooks.json`, Gemini's `settings.json`). The script does nothing at
+all when it is not running inside a QuickTerm pane, so the same entry is harmless in Terminal.app, VS Code,
+tmux or CI.
+
+```sh
+quickterm hooks status                 # the script, then one line per agent
+quickterm hooks status claude-code --json
+quickterm hooks install claude-code    # asks you to confirm inside QuickTerm
+quickterm hooks uninstall claude-code  # removes only the entries carrying QuickTerm's marker
+```
+
+- `install` / `uninstall` are ordinary mutations and need the app running (exit 2 otherwise): there is **one**
+  installer, in the app, shared by the CLI, the menu item and the "shall I install these?" prompt. They only
+  ever write or remove entries carrying QuickTerm's own marker; your own hook entries are left alone.
+- `status` is a read. It reports the script's path, the `quickterm` binary baked into it, and per agent
+  whether the entries are installed and at which detail tier (`lifecycle` — session and prompt events, the
+  default — or `tools`, which adds one process per tool call and makes the pane's strip follow tool calls).
+- `agent-event` is what the installed script runs, from inside the pane, and is the one command you should
+  never call yourself: it reports about **the caller's own pane**, is refused without that pane's
+  `QUICKTERM_PANE_TOKEN`, and is not exposed over MCP for exactly that reason.
+
+### `origin_mismatch`
+
+Resolving an alarm is not the same act as raising one. **A forger may add a notice; it may never remove
+one.** A `state-changed` resolution is accepted only from the process lineage (and session) that posted the
+alarm in the first place, so a hook firing in pane `t2` cannot silence the approval prompt sitting in pane
+`t7`. When every live alarm on a pane refuses the caller, the reply is `origin_mismatch` (exit 5), the
+refusal is logged, and the alarm stays up. There is nothing to retry: the pane's own agent, or the user, or
+the process going away, will clear it.
+
 ## Typing into someone else's shell: `input send-text`
 
 ```sh
@@ -509,7 +604,7 @@ So:
 
 ## MCP: `quickterm mcp`
 
-The same command table also generates a stdio MCP server with **14 coarse-grained tools** (not one tool per command):
+The same command table also generates a stdio MCP server with **15 coarse-grained tools** (not one tool per command):
 
 ```sh
 claude mcp add quickterm -- /usr/local/bin/quickterm mcp     # Claude Code
@@ -520,7 +615,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'           # see what gets exp
 The tools: `quickterm_describe` `quickterm_state` `quickterm_action` `quickterm_new_pane`
 `quickterm_focus` `quickterm_arrange` `quickterm_close` `quickterm_browser`
 `quickterm_read_terminal` `quickterm_dump_spec` `quickterm_apply_spec`
-`quickterm_poll_events` `quickterm_notices` `quickterm_send_text`.
+`quickterm_poll_events` `quickterm_notices` `quickterm_agents` `quickterm_send_text`.
 
 - Which commands from the table sit behind each tool is written in its `description`, and in `mcpTools` in
   `quickterm describe --json`. The parameter names are identical to the CLI's (`target` / `dry-run` / …).
@@ -530,7 +625,9 @@ The tools: `quickterm_describe` `quickterm_state` `quickterm_action` `quickterm_
   QuickTerm's own confirmation.
 - The MCP layer **has no privileges of its own**: every `tools/call` goes over the same socket, through the same
   confirmations, the same rate limiting and the same activity log.
-- `events follow` (a stream) and `install-cli` (which creates symlinks) are deliberately not exposed over MCP;
+- `events follow` (a stream) and `install-cli` (which creates symlinks) are deliberately not exposed over MCP,
+  and neither are `agent-event` (it reports about the *caller's own* pane, which an MCP host does not have) nor
+  `hooks install` / `hooks uninstall` (they edit the user's other tools' config files — a human runs those);
   `spec` can only be passed inline (there is no `-f` on the MCP side: reading files is always the caller's job).
 - **Which one when**: interactive, one-off control goes through MCP (the host layer does the gating for you);
   batch composition goes through the CLI — the tool table is a context tax you pay every session (roughly 70 KB of

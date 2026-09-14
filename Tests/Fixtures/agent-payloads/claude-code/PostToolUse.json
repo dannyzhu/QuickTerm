@@ -1,0 +1,15 @@
+{
+  "session_id": "c3a1f0d2-51b8-4b6a-9a2e-6d0c1f3e8a47",
+  "transcript_path": "/Users/danny/.claude/projects/-Users-danny-repo/2f8c9b10-7d31-4a55-9ad4-0f5c2d7c4e11.jsonl",
+  "cwd": "/Users/danny/repo",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "grep -rn hookEventName Sources",
+    "description": "search the sources"
+  },
+  "tool_response": {
+    "stdout": "Sources/Control/Wire/AgentEventPayload.swift:26",
+    "interrupted": false
+  }
+}

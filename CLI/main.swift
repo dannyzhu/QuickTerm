@@ -147,6 +147,13 @@ case .command(let parsed):
 
 func run(_ parsed: ParsedCommand) -> Never {
     var parsed = parsed
+    // The hook script's command leaves here and never comes back: it reads stdin, sends what
+    // survives the whitelist and exits 0 whatever happens — no `--start`, no output, no non-zero
+    // exit (an exiting hook is a verdict to the agent that ran it). Everything below this line
+    // ends in `emit` / `fail`, which is exactly what a hook must not do.
+    if parsed.spec.name == "agent-event" {
+        AgentEvent.run(parsed)
+    }
     // Commands that complete entirely locally; QuickTerm does not have to be running.
     if parsed.spec.local {
         runLocal(parsed)

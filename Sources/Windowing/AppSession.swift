@@ -207,6 +207,24 @@ final class AppSession {
         // The notification centre reads its switches from here, never from the config file: one
         // reload, one push, and every sink's `isEnabled` is re-derived in one place.
         NoticeCenter.shared.settings = NoticeSettings(settings)
+        // The agent registry reads its switches from here too, and never from the config file.
+        var agents = AgentSettings(settings)
+        // A test host must not edit anybody's ~/.claude/settings.json, so the one setting that
+        // can write to another program's file is pinned off, whatever the config says.
+        if AppDelegate.isRunningTests { agents.autoInstallHooks = "never" }
+        let previousHookDetail = AgentRegistry.shared.settings.hookDetail
+        AgentRegistry.shared.settings = agents
+        AgentRegistry.shared.consent = controlConsent
+        // Owner decision Q4: a changed `[agents] hook-detail` rewrites the entries that are
+        // already installed, so editing the key and saving is enough — the alternative is a config
+        // key whose help text describes something that only happens at the next launch.
+        // **Only when the tier really moved**: this method runs on every save of config.toml, and
+        // re-reading three other programs' config files on each one is work nobody asked for.
+        // The guards that keep a test host and a second copy out of the user's files live in
+        // `AppDelegate.rewriteAgentHooksForChangedTier`, next to the launch self-heal they mirror.
+        if agents.hookDetail != previousHookDetail {
+            AppDelegate.rewriteAgentHooksForChangedTier()
+        }
         // Control plane: a config hot reload starts or stops it (with enabled=false or
         // mode="off" nothing listens at all).
         var control = ControlCommandRunner.Config(settings)

@@ -36,10 +36,17 @@ extension ControlCommandRunner {
         var screen: UUID?
         var workspace: Int?
 
-        func admits(_ notice: Notice) -> Bool {
+        /// **Where the pane is now** (`NoticeCenter.location(of:)`), not where the notice was
+        /// posted: `-t 1:3` has to find the alarm of a pane the caller has just moved there,
+        /// and the count beside it is computed from the same reading (plan §1.1).
+        ///
+        /// `@MainActor` spelled out: a nested type does not inherit the extension's isolation,
+        /// and this reads the centre.
+        @MainActor func admits(_ notice: Notice) -> Bool {
             if let pane, notice.pane != pane { return false }
-            if let screen, notice.screen != screen { return false }
-            if let workspace, notice.workspace != workspace { return false }
+            let location = NoticeCenter.shared.location(of: notice)
+            if let screen, location.screen != screen { return false }
+            if let workspace, location.workspace != workspace { return false }
             return true
         }
     }

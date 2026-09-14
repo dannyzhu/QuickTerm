@@ -9,10 +9,11 @@ import XCTest
 /// (OSC 133) and the bell.
 ///
 /// These cases drive the Swift half of the engine callbacks through `GhosttyNoticeProducer`,
-/// whose three closures are replaced here by recorders. That seam is the reason the whole file
-/// needs no window, no pane, no libghostty surface and no live `UNUserNotificationCenter`: what
-/// is being asserted is a policy — *what* each source posts and *whether* the settings let it —
-/// and every one of those decisions is made before a notice ever reaches the centre.
+/// whose closures are replaced here by recorders. That seam is the reason the whole file needs no
+/// window, no pane, no libghostty surface, no live `UNUserNotificationCenter` and no agent
+/// registry: what is being asserted is a policy — *what* each source posts, *whether* the settings
+/// let it, and (Phase 2) what it does with the registry's two answers — and every one of those
+/// decisions is made before a notice ever reaches the centre.
 ///
 /// The centre's own behaviour (coalescing, counts, resolution) is `NoticeCenterTests`; the
 /// banner is `NoticeSystemSinkTests`. Nothing here asserts either.
@@ -24,6 +25,15 @@ final class NoticeSourcesTests: XCTestCase {
     private var settings = NoticeSettings()
     /// What `ControlHandleRegistry` would answer, without touching the process-wide registry.
     private var handles: [UUID: String] = [:]
+    /// Every engine signal the producers offered the agent registry, in order. The registry
+    /// itself is not built here: what is being asserted is that the producers *offer* — and what
+    /// they do with the two answers.
+    private var observed: [(pane: UUID, signal: AgentRegistry.EngineSignal)] = []
+    /// What the registry answers. `.ignored` (no rule wanted it) is Phase 1's world, and every
+    /// case written before Phase 2 runs in it.
+    private var outcome = AgentRegistry.EngineSignalOutcome.ignored
+    /// Whether a hook is already speaking for the pane.
+    private var muted = false
 
     private let pane = UUID()
 
@@ -35,6 +45,14 @@ final class NoticeSourcesTests: XCTestCase {
         GhosttyNoticeProducer.post = { [self] in posted.append($0) }
         GhosttyNoticeProducer.settings = { [self] in settings }
         GhosttyNoticeProducer.handle = { [self] in handles[$0] }
+        observed = []
+        outcome = .ignored
+        muted = false
+        GhosttyNoticeProducer.observe = { [self] pane, signal in
+            observed.append((pane, signal))
+            return outcome
+        }
+        GhosttyNoticeProducer.mutes = { [self] _ in muted }
     }
 
     override func tearDown() async throws {
@@ -192,6 +210,103 @@ final class NoticeSourcesTests: XCTestCase {
         XCTAssertEqual(request.title, L("notice.bell.title"))
         // A bell says nothing but that it rang, so there is no body to be sensitive about.
         XCTAssertNil(request.body)
+    }
+
+    // MARK: The agent registry's ear on the engine (plan §1.2)
+
+    /// A rule matched the program's words: the registry owns that moment — it has already decided
+    /// what it means and posted whatever it means — so the producer adds no second, vaguer notice
+    /// about the same OSC.
+    func testAConsumedNotificationPostsNoTerminalNotice() {
+        outcome = .consumed
+        GhosttyNoticeProducer.desktopNotification(
+            pane: pane, title: "Claude Code", body: "Waiting for your approval")
+
+        XCTAssertTrue(posted.isEmpty, "the registry spoke for this pane")
+        XCTAssertEqual(observed.count, 1)
+        XCTAssertEqual(observed.first?.pane, pane)
+        XCTAssertEqual(observed.first?.signal,
+                       .notification(title: "Claude Code", body: "Waiting for your approval"))
+    }
+
+    /// No rule wanted it, no hook is speaking: Phase 1's behaviour, unchanged.
+    func testANotificationNoRuleWantsStillPostsTheTerminalInfo() throws {
+        GhosttyNoticeProducer.desktopNotification(
+            pane: pane, title: "Build finished", body: "npm test exited 0")
+
+        XCTAssertEqual(observed.count, 1, "it is offered either way")
+        let request = try onlyRequest()
+        XCTAssertEqual(request.source.id, "terminal")
+        XCTAssertEqual(request.urgency, .info)
+        XCTAssertEqual(request.title, "Build finished")
+    }
+
+    /// The registry is handed the **program's** words, not ours: a rule matches on what the agent
+    /// actually wrote (and on the body when the title is empty), so our handle-based fallback
+    /// title must not reach it. The fallback still names the notice.
+    func testTheRegistryHearsTheProgramsOwnTitleNotOurFallback() throws {
+        handles[pane] = "t7"
+        GhosttyNoticeProducer.desktopNotification(pane: pane, title: "", body: "ready")
+
+        XCTAssertEqual(observed.first?.signal, .notification(title: "", body: "ready"))
+        XCTAssertEqual(try onlyRequest().title, L("notice.terminal.title", "t7"))
+    }
+
+    /// A hook is speaking for this pane. The OSC still reaches the registry (it is a cheap moment
+    /// to look for an agent's process) and posts nothing: the agent is describing this moment
+    /// precisely, and the engine's version of it is the vaguer second voice.
+    func testAHookSpeakingForThePaneMutesTheNotificationButStillHearsIt() {
+        muted = true
+        GhosttyNoticeProducer.desktopNotification(pane: pane, title: "Alert", body: "attention")
+
+        XCTAssertTrue(posted.isEmpty)
+        XCTAssertEqual(observed.count, 1)
+    }
+
+    /// The same for a long command: under a hook, "the command took 90 s" is the agent's turn
+    /// seen from outside, and the agent is already saying so.
+    func testAHookSpeakingForThePaneMutesALongCommandButStillTriggersTheScan() {
+        settings.commandFinished = "always"
+        muted = true
+        GhosttyNoticeProducer.commandFinished(pane: pane, exitCode: 0, duration: .seconds(90))
+
+        XCTAssertTrue(posted.isEmpty)
+        XCTAssertEqual(observed.map(\.signal), [.commandFinished])
+    }
+
+    /// `commandFinished` is offered **before** either gate, and its answer is dropped: it never
+    /// means anything about an agent's state, but a scan wants to happen even when the user has
+    /// switched the notice off entirely.
+    func testCommandFinishedReachesTheRegistryEvenWhenTheKeySaysNever() {
+        settings.commandFinished = "never"
+        GhosttyNoticeProducer.commandFinished(pane: pane, exitCode: 0, duration: .seconds(600))
+
+        XCTAssertTrue(posted.isEmpty)
+        XCTAssertEqual(observed.map(\.signal), [.commandFinished], "the scan trigger is not gated")
+    }
+
+    /// A bell is not an agent signal: a shell rings it for a completion that found nothing, and an
+    /// agent with something to say said it through a hook. So it is neither offered nor muted.
+    func testBellIsNeitherOfferedNorMuted() {
+        settings.bell = "info"
+        muted = true
+        GhosttyNoticeProducer.bell(pane: pane)
+
+        XCTAssertEqual(posted.count, 1, "a bell is nobody's agent state")
+        XCTAssertTrue(observed.isEmpty)
+    }
+
+    /// The two agent seams go back **inert** rather than back to the singleton (plan §1.2): a test
+    /// host that has finished with its recorder must not start driving the process-wide registry
+    /// from engine callbacks, and "no registry at all" is what every case above assumes.
+    func testResetForTestingPutsTheAgentSeamsBackInert() {
+        GhosttyNoticeProducer.resetForTesting()
+
+        XCTAssertEqual(GhosttyNoticeProducer.observe(pane, .commandFinished), .ignored)
+        XCTAssertEqual(GhosttyNoticeProducer.observe(pane, .notification(title: "x", body: "y")),
+                       .ignored)
+        XCTAssertFalse(GhosttyNoticeProducer.mutes(pane))
+        XCTAssertTrue(observed.isEmpty, "the recorder really is off the seam")
     }
 
     // MARK: The rule that covers all three

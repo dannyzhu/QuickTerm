@@ -1,0 +1,29 @@
+# QuickTerm agent rules — Codex.
+id = "codex"
+name = "Codex"
+process = ["codex"]
+
+[fields]
+session = "$.session_id"
+message = "$.message"
+tool    = "$.tool_name"
+summary = ["$.tool_input.command", "$.message"]
+
+[hooks]
+SessionStart      = "idle"
+UserPromptSubmit  = "working:thinking"
+PreToolUse        = "working:tool"
+PostToolUse       = "working:thinking"
+PermissionRequest = "blocked:approval"
+Stop              = "done"
+Interrupt         = "idle"
+SessionEnd        = "released"
+
+# [notifications] is deliberately empty: Codex's OSC wording is not in the spec and is not guessed.
+# Record it from a real session and add the prefixes here — a rule-file change, nothing else.
+
+[install]
+shape     = "codex"
+config    = "~/.codex/hooks.json"
+lifecycle = ["SessionStart", "SessionEnd", "UserPromptSubmit", "PermissionRequest", "Stop", "Interrupt"]
+tools     = ["PreToolUse", "PostToolUse"]

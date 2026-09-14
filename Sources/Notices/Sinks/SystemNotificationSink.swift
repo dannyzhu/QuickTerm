@@ -34,7 +34,8 @@ extension UNUserNotificationCenter: UserNotificationCentering {}
 ///    other screen of a two-screen setup is not being looked at however frontmost the app is.
 /// 3. **A click is navigation, not acknowledgement.** `didReceive` reveals the pane and withdraws
 ///    the banner; the notice stays live, so with two panes blocked, clicking A and being pulled
-///    away leaves A marked.
+///    away leaves A marked. A quieting (plan §2.8) withdraws by the same road and for the same
+///    reason: this sink takes banners down, and never resolves anything.
 @MainActor
 final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCenterDelegate {
     let sinkID = NoticeSinkID.system
@@ -108,7 +109,19 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
             // resolves in the same pass.)
             if activity.isActive { withdraw(pane: pane) }
 
+        case .quieted(let notice, _):
+            // The banner half of the Q1(b) policy (plan §2.8). The user focused the pane and
+            // typed into it while this alarm was live: the banner has done its job — it exists to
+            // fetch somebody out of another app — so it comes down even though the notice is
+            // still live and the pane mark still draws.
+            //
+            // Nothing is posted again from here. The alarm comes back on screen only when the
+            // agent supersedes it with a *different* `needsUser` (a second tool asking), which
+            // arrives as `.superseded` above and presents silently — the pane was already loud.
+            withdraw(pane: notice.pane)
+
         case .countsChanged:
+            // The badge's business, not the banner's.
             break
         }
     }

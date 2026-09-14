@@ -314,6 +314,13 @@ enum MCPToolMap {
                     + "composed by QuickTerm and always readable; a notice body is a program's own words "
                     + "and reads <redacted> without QUICKTERM_TOKEN.",
                 commandNames: ["notices.list", "notices.ack"]),
+        MCPTool(name: "quickterm_agents", title: "See what each pane's agent is doing",
+                summary: "Per pane: which agent, its state (idle / working / blocked / done / error), what it is "
+                    + "waiting for and since when; and whether QuickTerm's hooks are installed for each agent. "
+                    + "Ask this before interrupting the user or before assuming another pane is free. A pane whose "
+                    + "agent is blocked is waiting for a human. The agent's own words (message) read <redacted> "
+                    + "without QUICKTERM_TOKEN; the agent, state and tool name never do.",
+                commandNames: ["agents.list", "hooks.status"]),
         MCPTool(name: "quickterm_send_text", title: "Type text into a terminal pane",
                 summary: "Type text into a terminal pane as if it came from the keyboard. This is arbitrary "
                     + "code execution in whatever shell is there — possibly root, possibly a live ssh session. "
@@ -333,6 +340,11 @@ enum MCPToolMap {
         "events.follow": "A never-ending NDJSON stream does not fit into one tool call; "
             + "MCP callers use quickterm_poll_events instead",
         "mcp": "This server itself",
+        "agent-event": "Run by the hook script from inside a pane; it reports about the caller's own pane "
+            + "and is meaningless from an MCP host",
+        "hooks.install": "Edits the user's other tools' config files; a human runs quickterm hooks install "
+            + "or uses the menu",
+        "hooks.uninstall": "same as hooks.install",
     ]
 
     static func tool(named name: String) -> MCPTool? { tools.first { $0.name == name } }

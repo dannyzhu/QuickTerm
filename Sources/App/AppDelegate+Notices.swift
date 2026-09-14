@@ -61,6 +61,22 @@ extension AppDelegate {
         // real one, or the inert one under the test host - so there is one code path rather than
         // one the tests never execute.
         system.installAsDelegate()
+
+        // The agent registry comes up right after the centre, and as an ordinary sink: that is
+        // how it learns a pane closed, and it is why the centre knows nothing about it. In the
+        // test host it is attached with no user rule directory — a test must never read the
+        // developer's own ~/.config/quickterm/agents.
+        AgentRegistry.shared.attach(locator: NoticeLocator(screens: app.screens),
+                                    userRuleDirectory: isRunningTests
+                                        ? nil : AgentRulesLoader.defaultUserDirectory)
+
+        // The presence scan comes up immediately behind the registry, because it is what fills in
+        // the registry's `scanTrigger`: every hook, and the engine's `commandFinished`, ask for a
+        // pass through that seam, and the heartbeat (5 s, always on - owner Q7) covers the rest.
+        // Not under the test host: a suite that walked a real process tree would be reading the
+        // environment blocks of whatever the developer happens to be running (plan §2.7).
+        // `ProcessScannerTests` drives a scanner of its own over a synthetic tree.
+        if !isRunningTests { ProcessScanner.shared.install() }
     }
 
     /// Second call site. `applicationDidFinishLaunching` installs the notice interface first, before

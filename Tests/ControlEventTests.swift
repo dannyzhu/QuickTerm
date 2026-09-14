@@ -309,13 +309,22 @@ final class ControlEventTests: XCTestCase {
         let populated = ControlEvent(
             seq: 1, ts: "t", type: .paneTitleChanged, screen: 1, screenID: "S", workspace: 2,
             pane: "t7", paneID: "P", kind: "terminal", layout: "scrolling",
-            title: "title", cwd: "/tmp", redacted: true)
+            title: "title", cwd: "/tmp", redacted: true,
+            noticeID: "N", urgency: "needs-user", source: "agent:claude-code",
+            body: "body", resolution: "state-changed",
+            agent: "claude-code", state: "blocked", detail: "approval", tool: "Bash",
+            evidence: "hook", message: "the agent's own words")
         let data = try ControlJSON.encoder.encode(populated)
         let object = try XCTUnwrap(
             try ControlJSON.decoder.decode(JSONValue.self, from: data).objectValue)
         XCTAssertEqual(Set(object.keys),
                        ["seq", "ts", "type", "screen", "screenID", "workspace",
-                        "pane", "paneID", "kind", "layout", "title", "cwd", "redacted"],
+                        "pane", "paneID", "kind", "layout", "title", "cwd", "redacted",
+                        "noticeID", "urgency", "source", "body", "resolution",
+                        // Phase 2 appends six: an agent id, its state, the detail, a tool NAME,
+                        // how we know, and the agent's own short message. Not one of them can
+                        // carry pane output — nothing reads the screen to build any of them.
+                        "agent", "state", "detail", "tool", "evidence", "message"],
                        "the event field list is closed: no field carrying pane output may appear")
 
         // The type list is closed as well: no output / scrollback / bell kinds.
@@ -326,7 +335,9 @@ final class ControlEventTests: XCTestCase {
                        ["pane.opened", "pane.closed", "focus.changed", "workspace.changed",
                         "layout.changed", "screen.opened", "screen.closed",
                         "pane.title.changed", "pane.cwd.changed",
-                        "notice.posted", "notice.resolved"])
+                        "notice.posted", "notice.resolved",
+                        // Phase 2's one new type: a state, never a stream of output.
+                        "agent.state.changed"])
 
         // Now for real: create a pane, change the layout, switch workspaces — not one event may
         // contain a large blob of text

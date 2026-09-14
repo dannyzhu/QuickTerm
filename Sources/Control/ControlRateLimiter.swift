@@ -29,6 +29,17 @@ struct ControlRateLimiter {
     /// How many panes one workspace may hold (an agent will happily create 40)
     static let maxPanesPerWorkspace = 32
 
+    /// **Reports** (`agent-event`): one bucket per proven pane, sized for `hook-detail = tools`
+    /// — Claude Code runs tools in parallel, so a burst of a dozen hooks inside one second is
+    /// normal — plus a global ceiling so ten busy panes cannot starve the main thread.
+    ///
+    /// Separate from `admit(origin:)` **by construction**: an agent's own `quickterm pane new`
+    /// loop and its hooks must never share a bucket, or a chatty agent would rate-limit its own
+    /// reports out of existence (and a report that is refused is lost for good — the hook exits 0
+    /// and never retries).
+    static let reportLimit = Limit(capacity: 60, perSecond: 20)
+    static let reportGlobalLimit = Limit(capacity: 240, perSecond: 60)
+
     enum Verdict: Equatable {
         case allowed
         /// Over the limit: how long to wait before retrying (ms)
@@ -42,9 +53,13 @@ struct ControlRateLimiter {
 
     private var global: Bucket
     private var origins: [String: Bucket] = [:]
+    /// The second ledger: reports, keyed by the **proven** pane (plan §2.1).
+    private var reportGlobal: Bucket
+    private var reports: [UUID: Bucket] = [:]
 
     init(now: Date = Date()) {
         global = Bucket(tokens: Self.globalLimit.capacity, at: now)
+        reportGlobal = Bucket(tokens: Self.reportGlobalLimit.capacity, at: now)
     }
 
     /// Take a token. **Only an actual admission spends one** — a refused request must not drain
@@ -67,10 +82,33 @@ struct ControlRateLimiter {
         return .allowed
     }
 
-    /// Tests and config reloads only: wipe the ledger
+    /// Take a token from the **report** ledger. The key is a pane id that has already been
+    /// proven by its `QUICKTERM_PANE_TOKEN`, so one runaway pane cannot spend another's budget.
+    mutating func admitReport(pane: UUID, now: Date = Date()) -> Verdict {
+        var paneBucket = reports[pane] ?? Bucket(tokens: Self.reportLimit.capacity, at: now)
+        Self.refill(&paneBucket, Self.reportLimit, now: now)
+        Self.refill(&reportGlobal, Self.reportGlobalLimit, now: now)
+        guard paneBucket.tokens >= 1 else {
+            reports[pane] = paneBucket
+            return .limited(retryAfterMs: Self.retryMs(paneBucket, Self.reportLimit), scope: "pane")
+        }
+        guard reportGlobal.tokens >= 1 else {
+            reports[pane] = paneBucket
+            return .limited(retryAfterMs: Self.retryMs(reportGlobal, Self.reportGlobalLimit),
+                            scope: "global")
+        }
+        paneBucket.tokens -= 1
+        reportGlobal.tokens -= 1
+        reports[pane] = paneBucket
+        return .allowed
+    }
+
+    /// Tests and config reloads only: wipe **both** ledgers
     mutating func reset(now: Date = Date()) {
         origins.removeAll()
         global = Bucket(tokens: Self.globalLimit.capacity, at: now)
+        reports.removeAll()
+        reportGlobal = Bucket(tokens: Self.reportGlobalLimit.capacity, at: now)
     }
 
     private static func refill(_ bucket: inout Bucket, _ limit: Limit, now: Date) {

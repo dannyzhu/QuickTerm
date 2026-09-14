@@ -247,6 +247,9 @@ quickterm screen    new | close | move | focus | set
 quickterm app       get | set
 quickterm spec      dump | validate | apply
 quickterm events    poll | follow
+quickterm notices   list | ack
+quickterm agents    list
+quickterm hooks     install | uninstall | status
 quickterm input     send-text
 quickterm mcp
 ```
@@ -291,6 +294,44 @@ There is deliberately **no "never ask" mode**: the confirmation gate can only be
 
 Every boolean key in the config (here and everywhere else) accepts `true` / `1` / `yes` / `on` and `false` / `0` / `no` / `off`, case-insensitively. Anything else is **not** guessed: the line is ignored, the declared default stays in effect, and a warning naming the key and the value is written to the log — so `socket = off` really does turn the listener off instead of quietly leaving it on.
 
+### Agents in panes, and the hooks behind them
+
+QuickTerm can tell what the AI agent in a pane is doing — thinking, running a tool, **waiting for you**,
+finished, failed — and show it three ways: a status line in the pane's own top padding, the red dot and the
+workspace pill it already had, and `quickterm agents list` for another agent to read before it interrupts you.
+
+```sh
+quickterm hooks status                 # what is installed, and where
+quickterm hooks install claude-code    # confirmed inside QuickTerm, like every other mutation
+quickterm agents list                  # what each pane's agent is doing
+```
+
+**What the installer writes.** One small `sh` script at `~/.config/quickterm/hooks/quickterm-agent-state.sh`,
+and one entry per lifecycle event in the agent's *own* config file — `~/.claude/settings.json` for Claude
+Code, `~/.codex/hooks.json` for Codex, `~/.gemini/settings.json` for Gemini. Every entry carries QuickTerm's
+marker, and `hooks uninstall` removes only the marked ones: your own hooks are never touched. The script's
+path to the `quickterm` binary is **baked in at install time and never read from the environment** — a hook
+runs on every prompt, and a project `.envrc` or a Makefile choosing which binary that is would be a fine way
+to run anything. Outside QuickTerm (no control socket in the environment) the script exits 0 immediately and
+does nothing at all, so the same entry is harmless in Terminal.app, VS Code, tmux or CI. Nothing is installed
+behind your back: `[agents] auto-install-hooks` is `ask` by default, and the ask happens once per agent per
+launch.
+
+**What the scan reads.** When an agent has no hooks installed, QuickTerm falls back to looking for it — and
+that fallback is deliberately almost blind. It walks **only QuickTerm's own descendant processes**, keeps a
+pid and an executable name, matches that name against the `process` list in a rule file, and throws the
+argument buffer away in the same call. No command lines, no environment, no other user's processes, nothing
+outside this app's own process tree. All it can ever conclude is "something by that name is running in this
+pane", which is reported as the state `unknown` — the honest answer. The precise states only ever come from
+the agent itself.
+
+**What a rule file is.** Which events mean which state, and where in the hook payload the tool name and the
+message are, live in TOML rule files — three ship inside the app (`claude-code`, `codex`, `gemini`) and
+anything in `~/.config/quickterm/agents/*.toml` is loaded beside them, so a new agent is a file, not a
+release. Only a whitelist of fields ever crosses from a hook into QuickTerm (the event name, a session id, a
+tool name, an error type, a message, and string-valued entries of `tool_input`), each clamped to 200
+characters — never a transcript path, a working directory or a file's contents.
+
 ### Security posture
 
 - Reads are silent — but **browser pane URLs and titles are redacted** for callers that did not inherit `QUICKTERM_TOKEN`. Browser panes hold logged-in sessions, so `quickterm state` is itself a disclosure surface.
@@ -320,7 +361,7 @@ Errors come back as JSON on stderr with a stable `code` and an `exit`. **Exit co
 
 ### MCP
 
-`quickterm mcp` is a stdio MCP server whose 13 coarse tools are generated from the same command table (a hand-written one would drift silently).
+`quickterm mcp` is a stdio MCP server whose 15 coarse tools are generated from the same command table (a hand-written one would drift silently).
 
 ```sh
 claude mcp add quickterm -- /usr/local/bin/quickterm mcp
@@ -387,6 +428,13 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 # download-dir = "~/Downloads"                   # where browser panes save downloads (~ expands; falls back to ~/Downloads)
 # link-opener = "browser-pane"                   # browser-pane | system — where ⌘-clicked terminal links open
 
+[agents]                    # recognise the AI agent in each pane; the scan reads only QuickTerm's own descendants
+# detect = true                                  # recognise agents in terminal panes (hooks, OSC fallback, process scan)
+# enabled = ["claude-code", "codex", "gemini"]   # the rule ids to use (three are bundled; ~/.config/quickterm/agents/*.toml overrides or adds)
+# hook-detail = "lifecycle"                      # tools adds Pre/PostToolUse (one process per tool call) and rewrites installed hooks to match
+# auto-install-hooks = "ask"                     # the first time a pane runs an agent whose hooks are missing: ask once per agent, install silently, or never
+# info-strip = true                              # the status line in the pane's top padding; never resizes the terminal
+
 [notifications]              # who is waiting for you; the marks count PANES that need you, not notices
 # system = "inactive"         # inactive = banner only while you are not looking at that pane | never
 # system-body = "composed"    # never | composed (only text QuickTerm wrote itself) | always — Notification Center keeps the body
@@ -395,6 +443,7 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 # workspace-count = true      # the ●N on a workspace pill
 # bell = "ignore"             # ignore (a bare bell is not a notice) | info
 # command-finished = "long"   # never | long (over 10 s, the default) | always — needs the shell's OSC 133 integration; replaces the engine's own notify-on-command-finish keys, which are no longer consulted
+# done = true                 # a finished agent turn posts an info notice when the pane is not active; never counts toward the Dock badge
 
 [keybinds]                  # action = "modifiers+key"; "none" unbinds. Action ids: Cmd+K
 # new-terminal = "cmd+return"

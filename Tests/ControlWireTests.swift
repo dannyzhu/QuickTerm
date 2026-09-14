@@ -113,6 +113,44 @@ final class ControlWireTests: XCTestCase {
         }
     }
 
+    /// The Phase 2 payloads reparse into the types the CLI decodes, and the samples embedded in
+    /// `--help` are those very shapes rather than prose that drifted away from them.
+    func testAgentAndHookSamplesMatchTheirPayloads() throws {
+        let agents = try XCTUnwrap(ControlCommandTable.command("agents.list")?.outputSample)
+        let agentsData = try XCTUnwrap(try reparse(Data(agents.utf8))["data"] as? [String: Any])
+        XCTAssertEqual(agentsData["schema"] as? String, ControlAgentsPayload(agents: []).schema)
+        let rows = try XCTUnwrap(agentsData["agents"] as? [[String: Any]])
+        let record = try XCTUnwrap(rows.first?["agent"] as? [String: Any])
+        // Decode the sample row through the real type: a field renamed here without the sample
+        // following would go unnoticed until an agent parsed it.
+        let decoded = try ControlJSON.decoder.decode(
+            ControlAgentRecord.self, from: try JSONSerialization.data(withJSONObject: record))
+        XCTAssertEqual(decoded.state, "blocked")
+        XCTAssertEqual(decoded.needsUser, true)
+        XCTAssertEqual(decoded.message, ControlEvent.redactedPlaceholder)
+
+        let hooks = try XCTUnwrap(ControlCommandTable.command("hooks.status")?.outputSample)
+        let hooksData = try XCTUnwrap(try reparse(Data(hooks.utf8))["data"] as? [String: Any])
+        let payload = try ControlJSON.decoder.decode(
+            ControlHooksPayload.self, from: try JSONSerialization.data(withJSONObject: hooksData))
+        XCTAssertEqual(payload.schema, "quickterm.hooks/1")
+        XCTAssertTrue(payload.script.ok)
+        XCTAssertEqual(payload.agents.first?.detail, "lifecycle")
+        XCTAssertEqual(payload.agents.last?.installed, false)
+    }
+
+    /// A report is not a mutation, and every gate in the runner keys off exactly that.
+    func testReportClassIsNotAMutation() {
+        XCTAssertFalse(ControlCommandClass.report.isMutation)
+        XCTAssertFalse(ControlCommandClass.report.requiresConsent)
+        let spec = ControlCommandTable.command("agent-event")
+        XCTAssertEqual(spec?.cls, .report)
+        XCTAssertEqual(spec?.acceptsTarget, false, "a report is about the caller's own pane")
+        XCTAssertEqual(spec?.honorsMutationFlags, false)
+        XCTAssertFalse(ControlServer.isMutation(ControlRequest(id: "1", cmd: "agent-event")),
+                       "a report must never touch the per-connection mutation bucket")
+    }
+
     // MARK: describe --json matches the shape it documents for itself
 
     func testDescribeDocumentShape() throws {

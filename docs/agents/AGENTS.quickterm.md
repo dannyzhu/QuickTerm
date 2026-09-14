@@ -114,6 +114,19 @@ clears its marks (it must name a pane; it does not answer the prompt — only th
 A notice's `title` is QuickTerm's own words and always readable; its `body` is the program's own and reads
 `<redacted>` without `QUICKTERM_TOKEN`.
 
+```bash
+quickterm agents list --json | jq -r '.data.agents[] | select(.agent.needsUser) | .pane'
+```
+
+`quickterm agents list` tells you what the other panes' agents are doing — which agent, whether it is `idle`,
+`working`, `blocked`, `done` or `error`, what it is waiting for and since when. **A pane whose agent is
+`blocked` is waiting for the human**, so leave it be; `error` means its turn stopped and somebody has to go
+and look. That is one step earlier than `notices list`: an agent shows up here while it is merely busy, which
+is exactly what you want to know before you type into somebody else's pane. `evidence` says how sure the
+answer is (`hook` = the agent said so itself; `process` = we can only see that it is running), and the
+`message` field is the agent's own words, so it reads `<redacted>` without `QUICKTERM_TOKEN` like every other
+program-produced string here.
+
 Build a whole workspace in one command (**the most efficient thing you can do here**):
 
 ```bash

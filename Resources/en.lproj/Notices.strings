@@ -75,3 +75,30 @@
 
 /* The same, for a pane the user has named: %1$@ is the handle, %2$@ the name they gave it. */
 "notice.system.subtitle-named" = "Pane %1$@ · %2$@";
+
+/* MARK: - agent notices (Sources/Agents/AgentRegistry.swift) */
+
+/* The title of an agent's alarm. **Payload-free by construction**: the agent's name, what it is
+   waiting for, and a tool NAME — never a command line, which belongs in the body and is redacted
+   for a caller with no token.
+   %1$@ is the agent's display name ("Claude Code"), %2$@ the tool it wants to run ("Bash"). */
+"notice.agent.approval" = "%1$@ · Awaiting approval · %2$@";
+
+/* The same prompt, from a signal that did not name a tool (an OSC text, a report). */
+"notice.agent.approval.no-tool" = "%1$@ · Awaiting approval";
+
+/* The agent asked the user a question and is waiting for the answer. %1$@ is its name. */
+"notice.agent.input" = "%1$@ · Waiting for your input";
+
+/* The agent put a list of options in front of the user. %1$@ is its name. */
+"notice.agent.choice" = "%1$@ · Waiting for your choice";
+
+/* The turn failed. %1$@ is the agent's name, %2$@ the error TYPE it reported (never its text). */
+"notice.agent.error" = "%1$@ · Failed · %2$@";
+
+/* The same, when the agent reported no error type. */
+"notice.agent.error.no-type" = "%1$@ · Failed";
+
+/* An `info` notice: the turn finished, and the user is not looking at that pane. Never counts
+   toward the Dock badge. %1$@ is the agent's name. */
+"notice.agent.done" = "%1$@ · Finished";

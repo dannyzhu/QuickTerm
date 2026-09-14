@@ -26,6 +26,13 @@ enum MainMenu {
         // The two display submenu delegates are re-registered on every rebuild; the old ones
         // must not pile up.
         displayDelegates.removeAll()
+        hooksDelegate = nil
+
+        // The last step of launching, and the one this package owns: a hook script whose binary
+        // has gone, and installed entries that no longer match `[agents] hook-detail`, are put
+        // right here. It runs once per launch whatever the menu does afterwards (the menu is
+        // rebuilt on every language change). See the seam note on `ensureAgentHooksHealthy`.
+        MainActor.assumeIsolated { AppDelegate.ensureAgentHooksHealthy() }
 
         let main = NSMenu()
 
@@ -49,6 +56,13 @@ enum MainMenu {
                                       action: #selector(AppDelegate.controlActivityAction(_:)),
                                       keyEquivalent: "")
         logItem.target = delegate
+        // Agent hooks: the third front door onto the one installer (the CLI's `quickterm hooks`
+        // and the auto-install ask are the other two). The submenu is built when it opens, because
+        // what is installed changes under it — see AgentHooksMenuDelegate.
+        let hooksItem = appMenu.addItem(withTitle: L("agents.menu.hooks"), action: nil, keyEquivalent: "")
+        let hooksMenu = NSMenu(title: L("agents.menu.hooks"))
+        hooksMenu.delegate = agentHooksDelegate(for: delegate)
+        appMenu.setSubmenu(hooksMenu, for: hooksItem)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: L("menu.app.hide"), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: L("menu.app.quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -128,6 +142,16 @@ enum MainMenu {
     /// The delegates for the two display submenus: the lists change as monitors come and go and are
     /// rebuilt on every open. They have to be held strongly, since NSMenu.delegate is weak.
     private static var displayDelegates: [DisplayMenuDelegate] = []
+
+    /// Held strongly for the same reason as the display ones: `NSMenu.delegate` is weak, and a
+    /// submenu whose delegate has been released simply never fills itself in.
+    private static var hooksDelegate: AgentHooksMenuDelegate?
+
+    private static func agentHooksDelegate(for delegate: AppDelegate) -> AgentHooksMenuDelegate {
+        let made = AgentHooksMenuDelegate(target: delegate)
+        hooksDelegate = made
+        return made
+    }
 
     private static func newScreenDisplayDelegate(for delegate: AppDelegate) -> DisplayMenuDelegate {
         let d = DisplayMenuDelegate(mode: .newScreen, target: delegate)

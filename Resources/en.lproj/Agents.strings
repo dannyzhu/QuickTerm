@@ -1,0 +1,84 @@
+/* Agent awareness (Sources/Agents) — the info strip's state words and the auto-install ask.
+   The agent notice titles live in Notices.strings, beside the other notices, and the hook-install
+   confirmation lives in Control.strings, beside the other consent sentences: one key, one owner. */
+
+/* MARK: - the info strip (AgentStatus.localizedStateText, drawn by Sources/Splits) */
+
+/* The agent is thinking: a turn has started and no tool is running yet. */
+"agents.strip.thinking" = "Thinking";
+
+/* The agent is running a tool. The tool's own name is drawn beside this, never inside it. */
+"agents.strip.tool" = "Running";
+
+/* The agent is waiting for the user to approve a tool call. */
+"agents.strip.approval" = "Awaiting approval";
+
+/* The agent asked the user a question and is waiting for the answer. */
+"agents.strip.input" = "Waiting for input";
+
+/* The agent put a list of options in front of the user. */
+"agents.strip.choice" = "Waiting for your choice";
+
+/* Nothing is running; the agent is waiting for the user to say something. */
+"agents.strip.idle" = "Idle";
+
+/* The turn finished. */
+"agents.strip.done" = "Finished";
+
+/* The turn failed. */
+"agents.strip.error" = "Failed";
+
+/* An agent we can see but that has told us nothing — the process scan found it and no hook has
+   been heard. "Running" is the honest word: we know it is there and nothing more. */
+"agents.strip.unknown" = "Running";
+
+/* MARK: - the auto-install ask (Sources/Agents/AgentRegistry.swift) */
+
+/* Shown once per agent per launch, the first time a pane runs an agent whose hooks are missing.
+   %1$@ is the agent's name ("Claude Code"), %2$@ the config file QuickTerm would edit. */
+"agents.install.ask" = "%1$@ is running in a pane, and QuickTerm's hooks are not installed for it. Add them to %2$@ so QuickTerm can tell when it is waiting for you?";
+
+/* MARK: - the Agent Hooks submenu (Sources/App/MainMenu.swift, AppDelegate+Agents.swift) */
+
+/* QuickTerm ▸ Agent Hooks — the submenu that installs and removes the hook entries. */
+"agents.menu.hooks" = "Agent Hooks";
+
+/* Menu item for an agent whose hooks are not installed. %1$@ is the agent's name. */
+"agents.menu.install" = "Install hooks for %1$@";
+
+/* Menu item for an agent whose hooks are installed; clicking it removes them again. */
+"agents.menu.uninstall" = "Remove hooks for %1$@";
+
+/* The last item of the submenu: shows what is installed, as an alert. */
+"agents.menu.status" = "Hook Status…";
+
+/* The submenu with no rule file that can be installed at all (disabled item). */
+"agents.hooks.none" = "No agent rule file can install hooks";
+
+/* MARK: - the Hook Status alert (Sources/App/AppDelegate+Agents.swift) */
+
+"agents.hooks.status.title" = "QuickTerm's agent hooks";
+
+/* %1$@ is the script's path, %2$@ the quickterm binary it runs. */
+"agents.hooks.status.script-ready" = "The hook script is in place at %1$@ and runs %2$@.";
+
+/* %1$@ is where the script would go. Installing an agent's hooks writes it. */
+"agents.hooks.status.script-missing" = "The hook script is not installed yet; it would go to %1$@.";
+
+/* %1$@ is the script's path, %2$@ the binary it names, which is no longer on disk. */
+"agents.hooks.status.script-stale" = "The hook script at %1$@ runs %2$@, which is no longer there — install an agent's hooks again to repoint it.";
+
+/* %1$@ is the agent's name, %2$@ which events are installed, %3$@ the file they are in. */
+"agents.hooks.status.installed" = "%1$@: installed for %2$@, in %3$@.";
+
+/* %1$@ is the agent's name, %2$@ the file QuickTerm would write. */
+"agents.hooks.status.absent" = "%1$@: not installed; the file would be %2$@.";
+
+/* The three tiers, as the alert words them. */
+"agents.hooks.detail.lifecycle" = "session and prompt events";
+"agents.hooks.detail.tools" = "session, prompt and tool events";
+"agents.hooks.detail.mixed" = "a mixture of events — installing again tidies it up";
+
+/* Alert title when installing or removing hooks failed. %1$@ is the agent's name; the reason is
+   the alert's body. */
+"agents.hooks.failed" = "QuickTerm could not change %1$@'s hooks";

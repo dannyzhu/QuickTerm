@@ -76,6 +76,11 @@
 "consent.summary.browser-close-tab.other" = "Close tab %2$@ of %1$@ (%3$@ tabs left).";
 "consent.summary.capture-text" = "Read every character on the screen of %1$@ and hand it to this caller (it may hold passwords, tokens, private source).";
 "consent.summary.applies-to" = "Applies to %1$@.";
+
+/* `hooks install`: the one mutation whose subject is not a pane but a FILE belonging to another
+   program. The path is the whole of the decision, so it is in the sentence.
+   %1$@ is the agent's name ("Claude Code"), %2$@ the config file that will be edited. */
+"consent.summary.hooks-install" = "Add QuickTerm's hook entries for %1$@ to %2$@. Only entries QuickTerm marks as its own are written, and quickterm hooks uninstall removes them again.";
 /* close-pane the ACTION (the Cmd+W path) closes one tab; `quickterm pane close` the COMMAND
  * closes the whole pane. Two sentences, because they are two different outcomes. */
 "consent.summary.tab-only" = "Only the current tab is closed.";

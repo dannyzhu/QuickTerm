@@ -267,6 +267,12 @@ struct ControlDescribeDocument: Codable, Equatable {
                          policy: "Always refused: these open a panel or pop-up menu that needs the keyboard."),
                 ClassDoc(name: ControlCommandClass.sensitive.rawValue,
                          policy: sensitivePolicy(mode: mode)),
+                ClassDoc(name: ControlCommandClass.report.rawValue,
+                         policy: "A status report from a program inside a pane about that pane "
+                             + "(agent-event). It changes nothing of the user's: no consent, no flash, no "
+                             + "undo, no activity-log entry, allowed in readonly mode and while a dialog is "
+                             + "up; its own rate limit keyed by the proven pane; seq moves only when the "
+                             + "report changed something."),
             ],
             exitCodes: ControlExit.allCases.map {
                 ExitCodeDoc(code: $0.rawValue, name: String(describing: $0), summary: $0.summary)

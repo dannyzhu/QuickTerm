@@ -63,6 +63,8 @@
 "consent.summary.browser-close-tab.other" = "关掉 %1$@ 的标签 %2$@（还剩 %3$@ 个）。";
 "consent.summary.capture-text" = "读取 %1$@ 屏幕上的全部文字并交给这个调用方（其中可能有密码、token、私有代码）。";
 "consent.summary.applies-to" = "作用于 %1$@。";
+
+"consent.summary.hooks-install" = "把 QuickTerm 给 %1$@ 用的钩子写进 %2$@。只写 QuickTerm 自己标记过的条目，quickterm hooks uninstall 可以原样删掉。";
 /* close-pane 这个动作（Cmd+W 那条路）只关一个标签；quickterm pane close 这条命令关整个 pane。
  * 两句话，因为是两种结果。 */
 "consent.summary.tab-only" = "只关当前标签。";

@@ -241,6 +241,46 @@ final class ControlCommandRunner {
                                   hint: ControlCommandTable.interactiveHint(action)))
             return
         }
+        // **The report gate** (plan §2.1). A report changes nothing of the user's, so it passes
+        // the readonly, modal-busy, origin-bucket and consent gates below — which exist to
+        // protect the user's layout, and would silently lose an approval prompt if they applied
+        // here (the hook exits 0 by design and never retries). What it does have to prove, before
+        // a single byte of its payload is parsed, is that it really is reporting about **its own**
+        // pane: the proven origin, and its own rate-limit bucket keyed by that pane.
+        if cls == .report {
+            guard let raw = request.origin?.pane, let paneID = UUID(uuidString: raw),
+                  let claim = request.origin?.paneToken, !claim.isEmpty else {
+                fail(ControlErrorBody(
+                    .badRequest,
+                    "\(spec.cli) needs QUICKTERM_PANE and QUICKTERM_PANE_TOKEN in the environment "
+                        + "(run it from a hook inside a QuickTerm pane)",
+                    hint: "There is no -t for a report: the pane is the caller's own, proven by the "
+                        + "per-pane token QuickTerm injected into it."))
+                return
+            }
+            // The same test `writesIntoOwnPane` makes, minus the resolver: there is no target to
+            // resolve, so the HMAC is recomputed from the pane the caller names and compared.
+            guard ControlEnvironment.constantTimeEquals(claim, ControlEnvironment.paneToken(for: paneID)) else {
+                logRefusal(request.cmd, peer: peer, request: request, code: .badRequest,
+                           message: "pane token mismatch")
+                fail(ControlErrorBody(.badRequest, "The pane token does not match QUICKTERM_PANE",
+                                      hint: "Run this from inside the pane the report is about."))
+                return
+            }
+            guard ControlResolver.addressablePanes(in: screens).contains(where: { $0.pane.id == paneID }) else {
+                fail(ControlErrorBody(.notFound, "That pane is not addressable any more"))
+                return
+            }
+            if case .limited(let retry, let scope) = rateLimiter.admitReport(pane: paneID) {
+                logRefusal(request.cmd, peer: peer, request: request, code: .rateLimited,
+                           message: "rate limited (\(scope))")
+                fail(ControlErrorBody(.rateLimited, "Reports are coming in too fast (\(scope) rate limit)",
+                                      hint: "This is a hint for a human; the hook script ignores it and exits 0.",
+                                      retryAfterMs: retry))
+                return
+            }
+        }
+
         if cls == .sensitive, !config.allowsSensitive(spec.name) {
             fail(ControlErrorBody(.disabled, "Sensitive commands are off by default (\(spec.cli))",
                                   hint: config.sensitiveHint(spec.name)))
@@ -326,6 +366,10 @@ final class ControlCommandRunner {
         // confirmation gate
         var needsConsent = cls.requiresConsent && config.promptsForDestructive
             && !(dryRun(request) && spec.honorsMutationFlags)
+        // `hooks install` is class `mutate` — it changes nothing of the user's **layout** — and it
+        // is still the one mutation that writes into another program's config file. It asks, once
+        // per agent (see the grant scope below), through the same gate destructive commands use.
+        if spec.name == "hooks.install", config.promptsForDestructive { needsConsent = true }
 
         // The send-text payload is validated **before** the user is asked: text that cannot be
         // delivered at all (control characters, over-long) must not first drag the user over to
@@ -399,7 +443,12 @@ final class ControlCommandRunner {
         }
         // Sensitive commands get one grant key each: having approved "read the screen" is not
         // approval for "type into the shell"
-        let grantScope: String? = cls == .sensitive ? spec.name : nil
+        var grantScope: String? = cls == .sensitive ? spec.name : nil
+        // One grant per agent: approving Claude Code's settings.json is not approving Codex's, and
+        // `hooks install all` therefore asks once for each file it is about to touch.
+        if spec.name == "hooks.install" {
+            grantScope = "hooks.install:\(request.args["agent"]?.stringValue ?? "")"
+        }
         if consent.isModalBusy, !consent.hasGrant(pid: peer.pid, cls: cls, scope: grantScope) {
             fail(ControlErrorBody(.busy, "A dialog is open in QuickTerm, so destructive commands are held back",
                                   hint: "Dismiss the dialog in QuickTerm first.", retryAfterMs: 2000))
@@ -590,6 +639,15 @@ final class ControlCommandRunner {
                 controller: resolution.controller, workspace: resolution.workspace,
                 pane: nil, handle: nil, paneIDs: nil, scopes: scopes, description: description,
                 consentText: consentText)
+        case "hooks.install":
+            // **Refuse a bad agent id before the user is asked**, the same way the send-text
+            // payload is validated a few lines up: `hooks install claude` can only ever end in
+            // `bad_request`, and a confirmation sheet naming a file that nothing will write is a
+            // question the user cannot answer — they click Allow and get the refusal anyway.
+            try validateHooksInstallTarget(request)
+            // There is no pane, no workspace and no screen to pin: the subject is a file belonging
+            // to another program. `consentSummary` writes that sentence from the request itself.
+            return nil
         case "screen.close":
             let resolution = try resolver.resolve(target)
             let controller = resolution.controller
@@ -627,6 +685,15 @@ final class ControlCommandRunner {
         // shape cannot be translated. The location is its own line, and so is "tab only".
         var lines = [action.map { L("consent.summary.action", $0.rawValue, $0.localizedHelp) }
             ?? L("consent.summary.command", spec.cli, spec.summary)]
+        // `hooks install` names a file rather than a pane: what the user is approving is an edit
+        // to another program's configuration, and the path is the whole of the decision.
+        if spec.name == "hooks.install" {
+            let id = request.args["agent"]?.stringValue ?? ""
+            let rules = AgentRegistry.shared.rules[id]
+            lines.append(L("consent.summary.hooks-install", rules?.name ?? id,
+                           request.args["config-dir"]?.stringValue ?? rules?.install?.config ?? ""))
+            return lines.joined(separator: "\n")
+        }
         if let subject {
             let controller = subject.controller
             switch spec.name {
@@ -849,6 +916,15 @@ final class ControlCommandRunner {
                                         appProtocolVersion: ControlProtocol.version,
                                         socket: ControlEnvironment.socketPath, running: true)))
 
+            case "agent-event":
+                // A report, not a mutation: **no `settleMutation()`**. `seq` in this response is
+                // whatever the bus holds, which moved exactly when the registry emitted
+                // `agent.state.changed` — which is what the payload's `changed` says.
+                let ctx = ControlContext(spec: spec, request: request, peer: peer, target: target,
+                                         resolver: resolver, encoder: encoder, pinned: pinned)
+                let result = try runAgentEvent(ctx)
+                completion(.success(id: request.id, seq: seq, resolved: result.echo, data: result.data))
+
             case "events.poll", "events.follow":
                 // **The one command that need not answer synchronously**: a long poll hangs there
                 // waiting, and a stream keeps pushing. `isExecuting` is reset when this function
@@ -875,6 +951,8 @@ final class ControlCommandRunner {
                 case "spec": result = try runSpec(ctx)
                 case "input": result = try runInput(ctx)
                 case "notices": result = try runNotices(ctx)
+                case "agents": result = try runAgents(ctx)
+                case "hooks": result = try runHooks(ctx)
                 case "browser": result = try runBrowser(ctx)
                 default:
                     throw ControlErrorBody(.unknownCommand, "Unknown command group \(group)",

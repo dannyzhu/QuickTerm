@@ -25,6 +25,7 @@ enum ControlEventType: String, Codable, CaseIterable {
     case paneCwdChanged = "pane.cwd.changed"
     case noticePosted = "notice.posted"
     case noticeResolved = "notice.resolved"
+    case agentStateChanged = "agent.state.changed"
 
     /// The two types produced by the notification centre rather than by the snapshot diff.
     /// They are the one exception to two rules and both exceptions live here, spelled once:
@@ -46,7 +47,8 @@ enum ControlEventType: String, Codable, CaseIterable {
         case .paneTitleChanged: "a pane title changed (**not** its output)"
         case .paneCwdChanged: "the working directory of a terminal pane changed (OSC 7)"
         case .noticePosted: "a notice was posted on a pane (urgency=needs-user means a human has to go and act there; info is information)"
-        case .noticeResolved: "a notice stopped being live (resolution says why: the user typed in that pane, acknowledged it, the state changed, it was superseded, the pane was focused, or the pane closed)"
+        case .noticeResolved: "a notice stopped being live (resolution says why: the user typed in that pane, acknowledged it, the state changed, it was superseded, the pane was focused, the pane closed, or the agent process went away)"
+        case .agentStateChanged: "an agent's state in a terminal pane changed (agent, state, detail, tool; message is the agent's own words and reads <redacted> without the token)"
         }
     }
 }
@@ -101,6 +103,19 @@ struct ControlEvent: Codable, Equatable {
     var body: String?
     /// notice.resolved: `NoticeResolution` (`user-acted`, `acknowledged`, `superseded`, …).
     var resolution: String?
+    /// agent.state.changed: the rule id of the agent (`claude-code`).
+    var agent: String?
+    /// agent.state.changed: `idle` | `working` | `blocked` | `done` | `error` | `unknown`.
+    var state: String?
+    /// agent.state.changed: `thinking` | `tool` | `approval` | `input` | `choice`.
+    var detail: String?
+    /// agent.state.changed: a tool **name** (`Bash`) — payload-free, never a command line.
+    var tool: String?
+    /// agent.state.changed: `hook` | `report` | `notification` | `process`.
+    var evidence: String?
+    /// agent.state.changed: the agent's own words. **Redacted for a caller without the token**,
+    /// exactly like a notice body — which is what it becomes when the state needs the user.
+    var message: String?
 
     static let redactedPlaceholder = "<redacted>"
 
@@ -110,7 +125,9 @@ struct ControlEvent: Codable, Equatable {
          layout: String? = nil, title: String? = nil, titleSet: Bool? = nil,
          cwd: String? = nil, redacted: Bool? = nil,
          noticeID: String? = nil, urgency: String? = nil, source: String? = nil,
-         body: String? = nil, resolution: String? = nil) {
+         body: String? = nil, resolution: String? = nil,
+         agent: String? = nil, state: String? = nil, detail: String? = nil,
+         tool: String? = nil, evidence: String? = nil, message: String? = nil) {
         self.seq = seq
         self.ts = ts
         self.type = type.rawValue
@@ -130,6 +147,12 @@ struct ControlEvent: Codable, Equatable {
         self.source = source
         self.body = body
         self.resolution = resolution
+        self.agent = agent
+        self.state = state
+        self.detail = detail
+        self.tool = tool
+        self.evidence = evidence
+        self.message = message
     }
 
     /// Timestamp: ISO8601 plus milliseconds (one per event; the formatter itself is static).

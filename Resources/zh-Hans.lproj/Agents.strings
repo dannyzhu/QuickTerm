@@ -1,0 +1,43 @@
+/* Agent 识别（Sources/Agents）——状态条的措辞与自动安装钩子的询问。
+   agent 通知标题在 Notices.strings，安装钩子的确认句在 Control.strings：一个键只有一个归属。 */
+
+/* MARK: - the info strip (AgentStatus.localizedStateText, drawn by Sources/Splits) */
+
+"agents.strip.thinking" = "思考中";
+"agents.strip.tool" = "执行中";
+"agents.strip.approval" = "等你批准";
+"agents.strip.input" = "等你回答";
+"agents.strip.choice" = "等你选择";
+"agents.strip.idle" = "空闲";
+"agents.strip.done" = "已跑完";
+"agents.strip.error" = "失败";
+
+/* 只靠进程扫描看到、还没听到任何钩子的 agent：我们只知道它在跑，别的一概不知。 */
+"agents.strip.unknown" = "运行中";
+
+/* MARK: - the auto-install ask (Sources/Agents/AgentRegistry.swift) */
+
+"agents.install.ask" = "有个 pane 里跑起了 %1$@，但还没给它装 QuickTerm 的钩子。要写进 %2$@ 吗？装上之后 QuickTerm 才知道它什么时候在等你。";
+
+/* MARK: - the Agent Hooks submenu (Sources/App/MainMenu.swift, AppDelegate+Agents.swift) */
+
+"agents.menu.hooks" = "Agent 钩子";
+"agents.menu.install" = "为 %1$@ 安装钩子";
+"agents.menu.uninstall" = "移除 %1$@ 的钩子";
+"agents.menu.status" = "钩子状态…";
+"agents.hooks.none" = "没有哪个 agent 规则文件能安装钩子";
+
+/* MARK: - the Hook Status alert (Sources/App/AppDelegate+Agents.swift) */
+
+"agents.hooks.status.title" = "QuickTerm 的 agent 钩子";
+"agents.hooks.status.script-ready" = "钩子脚本已就位：%1$@，它调用的是 %2$@。";
+"agents.hooks.status.script-missing" = "钩子脚本还没装；装的话会写到 %1$@。";
+"agents.hooks.status.script-stale" = "%1$@ 这个钩子脚本调用的是 %2$@，但那个文件已经不在了——给任意 agent 重装一次钩子即可指回来。";
+"agents.hooks.status.installed" = "%1$@：已安装，覆盖%2$@，写在 %3$@。";
+"agents.hooks.status.absent" = "%1$@：没装；要装的话会写进 %2$@。";
+
+"agents.hooks.detail.lifecycle" = "会话与提问事件";
+"agents.hooks.detail.tools" = "会话、提问与工具事件";
+"agents.hooks.detail.mixed" = "一堆混在一起的事件——重装一次就能理顺";
+
+"agents.hooks.failed" = "QuickTerm 改不了 %1$@ 的钩子";

@@ -23,6 +23,7 @@ enum ConfigSection: String, CaseIterable, Codable {
     case terminal
     case browser
     case control
+    case agents
     case notifications
     case keybinds
     case ghostty
@@ -35,6 +36,7 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .terminal: "终端"
         case .browser: "浏览器"
         case .control: "控制面"
+        case .agents: "Agent"
         case .notifications: "通知"
         case .keybinds: "快捷键"
         case .ghostty: "引擎透传"
@@ -49,6 +51,7 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .terminal: "Terminal"
         case .browser: "Browser"
         case .control: "Control plane"
+        case .agents: "Agents"
         case .notifications: "Notifications"
         case .keybinds: "Keybinds"
         case .ghostty: "Ghostty passthrough"
@@ -67,6 +70,10 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .control:
             """
             控制面（quickterm 命令行 / AI agent）。socket：~/Library/Application Support/QuickTerm/control.sock
+            """
+        case .agents:
+            """
+            识别 pane 里的 AI agent：钩子是精确信号，进程扫描只看 QuickTerm 自己的子进程。
             """
         case .notifications:
             """
@@ -90,6 +97,11 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .control:
             """
             Control plane (the quickterm CLI / AI agents). Socket: ~/Library/Application Support/QuickTerm/control.sock
+            """
+        case .agents:
+            """
+            Recognise the AI agent in each pane: its hooks are the exact signal; the process scan reads
+            only QuickTerm's own descendants.
             """
         case .notifications:
             """
@@ -201,6 +213,13 @@ enum ConfigKind: Equatable {
     /// A filesystem path (`~` is expanded). Validated exactly like a string; the settings window
     /// should give it a "choose directory" button.
     case path
+    /// A one-line TOML array of strings (`["claude-code", "codex"]`).
+    ///
+    /// The registry had no list kind until `[agents] enabled` needed one (owner decision Q3). A
+    /// comma-separated string would have read the same to the parser and worse to everyone else:
+    /// the template, the READMEs and a future settings window would all have had to explain that
+    /// this one string is secretly a list. An empty array is a legal value and means "none".
+    case stringList
 
     /// What this key accepts. Goes into the message a rejected line produces, and will be the
     /// input hint in the settings window.
@@ -213,6 +232,7 @@ enum ConfigKind: Equatable {
             strict ? values.joined(separator: " | ") : "\(values.joined(separator: " | ")) 或自定义值（非空）"
         case .string: "非空字符串"
         case .path: "路径（支持 ~）"
+        case .stringList: "字符串数组，写成一行，如 [\"a\", \"b\"]"
         }
     }
 
@@ -227,6 +247,7 @@ enum ConfigKind: Equatable {
                    : "\(values.joined(separator: " | ")), or any other non-empty value"
         case .string: "a non-empty string"
         case .path: "a path (~ is expanded)"
+        case .stringList: "a one-line array of strings, e.g. [\"a\", \"b\"]"
         }
     }
 
@@ -280,11 +301,13 @@ enum ConfigValue: Equatable {
     case int(Int)
     case double(Double)
     case string(String)
+    case strings([String])
 
     var boolValue: Bool? { if case .bool(let v) = self { v } else { nil } }
     var intValue: Int? { if case .int(let v) = self { v } else { nil } }
     var doubleValue: Double? { if case .double(let v) = self { v } else { nil } }
     var stringValue: String? { if case .string(let v) = self { v } else { nil } }
+    var stringsValue: [String]? { if case .strings(let v) = self { v } else { nil } }
 
     /// The literal written into the config file; strings keep their quotes.
     var literal: String {
@@ -293,6 +316,7 @@ enum ConfigValue: Equatable {
         case .int(let v): String(v)
         case .double(let v): Self.trim(v)
         case .string(let v): "\"\(v)\""
+        case .strings(let v): "[" + v.map { "\"\($0)\"" }.joined(separator: ", ") + "]"
         }
     }
 
@@ -413,6 +437,28 @@ struct ConfigKeySpec {
     static let trueLiterals: Set<String> = ["true", "1", "yes", "on"]
     static let falseLiterals: Set<String> = ["false", "0", "no", "off"]
 
+    /// `["a", "b"]` -> `["a", "b"]`; `[]` -> `[]`; anything that is not a one-line array of
+    /// double-quoted strings -> nil (the line is rejected and the default kept).
+    ///
+    /// A `#` inside one of the strings is not survivable here: `ConfigTOML.scan` strips trailing
+    /// comments from any value that does not begin with a quote, and an array does not. No rule id
+    /// contains one.
+    static func stringArray(_ raw: String) -> [String]? {
+        let text = raw.trimmingCharacters(in: .whitespaces)
+        guard text.hasPrefix("["), text.hasSuffix("]") else { return nil }
+        let inner = text.dropFirst().dropLast().trimmingCharacters(in: .whitespaces)
+        guard !inner.isEmpty else { return [] }
+        var out: [String] = []
+        for piece in inner.split(separator: ",") {
+            let item = piece.trimmingCharacters(in: .whitespaces)
+            guard item.count >= 2, item.hasPrefix("\""), item.hasSuffix("\"") else { return nil }
+            let value = String(item.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
+            guard !value.isEmpty else { continue }
+            out.append(value)
+        }
+        return out
+    }
+
     static func boolLiteral(_ raw: String) -> Bool? {
         let lowered = raw.lowercased()
         if trueLiterals.contains(lowered) { return true }
@@ -454,6 +500,13 @@ struct ConfigKeySpec {
         case .string, .path:
             guard acceptsEmpty || !raw.isEmpty else { return nil }
             return .string(raw)
+        case .stringList:
+            // Only the array form is accepted, and the whole line is rejected when it is not one:
+            // a bare word here is much more likely to be a user reaching for the old
+            // comma-separated shape than a list of one, and silently reading it as a list of one
+            // would switch off every other agent without a word.
+            guard let list = ConfigKeySpec.stringArray(raw) else { return nil }
+            return .strings(list)
         }
     }
 }
@@ -661,6 +714,35 @@ enum ConfigSchema {
                       """,
                       helpEN: "reading a terminal pane's visible text on behalf of a caller; off by default"),
 
+        // MARK: [agents]
+        // Agent awareness (plan §2.10). The hooks are the exact signal; the OSC fallback and the
+        // process scan are what is left when an agent has no hooks installed.
+        ConfigKeySpec(.agents, "detect", .bool, default: .bool(true),
+                      labelZH: "识别 agent", labelEN: "Detect agents",
+                      helpZH: "识别终端 pane 里的 AI agent（钩子、OSC 回退、进程扫描）",
+                      helpEN: "recognise agents in terminal panes (hooks, OSC fallback, process scan)"),
+        ConfigKeySpec(.agents, "enabled", .stringList,
+                      default: .strings(["claude-code", "codex", "gemini"]),
+                      labelZH: "启用的规则", labelEN: "Enabled rules",
+                      helpZH: "要用的规则 id 列表（内置三个；~/.config/quickterm/agents/*.toml 可覆盖或新增）",
+                      helpEN: "the rule ids to use (three are bundled; ~/.config/quickterm/agents/*.toml overrides or adds)"),
+        ConfigKeySpec(.agents, "hook-detail",
+                      .enumeration(values: ["lifecycle", "tools"], strict: true),
+                      default: .string("lifecycle"),
+                      labelZH: "钩子粒度", labelEN: "Hook detail",
+                      helpZH: "tools 会多装 Pre/PostToolUse（每次工具调用多一个进程），并把已装的钩子改写成同一档",
+                      helpEN: "tools adds Pre/PostToolUse (one process per tool call) and rewrites installed hooks to match"),
+        ConfigKeySpec(.agents, "auto-install-hooks",
+                      .enumeration(values: ["ask", "always", "never"], strict: true),
+                      default: .string("ask"),
+                      labelZH: "自动安装钩子", labelEN: "Auto-install hooks",
+                      helpZH: "某个 pane 第一次跑起一个还没装钩子的 agent 时：ask = 每个 agent 问一次 | always = 直接装 | never = 不装",
+                      helpEN: "the first time a pane runs an agent whose hooks are missing: ask once per agent, install silently, or never"),
+        ConfigKeySpec(.agents, "info-strip", .bool, default: .bool(true),
+                      labelZH: "pane 状态条", labelEN: "Info strip",
+                      helpZH: "画在 pane 上内边距里的状态行（不会改终端尺寸；内边距小于 14 时不画）",
+                      helpEN: "the status line in the pane's top padding; never resizes the terminal"),
+
         // MARK: [notifications]
         // The notification centre (spec §3.5). `bell` and `command-finished` are read by the
         // producers, not by the centre: they answer "should this signal become a notice at all".
@@ -720,6 +802,10 @@ enum ConfigSchema {
                       never | long (over 10 s, the default) | always — needs the shell's OSC 133 integration
                       This key decides on its own: the engine's own notify-on-command-finish and bell action are not consulted
                       """),
+        ConfigKeySpec(.notifications, "done", .bool, default: .bool(true),
+                      labelZH: "agent 跑完一轮", labelEN: "Agent turn finished",
+                      helpZH: "agent 跑完一轮时，若那个 pane 不在你眼前，发一条 info 通知；info 从不计入 Dock 角标",
+                      helpEN: "a finished turn posts an info notice when the pane is not active; never counts toward the Dock badge"),
     ]
 
     /// `id` -> the setting.

@@ -182,6 +182,10 @@ struct ControlStatePayload: Codable, Equatable {
         /// that is the single question an agent asks before interrupting the user — and a jq
         /// filter on a bool is harder to get wrong than one on a string.
         var needsUser: Bool? = nil
+        /// What the AI agent running in this pane is doing, when QuickTerm recognises one
+        /// (Phase 2). Encoded only when there is a status, so a session with no agents in it
+        /// returns exactly the bytes it always did.
+        var agent: ControlAgentRecord? = nil
 
         struct Position: Codable, Equatable {
             var column: Int?
@@ -311,6 +315,12 @@ struct ControlNoticeRecord: Codable, Equatable {
     var redacted: Bool?
     /// ISO8601 with milliseconds, the same stamp the event stream uses.
     var postedAt: String
+    /// The user focused this pane and typed into it while the alarm was still live, so the
+    /// **interrupting** sinks (the banner, the Dock badge) let go of it — the pane mark, the
+    /// workspace count and this record stay until the agent or its process confirms (plan §2.8,
+    /// owner decision Q1(b)). Absent means nothing has been quieted. A quieted notice is still
+    /// live: `notices list --needs-user` keeps listing it, and `notices ack` still resolves it.
+    var quietedAt: String? = nil
     /// Set only on a resolved notice (`notices list --history`).
     var resolvedAt: String?
     /// `state-changed` | `user-acted` | `acknowledged` | `superseded` | `pane-focused` |
@@ -327,6 +337,143 @@ struct ControlNoticesPayload: Codable, Equatable {
     /// **How many panes** (not notices) are waiting for a human, within whatever the target
     /// scoped this call to. This is the number an agent branches on before interrupting the user.
     var panesNeedingUser: Int
+}
+
+/// **What one pane's agent is doing** — the record `agents list`, `state` and `get` all share.
+///
+/// A flat record of strings, like `ControlNoticeRecord` and for the same reason: this directory
+/// is compiled into the `quickterm` tool, which knows nothing of `AgentStatus`. The mapping
+/// lives in one place on the app side, so the spellings of a state or an evidence cannot drift.
+///
+/// `message` is the agent's own words and follows the browser-URL rule exactly (a caller with no
+/// `QUICKTERM_TOKEN` reads `<redacted>`); everything else — the agent id, the state, the tool
+/// **name** — is payload-free and always readable, because deciding whether to interrupt the
+/// user is precisely what this record exists for.
+struct ControlAgentRecord: Codable, Equatable {
+    /// The rule id (`claude-code` | `codex` | `gemini` | a user rule file's id).
+    var id: String
+    /// The display name from the rule file (`Claude Code`).
+    var name: String
+    /// `idle` | `working` | `blocked` | `done` | `error` | `unknown`. Stable — branch on it.
+    var state: String
+    /// What kind of working / blocked: `thinking` | `tool` | `approval` | `input` | `choice`.
+    var detail: String?
+    /// A tool **name** (`Bash`), never a command line.
+    var tool: String?
+    /// The agent's own words, `<redacted>` for a caller with no token, absent when there are none.
+    var message: String?
+    /// A message exists and was withheld.
+    var redacted: Bool?
+    /// `hook` | `report` | `notification` | `process` — how sure we are. A hook is the agent
+    /// telling us; `process` means only that a process with that name is running in the pane.
+    var evidence: String
+    var sessionID: String?
+    /// When the state last changed. ISO8601 with milliseconds, the same stamp events use.
+    var since: String
+    /// The pane is waiting for a human (`blocked` or `error`). Encoded only when true.
+    var needsUser: Bool?
+}
+
+/// One row of `agents list`: the pane, where it is, and its agent.
+struct ControlAgentListEntry: Codable, Equatable {
+    var pane: String
+    var paneID: String
+    var screen: Int
+    var screenID: String
+    var workspace: Int
+    var agent: ControlAgentRecord
+}
+
+/// The payload for `agents list`.
+struct ControlAgentsPayload: Codable, Equatable {
+    var schema = "quickterm.agents/1"
+    /// One entry per pane that has an agent status, in pane order. A pane with no agent is not
+    /// listed at all — "no agent here" is the absence of a row, never a row full of nils.
+    var agents: [ControlAgentListEntry]
+}
+
+/// The hook script on disk, as `hooks status` reports it.
+struct HookScriptStatus: Codable, Equatable {
+    /// `~/.config/quickterm/hooks/quickterm-agent-state.sh`.
+    var path: String
+    var exists: Bool
+    /// The path is a symlink. QuickTerm **refuses to install over one** rather than follow it:
+    /// writing through a link means writing wherever somebody else pointed it.
+    var isSymlink: Bool
+    /// The `quickterm` binary baked into the script (it is never taken from the environment, so
+    /// a project `.envrc` cannot choose which binary every prompt runs).
+    var bakedBinary: String?
+    var bakedBinaryExists: Bool
+    /// The script is there, ours, and its baked binary exists.
+    var ok: Bool
+
+    init(path: String, exists: Bool, isSymlink: Bool = false, bakedBinary: String? = nil,
+         bakedBinaryExists: Bool = false, ok: Bool = false) {
+        self.path = path
+        self.exists = exists
+        self.isSymlink = isSymlink
+        self.bakedBinary = bakedBinary
+        self.bakedBinaryExists = bakedBinaryExists
+        self.ok = ok
+    }
+}
+
+/// One agent's hook installation, as `hooks status` reports it.
+struct HookAgentStatus: Codable, Equatable {
+    var id: String
+    var name: String
+    /// The agent's own user-level config file (`~/.claude/settings.json`), `~` already expanded.
+    /// nil when this rule file declares no installer at all.
+    var configPath: String?
+    var configExists: Bool
+    /// At least one entry carrying our marker is in that file.
+    var installed: Bool
+    /// The hook events we own in it, in file order.
+    var entries: [String]
+    /// `lifecycle` | `tools` | `mixed` — which tier those entries add up to; nil when none.
+    var detail: String?
+    /// Why this agent cannot be installed / what is wrong with what is there.
+    var issue: String?
+
+    init(id: String, name: String, configPath: String? = nil, configExists: Bool = false,
+         installed: Bool = false, entries: [String] = [], detail: String? = nil,
+         issue: String? = nil) {
+        self.id = id
+        self.name = name
+        self.configPath = configPath
+        self.configExists = configExists
+        self.installed = installed
+        self.entries = entries
+        self.detail = detail
+        self.issue = issue
+    }
+}
+
+/// The payload for `hooks status`.
+struct ControlHooksPayload: Codable, Equatable {
+    var schema = "quickterm.hooks/1"
+    var script: HookScriptStatus
+    var agents: [HookAgentStatus]
+}
+
+/// The payload for `agent-event` — what the hook is told about the report it just made.
+///
+/// There is no mutation envelope here and no `seq` bump of its own: a report is not a mutation
+/// of anything the user owns (plan §2.1). `seq` in the response moved **iff** the registry
+/// emitted `agent.state.changed`, which is exactly what `changed` says.
+struct ControlAgentEventPayload: Codable, Equatable {
+    var schema = "quickterm.agent-event/1"
+    /// The caller's own pane, by handle.
+    var pane: String
+    var agent: String
+    var state: String
+    var detail: String?
+    /// The event moved the pane's agent state (and therefore moved `seq`).
+    var changed: Bool
+    /// A `needs-user` notice was posted by this event.
+    var noticeID: String?
+    /// How many live notices this event resolved.
+    var resolved: Int
 }
 
 /// The payload for `list` (exactly one of the three is non-nil).

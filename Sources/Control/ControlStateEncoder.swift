@@ -63,15 +63,18 @@ struct ControlStateEncoder {
     /// about a spelling.
     func noticeRecord(_ notice: Notice) -> ControlNoticeRecord {
         let hide = notice.body != nil && !exposesNoticeBody
+        // Where the pane **is**, not where it was posted (plan §1.1): the record, the counts and
+        // the `-t 1:2` filter all read the one function, so they cannot disagree about a move.
+        let location = NoticeCenter.shared.location(of: notice)
         return ControlNoticeRecord(
             id: notice.id.uuidString,
             pane: Self.handle(forPane: notice.pane, in: screens) ?? "",
             paneID: notice.pane.uuidString,
             // A history entry can outlive its window; 0 says "that screen is gone" rather than
             // pointing at whichever screen happens to hold that index now.
-            screen: screens.controller(id: notice.screen).map { $0.screenIndex + 1 } ?? 0,
-            screenID: notice.screen.uuidString,
-            workspace: notice.workspace + 1,
+            screen: screens.controller(id: location.screen).map { $0.screenIndex + 1 } ?? 0,
+            screenID: location.screen.uuidString,
+            workspace: location.workspace + 1,
             source: notice.source.id,
             urgency: notice.urgency.rawValue,
             evidence: notice.evidence.rawValue,
@@ -79,8 +82,36 @@ struct ControlStateEncoder {
             body: hide ? Self.redacted : notice.body,
             redacted: hide ? true : nil,
             postedAt: ControlEvent.stamp(notice.postedAt),
+            quietedAt: notice.quietedAt.map { ControlEvent.stamp($0) },
             resolvedAt: notice.resolvedAt.map { ControlEvent.stamp($0) },
             resolution: notice.resolution?.rawValue)
+    }
+
+    /// One pane's agent as the wire sees it. **The only place `AgentStatus` is translated**, so
+    /// `agents list`, the `agent` field of a pane record in `state` / `get` and anything added
+    /// later cannot disagree about how a state or an evidence is spelled.
+    ///
+    /// The redaction rule is `noticeRecord`'s, to the letter, and for the same reason: `message`
+    /// is the agent's own words — the command it wants to run, the question it is asking — while
+    /// the id, the state, the detail and the tool **name** are composed vocabulary that carries no
+    /// payload. Deciding whether to interrupt the user is exactly what a token-less caller needs
+    /// this record for, so everything but the message stays readable.
+    func agentRecord(_ status: AgentStatus) -> ControlAgentRecord {
+        let hide = status.message != nil && !exposesNoticeBody
+        return ControlAgentRecord(
+            id: status.agent,
+            name: status.name,
+            state: status.state.rawValue,
+            detail: status.detail?.rawValue,
+            tool: status.tool,
+            message: hide ? Self.redacted : status.message,
+            redacted: hide ? true : nil,
+            evidence: status.evidence.rawValue,
+            sessionID: status.sessionID,
+            since: ControlEvent.stamp(status.since),
+            // Encoded only when true, the same convention `needsUser` follows on a pane record:
+            // an absent field means "nobody is waiting", which is the common case.
+            needsUser: status.needsUser ? true : nil)
     }
 
     func payload(scope: MainWindowController? = nil) -> ControlStatePayload {
@@ -408,6 +439,9 @@ struct ControlStateEncoder {
             // `urgency == .needsUser` in one boolean: the single question an agent asks before
             // interrupting the user, and a jq filter on a bool is harder to get wrong than one on
             // a string.
-            needsUser: urgency == .needsUser ? true : nil)
+            needsUser: urgency == .needsUser ? true : nil,
+            // Absent unless QuickTerm recognises an agent in this pane, so a session with no
+            // agents in it encodes byte for byte what it always did.
+            agent: AgentRegistry.shared.status(pane: pane.id).map { agentRecord($0) })
     }
 }

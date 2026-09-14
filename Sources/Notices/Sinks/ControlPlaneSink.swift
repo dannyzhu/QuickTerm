@@ -44,11 +44,11 @@ final class ControlPlaneSink: NoticeSink {
             emit(new, type: .noticePosted)
         case .resolved(let notice, _, _):
             emit(notice, type: .noticeResolved)
-        case .activityChanged, .countsChanged:
-            // Neither is an event: activity is "is the user looking at this pane", which the
-            // focus / workspace events already describe, and the counts are a function of the
-            // posts and resolutions that were just emitted. Emitting them would double every
-            // notice on the stream.
+        case .quieted, .activityChanged, .countsChanged:
+            // None of them is an event: activity is "is the user looking at this pane", which the
+            // focus / workspace events already describe, the counts are a function of the posts
+            // and resolutions that were just emitted, and a quieting changes nothing an agent can
+            // act on — the notice is still live and still in `state`, with `quietedAt` on it.
             break
         }
     }
@@ -64,12 +64,16 @@ final class ControlPlaneSink: NoticeSink {
         // A notice whose window has since gone reports no index at all — better than a number
         // that now points at somebody else.
         let screens = (NSApp.delegate as? AppDelegate)?.screens
-        let screenIndex = screens?.controller(id: notice.screen).map { $0.screenIndex + 1 }
+        // **Where the pane is now**, not where it was posted: an agent that moves a pane while
+        // its own approval is pending would otherwise be told the alarm is on the workspace it
+        // left (plan §1.1). A history entry whose pane is gone keeps the stored pair.
+        let location = NoticeCenter.shared.location(of: notice)
+        let screenIndex = screens?.controller(id: location.screen).map { $0.screenIndex + 1 }
         let event = ControlEvent(
             type: type,
             screen: screenIndex,
-            screenID: notice.screen.uuidString,
-            workspace: notice.workspace + 1,
+            screenID: location.screen.uuidString,
+            workspace: location.workspace + 1,
             // Allocating here when the pane has never been encoded: an event that names no pane is
             // an event nobody can act on (see `ControlStateEncoder.handle(forPane:in:)`).
             pane: screens.flatMap { ControlStateEncoder.handle(forPane: notice.pane, in: $0) },
@@ -82,6 +86,6 @@ final class ControlPlaneSink: NoticeSink {
             resolution: notice.resolution?.rawValue)
         // Redactable exactly when there is a body to withhold. The title is payload-free by
         // construction and stays readable for every caller (see `ControlEventBus.redact`).
-        bus.emit(event, redactable: notice.body != nil)
+        bus.emit(event, redactable: notice.body != nil, producer: .noticeCenter)
     }
 }

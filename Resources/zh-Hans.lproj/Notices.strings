@@ -36,3 +36,13 @@
 
 "notice.system.subtitle" = "来自 pane %1$@";
 "notice.system.subtitle-named" = "来自 pane %1$@「%2$@」";
+
+/* MARK: - agent notices (Sources/Agents/AgentRegistry.swift) */
+
+"notice.agent.approval" = "%1$@ · 等你批准 · %2$@";
+"notice.agent.approval.no-tool" = "%1$@ · 等你批准";
+"notice.agent.input" = "%1$@ · 等你回答";
+"notice.agent.choice" = "%1$@ · 等你选择";
+"notice.agent.error" = "%1$@ · 失败 · %2$@";
+"notice.agent.error.no-type" = "%1$@ · 失败";
+"notice.agent.done" = "%1$@ · 已跑完";

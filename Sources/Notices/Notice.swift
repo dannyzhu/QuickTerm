@@ -94,6 +94,14 @@ enum NoticeResolution: String, Codable {
     case paneFocused = "pane-focused"
     /// Rule 4: the pane is gone.
     case paneClosed = "pane-closed"
+    /// The agent's **process** went away while its prompt was still live — the registry lost
+    /// presence, or the pane's child exited (plan §1.4, §2.7).
+    ///
+    /// Appended, never reordered: this is a wire value. It is deliberately **not** origin-gated
+    /// the way `stateChanged` is: the registry is in-process and the program really is gone. On
+    /// the wire it tells an agent "the prompt went away because the program did", which
+    /// `state-changed` would misstate.
+    case agentGone = "agent-gone"
 }
 
 /// Who may resolve a notice as `.stateChanged` (spec §3.3).
@@ -156,12 +164,24 @@ struct Notice: Identifiable, Equatable, Codable {
     let bodySensitive: Bool
     let origin: NoticeOrigin?
     let postedAt: Date
+    /// The user focused this pane and typed into it while this alarm was still live, and the
+    /// policy in force was `clearInterruptingSinks` (plan §2.8, owner decision Q1(b)): the
+    /// **interrupting** sinks — the system banner and the Dock badge — let go, while the pane
+    /// mark, the workspace pill count and this notice all stay until a hook or the process
+    /// confirms. A quieted notice is still **live**; `notices ack` still resolves it and
+    /// `notices list --needs-user` still lists it (the human started, the prompt may well still
+    /// be pending).
+    var quietedAt: Date?
     var resolvedAt: Date?
     var resolution: NoticeResolution?
 
     var isLive: Bool { resolvedAt == nil }
+    /// Live and not quieted — the state the banner and the badge react to.
+    var isInterrupting: Bool { isLive && quietedAt == nil }
 
-    /// Where the notice was posted, as the counts and the pill read it.
+    /// Where the notice was posted. **`NoticeCenter.location(of:)` is the current one**: a pane
+    /// that has since moved to another workspace is counted where it is now, and this pair is
+    /// what a history entry outliving its pane falls back to (plan §1.1).
     var location: NoticeLocation { NoticeLocation(screen: screen, workspace: workspace) }
 
     /// A body longer than this is cut. One kilobyte is far more than any banner or `notices list`
@@ -252,12 +272,18 @@ struct NoticeLocation: Equatable {
 /// `Set(...)` somewhere downstream.
 struct NoticeCounts: Equatable {
     var needsUser: [UUID: NoticeLocation]
+    /// Panes holding at least one live `needs-user` notice that has **not** been quieted — the
+    /// number the interrupting sinks (the Dock badge) show. `needsUser` above counts every live
+    /// alarm whatever its quieted state, and that is what the pane mark and the workspace pill
+    /// keep reading (owner decision Q6).
+    var interrupting: Int
 
-    init(needsUser: [UUID: NoticeLocation] = [:]) {
+    init(needsUser: [UUID: NoticeLocation] = [:], interrupting: Int = 0) {
         self.needsUser = needsUser
+        self.interrupting = interrupting
     }
 
-    /// Across every screen — the Dock badge's number.
+    /// Across every screen — panes that need the user at all.
     var total: Int { needsUser.count }
 
     func count(screen: UUID) -> Int {
@@ -319,6 +345,10 @@ struct PaneActivity: Equatable {
 /// at that instant.
 enum NoticeChange {
     case posted(Notice, PaneTransition, PaneActivity?)
+    /// The user acted in the pane and this alarm stopped interrupting, without being resolved
+    /// (plan §2.8). Only the interrupting sinks react: the banner is withdrawn, the badge drops
+    /// this pane. The notice is still live.
+    case quieted(Notice, PaneActivity?)
     case superseded(old: Notice, new: Notice, PaneTransition, PaneActivity?)
     case resolved(Notice, PaneTransition, PaneActivity?)
     /// Only for panes holding a live notice, and only when the activity really changed — the

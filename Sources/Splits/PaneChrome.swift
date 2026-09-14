@@ -98,6 +98,10 @@ struct PaneChrome: ViewModifier {
             .overlay {
                 if let mark { PaneNoticeMarkTooltip(mark: mark) }
             }
+            // The agent info strip, drawn inside the pane's own top padding (plan §2.11). Like
+            // the tooltip above it is a separate overlay because it takes a click, and unlike the
+            // mark it reads `surfaceView.agentStatus` — this pane's, nobody else's.
+            .overlay { PaneAgentStrip(surfaceView: surfaceView) }
             // pane-gap of breathing room on every side (the same in both layouts)
             .padding(theme.gapsEnabled ? theme.paneGap : 0)
             .scaleEffect(appeared ? 1 : 0.87)

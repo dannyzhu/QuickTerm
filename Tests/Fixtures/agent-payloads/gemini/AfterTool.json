@@ -1,0 +1,12 @@
+{
+  "session_id": "a7e4c1b0-93f2-4d18-b55c-1e8f6a0d23c9",
+  "hook_event_name": "AfterTool",
+  "workspace_dir": "/Users/danny/repo",
+  "tool_name": "run_shell_command",
+  "details": {
+    "command": "npm test"
+  },
+  "result": {
+    "exit_code": 0
+  }
+}

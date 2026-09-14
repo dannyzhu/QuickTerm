@@ -43,7 +43,9 @@ final class ActivityLogSink: NoticeSink {
         case .resolved(let notice, _, _):
             record(notice, command: Self.resolveCommand,
                    outcome: notice.resolution?.rawValue ?? ControlActivityLog.Entry.Outcome.applied)
-        case .activityChanged, .countsChanged:
+        case .quieted, .activityChanged, .countsChanged:
+            // A quieting is not a resolution — the alarm is still live and still in the record.
+            // What the user did about it will be logged when it really resolves.
             break
         }
     }

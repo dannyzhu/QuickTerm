@@ -22,6 +22,9 @@ struct NoticeSettings: Equatable {
     var bell = "ignore"
     /// `never` | `long` | `always`.
     var commandFinished = "long"
+    /// A finished agent turn posts an `info` notice (the system sink presents it only when the
+    /// pane is not active, and `info` never counts toward the Dock badge).
+    var done = true
 
     /// What `command-finished = "long"` means, in seconds.
     static let longCommand: TimeInterval = 10
@@ -36,6 +39,7 @@ struct NoticeSettings: Equatable {
         workspaceCount = settings.notificationsWorkspaceCount
         bell = settings.notificationsBell
         commandFinished = settings.notificationsCommandFinished
+        done = settings.notificationsDone
     }
 
     /// Whether a command that ran for `duration` should post an info notice.
@@ -84,4 +88,7 @@ enum NoticeSinkID {
     static let workspaceCount = "workspace-count"
     static let controlPlane = "control-plane"
     static let activityLog = "activity-log"
+    /// The agent registry listens as an ordinary sink (that is how it hears that a pane closed),
+    /// and like the two above it is never switched off: it is not a way of interrupting anybody.
+    static let agentRegistry = "agent-registry"
 }

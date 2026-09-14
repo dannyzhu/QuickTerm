@@ -1,0 +1,45 @@
+# QuickTerm agent rules — Claude Code.
+# Data only: which processes carry this agent's name, which hook event means which state, where in
+# a payload each piece of text lives, and what the installer writes. Everything cross-agent
+# (precedence, the hook-recency window, presence, when a notice is posted) lives in Swift.
+id = "claude-code"
+name = "Claude Code"
+process = ["claude"]
+
+[fields]
+session = "$.session_id"
+message = "$.message"
+tool    = "$.tool_name"
+summary = ["$.tool_input.command", "$.tool_input.file_path", "$.tool_input.pattern", "$.tool_input.url", "$.message"]
+error   = "$.error_type"
+
+[hooks]
+SessionStart      = "idle"
+UserPromptSubmit  = "working:thinking"
+PreToolUse        = "working:tool"
+PostToolUse       = "working:thinking"
+PermissionRequest = "blocked:approval"
+Stop              = "done"
+StopFailure       = "error"
+SessionEnd        = "released"
+
+[hooks.Notification]
+field = "$.notification_type"
+
+[hooks.Notification.values]
+permission_prompt  = "blocked:approval"
+idle_prompt        = "idle"
+agent_needs_input  = "blocked:input"
+elicitation_dialog = "blocked:choice"
+
+# The OSC fallback, for a session whose hooks are not installed. Prefix match on the title.
+[notifications]
+"Claude needs your permission"     = "blocked:approval"
+"Claude is waiting for your input" = "idle"
+"Claude Code task complete"        = "done"
+
+[install]
+shape     = "claude"
+config    = "~/.claude/settings.json"
+lifecycle = ["SessionStart", "SessionEnd", "UserPromptSubmit", "PermissionRequest", "Notification", "Stop", "StopFailure"]
+tools     = ["PreToolUse", "PostToolUse"]

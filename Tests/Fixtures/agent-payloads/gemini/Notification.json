@@ -1,0 +1,11 @@
+{
+  "session_id": "a7e4c1b0-93f2-4d18-b55c-1e8f6a0d23c9",
+  "hook_event_name": "Notification",
+  "workspace_dir": "/Users/danny/repo",
+  "notification_type": "ToolPermission",
+  "tool_name": "run_shell_command",
+  "details": {
+    "command": "rm -rf dist"
+  },
+  "message": "Gemini CLI needs permission to run a command"
+}

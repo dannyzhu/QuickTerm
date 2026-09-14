@@ -112,6 +112,15 @@ final class ControlEventBus {
         if seq == mark { seq += 1 }
     }
 
+    /// **The two things allowed to skip the snapshot diff.** Adding a case here is a design
+    /// decision, not a convenience: a direct producer must be the sole owner of its event type
+    /// and must have coalesced its own duplicates before calling.
+    ///
+    /// `noticeCenter` is `ControlPlaneSink` (the centre has already coalesced duplicates and
+    /// supersessions); `agentRegistry` is the agent registry, which emits on a transition of its
+    /// own reduced state and never on a repeat.
+    enum DirectProducer { case noticeCenter, agentRegistry }
+
     /// Emit one event **directly**, without the snapshot diff — the single exception to the rule
     /// this whole class is built on, and it is narrow on purpose.
     ///
@@ -124,9 +133,12 @@ final class ControlEventBus {
     /// guarantees.
     ///
     /// `redactable` is the same flag the ring already carries: pass true when the event holds a
-    /// notice body, so a caller without the token reads `<redacted>` instead of the program's own
-    /// words.
-    func emit(_ event: ControlEvent, redactable: Bool) {
+    /// notice body or an agent's own message, so a caller without the token reads `<redacted>`
+    /// instead of the program's own words.
+    ///
+    /// `producer` makes the rule structural rather than a matter of who remembered to read this
+    /// comment: there is no anonymous direct emission.
+    func emit(_ event: ControlEvent, redactable: Bool, producer: DirectProducer) {
         // Settle the structural backlog first, so causality survives on the wire. A notice can be
         // posted in the same run-loop turn its pane was created in, while the scan for that
         // creation is still only *scheduled* — emitted straight away, `notice.posted` would arrive
@@ -230,6 +242,11 @@ final class ControlEventBus {
             if out.cwd != nil { out.cwd = ControlEvent.redactedPlaceholder }
         }
         if out.body != nil { out.body = ControlEvent.redactedPlaceholder }
+        // An agent's `message` is the same kind of thing as a notice body — the program's own
+        // words — and follows the same rule. The `agent` / `state` / `detail` / `tool` beside it
+        // are payload-free by construction and stay readable, because "is that pane blocked"
+        // is exactly the question a token-less caller is allowed to ask.
+        if out.message != nil { out.message = ControlEvent.redactedPlaceholder }
         out.redacted = true
         return out
     }

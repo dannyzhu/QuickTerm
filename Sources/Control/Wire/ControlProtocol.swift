@@ -110,13 +110,17 @@ enum ControlErrorCode: String, Codable, CaseIterable {
     /// happened" and "half of it happened" demand completely different things from an agent, and it
     /// must never have to tell them apart by reading the error prose.
     case partialApply = "partial_apply"
+    /// A `state-changed` resolution from a process lineage or session other than the one that
+    /// posted the alarm: refused, logged, the alarm stays. **A forger may add a notice and never
+    /// remove one** — that rule is what this code is the wire spelling of.
+    case originMismatch = "origin_mismatch"
 
     var exit: ControlExit {
         switch self {
         case .failed, .badRequest, .unknownCommand, .unknownAction, .internalError, .partialApply: .failure
         case .protocolMismatch: .protocolMismatch
         case .badTarget, .ambiguousTarget, .notFound, .wrongPaneKind: .badTarget
-        case .interactiveAction, .denied, .disabled, .cwdDenied, .limit: .denied
+        case .interactiveAction, .denied, .disabled, .cwdDenied, .limit, .originMismatch: .denied
         case .confirmationRequired: .confirmationRequired
         case .busy, .rateLimited: .busy
         case .notRunning: .notRunning
@@ -147,6 +151,7 @@ enum ControlErrorCode: String, Codable, CaseIterable {
         case .internalError: "internal error"
         case .noop: "already in the target state, nothing changed (an error only with --fail-if-noop)"
         case .partialApply: "spec was only half applied: the workspace has already changed, read the state again"
+        case .originMismatch: "A state-changed resolution from a process lineage or session other than the one that posted the alarm: refused, logged, the alarm stays. A forger may add a notice and never remove one."
         }
     }
 }

@@ -20,11 +20,16 @@ protocol GhosttyAppDelegate: AnyObject {
 /// one prompt is announced twice (the engine's banner and the notice centre's), and neither half
 /// knows that the other already withdrew its own.
 ///
-/// The three closures are the seam. In the app they are the singleton; a test replaces them and
+/// The closures are the seam. In the app they are the singletons; a test replaces them and
 /// drives the Swift half of an engine callback with no window, no pane and no live
 /// `UNUserNotificationCenter` anywhere near it — which is the whole reason the three producers
 /// live here instead of being three `NoticeCenter.shared.post(…)` calls spread through the
 /// engine. `Tests/NoticeSourcesTests.swift` is the caller that pins them.
+///
+/// Phase 2 adds two more of them, `observe` and `mutes` (plan §1.2): the same engine signals now
+/// pass the agent registry on their way, and a pane whose agent is speaking through hooks stops
+/// posting the engine's vaguer second opinion. The registry is reached through closures for the
+/// same reason as the rest — this type stays buildable, and testable, with no registry at all.
 @MainActor
 enum GhosttyNoticeProducer {
     /// Where a notice goes. The outcome is dropped on purpose: a producer has nothing to do with
@@ -41,6 +46,26 @@ enum GhosttyNoticeProducer {
     /// with an empty title. Never allocates one: a pane nobody has addressed yet gets the
     /// centre's own fallback title instead.
     static var handle: (UUID) -> String? = { ControlHandleRegistry.shared.existingHandle(for: $0) }
+
+    /// **The agent registry's ear on the engine** (plan §1.2).
+    ///
+    /// Every engine signal that could mean something about an agent is offered to the registry
+    /// first, and `consumed` means a rule matched it: the registry now owns that moment — it has
+    /// the pane's state, it has already decided whether a human is needed — and this producer
+    /// posts no `.terminal` notice of its own on top of it. `ignored` means no rule wanted it and
+    /// Phase 1's behaviour stands.
+    ///
+    /// A closure rather than a Combine publisher for the reason the plan gives: one consumer, and
+    /// a publisher would buy a subscription lifecycle and a second dispatch hop for it.
+    static var observe: (UUID, AgentRegistry.EngineSignal) -> AgentRegistry.EngineSignalOutcome = {
+        AgentRegistry.shared.observeEngine(pane: $0, $1)
+    }
+
+    /// True while the pane's agent status rests on a hook or a report (spec §3.2). The engine's
+    /// OSC notifications and its finished commands **still reach `observe`** — they are cheap
+    /// moments to look for an agent's process — but they post nothing: the agent is telling us
+    /// precisely what it is doing, and a vaguer notice about the same moment is noise.
+    static var mutes: (UUID) -> Bool = { AgentRegistry.shared.mutesEngineNotices(pane: $0) }
 
     // MARK: The three producers
     //
@@ -59,6 +84,14 @@ enum GhosttyNoticeProducer {
     /// unless `[notifications] system-body = "always"`.
     nonisolated static func desktopNotification(pane: UUID, title: String, body: String) {
         MainActor.assumeIsolated {
+            // The registry hears the program's **own** words, not our fallback title: a rule
+            // matches on what the agent actually wrote (and on the body when the title is empty).
+            let outcome = observe(pane, .notification(title: title, body: body))
+            // Two different silences, and both have to be here rather than in the centre: a rule
+            // matched (the registry owns this moment and has posted whatever it means), or a hook
+            // is already speaking for this pane (this OSC is the vaguer second voice).
+            guard outcome == .ignored, !mutes(pane) else { return }
+
             // A title of nothing but control characters is as empty as "" — the centre would
             // sanitise it away and fall back to "Notice from terminal", which says less than the
             // pane's handle does.
@@ -75,13 +108,21 @@ enum GhosttyNoticeProducer {
     /// A command finished (OSC 133). **`[notifications] command-finished` decides on its own** —
     /// the engine's `notify-on-command-finish` gates and its bell action are not consulted, so
     /// there is exactly one answer to "was I told about this command" and the config key's help
-    /// says so. `never` | `long` (over ten seconds) | `always`.
+    /// says so. `never` | `long` (over ten seconds) | `always`. The one thing on top of that key
+    /// is `mutes`: while a hook is speaking for the pane, "the command took 12 minutes" is the
+    /// agent's turn seen from outside, and the agent is already describing it.
     ///
     /// The text is QuickTerm's own sentence, which is what `.composed` and `bodySensitive: false`
     /// mean: it carries a duration and an exit code, never a command line, so it is the one body
     /// a system banner may show under the default `system-body = "composed"`.
     nonisolated static func commandFinished(pane: UUID, exitCode: Int, duration: Duration) {
         MainActor.assumeIsolated {
+            // Offered before either gate, and the outcome is dropped on purpose: a finished
+            // command never *means* anything about an agent's state (`observeEngine` answers
+            // `.ignored` by construction), but it is a good moment to go and look for one, and
+            // that has to happen even when `[notifications] command-finished = "never"`.
+            _ = observe(pane, .commandFinished)
+            guard !mutes(pane) else { return }
             guard settings().allowsCommandFinished(duration) else { return }
             let formatted = duration.formatted(
                 .units(
@@ -114,6 +155,9 @@ enum GhosttyNoticeProducer {
     /// (the owner's decision, spec §7.4): shells ring it for a completion that found nothing.
     /// The pane's own bell border still flashes either way; that is drawn by the surface view and
     /// is not a notice at all.
+    ///
+    /// **Neither offered to the registry nor muted by it**: a bell is not an agent signal, and an
+    /// agent with something to say said it through a hook.
     nonisolated static func bell(pane: UUID) {
         MainActor.assumeIsolated {
             guard settings().allowsBell else { return }
@@ -127,6 +171,13 @@ enum GhosttyNoticeProducer {
         post = { NoticeCenter.shared.post($0) }
         settings = { NoticeCenter.shared.settings }
         handle = { ControlHandleRegistry.shared.existingHandle(for: $0) }
+        // The two agent seams go back **inert**, not back to the singleton (plan §1.2): a test
+        // host that has finished with its recorder must not start driving the process-wide
+        // registry from engine callbacks — `EngineSmokeTests` runs a real surface in it — and
+        // "no registry at all" is exactly the Phase 1 behaviour every case in
+        // `NoticeSourcesTests` was written against.
+        observe = { _, _ in .ignored }
+        mutes = { _ in false }
     }
 }
 

@@ -1,0 +1,11 @@
+{
+  "session_id": "0f1b7c9a-2d4e-4b31-8c6f-5a9e3d2b7014",
+  "hook_event_name": "PreToolUse",
+  "cwd": "/Users/danny/repo",
+  "tool_name": "shell",
+  "tool_input": {
+    "command": "cargo test --quiet",
+    "workdir": "/Users/danny/repo",
+    "timeout_ms": 60000
+  }
+}

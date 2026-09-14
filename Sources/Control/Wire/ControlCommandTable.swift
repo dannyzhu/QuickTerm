@@ -16,9 +16,19 @@ enum ControlCommandClass: String, Codable, CaseIterable {
     case interactive
     /// Touches the user's privacy or someone else's tty (send-text, reading browser URLs): Phase 4.
     case sensitive
+    /// A status report from a program inside a pane **about that pane** (`agent-event`). It
+    /// changes nothing of the user's: no consent, no flash, no undo, no activity-log entry,
+    /// allowed in readonly mode and while a dialog is up; its own rate limit keyed by the proven
+    /// pane; `seq` moves only when the report changed something (through the event bus, never
+    /// through `settleMutation`).
+    ///
+    /// Refusing a report for the reasons that apply to mutations would lose it for good: the hook
+    /// exits 0 by design and never retries, so a `PermissionRequest` landing while some dialog is
+    /// up would simply never be heard of again.
+    case report
 
     var requiresConsent: Bool { self == .destructive || self == .sensitive }
-    var isMutation: Bool { self != .read }
+    var isMutation: Bool { self != .read && self != .report }
 }
 
 struct ControlArgSpec: Codable, Equatable {
@@ -738,6 +748,92 @@ enum ControlCommandTable {
             ],
             outputSample: nil),
 
+        // MARK: - Agent awareness: what each pane's agent is doing -
+        // `agent-event` is the hook's road in. It is class `report`, not `mutate`: it reports a
+        // fact about the caller's **own** pane and changes nothing of the user's, so it passes
+        // the readonly and modal gates that exist to protect the user's layout. The pane is the
+        // proven origin (QUICKTERM_PANE + QUICKTERM_PANE_TOKEN), never a `-t` target — a report
+        // about somebody else's pane is not a thing this command can express.
+
+        ControlCommandSpec(
+            "agent-event",
+            summary: "Report an agent lifecycle event about the caller's own pane (run by the hook script QuickTerm installs; reads the hook's JSON on stdin)",
+            cls: .report, idempotent: true, acceptsTarget: false,
+            args: [
+                ControlArgSpec("agent", .string,
+                               help: "the agent rule id (claude-code | codex | gemini, or a user rule file's id)",
+                               required: true),
+                ControlArgSpec("event", .string,
+                               help: "the reduced hook payload as one JSON object (the CLI builds it from stdin; passing it by hand is for tests)"),
+            ],
+            examples: [
+                "quickterm agent-event --agent claude-code < payload.json   # what the hook script runs; never exits non-zero",
+            ],
+            outputSample: nil),
+
+        ControlCommandSpec(
+            group: "agents", "list",
+            summary: "List what each pane's agent is doing — which agent, its state, what it is waiting for and since when",
+            cls: .read, idempotent: true, acceptsTarget: true,
+            args: [],
+            examples: [
+                "quickterm agents list",
+                "quickterm agents list -t 1:2             # only this workspace",
+                "quickterm agents list --json | jq -r '.data.agents[] | select(.agent.needsUser) | .pane'",
+            ],
+            outputSample: agentsSample),
+
+        // The installer is one code path in the app (plan §2.6, owner decision Q2): the CLI, the
+        // menu item and the auto-install ask all end in the same `HookInstaller` and share one
+        // confirmation, so there is one place that knows how to edit another program's config.
+
+        ControlCommandSpec(
+            group: "hooks", "install",
+            summary: "Install QuickTerm's hook entries into an agent's own config file (asks you to confirm in QuickTerm; writes only entries carrying our marker)",
+            cls: .mutate, idempotent: true, acceptsTarget: false,
+            args: [
+                ControlArgSpec("agent", .string,
+                               help: "claude-code | codex | gemini | all — any loaded rule id",
+                               required: true, positional: true),
+                ControlArgSpec("config-dir", .string,
+                               help: "write into this directory instead of the agent's own (tests; a smoke pointing CLAUDE_CONFIG_DIR at a scratch directory)"),
+            ],
+            examples: [
+                "quickterm hooks install claude-code",
+                "quickterm hooks install all",
+                "quickterm hooks install claude-code --config-dir /tmp/claude-scratch",
+            ],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "hooks", "uninstall",
+            summary: "Remove QuickTerm's hook entries from an agent's config file (only entries carrying our marker; the user's own are left alone)",
+            cls: .mutate, idempotent: true, acceptsTarget: false,
+            args: [
+                ControlArgSpec("agent", .string,
+                               help: "claude-code | codex | gemini | all — any loaded rule id",
+                               required: true, positional: true),
+                ControlArgSpec("config-dir", .string,
+                               help: "read and write this directory instead of the agent's own (tests)"),
+            ],
+            examples: [
+                "quickterm hooks uninstall claude-code",
+                "quickterm hooks uninstall all",
+            ],
+            outputSample: nil),
+        ControlCommandSpec(
+            group: "hooks", "status",
+            summary: "Report the hook script and, per agent, whether QuickTerm's hooks are installed and at which detail tier",
+            cls: .read, idempotent: true, acceptsTarget: false,
+            args: [
+                ControlArgSpec("agent", .string, help: "only this rule id", positional: true),
+                ControlArgSpec("config-dir", .string, help: "read this directory instead of the agent's own (tests)"),
+            ],
+            examples: [
+                "quickterm hooks status",
+                "quickterm hooks status claude-code --json",
+            ],
+            outputSample: hooksSample),
+
         // MARK: - Phase 4: injecting text into a pane -
         // This is the one command in the whole control plane that can make someone else's shell run
         // arbitrary commands. Off by default, and even once it is on, confirmed every single time
@@ -1000,6 +1096,35 @@ enum ControlCommandTable {
        "source":"command","urgency":"info","evidence":"composed",
        "title":"Command finished","body":"took 42s, exit 0",
        "postedAt":"2026-09-13T09:11:40.004Z"}]}}
+    """
+
+    /// `agents list`. One row per pane that has an agent; `message` is the agent's own words and
+    /// reads `<redacted>` for a caller without the token, exactly like a notice body.
+    static let agentsSample = """
+    {"ok":true,"seq":441,"data":{"schema":"quickterm.agents/1",
+     "agents":[
+      {"pane":"t7","paneID":"C40D…","screen":1,"screenID":"3F2A9C…","workspace":2,
+       "agent":{"id":"claude-code","name":"Claude Code","state":"blocked","detail":"approval",
+                "tool":"Bash","message":"<redacted>","redacted":true,"evidence":"hook",
+                "sessionID":"6f1c…","since":"2026-09-14T09:12:03.221Z","needsUser":true}},
+      {"pane":"t2","paneID":"9C1B…","screen":1,"screenID":"3F2A9C…","workspace":2,
+       "agent":{"id":"codex","name":"Codex","state":"working","detail":"tool","tool":"shell",
+                "evidence":"hook","since":"2026-09-14T09:11:58.004Z"}}]}}
+    """
+
+    /// `hooks status`: the script first, then one line per agent.
+    static let hooksSample = """
+    {"ok":true,"seq":441,"data":{"schema":"quickterm.hooks/1",
+     "script":{"path":"/Users/danny/.config/quickterm/hooks/quickterm-agent-state.sh","exists":true,
+               "isSymlink":false,"bakedBinary":"/Applications/QuickTerm.app/Contents/SharedSupport/quickterm",
+               "bakedBinaryExists":true,"ok":true},
+     "agents":[
+      {"id":"claude-code","name":"Claude Code","configPath":"/Users/danny/.claude/settings.json",
+       "configExists":true,"installed":true,
+       "entries":["SessionStart","SessionEnd","UserPromptSubmit","PermissionRequest","Notification","Stop","StopFailure"],
+       "detail":"lifecycle"},
+      {"id":"codex","name":"Codex","configPath":"/Users/danny/.codex/hooks.json","configExists":false,
+       "installed":false,"entries":[]}]}}
     """
 
     static let sendTextSample = """

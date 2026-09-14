@@ -1,15 +1,23 @@
 import AppKit
 
 /// **The red number on the Dock icon**: how many panes, across every screen, are waiting for the
-/// user (design §3.5, "Dock badge"; contract §10.5).
+/// user and have not been picked up yet (design §3.5, "Dock badge"; contract §10.5).
 ///
 /// Panes, never notices. Two approval prompts stacked up in one pane are one pane the user has to
 /// go to, and a badge that read `2` for a single pane would send them looking for a second one.
-/// `NoticeCounts.total` already counts that way, which is why this sink is four lines long.
+/// `NoticeCounts` already counts that way, which is why this sink is four lines long.
 ///
-/// Only `.countsChanged` is acted on. Every post and every resolution that moves the number is
-/// followed by exactly one of those (the centre recomputes `counts` and only dispatches when they
-/// really moved), so reacting to `.posted` as well would set the same label twice per notice.
+/// **`interrupting`, not `total`** (plan §2.8, owner decisions Q1(b) and Q6). The badge is one of
+/// the two *interrupting* sinks: it is there to pull somebody out of another app. The moment they
+/// focus the pane and type into it, that job is done — the alarm is quieted, this number drops it,
+/// and the banner goes away with it — while the pane mark and the workspace pill keep reading
+/// `needsUser` and stay up until the agent or its process confirms. A badge that kept counting a
+/// pane the user is sitting in front of is a red number you learn to ignore.
+///
+/// Only `.countsChanged` is acted on. Every post, every resolution **and every quieting** that
+/// moves the number is followed by exactly one of those (the centre recomputes `counts` and only
+/// dispatches when they really moved), so reacting to `.posted` or `.quieted` as well would set
+/// the same label twice per notice.
 @MainActor
 final class DockBadgeSink: NoticeSink {
     let sinkID = NoticeSinkID.dockBadge
@@ -31,7 +39,7 @@ final class DockBadgeSink: NoticeSink {
     func apply(_ change: NoticeChange) {
         guard case .countsChanged(let counts) = change else { return }
         // `nil`, not "0": an empty string still draws the red pill, and `0` draws a zero in it.
-        setBadge(counts.total == 0 ? nil : String(counts.total))
+        setBadge(counts.interrupting == 0 ? nil : String(counts.interrupting))
     }
 
     func clearAll() {

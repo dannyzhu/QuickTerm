@@ -120,7 +120,18 @@ targets:
     type: bundle.unit-test
     platform: macOS
     sources:
-      - Tests
+      - path: Tests
+        excludes:
+          - "Fixtures/**"
+      # Recorded / hand-written agent hook payloads, as a **folder reference**: the same file name
+      # (PreToolUse.json) exists under three agents, and a flat resource phase would copy all
+      # three to one path and fail the build. A folder reference keeps the directory intact inside
+      # the bundle (Fixtures/agent-payloads/<agent>/<Event>.json), which is also how the test finds
+      # them without reading the source tree — the test host is ad-hoc signed and the repo lives
+      # under ~/Documents, behind a privacy prompt nobody answers on a build machine.
+      - path: Tests/Fixtures
+        type: folder
+        buildPhase: resources
       # The two READMEs ride along as test resources. testEveryKeyIsDocumented has to read them,
       # and the test host cannot: it is ad-hoc signed and the repo lives under ~/Documents, which
       # macOS gates behind a privacy prompt nobody is there to answer on a build machine. Copying

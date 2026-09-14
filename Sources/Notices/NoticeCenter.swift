@@ -63,6 +63,11 @@ final class NoticeCenter: ObservableObject {
         didSet { applySettings() }
     }
 
+    /// What "the user focused the pane and typed into it" does to a live alarm (plan §2.8).
+    /// A stored var rather than a direct read of `AgentPolicy.userActed` so a test can drive all
+    /// three answers; the app never writes it.
+    var userActedPolicy: AgentPolicy.UserActed = AgentPolicy.userActed
+
     private var sinks: [NoticeSink] = []
 
     /// The activity each pane holding a live notice had at the last pass, so `.activityChanged`
@@ -138,7 +143,7 @@ final class NoticeCenter: ObservableObject {
             screen: located.controller.windowID, workspace: located.workspace,
             urgency: request.urgency, evidence: request.evidence, title: title, body: body,
             bodySensitive: request.bodySensitive, origin: request.origin, postedAt: now,
-            resolvedAt: nil, resolution: nil)
+            quietedAt: nil, resolvedAt: nil, resolution: nil)
 
         // 4./5. Same key, different content: the old one is superseded and the new one takes its
         //       place. Otherwise this is simply a new notice.
@@ -252,19 +257,86 @@ final class NoticeCenter: ObservableObject {
 
     // MARK: The resolution rules (spec §3.5)
 
-    /// Rule 1 — the pane's agent state left `blocked`/`error`, and the poster's own lineage said
-    /// so. Phase 2's `agent-event` is the only caller; Phase 1 never fills an origin in, so this
-    /// is here to be called, not to fire.
-    @discardableResult
-    func agentStateLeftNeedsUser(pane: UUID, origin: NoticeOrigin?) -> Int {
-        resolveAll(pane: pane, .stateChanged, urgency: .needsUser, origin: origin)
+    /// What rule 1 did: how many alarms really resolved, and which live ones **refused** the
+    /// caller's origin.
+    ///
+    /// The two have to be told apart, or `agent-event` cannot distinguish "nothing was live" from
+    /// "a cross-pane attempt was refused" — and the second is the case the whole lineage rule
+    /// exists to catch, so it has to be reportable (plan §1.4).
+    struct StateChangeOutcome: Equatable {
+        var resolved: Int
+        var refused: [UUID]
+
+        init(resolved: Int = 0, refused: [UUID] = []) {
+            self.resolved = resolved
+            self.refused = refused
+        }
     }
 
-    /// Rule 2 — the user focused the pane and typed into it. **Every urgency**, as the owner
-    /// decided ("the user handles it; the marks go away"); §9 Q1 records the argument for
-    /// narrowing this by `evidence` in Phase 2, which every notice already carries.
+    /// What `agentStateLeftNeedsUser` **would** answer, changing nothing.
+    ///
+    /// `AgentRegistry` asks this *before* it stores a status, because a refusal has to be total:
+    /// a report that may not take this pane's alarm down may not take the pane's agent status
+    /// with it either (the reason is spelled out at that call site). The two filters are the same
+    /// two the real thing uses, so the forecast cannot drift from it.
+    func stateChangeForecast(pane: UUID, origin: NoticeOrigin?) -> StateChangeOutcome {
+        var out = StateChangeOutcome()
+        for notice in live where notice.pane == pane && notice.urgency == .needsUser {
+            if let stored = notice.origin, !stored.permits(origin) {
+                out.refused.append(notice.id)
+            } else {
+                out.resolved += 1
+            }
+        }
+        return out
+    }
+
+    /// Rule 1 — the pane's agent state left `blocked`/`error`, and the poster's own lineage said
+    /// so. Phase 2's `agent-event` is the only caller.
+    @discardableResult
+    func agentStateLeftNeedsUser(pane: UUID, origin: NoticeOrigin?) -> StateChangeOutcome {
+        let refused = stateChangeForecast(pane: pane, origin: origin).refused
+        let resolved = resolveAll(pane: pane, .stateChanged, urgency: .needsUser, origin: origin)
+        return StateChangeOutcome(resolved: resolved, refused: refused)
+    }
+
+    /// Rule 2 — the user focused the pane and typed into it.
+    ///
+    /// What that means is the owner's Q1 answer, held in `userActedPolicy` (plan §2.8):
+    /// - `.resolveFully` (Phase 1's behaviour): every urgency of that pane resolves;
+    /// - `.clearInterruptingSinks` (**the default**): an alarm with *hook or report* evidence is
+    ///   **quieted** — banner and Dock badge let go, the pane mark, the pill count and the strip
+    ///   stay until the agent or its process confirms. Everything else resolves, because no later
+    ///   signal will ever come for it: a notification-evidenced alarm has no hook behind it.
+    /// - `.resolveFullyAndRearm`: as `.resolveFully` here; the registry arms the re-arm timer.
     func userDidType(in pane: UUID) {
-        resolveAll(pane: pane, .userActed)
+        switch userActedPolicy {
+        case .resolveFully, .resolveFullyAndRearm:
+            resolveAll(pane: pane, .userActed)
+        case .clearInterruptingSinks:
+            quietOrResolve(pane: pane)
+        }
+    }
+
+    /// Q1(b): quiet what a hook will speak for again, resolve the rest.
+    private func quietOrResolve(pane: UUID) {
+        let now = clock()
+        var quieted = false
+        for id in live(pane: pane).map(\.id) {
+            guard let index = live.firstIndex(where: { $0.id == id }) else { continue }
+            let notice = live[index]
+            guard notice.urgency == .needsUser,
+                  notice.evidence == .hook || notice.evidence == .report else {
+                resolveAtIndex(index, .userActed)
+                continue
+            }
+            guard notice.quietedAt == nil else { continue }
+            live[index].quietedAt = now
+            quieted = true
+            dispatch(.quieted(live[index], locator.activity(pane)))
+        }
+        guard quieted, recomputeCounts() else { return }
+        dispatch(.countsChanged(counts))
     }
 
     /// The **only** road to rule 2, and it is deliberately narrow: a real `NSEvent` delivered to
@@ -329,6 +401,10 @@ final class NoticeCenter: ObservableObject {
             recordedActivity[pane] = activity
             dispatch(.activityChanged(pane: pane, activity))
         }
+        // A pane that **moved** changes no notice and resolves nothing, so nothing above would
+        // have recomputed the counts — and the pill on the workspace it left would keep the
+        // number. The pass already runs on every layout change, so this is where a move lands.
+        if recomputeCounts() { dispatch(.countsChanged(counts)) }
     }
 
     /// Panes holding at least one live notice, in post order, deduplicated. A snapshot: the walk
@@ -341,6 +417,19 @@ final class NoticeCenter: ObservableObject {
     }
 
     // MARK: Reading
+
+    /// **Where a notice is now.** The pane's current location while the pane still exists, the
+    /// pair recorded at post time when it does not (a history entry outliving its pane).
+    ///
+    /// Everything that asks "which workspace is this alarm on" comes through here — the counts,
+    /// `notices list -t 1:2`, the wire records and the event stream — so the pill, the Dock total
+    /// and what an agent reads can never give three different answers. `pane move -t t7 --to 1:3`
+    /// by the very agent arranging the work is routine, and Phase 2 makes approval notices live
+    /// for minutes (plan §1.1).
+    func location(of notice: Notice) -> NoticeLocation {
+        guard let located = locator.locate(notice.pane) else { return notice.location }
+        return NoticeLocation(screen: located.controller.windowID, workspace: located.workspace)
+    }
 
     func live(pane: UUID) -> [Notice] {
         live.filter { $0.pane == pane }
@@ -418,19 +507,24 @@ final class NoticeCenter: ObservableObject {
 
     /// Recompute `counts` and say whether they moved.
     ///
-    /// The location comes from the notice, which recorded it at post time — see the contract
-    /// §10.2. A pane dragged to another workspace while an approval is still pending therefore
-    /// keeps its count on the workspace it was posted in until the notice resolves; that is a
-    /// known, deliberate limitation of Phase 1 rather than an oversight, and moving it would mean
-    /// two readings of "where is this notice" (the record the control plane reports and the one
-    /// the pill counts) that could disagree.
+    /// The location comes from `location(of:)` — **where the pane is now** — so a pane dragged to
+    /// another workspace while an approval is pending takes its count with it. The activity pass
+    /// already runs on every `$layouts` / `$floatings` change, so the move is picked up in the
+    /// same turn (plan §1.1).
+    ///
+    /// `interrupting` counts the panes whose alarm has not been quieted; `needsUser` counts every
+    /// pane with a live alarm, quieted or not. Two numbers because two sets of sinks: the banner
+    /// and the Dock badge let go when the user starts dealing with it, while the pane mark and the
+    /// pill stay until the agent confirms (owner decision Q1(b) / Q6).
     @discardableResult
     private func recomputeCounts() -> Bool {
         var map: [UUID: NoticeLocation] = [:]
+        var interrupting = Set<UUID>()
         for notice in live where notice.urgency == .needsUser {
-            map[notice.pane] = notice.location
+            map[notice.pane] = location(of: notice)
+            if notice.quietedAt == nil { interrupting.insert(notice.pane) }
         }
-        let fresh = NoticeCounts(needsUser: map)
+        let fresh = NoticeCounts(needsUser: map, interrupting: interrupting.count)
         guard fresh != counts else { return false }
         counts = fresh
         return true

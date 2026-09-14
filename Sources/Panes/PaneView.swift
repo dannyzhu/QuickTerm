@@ -96,6 +96,24 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
         NoticeCenter.noteActivityChange()
     }
 
+    // MARK: - Agent status
+
+    /// What the AI agent running in this pane is doing, or nil when there is none (plan §2.5).
+    ///
+    /// **Written only by `AgentRegistry`.** It lives on the pane rather than in a dictionary the
+    /// views read so that the info strip can observe *its* pane: one pane's agent changing state
+    /// then redraws one frame, and a `hook-detail = "tools"` session does not re-evaluate every
+    /// mounted pane's body on every tool call.
+    private(set) var agentStatus: AgentStatus?
+
+    /// `objectWillChange` first, exactly like `focusDidChange`: the flag is not `@Published`, so
+    /// the notification is sent by hand and before the value moves.
+    func setAgentStatus(_ status: AgentStatus?) {
+        guard agentStatus != status else { return }
+        objectWillChange.send()
+        agentStatus = status
+    }
+
     /// The window's first responder is this pane or one of its descendants.
     func holdsFirstResponder(of window: NSWindow) -> Bool {
         guard let fr = window.firstResponder else { return false }
