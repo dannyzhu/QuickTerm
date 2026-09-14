@@ -1174,3 +1174,22 @@ Core → branch, tests, full suite, review, merge. Then A–E in parallel from `
 restart the app with hooks installed for whichever agent is on this machine, run the smokes above, update
 `docs/agents/*` and the READMEs with what the session taught, and only then consider a release
 (third-level version bump per `release-versioning.md`).
+
+## Owner decisions (2026-09-14)
+
+All seven questions were answered with the recommended option:
+
+- **Q1** (b): after focus + keystroke a hook-evidenced approval notice clears the banner and the Dock badge
+  and keeps the pane mark, the pill count and the strip until a hook or the process confirms. Under the
+  default `hook-detail = lifecycle` no hook fires between the approval and the end of the turn, so the mark
+  stays until `Stop`; documented as the cost of the lifecycle tier, not worked around.
+- **Q2** socket: one installer in the app; CLI, menu and auto-install share one prompt;
+  `confirmation_required` (exit 4) when nobody answers; `hooks status` stays read.
+- **Q3** `.stringList` config kind (TOML array) for `[agents] enabled` — parser, template renderer and
+  README table all learn the kind.
+- **Q4** a `hook-detail` change rewrites installed entries in place without a prompt, logged as
+  `hooks.install` by QuickTerm.
+- **Q5** the OSC fallback ships for Claude Code only; Codex's and Gemini's `[notifications]` tables stay
+  empty until recorded from a real session.
+- **Q6** interrupting sinks under (b) are the banner and the Dock badge; the pane mark and the pill count stay.
+- **Q7** the presence heartbeat runs always, every 5 s, one `proc_listchildpids` walk.
