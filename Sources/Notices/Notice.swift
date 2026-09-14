@@ -104,6 +104,31 @@ enum NoticeResolution: String, Codable {
     case agentGone = "agent-gone"
 }
 
+/// **Where macOS stands on showing QuickTerm's banners.**
+///
+/// This exists because a denial is *silent*: `UNUserNotificationCenter.add` simply calls back with
+/// an error, usernoted writes "ineligible … authorizationStatus: Denied" into the unified log, and
+/// the person who has been waiting three minutes for a banner that was never going to come is told
+/// nothing. A denial stored by some earlier launch outlives every reinstall, so "it worked on my
+/// machine" is not evidence either. The status is therefore a value the app carries, reports on the
+/// wire (`notices list` → `systemNotifications`) and says out loud once per launch.
+///
+/// The spellings are **wire API** — an agent branches on them:
+/// - `authorized`: banners will be shown (`provisional` and `ephemeral` fold in here — both of them
+///   do deliver, quietly, which is the only distinction a caller of ours could act on);
+/// - `denied`: macOS will show nothing, and asking again will not prompt;
+/// - `notDetermined`: nobody has been asked yet. The lazy request at the first banner will ask, and
+///   that path is deliberately left alone — an app that asks at launch gets denied by people who do
+///   not yet know what it wants to tell them;
+/// - `unavailable`: we could not ask at all (the test host's inert centre, or a probe that never
+///   came back). Not the same as `denied`, and must not be reported as it.
+enum SystemNotificationStatus: String, Codable {
+    case authorized
+    case denied
+    case notDetermined
+    case unavailable
+}
+
 /// Who may resolve a notice as `.stateChanged` (spec §3.3).
 ///
 /// Phase 1 never fills this in — nothing posts with an origin yet, so `permits` answers "yes" for
@@ -251,6 +276,33 @@ struct NoticeRequest {
         self.bodySensitive = bodySensitive
         self.origin = origin
     }
+}
+
+/// **A notice that is about QuickTerm itself rather than about a pane.**
+///
+/// A separate type, not a `Notice` with a made-up pane id, and the reason is the whole design of
+/// the centre: a `Notice` **is** (source, urgency, pane) — that triple is its coalescing key, it is
+/// what the Dock badge counts, what the pane mark draws and what the activity pass resolves when a
+/// pane closes. A sentinel uuid in that field would be counted, drawn and resolved by every one of
+/// those, and each would be wrong in its own way.
+///
+/// So this is deliberately small and deliberately inert: it has no pane, no screen, no workspace,
+/// no resolution rules and no sinks. It is posted, it is readable (`NoticeCenter.appNotices`, and
+/// the `appNotices` array of `notices list`), and it lasts for the launch. Exactly one thing posts
+/// one today — the system-notification sink, when macOS says it will show nothing.
+struct AppNotice: Identifiable, Equatable {
+    let id: UUID
+    let source: NoticeSource
+    let urgency: NoticeUrgency
+    let evidence: NoticeEvidence
+    /// Already sanitised by `NoticeCenter.postAppNotice`, like a `Notice.title`.
+    let title: String
+    let body: String?
+    let postedAt: Date
+
+    /// What makes two of these the same thing to say. The pane is missing from a `Notice`'s key
+    /// because there is no pane; the rest is the same triple, so a hint posted twice is one hint.
+    var key: String { "\(source.id)|\(urgency.rawValue)|\(title)" }
 }
 
 /// Where a pane is: which screen's window, and which zero-based workspace inside it.

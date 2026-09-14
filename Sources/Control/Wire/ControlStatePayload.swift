@@ -328,6 +328,26 @@ struct ControlNoticeRecord: Codable, Equatable {
     var resolution: String?
 }
 
+/// One notice that is about QuickTerm itself rather than about a pane (`AppNotice` on the app
+/// side): no pane, no screen, no workspace, no resolution. Today exactly one thing posts one —
+/// "macOS has notifications switched off for QuickTerm".
+///
+/// A separate record rather than a `ControlNoticeRecord` with empty strings in `pane` / `paneID`:
+/// an agent filtering `notices[]` by pane would otherwise have to know that `""` is a real value,
+/// and the first one that forgets follows a handle that does not exist.
+struct ControlAppNoticeRecord: Codable, Equatable {
+    var id: String
+    /// `NoticeSource.id` — `custom:system` for the notification-permission hint.
+    var source: String
+    /// `info` | `needs-user`.
+    var urgency: String
+    var evidence: String
+    /// Composed by QuickTerm, so never redacted — same rule as a pane notice's title.
+    var title: String
+    var body: String?
+    var postedAt: String
+}
+
 /// The payload for `notices list`.
 struct ControlNoticesPayload: Codable, Equatable {
     var schema = "quickterm.notices/1"
@@ -337,6 +357,21 @@ struct ControlNoticesPayload: Codable, Equatable {
     /// **How many panes** (not notices) are waiting for a human, within whatever the target
     /// scoped this call to. This is the number an agent branches on before interrupting the user.
     var panesNeedingUser: Int
+    /// **Whether macOS will show QuickTerm's banners at all**: `authorized` | `denied` |
+    /// `notDetermined` | `unavailable`.
+    ///
+    /// Always present, and deliberately not scoped by `-t`: it is a property of the app, not of a
+    /// pane. `denied` means every banner this launch posts is thrown away by macOS — the pane mark,
+    /// the workspace count and this very list still work, so an agent that reads `denied` knows the
+    /// human will not be pulled out of another app and can say so instead of assuming they were
+    /// told. `unavailable` means we could not ask; it is not a denial.
+    ///
+    /// Spelled by `SystemNotificationStatus.rawValue` on the app side, which is the only writer;
+    /// the default here is the value that is true before anybody has managed to ask.
+    var systemNotifications: String = "unavailable"
+    /// Notices about the app itself, when there are any. Absent (not `[]`) when there are none, so
+    /// a session with nothing to say encodes exactly the bytes it always did.
+    var appNotices: [ControlAppNoticeRecord]? = nil
 }
 
 /// **What one pane's agent is doing** — the record `agents list`, `state` and `get` all share.

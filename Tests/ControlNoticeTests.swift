@@ -126,6 +126,48 @@ final class ControlNoticeTests: XCTestCase {
         XCTAssertEqual(needsUser.data?["panesNeedingUser"]?.intValue, 0)
     }
 
+    /// **Whether the user could have been told at all.**
+    ///
+    /// `panesNeedingUser: 0` used to be the only answer an agent could read, and it meant two
+    /// completely different things: nobody is waiting, or macOS has QuickTerm's notifications
+    /// switched off and every banner this launch posted was thrown away. This field separates
+    /// them, and the pane-less hint beside it is what the *human* reads.
+    func testListReportsWhetherMacOSWillShowBannersAtAll() throws {
+        AppDelegate.ensureNoticeInterfaceInstalled()
+        let sink = try XCTUnwrap(center.systemSink)
+        let before = sink.authorizationStatus
+        defer { sink.noteAuthorization(before) }
+
+        // The test host's notification centre is inert, so nobody has been able to ask macOS
+        // anything — `unavailable`, which is deliberately not `denied`.
+        let quiet = try harness.run("notices.list")
+        quiet.assertOK()
+        XCTAssertEqual(quiet.data?["systemNotifications"]?.stringValue, "unavailable")
+        XCTAssertNil(quiet.data?["appNotices"],
+                     "nothing to say about the app: the field is absent, not an empty array")
+
+        sink.noteAuthorization(.denied)
+
+        let reply = try harness.run("notices.list")
+        reply.assertOK()
+        XCTAssertEqual(reply.data?["systemNotifications"]?.stringValue, "denied")
+        let app = try XCTUnwrap(reply.data?["appNotices"]?.arrayValue).compactMap(\.objectValue)
+        XCTAssertEqual(app.count, 1, "one hint per launch")
+        XCTAssertEqual(app.first?["source"]?.stringValue, "custom:system")
+        XCTAssertEqual(app.first?["urgency"]?.stringValue, "info")
+        XCTAssertEqual(app.first?["title"]?.stringValue, L("notice.system.denied"))
+        XCTAssertNil(app.first?["pane"], "it belongs to no pane, and says so by not naming one")
+        // The status is a property of the app, so narrowing the call must not narrow it away.
+        let scoped = try harness.run("notices.list", args: ["needs-user": .bool(true)])
+        XCTAssertEqual(scoped.data?["systemNotifications"]?.stringValue, "denied")
+        // And the record carries it too — the panel the user can open, plus the OSLog mirror.
+        XCTAssertTrue(
+            ControlActivityLog.shared.recent().contains {
+                $0.command == SystemNotificationSink.deniedCommand
+            },
+            "a silent failure the user is never told about is the whole bug")
+    }
+
     // MARK: Redaction
 
     /// **The body is a program's own words; the title is not.**

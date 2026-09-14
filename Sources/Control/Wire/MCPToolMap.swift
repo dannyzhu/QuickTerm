@@ -555,7 +555,8 @@ enum MCPSamples {
         title: "Claude Code · Awaiting approval · Bash", body: "<redacted>", redacted: true,
         postedAt: ControlEvent.stamp(), resolvedAt: ControlEvent.stamp(), resolution: "acknowledged")
 
-    static let notices = ControlNoticesPayload(notices: [noticeRecord], panesNeedingUser: 1)
+    static let notices = ControlNoticesPayload(notices: [noticeRecord], panesNeedingUser: 1,
+                                               systemNotifications: "authorized")
 
     static let paneInfo = ControlStatePayload.PaneInfo(
         handle: "t7", id: "C40D-…", kind: "terminal", role: "shell", screen: 1, workspace: 2,

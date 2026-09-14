@@ -1086,7 +1086,7 @@ enum ControlCommandTable {
     /// `notices list`. `panesNeedingUser` counts **panes**, not notices: two prompts in one pane
     /// are one thing for the human to go and handle.
     static let noticesSample = """
-    {"ok":true,"seq":436,"data":{"schema":"quickterm.notices/1","panesNeedingUser":1,
+    {"ok":true,"seq":436,"data":{"schema":"quickterm.notices/1","panesNeedingUser":1,"systemNotifications":"authorized",
      "notices":[
       {"id":"7C2E…","pane":"t7","paneID":"C40D…","screen":1,"screenID":"3F2A9C…","workspace":2,
        "source":"agent:claude-code","urgency":"needs-user","evidence":"hook",

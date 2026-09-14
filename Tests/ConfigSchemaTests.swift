@@ -262,6 +262,17 @@ final class ConfigSchemaTests: XCTestCase {
                 XCTAssertNil(spec.coerce("a, b"), "\(spec.id) takes an array, not a comma list")
                 XCTAssertNil(spec.coerce("[a]"), "the items of a list are quoted")
                 XCTAssertEqual(spec.outOfRange, .reject)
+            case .color:
+                // Six hexadecimal digits, `#` optional, normalised on the way in so every
+                // consumer reads one shape. Anything else is rejected outright: a colour that
+                // silently fell back to the default would leave the user certain they had set it.
+                XCTAssertEqual(spec.coerce("#7AA2F7"), .string("#7aa2f7"), "\(spec.id) normalises")
+                XCTAssertEqual(spec.coerce("7aa2f7"), .string("#7aa2f7"), "the # may be left off")
+                XCTAssertEqual(spec.coerce("  #7aa2f7  "), .string("#7aa2f7"))
+                for garbage in ["", "red", "#7aa2f", "#7aa2f77", "#gggggg", "rgb(1,2,3)", "#7aa2f7ff"] {
+                    XCTAssertNil(spec.coerce(garbage), "\(spec.id) has to reject \"\(garbage)\"")
+                }
+                XCTAssertEqual(spec.outOfRange, .reject)
             case .bool:
                 // Booleans know only that table of literals; anything outside it is rejected, which means
                 // keeping the default and leaving a diagnostic.
@@ -282,6 +293,49 @@ final class ConfigSchemaTests: XCTestCase {
         XCTAssertEqual(ConfigStore.parse("[control]\nmode = \"yolo\"\n").controlMode, "ask")
         XCTAssertEqual(ConfigStore.parse("[control]\nexpose-browser = \"yolo\"\n").controlExposeBrowser, "token")
         XCTAssertEqual(ConfigStore.parse("browser-download-dir = \"\"").browserDownloadDir, "~/Downloads")
+    }
+
+    // MARK: The agent status bar's colours
+
+    /// The three `[agents]` colour keys, end to end: the kind validates, the value is normalised,
+    /// garbage is refused **with a diagnostic** rather than quietly falling back, and each default
+    /// really is a colour the bar can draw.
+    ///
+    /// The rejection half is the point. A colour typed wrong is invisible from the user's chair —
+    /// the bar simply keeps the colour it had — so the only way they ever find out is the
+    /// diagnostic this proves gets recorded.
+    func testStatusBarColoursParseAndRejectGarbage() {
+        for id in ["agents.strip-background", "agents.strip-attention", "agents.strip-text"] {
+            let spec = ConfigSchema.keys.first { $0.id == id }
+            XCTAssertNotNil(spec, "\(id) is missing from the registry")
+            XCTAssertEqual(spec?.kind, .color, "\(id) has to be a colour, not a free string")
+            XCTAssertNotNil(spec.flatMap { ConfigKeySpec.hexColor($0.defaultValue.stringValue ?? "") },
+                            "\(id)'s own default has to be a colour this parser accepts")
+        }
+
+        let good = ConfigStore.parse("""
+        [agents]
+        strip-background = "#102030"
+        strip-attention = "FF0000"
+        strip-text = "#ABCDEF"
+        """)
+        XCTAssertEqual(good.agentsStripBackground, "#102030")
+        XCTAssertEqual(good.agentsStripAttention, "#ff0000", "the # is optional and added back")
+        XCTAssertEqual(good.agentsStripText, "#abcdef", "the case is normalised")
+        XCTAssertEqual(AgentSettings(good).stripBackground, "#102030",
+                       "the settings the registry is handed carry the colour, not the raw line")
+
+        let bad = ConfigStore.parseDetailed("""
+        [agents]
+        strip-background = "slate"
+        strip-text = "#12345"
+        """)
+        XCTAssertEqual(bad.settings.agentsStripBackground, AgentSettings.defaultStripBackground,
+                       "a colour that is not one keeps the default")
+        XCTAssertEqual(bad.settings.agentsStripText, AgentSettings.defaultStripText)
+        XCTAssertEqual(Set(bad.diagnostics.map(\.id)),
+                       ["agents.strip-background", "agents.strip-text"],
+                       "and both rejections are reported, or the user never learns why nothing changed")
     }
 
     // MARK: Sample values
@@ -305,6 +359,9 @@ final class ConfigSchemaTests: XCTestCase {
             // Deliberately not the default list: this is the value a hot-reload case writes to
             // prove the key really reached its consumer.
             return "[\"qt-\(spec.key)\"]"
+        case .color:
+            // A legal colour no default uses, so "the value really changed something" holds.
+            return "\"#123456\""
         }
     }
 }

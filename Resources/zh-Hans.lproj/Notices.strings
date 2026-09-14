@@ -37,6 +37,9 @@
 "notice.system.subtitle" = "来自 pane %1$@";
 "notice.system.subtitle-named" = "来自 pane %1$@「%2$@」";
 
+/* macOS 已经把 QuickTerm 的通知关掉了：横幅一条也弹不出来。每次启动只说一次。 */
+"notice.system.denied" = "macOS 已关闭 QuickTerm 的系统通知 — 请到「系统设置 ▸ 通知 ▸ QuickTerm」里打开";
+
 /* MARK: - agent notices (Sources/Agents/AgentRegistry.swift) */
 
 "notice.agent.approval" = "%1$@ · 等你批准 · %2$@";

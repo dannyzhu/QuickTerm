@@ -71,6 +71,28 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug b
 open "$(xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR/{print $3}')/QuickTerm.app"
 ```
 
+### 起第二个实例，不碰你自己那个
+
+三个开关可以把一次启动指到别的文件上。每个都对应一个同义的环境变量，**两个都给时以命令行参数为准**：
+
+| 参数 | 环境变量 | 指到哪 |
+|---|---|---|
+| `--config-file <path>` | `QUICKTERM_CONFIG_FILE` | `config.toml`（支持 `~`） |
+| `--state-file <path>` | `QUICKTERM_STATE_FILE` | 保存的会话（`state.json`） |
+| `--control-socket <path>` | `QUICKTERM_CONTROL_SOCKET` | 控制面 socket |
+
+```bash
+open -n -a "$(xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR/{print $3}')/QuickTerm.app" \
+  --args --config-file /tmp/qt/config.toml --state-file /tmp/qt/state.json --control-socket /tmp/qt/control.sock
+```
+
+只要涉及通知，就得用 `open -n -a … --args`，别直接跑二进制：从 shell 里 exec 起来的进程没有
+LaunchServices 注册，macOS 会把它发的每一条横幅都拒掉，测了也白测。而 `open` 只传参数、**不传环境变量**，
+这三个开关就是为此才有的。
+
+如果 macOS 把 QuickTerm 的通知关掉了，应用现在每次启动会说一次——一条 info 通知加一行活动日志——
+`quickterm notices list --json` 里也能读到 `systemNotifications: "denied"`。
+
 测试（59 个用例，以 app 为测试宿主）：
 
 ```bash
@@ -297,8 +319,9 @@ quickterm spec apply -f dev.json -t :4            # 默认 --into-empty：非空
 ### pane 里的 agent，以及背后的钩子
 
 QuickTerm 能看出一个 pane 里的 AI agent 在干什么——在想、在跑工具、**在等你**、跑完了、失败了——并且用三种方式说出来：
-画在 pane 自己上内边距里的一行状态、原本就有的红点与工作区小药丸，以及 `quickterm agents list`，好让另一个 agent
-在打断你之前先读一眼。
+横跨 pane 上内边距的一条状态条（那个 agent 一旦在等你，底色就换成 `strip-attention`）、原本就有的红点与工作区小药丸，
+以及 `quickterm agents list`，好让另一个 agent 在打断你之前先读一眼。状态条在的时候，pane 的标题也画在它上面，
+边框上的标题就让位——一个 pane 永远只有一处标题。
 
 ```sh
 quickterm hooks status                 # 装了什么、装在哪
@@ -425,7 +448,10 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # enabled = ["claude-code", "codex", "gemini"]   # 要用的规则 id 列表（内置三个；~/.config/quickterm/agents/*.toml 可覆盖或新增）
 # hook-detail = "lifecycle"                      # tools 会多装 Pre/PostToolUse（每次工具调用多一个进程），并把已装的钩子改写成同一档
 # auto-install-hooks = "ask"                     # 某个 pane 第一次跑起一个还没装钩子的 agent 时：ask = 每个 agent 问一次 | always = 直接装 | never = 不装
-# info-strip = true                              # 画在 pane 上内边距里的状态行（不会改终端尺寸；内边距小于 14 时不画）
+# info-strip = true                              # 画在 pane 上内边距里的状态条（不会改终端尺寸；内边距小于 12 时不画）
+# strip-background = "#414868"                   # 状态条底色（#rrggbb）：闲置 / 工作中 / 完成 / 未知都用它
+# strip-attention = "#f7768e"                    # 状态条在「等你动手」和「出错」时的底色（#rrggbb）
+# strip-text = "#c0caf5"                         # 状态条上文字的颜色（#rrggbb）
 
 [notifications]              # 谁在等你；红点 / 角标 / 计数统计的是「需要你动手的 pane」，不是通知条数
 # system = "inactive"         # inactive = 只在你没在看那个 pane 时弹系统通知 | never = 从不弹

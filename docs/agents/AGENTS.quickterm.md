@@ -219,5 +219,6 @@ quickterm spec apply -f /tmp/ws.json --dry-run   # look at what it would change 
 - Layout got messy: `quickterm spec dump -t <workspace> > /tmp/before.json`, and one command puts it back if your edit goes wrong.
 - Don't leave junk panes behind when you're done — but **closing a pane pops a confirmation**, so ask the user
   whether to close them rather than firing `pane close` yourself.
-- About to ask the user something? Run `quickterm notices list --needs-user` first. Another pane may already be
+- About to ask the user something? Run `quickterm notices list --needs-user` first. Its reply's `systemNotifications` field tells you whether macOS will even show the user a
+  banner (`denied` = it will not; the user has to enable QuickTerm under System Settings ▸ Notifications). Another pane may already be
   holding a prompt in front of them, and two questions at once is how a person stops answering either.

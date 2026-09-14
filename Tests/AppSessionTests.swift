@@ -77,6 +77,89 @@ final class AppSessionTests: XCTestCase {
                        + " rewrites the engine overlay)")
     }
 
+    // MARK: Launch overrides: arguments as well as variables
+
+    /// **Why arguments exist at all.** A binary exec'd from a shell is not an app as far as
+    /// `UNUserNotificationCenter` is concerned — no LaunchServices registration, so banners are
+    /// refused — which made every notification smoke test measure the wrong thing. The launch that
+    /// *is* a real one is `open -n -a QuickTerm.app --args …`, and `open` passes arguments but no
+    /// environment. So each of the three variables gained a switch with the same meaning.
+    func testLaunchOverridesReadArgumentsAndFallBackToTheEnvironment() {
+        typealias Overrides = AppDelegate.LaunchOverrides
+
+        // Arguments alone, in the form `open --args` produces: two argv entries per switch.
+        let fromArguments = Overrides(
+            arguments: ["QuickTerm", "--config-file", "/tmp/c.toml",
+                        "--state-file", "/tmp/s.json", "--control-socket", "/tmp/q.sock"],
+            environment: [:])
+        XCTAssertEqual(fromArguments.configFile, "/tmp/c.toml")
+        XCTAssertEqual(fromArguments.stateFile, "/tmp/s.json")
+        XCTAssertEqual(fromArguments.controlSocket, "/tmp/q.sock")
+
+        // `--switch=value` is typed just as often, and means the same thing.
+        XCTAssertEqual(Overrides(arguments: ["QuickTerm", "--config-file=/tmp/c.toml"],
+                                 environment: [:]).configFile,
+                       "/tmp/c.toml")
+
+        // No arguments: the variables still work, exactly as they did before.
+        let fromEnvironment = Overrides(
+            arguments: ["QuickTerm"],
+            environment: ["QUICKTERM_CONFIG_FILE": "/tmp/env.toml",
+                          "QUICKTERM_STATE_FILE": "/tmp/env.json",
+                          "QUICKTERM_CONTROL_SOCKET": "/tmp/env.sock"])
+        XCTAssertEqual(fromEnvironment.configFile, "/tmp/env.toml")
+        XCTAssertEqual(fromEnvironment.stateFile, "/tmp/env.json")
+        XCTAssertEqual(fromEnvironment.controlSocket, "/tmp/env.sock")
+
+        // Both: the argument wins. The variable is ambient — inherited from whatever shell or CI
+        // job exported it — while the argument was typed for this launch.
+        let both = Overrides(
+            arguments: ["QuickTerm", "--state-file", "/tmp/arg.json"],
+            environment: ["QUICKTERM_STATE_FILE": "/tmp/env.json",
+                          "QUICKTERM_CONFIG_FILE": "/tmp/env.toml"])
+        XCTAssertEqual(both.stateFile, "/tmp/arg.json", "the argument was typed for this launch")
+        XCTAssertEqual(both.configFile, "/tmp/env.toml",
+                       "and it overrides only the one it names")
+
+        // Nothing anywhere = nothing: the single-instance behaviour the user's own app runs with.
+        let none = Overrides(arguments: ["QuickTerm"], environment: [:])
+        XCTAssertNil(none.configFile)
+        XCTAssertNil(none.stateFile)
+        XCTAssertNil(none.controlSocket)
+        XCTAssertNil(none.configURL)
+        XCTAssertNil(none.stateURL)
+        XCTAssertNil(none.controlSocketPath)
+    }
+
+    /// The edges that would silently point a second instance at the user's real files: an empty
+    /// value, and a switch with nothing behind it at all.
+    func testAnEmptyLaunchOverrideIsNoOverride() {
+        typealias Overrides = AppDelegate.LaunchOverrides
+
+        // An empty variable has always meant "unset"; an empty argument has to mean the same, or
+        // `--config-file ""` would point the config at the current directory.
+        XCTAssertNil(Overrides(arguments: ["QuickTerm", "--config-file", ""],
+                               environment: [:]).configFile)
+        XCTAssertNil(Overrides(arguments: ["QuickTerm", "--config-file="],
+                               environment: [:]).configFile)
+        XCTAssertNil(Overrides(arguments: ["QuickTerm"],
+                               environment: ["QUICKTERM_CONFIG_FILE": ""]).configFile)
+
+        // A trailing switch with no value falls back to the variable rather than crashing on the
+        // index after the end.
+        XCTAssertEqual(Overrides(arguments: ["QuickTerm", "--state-file"],
+                                 environment: ["QUICKTERM_STATE_FILE": "/tmp/env.json"]).stateFile,
+                       "/tmp/env.json")
+
+        // `~` is expanded on the argument road too — that is the road where no shell has done it.
+        let home = Overrides(arguments: ["QuickTerm", "--control-socket", "~/q.sock"],
+                             environment: [:])
+        XCTAssertEqual(home.controlSocketPath, NSHomeDirectory() + "/q.sock")
+        XCTAssertEqual(Overrides(arguments: ["QuickTerm", "--state-file", "~/s.json"],
+                                 environment: [:]).stateURL,
+                       URL(fileURLWithPath: NSHomeDirectory() + "/s.json"))
+    }
+
     // MARK: Shared process-level services
 
     func testScreensShareOneStatsServiceAndOneKeybindingMap() throws {

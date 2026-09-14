@@ -406,19 +406,25 @@ finished download) resolve when the pane becomes active.
 `commandFinished` for long commands (info, `[notifications] command-finished = "long"`). Bell:
 ignored by default (`bell = "ignore" | "info"`).
 
-### 3.6 The info strip — in the padding, never a resize
+### 3.6 The status bar — in the padding, never a resize
 
 ```
- ◐ Claude Code · Awaiting approval · Bash: npm test                       2m 14s
+ ▌ build · web · Awaiting approval · Bash: npm test                          2m 14s ▐
 ```
 
-Drawn as an overlay inside the pane's top padding (`pane-padding`, default 14 pt), the same way the
-title badge lives on the border: the terminal surface is never resized, so a running TUI never
-reflows. If the padding is smaller than the strip needs (≈14 pt), the strip is simply not drawn —
-the pane mark and the notifications still work. State colours: `working` dim with a spinner,
-`blocked` accent red, `error` alert red, `done` green fading after a few seconds, `idle` dim. The
-message is the agent's own text, clamped through `TitleRules`. Click → focus the pane.
-`[agents] info-strip = true|false`.
+Revised 2026-09-14 after the first real session: the 10pt text-only strip overlapped the pane's
+title badge and was too faint to notice. It is now a **bar**: a filled band spanning the pane's inner
+width inside the top padding, starting one border line in (so the border and the red pane mark stay on
+top), `min(pane-padding, 16) − 2` tall — 12 pt at the default padding of 14 — with 11 pt semibold text.
+Below `pane-padding = 12` nothing is drawn (the pane mark and the notifications still work); the
+terminal surface is never resized. The line reads, left to right: the pane's own title if one is set
+(else the agent's name) · the state · the tool · the agent's message, clamped through `TitleRules`,
+with the elapsed time at the right edge. **While the bar is drawn the title badge on the border is not**
+— the bar carries the title, so the two can never overlap; the badge returns unchanged when the bar
+goes. Colours come from config: `[agents] strip-background` for idle / working / done / unknown,
+`[agents] strip-attention` for blocked and error, `[agents] strip-text` for the text (`#rrggbb`;
+defaults from the Tokyo Night palette); `done` flashes green and blends back into the base over 3 s.
+Click → focus the pane. `[agents] info-strip = true|false`.
 
 ## 4. Configuration
 

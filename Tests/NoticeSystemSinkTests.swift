@@ -367,6 +367,132 @@ final class NoticeSystemSinkTests: XCTestCase {
         XCTAssertNil(center.urgency(pane: pane), "the mark goes with it")
     }
 
+    // MARK: Authorization — "macOS is not going to show this, and nobody told you"
+    //
+    // The bug these guard: a denial stored by an earlier launch made every banner fail silently.
+    // The app logged one `error` line and carried on; the pane mark, the pill and the info strip
+    // all drew, so from inside QuickTerm everything looked fine while the user sat in another app
+    // waiting for a banner that was never coming.
+
+    /// The probe at launch: macOS says denied, the user is told **once**, and the status is
+    /// readable afterwards. Asking again changes nothing — no second hint, and no prompt loop.
+    func testADeniedProbePostsExactlyOneHintPerLaunch() throws {
+        let centre = AuthorizingNotificationCenter()
+        centre.status = .denied
+        var announced = 0
+        let sink = SystemNotificationSink(center: centre, locator: locator, route: { _ in },
+                                          settings: { [self] in settings },
+                                          announceDenied: { announced += 1 })
+
+        sink.refreshAuthorizationStatus()
+        sink.refreshAuthorizationStatus()
+        sink.refreshAuthorizationStatus()
+
+        XCTAssertEqual(announced, 1, "once per launch, however many times we ask macOS")
+        XCTAssertEqual(sink.authorizationStatus, .denied)
+    }
+
+    /// Every other answer is recorded and says nothing. `notDetermined` in particular is left
+    /// alone: the lazy `requestAuthorization` at the first banner is what asks, and telling the
+    /// user "notifications are off" before anybody has been asked would be false.
+    func testOnlyADenialIsAnnounced() throws {
+        for status in [SystemNotificationStatus.authorized, .notDetermined, .unavailable] {
+            let centre = AuthorizingNotificationCenter()
+            centre.status = status
+            var announced = 0
+            let sink = SystemNotificationSink(center: centre, locator: locator, route: { _ in },
+                                              settings: { [self] in settings },
+                                              announceDenied: { announced += 1 })
+            sink.refreshAuthorizationStatus()
+            XCTAssertEqual(sink.authorizationStatus, status)
+            XCTAssertEqual(announced, 0, "\(status.rawValue) is not a denial")
+        }
+    }
+
+    /// A sink that has asked nothing reports `unavailable`, which is **not** `denied`: an agent
+    /// that read "denied" here would tell the user their settings are wrong when in fact nobody
+    /// looked. (This is also the test host's own state — its centre is inert.)
+    func testAnUnaskedSinkReportsUnavailableRatherThanDenied() throws {
+        XCTAssertEqual(sink.authorizationStatus, .unavailable)
+    }
+
+    /// The second road in: permission revoked while the app runs. The probe ran at launch and said
+    /// `authorized`; the banner is refused anyway, and that refusal is now reported instead of
+    /// disappearing into the error log.
+    func testABannerRefusedAsNotAllowedReportsDeniedOnce() throws {
+        let centre = AuthorizingNotificationCenter()
+        centre.status = .authorized
+        centre.addError = NSError(domain: UNErrorDomain,
+                                  code: UNError.Code.notificationsNotAllowed.rawValue)
+        var announced = 0
+        let sink = SystemNotificationSink(center: centre, locator: locator, route: { _ in },
+                                          settings: { [self] in settings },
+                                          announceDenied: { announced += 1 })
+        // The fixture's sink holds `NoticeSinkID.system`, and `addSink` refuses a second sink
+        // under an id it already has — so this one has to take its place, not queue behind it.
+        center.removeSink(id: NoticeSinkID.system)
+        center.addSink(sink)
+        sink.refreshAuthorizationStatus()
+        XCTAssertEqual(sink.authorizationStatus, .authorized)
+
+        center.post(request(try addPane(active: false)))
+        center.post(request(try addPane(active: false)))
+
+        XCTAssertEqual(sink.authorizationStatus, .denied)
+        XCTAssertEqual(announced, 1, "two refused banners are still one thing to tell the user")
+    }
+
+    /// Any other `add` failure is a malformed request, not a permission state, and must not be
+    /// reported as one — a user sent to System Settings over a bad payload finds a switch that is
+    /// already on and stops believing the app.
+    func testAnUnrelatedAddFailureIsNotReportedAsADenial() throws {
+        let centre = AuthorizingNotificationCenter()
+        centre.addError = NSError(domain: "SomeOtherDomain", code: 42)
+        var announced = 0
+        let sink = SystemNotificationSink(center: centre, locator: locator, route: { _ in },
+                                          settings: { [self] in settings },
+                                          announceDenied: { announced += 1 })
+        center.removeSink(id: NoticeSinkID.system)
+        center.addSink(sink)
+
+        center.post(request(try addPane(active: false)))
+        XCTAssertEqual(centre.recorder.added.count, 1, "the banner really was attempted")
+
+        XCTAssertEqual(sink.authorizationStatus, .unavailable)
+        XCTAssertEqual(announced, 0)
+    }
+
+    /// What the default announcement actually does: a pane-less `info` notice the user can read,
+    /// and a line in the activity log (which carries the OSLog mirror with it). Called twice on
+    /// purpose — the centre's own deduplication is the second lock under the sink's latch.
+    func testTheDefaultAnnouncementPostsOneAppNoticeAndOneLogLine() throws {
+        // The shared centre, because that is where `reportDenialToTheUser` posts — swept clean on
+        // both sides so this case neither reads nor leaves anybody else's notices.
+        let shared = NoticeCenter.shared
+        shared.resetForTesting()
+        ControlActivityLog.shared.clear()
+        defer {
+            shared.resetForTesting()
+            ControlActivityLog.shared.clear()
+        }
+
+        SystemNotificationSink.reportDenialToTheUser()
+        SystemNotificationSink.reportDenialToTheUser()
+
+        XCTAssertEqual(shared.appNotices.count, 1, "the same sentence twice is one thing to say")
+        let posted = try XCTUnwrap(shared.appNotices.first)
+        XCTAssertEqual(posted.title, L("notice.system.denied"))
+        XCTAssertEqual(posted.source.id, "custom:system")
+        XCTAssertEqual(posted.urgency, .info)
+        XCTAssertTrue(shared.live.isEmpty,
+                      "it belongs to no pane, so it joins no pane's notices and raises no mark")
+        XCTAssertEqual(shared.counts, NoticeCounts(), "and it is not a number on the Dock icon")
+        XCTAssertEqual(
+            ControlActivityLog.shared.recent().filter { $0.command == SystemNotificationSink.deniedCommand }.count,
+            2,
+            "the log is a record of what happened, so both discoveries are in it")
+    }
+
     // MARK: Click routing
 
     /// What a click on a banner does: the pane is focused, and the focus **stays** there for the
@@ -408,4 +534,50 @@ final class NoticeSystemSinkTests: XCTestCase {
     // A pane that closed while its banner was on screen routes nowhere: covered by
     // `NoticeUITests.testRoutingAnUnknownPaneDoesNothing`, which drives the same road through its
     // app-side name.
+}
+
+/// A recorder that can also answer "where does macOS stand" and fail an `add`.
+///
+/// `RecordingNotificationCenter` cannot: it lives in `NoticeTestSupport` and `add` there always
+/// succeeds, and its `getNotificationSettings` is an empty body because `UNNotificationSettings`
+/// has **no public initialiser** — which is precisely why the denied path had no test until now.
+/// Composition rather than subclassing, because the recorder is `final`.
+private final class AuthorizingNotificationCenter: UserNotificationCentering {
+    let recorder = RecordingNotificationCenter()
+
+    /// What `authorizationStatus` answers — synchronously and on the caller's thread, which is
+    /// what makes "exactly one hint was posted" assertable without a run-loop spin.
+    var status: SystemNotificationStatus = .unavailable
+    /// What `add` calls back with. nil = accepted.
+    var addError: (any Error)?
+
+    var delegate: UNUserNotificationCenterDelegate? {
+        get { recorder.delegate }
+        set { recorder.delegate = newValue }
+    }
+
+    func requestAuthorization(options: UNAuthorizationOptions,
+                              completionHandler: @escaping @Sendable (Bool, (any Error)?) -> Void) {
+        recorder.requestAuthorization(options: options, completionHandler: completionHandler)
+    }
+
+    func getNotificationSettings(completionHandler: @escaping @Sendable (UNNotificationSettings) -> Void) {}
+
+    func authorizationStatus(_ completion: @escaping @Sendable (SystemNotificationStatus) -> Void) {
+        completion(status)
+    }
+
+    func add(_ request: UNNotificationRequest,
+             withCompletionHandler: (@Sendable ((any Error)?) -> Void)?) {
+        recorder.add(request, withCompletionHandler: nil)
+        withCompletionHandler?(addError)
+    }
+
+    func removeDeliveredNotifications(withIdentifiers identifiers: [String]) {
+        recorder.removeDeliveredNotifications(withIdentifiers: identifiers)
+    }
+
+    func removePendingNotificationRequests(withIdentifiers identifiers: [String]) {
+        recorder.removePendingNotificationRequests(withIdentifiers: identifiers)
+    }
 }

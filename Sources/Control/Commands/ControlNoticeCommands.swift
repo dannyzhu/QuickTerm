@@ -99,8 +99,23 @@ extension ControlCommandRunner {
             panesNeedingUser = center.needsUserCount(screen: scope.screen, workspace: scope.workspace)
         }
 
-        return (echo, ControlNoticesPayload(notices: notices.map { ctx.encoder.noticeRecord($0) },
-                                            panesNeedingUser: panesNeedingUser))
+        // Neither of the last two is scoped by `-t`: both are properties of the **app**, not of a
+        // pane. The permission state in particular is the one an agent has to be able to read
+        // whatever it asked about — "nobody is waiting" and "nobody could have been told" are
+        // different answers, and before this field the second was indistinguishable from the first.
+        let appNotices = center.appNotices.map { ctx.encoder.appNoticeRecord($0) }
+        return (echo, ControlNoticesPayload(
+            notices: notices.map { ctx.encoder.noticeRecord($0) },
+            panesNeedingUser: panesNeedingUser,
+            systemNotifications: Self.systemNotificationStatus().rawValue,
+            appNotices: appNotices.isEmpty ? nil : appNotices))
+    }
+
+    /// What macOS last told the system-notification sink. **No sink means no answer**: there is
+    /// nothing that could have asked, which is `unavailable` — never `denied`, which would tell an
+    /// agent the user has switched banners off when in fact nobody looked.
+    static func systemNotificationStatus() -> SystemNotificationStatus {
+        NoticeCenter.shared.systemSink?.authorizationStatus ?? .unavailable
     }
 
     // MARK: ack

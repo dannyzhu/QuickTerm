@@ -47,12 +47,28 @@ struct PaneChrome: ViewModifier {
     /// the line makes it unreadable.
     private var titleColor: Color { surfaceView.focused ? theme.accent : Palette.inactiveTitle }
 
+    /// Is the agent status bar drawn on this pane this frame?
+    ///
+    /// Asked here for one reason: **the bar carries the title**. It spans the whole padding band
+    /// and its first column is the pane's own name, so while it is up the badge on the border
+    /// would repeat that name two points higher and half on top of it. Same inputs as the bar's
+    /// own `body` reads, through the same function, so the two cannot come to different answers
+    /// on the same frame.
+    private var agentBarVisible: Bool {
+        PaneAgentStrip.visible(status: surfaceView.agentStatus,
+                               infoStrip: AgentRegistry.shared.settings.infoStrip,
+                               panePadding: theme.panePadding)
+    }
+
     /// The title drawn on the top border: **only an explicitly set one counts** (right-click
     /// "Change Terminal Title", or `pane set --title` from the control plane). What the shell
     /// reports over OSC does not - that changes on every command you type, and the border would
-    /// judder along with it. The master switch is the `pane-title` config key.
+    /// judder along with it. The master switch is the `pane-title` config key, and the status bar
+    /// takes precedence over the badge - the whole rule lives in `PaneTitleBadge.borderTitle`.
     private var titleOnFrame: String? {
-        theme.paneTitleEnabled ? surfaceView.customTitle : nil
+        PaneTitleBadge.borderTitle(custom: surfaceView.customTitle,
+                                   enabled: theme.paneTitleEnabled,
+                                   barVisible: agentBarVisible)
     }
 
     /// The red dot: this pane has at least one live `needsUser` notice.
@@ -89,6 +105,14 @@ struct PaneChrome: ViewModifier {
             // No more `.border`: the title has to bite a gap out of the top border the way a
             // fieldset legend does, so all four edges are drawn by hand (pixel for pixel identical
             // to the old 2px square-cornered border).
+            // The agent status bar, drawn inside the pane's own top padding (plan §2.11). A
+            // separate overlay because it takes a click, and it reads `surfaceView.agentStatus` —
+            // this pane's, nobody else's. It goes UNDER `PaneFrame`, not over it: the bar is an
+            // opaque fill starting one border line in (y = 2), while the red pane mark is a 6pt
+            // dot centred on that 2pt line (y = -2…4). Drawn later, the bar would paint over the
+            // dot's lower third and sit between the cursor and the dot's tooltip. `PaneFrame`
+            // refuses hit-testing, so drawing it on top costs the bar none of its clicks.
+            .overlay { PaneAgentStrip(surfaceView: surfaceView) }
             .overlay { PaneFrame(color: borderColor, titleColor: titleColor,
                                  title: titleOnFrame, overhang: overhang,
                                  mark: mark, markColor: theme.alert) }
@@ -98,10 +122,6 @@ struct PaneChrome: ViewModifier {
             .overlay {
                 if let mark { PaneNoticeMarkTooltip(mark: mark) }
             }
-            // The agent info strip, drawn inside the pane's own top padding (plan §2.11). Like
-            // the tooltip above it is a separate overlay because it takes a click, and unlike the
-            // mark it reads `surfaceView.agentStatus` — this pane's, nobody else's.
-            .overlay { PaneAgentStrip(surfaceView: surfaceView) }
             // pane-gap of breathing room on every side (the same in both layouts)
             .padding(theme.gapsEnabled ? theme.paneGap : 0)
             .scaleEffect(appeared ? 1 : 0.87)

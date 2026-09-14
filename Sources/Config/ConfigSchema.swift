@@ -220,6 +220,15 @@ enum ConfigKind: Equatable {
     /// the template, the READMEs and a future settings window would all have had to explain that
     /// this one string is secretly a list. An empty array is a legal value and means "none".
     case stringList
+    /// A colour the user picks, written the way every file in `Themes/` writes one: `#rrggbb`,
+    /// six hexadecimal digits. The leading `#` is optional on the way in and always there on the
+    /// way out, so a consumer only ever parses one shape.
+    ///
+    /// Its own kind rather than a `.string` because a mistyped colour is otherwise invisible: as
+    /// a string, `strip-background = "blue"` would be accepted, stored, handed to the view and
+    /// quietly fall back, leaving the user sure they had set it. As a kind it is refused at the
+    /// door with a diagnostic, exactly like a mistyped bool.
+    case color
 
     /// What this key accepts. Goes into the message a rejected line produces, and will be the
     /// input hint in the settings window.
@@ -233,6 +242,7 @@ enum ConfigKind: Equatable {
         case .string: "非空字符串"
         case .path: "路径（支持 ~）"
         case .stringList: "字符串数组，写成一行，如 [\"a\", \"b\"]"
+        case .color: "#rrggbb 形式的颜色，如 \"#414868\"（# 可省略）"
         }
     }
 
@@ -248,6 +258,7 @@ enum ConfigKind: Equatable {
         case .string: "a non-empty string"
         case .path: "a path (~ is expanded)"
         case .stringList: "a one-line array of strings, e.g. [\"a\", \"b\"]"
+        case .color: "a colour as #rrggbb, e.g. \"#414868\" (the # may be left off)"
         }
     }
 
@@ -459,6 +470,20 @@ struct ConfigKeySpec {
         return out
     }
 
+    /// `#7AA2F7` / `7aa2f7` -> `#7aa2f7`; anything else -> nil (the line is rejected and the
+    /// default kept).
+    ///
+    /// **The one colour parser on the config side**, so the schema and the view that draws the
+    /// colour cannot disagree about what is legal: the view calls this too and a value that got
+    /// past here is guaranteed to render. Digits are checked as ASCII on purpose — Swift counts
+    /// the fullwidth forms as hexadecimal digits, and `＃ＦＦ0000` is a typo, not a colour.
+    static func hexColor(_ raw: String) -> String? {
+        var text = raw.trimmingCharacters(in: .whitespaces).lowercased()
+        if text.hasPrefix("#") { text.removeFirst() }
+        guard text.count == 6, text.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
+        return "#" + text
+    }
+
     static func boolLiteral(_ raw: String) -> Bool? {
         let lowered = raw.lowercased()
         if trueLiterals.contains(lowered) { return true }
@@ -507,6 +532,10 @@ struct ConfigKeySpec {
             // would switch off every other agent without a word.
             guard let list = ConfigKeySpec.stringArray(raw) else { return nil }
             return .strings(list)
+        case .color:
+            // Normalised on the way in, so every consumer reads `#rrggbb` and nothing else.
+            guard let hex = ConfigKeySpec.hexColor(raw) else { return nil }
+            return .string(hex)
         }
     }
 }
@@ -739,9 +768,24 @@ enum ConfigSchema {
                       helpZH: "某个 pane 第一次跑起一个还没装钩子的 agent 时：ask = 每个 agent 问一次 | always = 直接装 | never = 不装",
                       helpEN: "the first time a pane runs an agent whose hooks are missing: ask once per agent, install silently, or never"),
         ConfigKeySpec(.agents, "info-strip", .bool, default: .bool(true),
-                      labelZH: "pane 状态条", labelEN: "Info strip",
-                      helpZH: "画在 pane 上内边距里的状态行（不会改终端尺寸；内边距小于 14 时不画）",
-                      helpEN: "the status line in the pane's top padding; never resizes the terminal"),
+                      labelZH: "pane 状态条", labelEN: "Status bar",
+                      helpZH: "画在 pane 上内边距里的状态条（不会改终端尺寸；内边距小于 12 时不画）",
+                      helpEN: "the status bar in the pane's top padding; never resizes the terminal"),
+        // The bar's three colours. They are settings rather than theme keys because the bar is
+        // drawn over the wallpaper on top of somebody's own colour scheme: the one pair that
+        // reads well on Tokyo Night is a default, not a law.
+        ConfigKeySpec(.agents, "strip-background", .color, default: .string("#414868"),
+                      labelZH: "状态条底色", labelEN: "Status bar background",
+                      helpZH: "状态条底色（#rrggbb）：闲置 / 工作中 / 完成 / 未知都用它",
+                      helpEN: "the bar's background (#rrggbb) for idle, working, done and unknown"),
+        ConfigKeySpec(.agents, "strip-attention", .color, default: .string("#f7768e"),
+                      labelZH: "状态条告警底色", labelEN: "Status bar attention background",
+                      helpZH: "状态条在「等你动手」和「出错」时的底色（#rrggbb）",
+                      helpEN: "the bar's background (#rrggbb) while the agent needs you, or its turn failed"),
+        ConfigKeySpec(.agents, "strip-text", .color, default: .string("#c0caf5"),
+                      labelZH: "状态条文字色", labelEN: "Status bar text",
+                      helpZH: "状态条上文字的颜色（#rrggbb）",
+                      helpEN: "the colour (#rrggbb) of the text drawn on the bar"),
 
         // MARK: [notifications]
         // The notification centre (spec §3.5). `bell` and `command-finished` are read by the

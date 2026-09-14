@@ -62,6 +62,13 @@ extension AppDelegate {
         // one the tests never execute.
         system.installAsDelegate()
 
+        // And immediately ask macOS whether it will show anything at all. A read, not a prompt
+        // (`getNotificationSettings`), so it is safe this early — the lazy `requestAuthorization`
+        // still waits for the first real banner. A denial stored by an earlier launch is otherwise
+        // invisible from inside the app: every banner is refused, usernoted logs "ineligible …
+        // authorizationStatus: Denied", and the user waits for something that was never coming.
+        system.refreshAuthorizationStatus()
+
         // The agent registry comes up right after the centre, and as an ordinary sink: that is
         // how it learns a pane closed, and it is why the centre knows nothing about it. In the
         // test host it is attached with no user rule directory — a test must never read the

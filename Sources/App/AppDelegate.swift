@@ -38,6 +38,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// strongly from here).
     private var extensionHost: AppBrowserExtensionHost?
 
+    /// **The three "point this instance somewhere else" overrides, from arguments as well as from
+    /// the environment.**
+    ///
+    /// The environment variables came first and still work. The arguments exist because of one
+    /// hard fact about macOS: a binary started straight from a shell is not, as far as
+    /// `UNUserNotificationCenter` is concerned, an app — it has no LaunchServices registration, so
+    /// banners are refused and every smoke test of the notification path measured the wrong thing.
+    /// The road that *is* a real launch is `open -n -a QuickTerm.app --args …`, and `open` passes
+    /// **arguments but not environment**. Hence the same three switches, spelled as arguments.
+    ///
+    /// **An argument wins over the variable.** The variable is ambient — inherited from whatever
+    /// shell, CI job or parent app happened to export it — while an argument was typed for this
+    /// launch. When the two disagree, the specific one is the one that was meant.
+    ///
+    /// A pure value type with no side effects on purpose: this is the one piece of launch wiring
+    /// that can be tested without launching anything.
+    struct LaunchOverrides: Equatable {
+        /// `--config-file` / `QUICKTERM_CONFIG_FILE`
+        var configFile: String?
+        /// `--state-file` / `QUICKTERM_STATE_FILE`
+        var stateFile: String?
+        /// `--control-socket` / `QUICKTERM_CONTROL_SOCKET`
+        var controlSocket: String?
+
+        /// The argument names, and the variable each falls back to.
+        static let switches: [(argument: String, variable: String, path: WritableKeyPath<LaunchOverrides, String?>)] = [
+            ("--config-file", "QUICKTERM_CONFIG_FILE", \.configFile),
+            ("--state-file", "QUICKTERM_STATE_FILE", \.stateFile),
+            ("--control-socket", "QUICKTERM_CONTROL_SOCKET", \.controlSocket),
+        ]
+
+        init(arguments: [String], environment: [String: String]) {
+            for (argument, variable, path) in Self.switches {
+                self[keyPath: path] = Self.value(of: argument, in: arguments)
+                    ?? Self.nonEmpty(environment[variable])
+            }
+        }
+
+        /// `--config-file <path>` and `--config-file=<path>` both, because both are typed. The
+        /// **last** occurrence wins, which is what every `getopt` in the world does and what a
+        /// wrapper script appending a flag to an inherited command line expects.
+        private static func value(of argument: String, in arguments: [String]) -> String? {
+            var found: String?
+            var index = arguments.startIndex
+            while index < arguments.endIndex {
+                let item = arguments[index]
+                if item == argument {
+                    // An empty value is "unset", exactly as an empty variable is: a switch with
+                    // nothing after it must not point the config at the current directory.
+                    found = nonEmpty(arguments.indices.contains(index + 1) ? arguments[index + 1] : nil) ?? found
+                    index += 2
+                    continue
+                }
+                if item.hasPrefix(argument + "=") {
+                    found = nonEmpty(String(item.dropFirst(argument.count + 1))) ?? found
+                }
+                index += 1
+            }
+            return found
+        }
+
+        private static func nonEmpty(_ raw: String?) -> String? {
+            guard let raw, !raw.isEmpty else { return nil }
+            return raw
+        }
+
+        /// `~` is expanded here, once, so that the two roads cannot expand it differently —
+        /// `open --args` is the road where a shell has *not* already done it.
+        private static func expand(_ path: String?) -> String? {
+            path.map { ($0 as NSString).expandingTildeInPath }
+        }
+
+        var configURL: URL? { Self.expand(configFile).map { URL(fileURLWithPath: $0) } }
+        var stateURL: URL? { Self.expand(stateFile).map { URL(fileURLWithPath: $0) } }
+        var controlSocketPath: String? { Self.expand(controlSocket) }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // CLI / smoke test: `open -a QuickTerm --args --open-browser [url]` opens a browser pane
         // once the app has launched.
@@ -95,22 +172,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the socket from the user's QuickTerm or overwrite their session.
         // With neither variable set this is the normal single-instance behavior (the copy under
         // Application Support).
-        let environment = ProcessInfo.processInfo.environment
+        // Arguments as well as variables, argument wins - see `LaunchOverrides`. `open -n -a
+        // QuickTerm.app --args --state-file …` is the only way to start a second instance that
+        // macOS treats as a real app (and therefore the only way to test notifications), and
+        // `open` does not pass an environment.
+        let overrides = LaunchOverrides(arguments: CommandLine.arguments,
+                                        environment: ProcessInfo.processInfo.environment)
         // The config file can be pointed elsewhere too: switches like `[control] send-text` can
         // only be read from the config, and smoke-testing a Debug build must never touch the user's
         // real ~/.config/quickterm/config.toml.
         // This has to be set before loadInitialConfig.
-        if let path = environment["QUICKTERM_CONFIG_FILE"], !path.isEmpty {
-            ConfigStore.configURLOverride = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-        }
+        if let url = overrides.configURL { ConfigStore.configURLOverride = url }
         let session = AppSession(
             screens: screens, themeManager: themeManager,
-            stateURL: environment["QUICKTERM_STATE_FILE"].flatMap {
-                $0.isEmpty ? nil : URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
-            },
-            controlSocketPath: environment["QUICKTERM_CONTROL_SOCKET"].flatMap {
-                $0.isEmpty ? nil : ($0 as NSString).expandingTildeInPath
-            })
+            stateURL: overrides.stateURL,
+            controlSocketPath: overrides.controlSocketPath)
         self.session = session
         // The notification centre, before the config is loaded: `loadInitialConfig()` pushes
         // `[notifications]` through `AppSession.applyGlobalConfig`, and a sink registered after

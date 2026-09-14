@@ -71,6 +71,31 @@ Run the built app:
 open "$(xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR/{print $3}')/QuickTerm.app"
 ```
 
+### Running a second instance without touching your own
+
+Three switches point a launch at other files. Each mirrors an environment variable of the same
+meaning, and **the argument wins** when both are given:
+
+| Argument | Variable | What it points elsewhere |
+|---|---|---|
+| `--config-file <path>` | `QUICKTERM_CONFIG_FILE` | `config.toml` (`~` expands) |
+| `--state-file <path>` | `QUICKTERM_STATE_FILE` | the saved session (`state.json`) |
+| `--control-socket <path>` | `QUICKTERM_CONTROL_SOCKET` | the control-plane socket |
+
+```bash
+open -n -a "$(xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR/{print $3}')/QuickTerm.app" \
+  --args --config-file /tmp/qt/config.toml --state-file /tmp/qt/state.json --control-socket /tmp/qt/control.sock
+```
+
+Use `open -n -a … --args` rather than running the binary directly whenever notifications are
+involved: a binary exec'd from a shell has no LaunchServices registration, so macOS refuses every
+banner it posts and the test measures nothing. `open` passes arguments but **not** environment,
+which is why the three switches exist at all.
+
+If macOS has notifications switched off for QuickTerm, the app now says so once per launch — an
+info notice plus a line in the activity panel — and `quickterm notices list --json` reports it as
+`systemNotifications: "denied"`.
+
 Tests (59 cases, run inside the app as test host):
 
 ```bash
@@ -297,8 +322,10 @@ Every boolean key in the config (here and everywhere else) accepts `true` / `1` 
 ### Agents in panes, and the hooks behind them
 
 QuickTerm can tell what the AI agent in a pane is doing — thinking, running a tool, **waiting for you**,
-finished, failed — and show it three ways: a status line in the pane's own top padding, the red dot and the
-workspace pill it already had, and `quickterm agents list` for another agent to read before it interrupts you.
+finished, failed — and show it three ways: a status bar across the pane's own top padding (its background
+turns `strip-attention` the moment that agent needs you), the red dot and the workspace pill it already had,
+and `quickterm agents list` for another agent to read before it interrupts you. While the bar is up it also
+carries the pane's title, so the badge on the border stands down and there is only ever one of them.
 
 ```sh
 quickterm hooks status                 # what is installed, and where
@@ -433,7 +460,10 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 # enabled = ["claude-code", "codex", "gemini"]   # the rule ids to use (three are bundled; ~/.config/quickterm/agents/*.toml overrides or adds)
 # hook-detail = "lifecycle"                      # tools adds Pre/PostToolUse (one process per tool call) and rewrites installed hooks to match
 # auto-install-hooks = "ask"                     # the first time a pane runs an agent whose hooks are missing: ask once per agent, install silently, or never
-# info-strip = true                              # the status line in the pane's top padding; never resizes the terminal
+# info-strip = true                              # the status bar in the pane's top padding; never resizes the terminal
+# strip-background = "#414868"                   # the bar's background (#rrggbb) for idle, working, done and unknown
+# strip-attention = "#f7768e"                    # the bar's background (#rrggbb) while the agent needs you, or its turn failed
+# strip-text = "#c0caf5"                         # the colour (#rrggbb) of the text drawn on the bar
 
 [notifications]              # who is waiting for you; the marks count PANES that need you, not notices
 # system = "inactive"         # inactive = banner only while you are not looking at that pane | never

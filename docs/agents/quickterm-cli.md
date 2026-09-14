@@ -495,7 +495,10 @@ already holding a prompt in front of the user — say so and wait, instead of ad
 
 ## Agents: what the other panes are doing
 
-`notices list` answers "is somebody being asked something right now". `agents list` answers the question one
+`notices list` answers "is somebody being asked something right now". Its reply also carries `systemNotifications` — `authorized | denied | notDetermined | unavailable`, macOS's own
+verdict on QuickTerm's banners — and, when there is one, `appNotices`: pane-less notices about the app itself, such
+as the hint that macOS has notifications switched off (System Settings ▸ Notifications ▸ QuickTerm). If
+`systemNotifications` is `denied`, no banner will ever reach the user; say so instead of waiting for one. `agents list` answers the question one
 step earlier — **is that pane busy at all, with what, and since when** — which is what you actually need
 before you type into somebody else's workspace or add a second question on top of the one already on screen.
 

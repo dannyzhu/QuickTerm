@@ -76,6 +76,13 @@
 /* The same, for a pane the user has named: %1$@ is the handle, %2$@ the name they gave it. */
 "notice.system.subtitle-named" = "Pane %1$@ · %2$@";
 
+/* The one thing the app says when macOS has notifications switched OFF for QuickTerm: every
+   banner is refused, and until this existed the only trace was one error line in the log. Posted
+   once per launch as a pane-less info notice, and mirrored into the activity log. The path is the
+   one the user has to walk in System Settings; the arrow is U+25B8, which is what macOS itself
+   draws between the steps of a settings path. */
+"notice.system.denied" = "System notifications are off for QuickTerm — turn them on in System Settings ▸ Notifications ▸ QuickTerm";
+
 /* MARK: - agent notices (Sources/Agents/AgentRegistry.swift) */
 
 /* The title of an agent's alarm. **Payload-free by construction**: the agent's name, what it is

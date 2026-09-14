@@ -885,6 +885,13 @@ to the `NoticeSettings` line; `NoticeSettings` gains `done`.
 
 ### 2.11 The info strip
 
+> **Superseded on 2026-09-14** (after the first real session — the strip overlapped the title badge and was too
+> faint): the strip is now a full-width bar, 11 pt semibold on a configurable background
+> (`[agents] strip-background` / `strip-attention` / `strip-text`), drawn from `pane-padding ≥ 12`, carrying the
+> pane's title so the border badge stands down while it is up, and drawn *under* `PaneFrame` so the red mark stays
+> whole. The spec's §3.6 is the current description; the text below is the plan as executed.
+
+
 `Sources/Splits/PaneAgentStrip.swift`, a SwiftUI view added as one more `.overlay` in `PaneChrome.body`
 (after the mark tooltip). Inputs: `surfaceView.agentStatus` (the pane is already `@ObservedObject` there),
 `theme.panePadding`, `theme.alert`, `theme.accent`, `AgentRegistry.shared.settings.infoStrip` read live

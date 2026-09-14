@@ -13,8 +13,29 @@ struct AgentSettings: Equatable {
     var hookDetail = "lifecycle"
     /// `ask` | `always` | `never`.
     var autoInstallHooks = "ask"
-    /// Draw the info strip in the pane's top padding.
+    /// Draw the status bar in the pane's top padding.
     var infoStrip = true
+    /// The status bar's background for the four quiet states (idle / working / done / unknown),
+    /// as `#rrggbb`. The schema has already validated and normalised it — nothing downstream
+    /// re-checks, it only parses.
+    var stripBackground = defaultStripBackground
+    /// The background for the two states that mean "go and look": blocked and error.
+    var stripAttention = defaultStripAttention
+    /// The colour of the text on the bar, whichever background is under it.
+    var stripText = defaultStripText
+
+    /// The defaults, spelled once. They live here rather than only in `ConfigSchema` because two
+    /// other places need the same literals — `ConfigStore.Settings`, and the view's fallback for
+    /// the (impossible, but not worth crashing over) case of an unparsable colour reaching it —
+    /// and three copies of `#414868` is exactly how a default drifts.
+    ///
+    /// Chosen off the default Tokyo Night palette: `muted` for the base so the bar reads as part
+    /// of the chrome rather than as a second terminal, `red` for attention because that is the
+    /// same colour the pane mark and the workspace pill already use for "a human is needed
+    /// here", and `bright_foreground` for the text, which clears WCAG AA on both.
+    static let defaultStripBackground = "#414868"
+    static let defaultStripAttention = "#f7768e"
+    static let defaultStripText = "#c0caf5"
 
     init() {}
 
@@ -24,6 +45,9 @@ struct AgentSettings: Equatable {
         hookDetail = settings.agentsHookDetail
         autoInstallHooks = settings.agentsAutoInstallHooks
         infoStrip = settings.agentsInfoStrip
+        stripBackground = settings.agentsStripBackground
+        stripAttention = settings.agentsStripAttention
+        stripText = settings.agentsStripText
     }
 
     /// The enabled ids, trimmed, empties dropped — what the registry filters its loaded rules by.

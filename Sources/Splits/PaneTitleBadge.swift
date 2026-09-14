@@ -10,6 +10,22 @@ import AppKit
 /// pinning down the exact string together with its placement up front can the gap be drawn
 /// accurately - and tested.
 enum PaneTitleBadge {
+    /// **Who draws this pane's title.** nil = the top border stays whole this frame.
+    ///
+    /// Two switches and one yield. `enabled` is `[appearance] pane-title`, and `custom` is the
+    /// title someone actually set (right-click "Change Terminal Title", or `pane set --title`) —
+    /// what the shell reports over OSC never gets here. The yield is the new half: while the
+    /// **agent status bar** is drawn it spans the whole padding band two points below this badge
+    /// and carries the same title as its first column, so drawing both put one title half on top
+    /// of the other — which is exactly what the 1.6.1 screenshot showed. One title per pane: the
+    /// bar wins while it is up, and the moment it is gone (no agent in the pane, `[agents]
+    /// info-strip = false`, or a `pane-padding` too small for a bar) the badge is back on the
+    /// border unchanged, truncation, gap and all.
+    static func borderTitle(custom: String?, enabled: Bool, barVisible: Bool) -> String? {
+        guard enabled, !barVisible else { return nil }
+        return custom
+    }
+
     /// At most 20 characters, counted in **grapheme clusters**: one CJK ideograph, or one emoji
     /// (even a ZWJ sequence), each count as 1. The ellipsis added when truncating **counts against
     /// those 20**, so a 30-character title is drawn as 19 characters + `…`.

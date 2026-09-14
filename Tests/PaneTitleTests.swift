@@ -286,4 +286,54 @@ final class PaneTitleTests: XCTestCase {
         XCTAssertNil(surface.customTitle, "clearing back to the shell title takes it off the border")
         XCTAssertGreaterThan(notifications, 0, "the reverse direction has to wake it too")
     }
+
+    // MARK: One title per pane
+
+    /// **The badge stands down while the agent status bar is up.**
+    ///
+    /// This is the fix for what the 1.6.1 screenshot showed: the badge rides on the border and
+    /// the bar fills the padding band two points below it, both drawing the same name, and the
+    /// two read as one smudge. The bar wins because it is the one with a background and room for
+    /// the rest of the line — but only while it is really being drawn.
+    @MainActor
+    func testTheBorderBadgeStandsDownForTheAgentStatusBar() {
+        XCTAssertEqual(PaneTitleBadge.borderTitle(custom: "build", enabled: true, barVisible: false),
+                       "build", "no bar: the badge is the only title there is")
+        XCTAssertNil(PaneTitleBadge.borderTitle(custom: "build", enabled: true, barVisible: true),
+                     "with a bar up, the border stays whole — the bar carries the name")
+        XCTAssertNil(PaneTitleBadge.borderTitle(custom: "build", enabled: false, barVisible: false),
+                     "[appearance] pane-title = false still means no title on the border")
+        XCTAssertNil(PaneTitleBadge.borderTitle(custom: nil, enabled: true, barVisible: false),
+                     "and a pane nobody named has nothing to draw")
+    }
+
+    /// The other half of the same rule: **the moment the bar is gone the badge is back, exactly
+    /// as before** — same truncation, same placement, same gap bitten out of the border.
+    ///
+    /// Driven through `PaneAgentStrip.visible`, the one function `PaneChrome` asks, so the two
+    /// cannot come to different answers about whether a bar is on screen this frame.
+    @MainActor
+    func testTheBadgeComesBackUnchangedWhenTheBarIsNotDrawn() {
+        let agent = AgentStatus(agent: "claude-code", name: "Claude Code", state: .working,
+                                detail: .thinking, since: Date(), evidence: .hook)
+        func badge(padding: Int, status: AgentStatus?, infoStrip: Bool = true)
+            -> PaneTitleBadge.Placement? {
+            let title = PaneTitleBadge.borderTitle(
+                custom: "a-very-long-pane-name",
+                enabled: true,
+                barVisible: PaneAgentStrip.visible(status: status, infoStrip: infoStrip,
+                                                   panePadding: padding))
+            return PaneTitleBadge.place(title: title, topEdgeWidth: 400, overhang: 5,
+                                        metrics: metrics)
+        }
+        // The reference: a pane with no agent in it at all, which is how the badge has always
+        // looked. Every "the bar is not drawn" case has to reproduce it to the point.
+        let reference = badge(padding: 14, status: nil)
+        XCTAssertNotNil(reference, "precondition: a named pane with no agent draws a badge")
+        XCTAssertNil(badge(padding: 14, status: agent), "an agent at the default padding draws a bar")
+        XCTAssertEqual(badge(padding: 11, status: agent), reference,
+                       "a pane too tightly padded for a bar gets its badge back, unchanged")
+        XCTAssertEqual(badge(padding: 14, status: agent, infoStrip: false), reference,
+                       "[agents] info-strip = false gets its badge back, unchanged")
+    }
 }

@@ -33,7 +33,17 @@ final class DockBadgeSink: NoticeSink {
     /// evaluated in a **nonisolated** context however isolated the initialiser is, and
     /// `NSApp.dockTile` is main-actor isolated. (`ControlPlaneSink` carries the same note.)
     init(setBadge: ((String?) -> Void)? = nil) {
-        self.setBadge = setBadge ?? { NSApp.dockTile.badgeLabel = $0 }
+        self.setBadge = setBadge ?? { label in
+            NSApp.dockTile.badgeLabel = label
+            // Logged because the badge is the one surface that cannot be asserted from inside the
+            // app: `badgeLabel` is a property the Dock reads, and whether the Dock then draws
+            // anything is the Dock's business — it is not, as far as Apple documents, tied to the
+            // notification authorization that the banners need, but the report that prompted this
+            // line had a denied app showing no badge either, and there was no way to tell "we
+            // never set it" from "we set it and the Dock ignored us". Now there is: one `log
+            // stream --predicate 'subsystem == "dev.danny.quickterm"'` answers it.
+            AppDelegate.logger.info("dock badge set to \(label ?? "<none>", privacy: .public)")
+        }
     }
 
     func apply(_ change: NoticeChange) {

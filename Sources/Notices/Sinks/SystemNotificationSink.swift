@@ -11,6 +11,10 @@ protocol UserNotificationCentering: AnyObject {
     func requestAuthorization(options: UNAuthorizationOptions,
                               completionHandler: @escaping @Sendable (Bool, (any Error)?) -> Void)
     func getNotificationSettings(completionHandler: @escaping @Sendable (UNNotificationSettings) -> Void)
+    /// **A requirement, not only an extension**: the default below is what `UNUserNotificationCenter`
+    /// uses, and a double that answers this instead is only reached through dynamic dispatch — which
+    /// a method declared solely in a protocol extension does not get.
+    func authorizationStatus(_ completion: @escaping @Sendable (SystemNotificationStatus) -> Void)
     func add(_ request: UNNotificationRequest,
              withCompletionHandler: (@Sendable ((any Error)?) -> Void)?)
     func removeDeliveredNotifications(withIdentifiers identifiers: [String])
@@ -18,6 +22,40 @@ protocol UserNotificationCentering: AnyObject {
 }
 
 extension UNUserNotificationCenter: UserNotificationCentering {}
+
+extension UserNotificationCentering {
+    /// **Where macOS stands, in QuickTerm's own vocabulary.**
+    ///
+    /// Asked rather than derived from `getNotificationSettings` at the call site for one blunt
+    /// reason: `UNNotificationSettings` has **no public initialiser**, so no test double can ever
+    /// answer that method — which is exactly why `RecordingNotificationCenter.getNotificationSettings`
+    /// is an empty body and why a denial went unnoticed for a whole release. A protocol member
+    /// carrying a plain enum can be answered by anybody, so the denied path is reachable in a test.
+    ///
+    /// This default is the real translation, so `UNUserNotificationCenter` needs no code of its own
+    /// and a double that answers nothing simply never calls back (the sink then stays at
+    /// `.unavailable`, which is the truth: we did not learn anything).
+    ///
+    /// `getNotificationSettings` **never prompts** — it is a read. That is what makes it safe to
+    /// call at launch, where `requestAuthorization` would not be.
+    func authorizationStatus(_ completion: @escaping @Sendable (SystemNotificationStatus) -> Void) {
+        getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral:
+                // `provisional` and `ephemeral` do deliver — quietly, and straight to Notification
+                // Center — so for the one question this answers ("will anything reach the user")
+                // they are the same as authorized.
+                completion(.authorized)
+            case .denied:
+                completion(.denied)
+            case .notDetermined:
+                completion(.notDetermined)
+            @unknown default:
+                completion(.unavailable)
+            }
+        }
+    }
+}
 
 /// **The one owner of macOS banners** (design §3.5 "System notification", contract §10.7).
 ///
@@ -62,16 +100,36 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
     /// yet what it wants to tell them.
     private var authorizationRequested = false
 
+    /// **Where macOS stands on our banners**, as last learned. Read by `notices list`
+    /// (`systemNotifications`) and by nothing else.
+    ///
+    /// Starts at `.unavailable` and not at `.notDetermined`, because those are different facts and
+    /// only one of them is true before `refreshAuthorizationStatus()` has answered: we have not
+    /// been able to ask. Under the test host, where the centre is inert, it stays that way.
+    private(set) var authorizationStatus: SystemNotificationStatus = .unavailable
+
+    /// The "macOS will show nothing" hint is posted **once per launch** and never again — this is
+    /// the latch that says so. A second lock sits under it in `NoticeCenter.postAppNotice`
+    /// (deduplication by title), because two roads discover the same fact: the probe at launch and
+    /// the first banner macOS refuses.
+    private var deniedHintPosted = false
+
+    /// What "tell the user macOS is not going to show this" does. Injected so a test can watch it
+    /// happen without an activity log or a shared centre.
+    private let announceDenied: () -> Void
+
     init(center: UserNotificationCentering,
          locator: NoticeLocating,
          route: @escaping (UUID) -> Void,
-         settings: (() -> NoticeSettings)? = nil) {
+         settings: (() -> NoticeSettings)? = nil,
+         announceDenied: (() -> Void)? = nil) {
         self.center = center
         self.locator = locator
         self.route = route
         // `nil` rather than a default closure, for the reason `ControlPlaneSink` spells out: a
         // default argument expression is nonisolated, and `NoticeCenter.shared` is not.
         self.settings = settings ?? { NoticeCenter.shared.settings }
+        self.announceDenied = announceDenied ?? { Self.reportDenialToTheUser() }
     }
 
     /// Become the process's `UNUserNotificationCenterDelegate`, which is what makes a click on a
@@ -80,6 +138,82 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
     /// effect, and a sink a test builds to ask "what would this have posted" must not have one.
     func installAsDelegate() {
         center.delegate = self
+    }
+
+    // MARK: Authorization
+    //
+    // **The gap this closes.** A stored denial outlives reinstalls and is invisible from inside the
+    // app: `add` calls back with an error, usernoted writes "ineligible … authorizationStatus:
+    // Denied" into the unified log, and the person who has been waiting three minutes for a banner
+    // is told nothing at all. Until now the only trace was one `error` line nobody reads.
+    //
+    // Two roads lead here and both end at `noteAuthorization`, which is where the once-per-launch
+    // rule lives: the probe below (a read, at launch) and the first banner macOS refuses.
+
+    /// Ask macOS where we stand. Safe at launch: `getNotificationSettings` is a read and **never
+    /// prompts**, unlike `requestAuthorization`, which is still left exactly where it was — at the
+    /// first banner, lazily, for a `.notDetermined` install.
+    func refreshAuthorizationStatus() {
+        center.authorizationStatus { [weak self] status in
+            Self.onMain { self?.noteAuthorization(status) }
+        }
+    }
+
+    /// Record what macOS said, and say it out loud the first time the answer is "never".
+    func noteAuthorization(_ status: SystemNotificationStatus) {
+        authorizationStatus = status
+        guard status == .denied, !deniedHintPosted else { return }
+        deniedHintPosted = true
+        announceDenied()
+    }
+
+    /// The three things a denial is worth, and the only place they are spelled: a notice the user
+    /// can read, a line in the record, and the OSLog mirror that comes with it.
+    ///
+    /// Not a `NoticeChange`, so no sink hears it: there is no pane, so there is nothing for the
+    /// banner (which is the thing that is broken), the Dock badge or the pane mark to do with it.
+    /// The activity log is written directly for the same reason — `ActivityLogSink` only ever sees
+    /// pane notices, and giving it a second entrance would be a second owner of one record.
+    @MainActor
+    static func reportDenialToTheUser() {
+        NoticeCenter.shared.postAppNotice(source: .custom("system"), urgency: .info,
+                                          evidence: .composed, title: L("notice.system.denied"))
+        ControlActivityLog.shared.record(.init(
+            at: Date(),
+            command: Self.deniedCommand,
+            // QuickTerm itself, like every notice entry: nothing outside the app discovered this.
+            peer: "QuickTerm",
+            originPane: nil,
+            target: nil,
+            outcome: ControlActivityLog.Entry.Outcome.applied,
+            // Not sensitive: this is our own sentence about our own settings, and it is exactly
+            // what somebody reading `log stream` after the fact needs to see.
+            changes: [ControlChange("notifications.system", from: nil, to: "denied")]))
+    }
+
+    /// The activity log's name for it. A constant so the test and the writer cannot drift.
+    static let deniedCommand = "notice.system-denied"
+
+    /// Whether an `add` failure means "macOS will not show this", as opposed to a malformed
+    /// request. `UNErrorDomain` / `notificationsNotAllowed` is the one code that says so.
+    private nonisolated static func meansNotAllowed(_ error: any Error) -> Bool {
+        let error = error as NSError
+        return error.domain == UNErrorDomain
+            && error.code == UNError.Code.notificationsNotAllowed.rawValue
+    }
+
+    /// Run `body` on the main actor, **now** when we are already there.
+    ///
+    /// Both callbacks above are documented by `UserNotifications` as arriving on an unspecified
+    /// thread, so the hop is required; hopping unconditionally would also make a double that
+    /// answers synchronously land a run-loop turn later, and "the sink posted exactly one hint"
+    /// would be a test that has to sleep to be true.
+    private nonisolated static func onMain(_ body: @escaping @Sendable @MainActor () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { body() }
+        } else {
+            DispatchQueue.main.async { MainActor.assumeIsolated { body() } }
+        }
     }
 
     // MARK: NoticeSink
@@ -153,11 +287,16 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
 
         presented.insert(notice.pane)
         center.add(UNNotificationRequest(identifier: Self.identifier(pane: notice.pane),
-                                         content: content, trigger: nil)) { error in
+                                         content: content, trigger: nil)) { [weak self] error in
             guard let error else { return }
             // `privacy: .public`: every one of these strings comes from the OS, carries nothing
             // of the user's, and is useless in a bug report when it reads `<private>`.
             AppDelegate.logger.error("notice banner refused: \(error.localizedDescription, privacy: .public)")
+            // The second road to the denial hint. The probe at launch normally gets there first,
+            // but a permission revoked *while* the app runs arrives only here — and a refusal the
+            // user is never told about is the whole bug.
+            guard Self.meansNotAllowed(error) else { return }
+            Self.onMain { self?.noteAuthorization(.denied) }
         }
     }
 
@@ -275,6 +414,12 @@ final class InertNotificationCenter: UserNotificationCentering {
         completionHandler(false, nil)
     }
     func getNotificationSettings(completionHandler: @escaping @Sendable (UNNotificationSettings) -> Void) {}
+    /// Spelled out rather than left to the protocol's default, which would call the empty
+    /// `getNotificationSettings` above and never call back at all. `unavailable` is the honest
+    /// answer for a centre that does nothing: we did not ask macOS anything.
+    func authorizationStatus(_ completion: @escaping @Sendable (SystemNotificationStatus) -> Void) {
+        completion(.unavailable)
+    }
     func add(_ request: UNNotificationRequest,
              withCompletionHandler: (@Sendable ((any Error)?) -> Void)?) {
         withCompletionHandler?(nil)

@@ -294,13 +294,17 @@ enum ConfigStore {
         var controlExposeBrowser: String = "token"
         var controlSendText: Bool = false
         var controlCaptureText: Bool = false
-        /// `[agents]` — agent awareness (plan §2.10). `AgentSettings` is built from these five in
-        /// `AppSession.applyGlobalConfig`; the registry never reads the config itself.
+        /// `[agents]` — agent awareness (plan §2.10). `AgentSettings` is built from these eight
+        /// in `AppSession.applyGlobalConfig`; the registry never reads the config itself.
         var agentsDetect: Bool = true
         var agentsEnabled: [String] = ["claude-code", "codex", "gemini"]
         var agentsHookDetail: String = "lifecycle"
         var agentsAutoInstallHooks: String = "ask"
         var agentsInfoStrip: Bool = true
+        /// The status bar's three colours, each already normalised to `#rrggbb` by the schema.
+        var agentsStripBackground: String = AgentSettings.defaultStripBackground
+        var agentsStripAttention: String = AgentSettings.defaultStripAttention
+        var agentsStripText: String = AgentSettings.defaultStripText
         /// `[notifications]` — the notification centre (spec §3.5). `NoticeSettings` is built
         /// from these seven in `AppSession.applyGlobalConfig`; the centre never reads the config
         /// itself.
@@ -410,6 +414,9 @@ enum ConfigBindings {
         "agents.hook-detail": { v, s in v.stringValue.map { s.agentsHookDetail = $0 } },
         "agents.auto-install-hooks": { v, s in v.stringValue.map { s.agentsAutoInstallHooks = $0 } },
         "agents.info-strip": { v, s in v.boolValue.map { s.agentsInfoStrip = $0 } },
+        "agents.strip-background": { v, s in v.stringValue.map { s.agentsStripBackground = $0 } },
+        "agents.strip-attention": { v, s in v.stringValue.map { s.agentsStripAttention = $0 } },
+        "agents.strip-text": { v, s in v.stringValue.map { s.agentsStripText = $0 } },
     ]
 }
 

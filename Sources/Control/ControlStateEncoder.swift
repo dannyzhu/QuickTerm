@@ -87,6 +87,22 @@ struct ControlStateEncoder {
             resolution: notice.resolution?.rawValue)
     }
 
+    /// One app notice as the wire sees it (`AppNotice` — no pane, no screen, no workspace).
+    ///
+    /// Nothing is redacted: the only thing that posts one composes its own sentence about
+    /// QuickTerm's own settings, so there is no program's words in it to withhold. If that ever
+    /// stops being true, this is where `exposesNoticeBody` goes, exactly as in `noticeRecord`.
+    func appNoticeRecord(_ notice: AppNotice) -> ControlAppNoticeRecord {
+        ControlAppNoticeRecord(
+            id: notice.id.uuidString,
+            source: notice.source.id,
+            urgency: notice.urgency.rawValue,
+            evidence: notice.evidence.rawValue,
+            title: notice.title,
+            body: notice.body,
+            postedAt: ControlEvent.stamp(notice.postedAt))
+    }
+
     /// One pane's agent as the wire sees it. **The only place `AgentStatus` is translated**, so
     /// `agents list`, the `agent` field of a pane record in `state` / `get` and anything added
     /// later cannot disagree about how a state or an evidence is spelled.

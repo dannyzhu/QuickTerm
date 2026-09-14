@@ -54,6 +54,11 @@ final class NoticeCenter: ObservableObject {
     /// Resolved notices, oldest first, capped at `historyCapacity`.
     private(set) var history: [Notice] = []
 
+    /// Notices about **QuickTerm itself** — no pane, no sinks, no resolution rules (see
+    /// `AppNotice`). They last for the launch. `@Published` for the same reason `live` is: a
+    /// surface that wants to draw one observes the centre rather than being pushed at.
+    @Published private(set) var appNotices: [AppNotice] = []
+
     /// Panes with at least one live `needsUser`, and where each of them is. Recomputed after
     /// every change and handed to the sinks only when it actually moved.
     private(set) var counts = NoticeCounts()
@@ -173,6 +178,33 @@ final class NoticeCenter: ObservableObject {
         if countsMoved { dispatch(.countsChanged(counts)) }
 
         return superseded.map { .superseded(old: $0.id, new: notice.id) } ?? .posted(notice.id)
+    }
+
+    // MARK: App notices
+
+    /// Post something the app has to say about itself. Returns nil when the same thing is already
+    /// on the list.
+    ///
+    /// Deduplicated by `AppNotice.key`, which is the same rule a pane notice follows minus the
+    /// pane. That is a second lock on top of whatever latch the poster keeps: "tell the user once
+    /// per launch" must hold even if two roads discover the same fact (the authorization probe at
+    /// launch, and the first banner that macOS refuses, both learn that notifications are denied).
+    ///
+    /// No sink is told. There is nothing pane-shaped for a sink to draw, and the two surfaces that
+    /// do read this — the control plane's `notices list` and the in-app activity log — are written
+    /// by the poster itself, which is also the only thing that knows whether the fact is worth a
+    /// log line at all.
+    @discardableResult
+    func postAppNotice(source: NoticeSource, urgency: NoticeUrgency, evidence: NoticeEvidence,
+                       title: String, body: String? = nil) -> AppNotice? {
+        let cleaned = Notice.sanitizedTitle(title)
+        let notice = AppNotice(
+            id: UUID(), source: source, urgency: urgency, evidence: evidence,
+            title: cleaned.isEmpty ? L("notice.title.fallback", source.id) : cleaned,
+            body: Notice.sanitizedBody(body), postedAt: clock())
+        guard !appNotices.contains(where: { $0.key == notice.key }) else { return nil }
+        appNotices.append(notice)
+        return notice
     }
 
     /// An empty title is not an option: something has to be readable on the banner and in the
@@ -544,6 +576,7 @@ final class NoticeCenter: ObservableObject {
     func resetForTesting() {
         live.removeAll()
         history.removeAll()
+        appNotices.removeAll()
         counts = NoticeCounts()
         recordedActivity.removeAll()
         activityPassScheduled = false
