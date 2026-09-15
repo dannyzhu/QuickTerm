@@ -167,6 +167,12 @@ extension ControlCommandRunner {
     /// `report` class, like `agent-event`: no `-t`, the pane is the caller's own, proven by the
     /// per-pane token the runner already checked. It clears itself after a few seconds so a test
     /// never leaves the badge stuck.
+    ///
+    /// The alarm carries **`report` evidence, not `composed`**, on purpose: that is what a real agent
+    /// hook raises, and it means a keystroke *quiets* it (the banner steps back) rather than
+    /// *resolving* it — so the Dock badge stays up for the whole window instead of vanishing the
+    /// instant you type the next command. A composed alarm cleared on the first keystroke, and the
+    /// badge only ever flashed for a second, which is exactly what made the self-test look broken.
     private func noticesTest(_ ctx: ControlContext) throws -> (ResolvedTarget?, any Encodable) {
         guard let raw = ctx.request.origin?.pane, let paneID = UUID(uuidString: raw) else {
             throw ControlErrorBody(
@@ -184,7 +190,7 @@ extension ControlCommandRunner {
 
         let posted: Bool
         switch center.post(NoticeRequest(
-            source: .custom("selftest"), pane: paneID, urgency: .needsUser, evidence: .composed,
+            source: .custom("selftest"), pane: paneID, urgency: .needsUser, evidence: .report,
             title: L("notice.selftest.title"), body: L("notice.selftest.body"), bodySensitive: false)) {
         case .posted, .superseded, .duplicate: posted = true
         case .unknownPane: posted = false
@@ -205,8 +211,8 @@ extension ControlCommandRunner {
         else if !systemOn { banner = "Banners are off: [notifications] system = \"never\"." }
         else if auth == "denied" { banner = "macOS has notifications denied for QuickTerm — turn them on in System Settings ▸ Notifications ▸ QuickTerm." }
         else if auth != "authorized" { banner = "macOS authorization is \(auth); the first banner this launch will ask." }
-        else if active { banner = "This pane is the one you're looking at, so the banner is held. Switch to another pane and it appears; the Dock badge shows regardless." }
-        else { banner = "A banner should appear now." }
+        else if active { banner = "The Dock badge is on now and stays for \(seconds)s. This pane is the one you're looking at, so the banner is held by design — switch to another app within \(seconds)s and it will appear." }
+        else { banner = "A banner should appear now, and the Dock badge stays for \(seconds)s." }
 
         return (nil, ControlNoticeTestPayload(
             posted: posted, pane: handle, paneActive: active,
