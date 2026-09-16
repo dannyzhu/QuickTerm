@@ -84,7 +84,14 @@ echo "▶ Signing (${IDENTITY})…"
 if [ "$IDENTITY" = "-" ]; then
   codesign --force --sign - "$APP"
 else
-  codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
+  # A real identity gets the hardened runtime (required for notarization) and the entitlements a
+  # terminal needs so the programs it runs can still reach the camera/mic/contacts/etc. The stable
+  # Developer ID identity is also what makes macOS notification and TCC grants survive a rebuild —
+  # an ad-hoc signature binds them to the cdhash, which changes every build.
+  ENTITLEMENTS="$ROOT/QuickTerm.entitlements"
+  [ -f "$ENTITLEMENTS" ] || fail "missing $ENTITLEMENTS (needed for a hardened-runtime signature)"
+  codesign --force --options runtime --timestamp \
+    --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP"
 fi
 codesign --verify --strict "$APP"
 
