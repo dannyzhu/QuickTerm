@@ -329,13 +329,17 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
         presented.insert(notice.pane)
         center.add(UNNotificationRequest(identifier: Self.identifier(pane: notice.pane),
                                          content: content, trigger: nil)) { [weak self] error in
+            Self.onMain {
+                if let error {
+                    DiagnosticLog.shared.note("banner", "add FAILED pane=\(who) error=\(error.localizedDescription)")
+                } else {
+                    DiagnosticLog.shared.note("banner", "add OK pane=\(who) — macOS accepted the request")
+                }
+            }
             guard let error else { return }
             // `privacy: .public`: every one of these strings comes from the OS, carries nothing
             // of the user's, and is useless in a bug report when it reads `<private>`.
             AppDelegate.logger.error("notice banner refused: \(error.localizedDescription, privacy: .public)")
-            Self.onMain {
-                DiagnosticLog.shared.note("banner", "refused pane=\(who) error=\(error.localizedDescription)")
-            }
             // The second road to the denial hint. The probe at launch normally gets there first,
             // but a permission revoked *while* the app runs arrives only here — and a refusal the
             // user is never told about is the whole bug.
@@ -372,12 +376,20 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
     private func requestAuthorizationIfNeeded() {
         guard !authorizationRequested else { return }
         authorizationRequested = true
-        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
-            if let error {
-                AppDelegate.logger.error(
-                    "notification authorization failed: \(error.localizedDescription, privacy: .public)")
-            } else {
-                AppDelegate.logger.info("notification authorization granted=\(granted, privacy: .public)")
+        // `.badge` as well as `.alert`/`.sound`: without it macOS grants no badge capability, the
+        // "Badge app icon" switch never appears in System Settings, and the Dock badge is suppressed.
+        center.requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] granted, error in
+            Self.onMain {
+                DiagnosticLog.shared.note(
+                    "auth", "requestAuthorization → granted=\(granted) error=\(error?.localizedDescription ?? "none")")
+                if let error {
+                    AppDelegate.logger.error(
+                        "notification authorization failed: \(error.localizedDescription, privacy: .public)")
+                } else {
+                    AppDelegate.logger.info("notification authorization granted=\(granted, privacy: .public)")
+                }
+                // Learn where we now stand — the cached status was read at launch, before the grant.
+                self?.refreshAuthorizationStatus()
             }
         }
     }
@@ -410,10 +422,15 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
                 // shows a banner in the foreground only if the app says so, and between the `add`
                 // and this call the user may have walked over to exactly that pane.
                 guard let pane, let activity = self.locator.activity(pane), !activity.isActive else {
-                    completionHandler([])
+                    // The pane is the one being looked at (or gone): no banner. Still deliver it to
+                    // Notification Center (`.list`) rather than dropping it entirely, so a notice is
+                    // never silently lost when the app happens to be foreground at delivery.
+                    DiagnosticLog.shared.note("banner", "willPresent → list-only (foreground, pane active/gone)")
+                    completionHandler([.list])
                     return
                 }
-                completionHandler([.banner, .sound])
+                DiagnosticLog.shared.note("banner", "willPresent → banner+sound+list (foreground, pane inactive)")
+                completionHandler([.banner, .sound, .list])
             }
         }
     }
