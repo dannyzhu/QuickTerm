@@ -231,8 +231,13 @@ final class ThemeManager: ObservableObject {
     // ghostty.conf.tpl)
 
     func overlayExtra() -> String {
+        // window-padding-balance splits the sub-row leftover evenly instead of dumping it all at
+        // the bottom (the engine's default), so a pane never shows a fat dead strip below the last
+        // row. It sits in the base overlay, ahead of the [ghostty] passthrough, so a user who wants
+        // the engine default back can still set `window-padding-balance = false` there.
         var lines: [String] = ["window-padding-x = \(panePadding)",
-                               "window-padding-y = \(panePadding)"]
+                               "window-padding-y = \(panePadding)",
+                               "window-padding-balance = true"]
         if followEngineColors {
             // theme = "ghostty": colors and opacity follow ~/.config/ghostty/config entirely.
             // pane-padding is still a QuickTerm feature and is injected as usual; the [ghostty]
