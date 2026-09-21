@@ -1507,6 +1507,13 @@ final class MainWindowController: BaseTerminalController {
     /// the content cannot be lost.
     func reflowForScreenChange() {
         guard !isClosed, let window, let screen = window.screen ?? NSScreen.main else { return }
+        // A window in native macOS fullscreen lives in its own Space and its frame belongs to
+        // AppKit. Constraining it into visibleFrame here — which runs when the Dock reappears on
+        // another Space and fires didChangeScreenParameters — shrinks it by the Dock's height;
+        // AppKit then snaps it back to the fullscreen frame, so the height visibly jumps every time
+        // you swipe back to it. Leave a native-fullscreen window untouched (the same guard
+        // SurfaceScrollView already uses).
+        if window.styleMask.contains(.fullScreen) { return }
         if isSimpleFullscreen {
             // The frame to restore on leaving fullscreen has to be constrained into the new
             // display as well, or leaving fullscreen lands off-screen.
