@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// **The agent status bar** (plan §2.11): one filled bar across the pane's own top padding saying
-/// who is in that pane, what they are doing, and for how long.
+/// **The agent status bar** (plan §2.11): one filled bar across a dedicated band reserved at the
+/// top of every terminal pane, saying who is in that pane, what they are doing, and for how long.
 ///
 /// It replaces the 1.6.1 "info strip" — a 10pt line of unbacked text — and the reason is the
 /// screenshot that produced this change: drawn as bare glyphs in the padding it landed two points
@@ -14,10 +14,11 @@ import SwiftUI
 /// The three rules of the old strip survive it unchanged, and each is a rule about what the bar
 /// may *not* do:
 ///
-/// - **It never resizes the terminal.** It is an overlay drawn into padding the engine already
-///   reserves (`[appearance] pane-padding`, default 14). Below `Metrics.minPadding` there is no
-///   room for a line without covering text, so below that the bar does not exist — the terminal is
-///   never shrunk to make room for it, and the pane mark is left to tell the story.
+/// - **It reserves its own band.** The strip is a dedicated band of `[agents] strip-height`
+///   reserved at the very top of every terminal pane, above the terminal — not borrowed from
+///   `pane-padding`, so the padding is free to be as tight as you like. The height is reserved
+///   whenever the feature is on (`strip-height > 0`), whether or not there is anything to draw in
+///   it, so the terminal never moves as an agent comes or goes; an empty band is simply left blank.
 /// - **It observes its pane and nothing else.** `PaneChrome` already holds the `PaneView` as an
 ///   `@ObservedObject`, and `agentStatus` is written only by `AgentRegistry`, which sends
 ///   `objectWillChange` before it moves. So one pane's agent churning through tool calls redraws
@@ -40,25 +41,16 @@ struct PaneAgentStrip: View {
 
     /// Geometry, in one place: a bar spanning the pane's inner width inside the padding band.
     enum Metrics {
-        /// The tallest band the bar is ever given, measured from the pane's outer top edge. A
-        /// `pane-padding` larger than this leaves the extra space to the terminal rather than
-        /// growing the bar.
-        static let maxHeight: CGFloat = 16
         /// Where the bar starts, measured from the pane's outer top edge: one point in, i.e. under
         /// the inner half of the 2pt border. `PaneFrame` is drawn on top of the bar, so that point
-        /// is never visible as bar — but it is what makes the bar 13pt tall at the default
-        /// `pane-padding` of 14, and 11pt semibold glyphs measure 12.96pt from cap top to
-        /// descender bottom. Starting at the full border width (2) left 12pt and clipped a point
-        /// of every descender at the default setting; the fit test measures exactly this.
+        /// is never visible as bar — but it keeps the border's full 2pt line and the red pane mark
+        /// that rides on it whole while the bar fills the rest of the band.
         static let topInset: CGFloat = 1
-        /// Below this much padding there is nowhere to put the bar, so nothing is drawn. Two
-        /// points lower than the old strip's 14: from 12 the bar gets 11pt, which clips a little
-        /// of the descenders (`.clipped()`) and nothing of the terminal's first row.
-        static let minPadding = 12
         /// Left and right inset **inside** the bar, so the text does not touch the border.
         static let inset: CGFloat = 6
-        /// 11pt semibold, up from 10pt regular. On a filled background this is the difference
-        /// between "there is something written there" and text you actually read in passing.
+        /// The text size when no `[agents] strip-font-size` is supplied (the live bar uses the
+        /// configured size; this is the default and what the geometry tests measure). 11pt
+        /// semibold: on a filled background, text you actually read in passing.
         static let fontSize: CGFloat = 11
         /// The glyph cycles at this rate while the agent is working.
         static let spinnerPeriod: TimeInterval = 0.25
@@ -71,36 +63,57 @@ struct PaneAgentStrip: View {
         static let elapsedOpacity: Double = 0.75
     }
 
-    /// Whether the bar is drawn at all. Three independent reasons not to draw, spelled once so
-    /// the view, `PaneChrome`'s title suppression and the tests cannot disagree.
-    static func visible(status: AgentStatus?, infoStrip: Bool, panePadding: Int) -> Bool {
-        status != nil && infoStrip && panePadding >= Metrics.minPadding
+    /// The band's reserved height for a pane, in points — 0 means no band (the feature is off,
+    /// `strip-height` is 0, or the pane is not a terminal). Reserved whenever it is > 0, whether or
+    /// not there is anything to draw, so the terminal never moves as an agent comes or goes. This
+    /// is the one function `PaneChrome` asks: for the inset it reserves, and (> 0) for the title it
+    /// stands the border badge down for, since a live band is where the pane's name is drawn.
+    static func band(infoStrip: Bool, stripHeight: Int, isTerminal: Bool) -> CGFloat {
+        (isTerminal && infoStrip && stripHeight > 0) ? CGFloat(stripHeight) : 0
+    }
+
+    /// The SwiftUI top inset a pane reserves for the band. The band is `stripHeight` tall, but the
+    /// terminal already carries `pane-padding` of its own top padding just below the band, which
+    /// the band reuses — so only the remainder is reserved as extra space. The first row then hugs
+    /// the band instead of sitting a dead `pane-padding` gap below it, and because the surface is
+    /// pushed down (not overlaid) the band can never land on the first row.
+    static func topReserve(infoStrip: Bool, stripHeight: Int, panePadding: Int,
+                           isTerminal: Bool) -> CGFloat {
+        max(0, band(infoStrip: infoStrip, stripHeight: stripHeight, isTerminal: isTerminal)
+            - CGFloat(panePadding))
+    }
+
+    /// Whether the band paints anything: only when it is reserved *and* there is a status or a set
+    /// title to show. An empty band is left blank (the reserved height stays either way), spelled
+    /// once so the view and the tests cannot disagree.
+    static func draws(status: AgentStatus?, title: String?, infoStrip: Bool,
+                      stripHeight: Int, isTerminal: Bool) -> Bool {
+        band(infoStrip: infoStrip, stripHeight: stripHeight, isTerminal: isTerminal) > 0
+            && (status != nil || (title?.contains { !$0.isWhitespace } ?? false))
     }
 
     /// The bar's own rectangle inside the pane, in the pane's coordinate space. **This is also
     /// its hit-test rectangle**: a click anywhere else on the chrome still belongs to the
     /// terminal.
     ///
-    /// It occupies the padding band from the pane's outer top edge down to
-    /// `min(panePadding, maxHeight)`, minus the border line, which owns the first two points on
-    /// every edge and is not the bar's to paint over — the red pane mark rides on that line and
-    /// has to stay visible. So: inset by the border on the left, the right and the top, and
-    /// ending exactly where the engine's padding ends.
-    static func rect(in size: CGSize, panePadding: Int) -> CGRect {
+    /// It fills the reserved band from one border line below the pane's outer top edge — so the
+    /// border, and the red pane mark that rides on it, stay whole — down to `stripHeight`, inset by
+    /// the border on the left and the right.
+    static func rect(in size: CGSize, stripHeight: Int) -> CGRect {
         let border = PaneTitleBadge.lineWidth
-        let band = min(CGFloat(panePadding), Metrics.maxHeight)
         let width = max(0, size.width - border * 2)
         return CGRect(x: border, y: Metrics.topInset, width: width,
-                      height: max(0, band - Metrics.topInset))
+                      height: max(0, CGFloat(stripHeight) - Metrics.topInset))
     }
 
-    /// The lead of the line: the pane's own title when it has one, the agent's name otherwise.
-    ///
-    /// `[appearance] pane-title` governs it, the same key that governs the badge on the border —
-    /// it is one switch meaning "show this pane's own name", and the bar is now where that name
-    /// is drawn.
-    private var leadTitle: String? {
-        theme.paneTitleEnabled ? surfaceView.customTitle : nil
+    /// The pane's own title, cleaned and clamped, or nil when it has none (or `[appearance]
+    /// pane-title = false`). It leads the line when an agent is in the pane, and it is the whole of
+    /// the band when one is not — a named but idle pane still shows its name. `[appearance]
+    /// pane-title` is the same switch that governs the badge on the border; the band is now where
+    /// that name is drawn.
+    private var displayTitle: String? {
+        guard theme.paneTitleEnabled else { return nil }
+        return TitleRules.clamp(surfaceView.customTitle ?? "", to: PaneTitleBadge.maxCharacters)
     }
 
     /// `AgentRegistry.shared.settings` read live rather than cached, the same way `PaneChrome`
@@ -110,33 +123,46 @@ struct PaneAgentStrip: View {
 
     var body: some View {
         GeometryReader { geo in
-            if let status = surfaceView.agentStatus,
-               Self.visible(status: status, infoStrip: settings.infoStrip,
-                            panePadding: theme.panePadding) {
-                let rect = Self.rect(in: geo.size, panePadding: theme.panePadding)
-                // One schedule drives both the spinner and the elapsed time, and it only exists
-                // while the bar is on screen: a pane whose agent is idle ticks once a second,
-                // a working one four times, and a pane with no agent has no timeline at all.
-                TimelineView(.periodic(from: status.since,
-                                       by: status.state == .working ? Metrics.spinnerPeriod
-                                                                    : Metrics.tickPeriod)) { context in
-                    let model = Model.make(status: status, now: context.date, title: leadTitle)
-                    Bar(model: model, size: rect.size,
-                        background: background(model.tone), text: textColor)
-                }
-                // The background already fills the rectangle, but a `Model` with no glyphs at all
-                // would not: give the bar an explicit shape so the click never falls through to
-                // the terminal underneath.
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    // The pane knows its controller (it caches the last one it was attached to,
-                    // so a mid-remount click is not dropped); the chrome deliberately has no
-                    // controller of its own to reach for.
-                    (surfaceView.controller as? MainWindowController)?.requestFocus(to: surfaceView)
-                }
-                .offset(x: rect.minX, y: rect.minY)
+            let stripHeight = settings.stripHeight
+            let title = displayTitle
+            if Self.draws(status: surfaceView.agentStatus, title: title, infoStrip: settings.infoStrip,
+                          stripHeight: stripHeight, isTerminal: surfaceView.kind == .terminal) {
+                let rect = Self.rect(in: geo.size, stripHeight: stripHeight)
+                content(title: title, rect: rect)
+                    // The background already fills the rectangle, but a `Model` with no glyphs at
+                    // all would not: give the bar an explicit shape so the click never falls
+                    // through to the terminal underneath.
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        // The pane caches the last controller it was attached to, so a mid-remount
+                        // click is not dropped; the chrome has no controller of its own to reach for.
+                        (surfaceView.controller as? MainWindowController)?.requestFocus(to: surfaceView)
+                    }
+                    .offset(x: rect.minX, y: rect.minY)
             }
         }
+    }
+
+    /// An agent status drives a `TimelineView` (the spinner turns and the clock ticks). A named
+    /// but agent-less pane is a static title — no clock, so no timeline, so no per-second redraw.
+    @ViewBuilder
+    private func content(title: String?, rect: CGRect) -> some View {
+        if let status = surfaceView.agentStatus {
+            // One schedule drives both the spinner and the elapsed time, and it only exists while
+            // the bar is on screen: an idle agent ticks once a second, a working one four times.
+            TimelineView(.periodic(from: status.since,
+                                   by: status.state == .working ? Metrics.spinnerPeriod
+                                                                : Metrics.tickPeriod)) { context in
+                bar(Model.make(status: status, now: context.date, title: title), rect: rect)
+            }
+        } else if let title {
+            bar(Model.titleOnly(title: title), rect: rect)
+        }
+    }
+
+    private func bar(_ model: Model, rect: CGRect) -> Bar {
+        Bar(model: model, size: rect.size, fontSize: CGFloat(settings.stripFontSize),
+            background: background(model.tone), text: textColor)
     }
 
     /// The bar's background for a state. `[agents] strip-background` for the four quiet states,
@@ -204,18 +230,24 @@ extension PaneAgentStrip {
     /// `PaneAgentStrip` would need a `PaneView` and a `ThemeManager`; this needs a struct.
     struct Bar: View {
         let model: Model
-        /// Exactly what `PaneAgentStrip.rect` decided. The frame is hard, and the contents are
-        /// clipped to it: the band belongs to the padding, and nothing the text does may grow it.
+        /// Exactly what `PaneAgentStrip.rect` decided. The frame is hard and the contents are
+        /// clipped to it: the band is a fixed reserved height and nothing the text does may grow it.
         let size: CGSize
+        /// The configured text size (`[agents] strip-font-size`); the geometry tests pin it.
+        var fontSize: CGFloat = Metrics.fontSize
         let background: Color
         let text: Color
 
-        private var font: Font { .system(size: Metrics.fontSize, weight: .semibold) }
+        private var font: Font { .system(size: fontSize, weight: .semibold) }
 
         var body: some View {
             HStack(spacing: 5) {
-                Text(model.glyph)
-                    .font(font)
+                // A title-only band has no glyph; an empty `Text` would still spend the HStack's
+                // spacing, so leave it out entirely.
+                if !model.glyph.isEmpty {
+                    Text(model.glyph)
+                        .font(font)
+                }
                 Text(model.text)
                     .font(font)
                     .lineLimit(1)
@@ -231,9 +263,8 @@ extension PaneAgentStrip {
             .padding(.horizontal, Metrics.inset)
             .frame(width: size.width, height: size.height, alignment: .leading)
             .background(background)
-            // The band is the engine's padding and not one point more. A line taller than the
-            // band (11pt semibold in a `pane-padding = 12` pane) is cut, never allowed to draw
-            // over the terminal's first row.
+            // A line taller than the reserved band (a large strip-font-size in a short band) is
+            // cut, never allowed to draw past the band onto the terminal below it.
             .clipped()
         }
     }
@@ -277,13 +308,16 @@ extension PaneAgentStrip.Model {
     /// `now` is passed in rather than read: the tests drive it and the view gets it from its
     /// `TimelineView`, so nothing here ever reads the clock behind anybody's back.
     ///
-    /// `title` is the pane's own name when it has one. It leads the line because the bar is now
-    /// the only place a pane's title is drawn while an agent is in it, and because on a screen of
-    /// four Claude Code panes the agent's name is the one word that distinguishes nothing.
+    /// The line reads `<title> · <agent name> · <state>`. The pane's own title leads when it has
+    /// one (on a screen of four Claude Code panes it is the one word that tells them apart), the
+    /// agent's name always follows it (so you still see *which* agent), and the state comes last. A
+    /// title that is already the agent's name is not repeated.
     static func make(status: AgentStatus, now: Date, title: String? = nil,
                      language: AppLanguage = Localization.shared.language) -> Self {
         let elapsed = max(0, now.timeIntervalSince(status.since))
-        let lead = TitleRules.clamp(title ?? "", to: PaneTitleBadge.maxCharacters) ?? status.name
+        let clamped = TitleRules.clamp(title ?? "", to: PaneTitleBadge.maxCharacters)
+        let lead = (clamped != nil && clamped != status.name)
+            ? "\(clamped!) · \(status.name)" : status.name
         var text = "\(lead) · \(status.localizedStateText)"
         // The tool **name** may be shown; the agent's own words follow a colon, and are the only
         // part of this line that could carry a command anybody typed.
@@ -297,6 +331,14 @@ extension PaneAgentStrip.Model {
             elapsed: elapsedText(elapsed, language: language),
             state: status.state,
             tone: tone(for: status, elapsed: elapsed))
+    }
+
+    /// A named pane with no agent in it: the band is just its title — no glyph, no clock, no
+    /// spinner, and the neutral background. The name goes through the same title rulebook as every
+    /// other line drawn over a terminal (no control characters, a hard ceiling).
+    static func titleOnly(title: String) -> Self {
+        Self(glyph: "", text: TitleRules.fromTypedInput(title), elapsed: "",
+             state: .idle, tone: .neutral)
     }
 
     private static func glyph(for status: AgentStatus, elapsed: TimeInterval) -> String {

@@ -13,8 +13,14 @@ struct AgentSettings: Equatable {
     var hookDetail = "lifecycle"
     /// `ask` | `always` | `never`.
     var autoInstallHooks = "ask"
-    /// Draw the status bar in the pane's top padding.
+    /// Reserve a dedicated status strip at the top of every terminal pane.
     var infoStrip = true
+    /// The strip's reserved height in pt (0 = reserve nothing, falling back to the old
+    /// draw-in-the-padding behaviour). The band is reserved whenever it is > 0, whether or not
+    /// there is anything to draw in it, so the terminal never moves when an agent comes or goes.
+    var stripHeight = defaultStripHeight
+    /// The strip's text size in pt.
+    var stripFontSize = defaultStripFontSize
     /// The status bar's background for the four quiet states (idle / working / done / unknown),
     /// as `#rrggbb`. The schema has already validated and normalised it — nothing downstream
     /// re-checks, it only parses.
@@ -36,6 +42,9 @@ struct AgentSettings: Equatable {
     static let defaultStripBackground = "#414868"
     static let defaultStripAttention = "#f7768e"
     static let defaultStripText = "#c0caf5"
+    /// 16pt matches the tallest band the old in-padding bar was ever given; 11pt is its text size.
+    static let defaultStripHeight = 16
+    static let defaultStripFontSize = 11
 
     init() {}
 
@@ -45,6 +54,8 @@ struct AgentSettings: Equatable {
         hookDetail = settings.agentsHookDetail
         autoInstallHooks = settings.agentsAutoInstallHooks
         infoStrip = settings.agentsInfoStrip
+        stripHeight = settings.agentsStripHeight
+        stripFontSize = settings.agentsStripFontSize
         stripBackground = settings.agentsStripBackground
         stripAttention = settings.agentsStripAttention
         stripText = settings.agentsStripText

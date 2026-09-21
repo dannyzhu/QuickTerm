@@ -192,7 +192,11 @@ final class ControlSizeTests: XCTestCase {
         let view = try XCTUnwrap(controller.model.layouts[1].paneList.first {
             ControlHandleRegistry.shared.handle(for: $0) == handle
         })
-        let slot = view.convert(view.bounds, to: content).insetBy(dx: -gap, dy: -gap)
+        // The pane view is inset by the status band at its top, so the slot reconstructed from its
+        // bounds is short by one inset — add it back to match the model's slot (ControlGeometry).
+        let inset = view.kind == .terminal ? terminalInset(controller) : 0
+        let raw = view.convert(view.bounds, to: content).insetBy(dx: -gap, dy: -gap)
+        let slot = CGRect(x: raw.minX, y: raw.minY - inset, width: raw.width, height: raw.height + inset)
         let points = try XCTUnwrap(ba["size"]?["points"]?.arrayValue).compactMap(\.doubleValue)
         XCTAssertEqual(points[0], Double(slot.width), accuracy: 1.5, "the slot width of b.a")
         XCTAssertEqual(points[1], Double(slot.height), accuracy: 1.5, "the slot height of b.a")
@@ -629,6 +633,16 @@ final class ControlSizeTests: XCTestCase {
     /// (`PaneChrome`'s padding), so the union of them grown by one gap is the layout area.
     /// The expectation must never route through `ControlGeometry` again — that would only compare
     /// the encoder with itself
+    /// The top inset a terminal pane reserves for the status band, in points. Terminal panes are
+    /// pushed down by this at their top (`PaneChrome`), so a slot reconstructed from a pane's own
+    /// bounds falls short by exactly this — add it back to compare against the model's slot.
+    private func terminalInset(_ controller: MainWindowController) -> CGFloat {
+        let s = AgentRegistry.shared.settings
+        return PaneAgentStrip.topReserve(infoStrip: s.infoStrip, stripHeight: s.stripHeight,
+                                         panePadding: controller.themeManager.panePadding,
+                                         isTerminal: true)
+    }
+
     private func measuredLayoutBox(file: StaticString = #filePath,
                                    line: UInt = #line) throws -> CGRect {
         let controller = try harness.controller
@@ -643,6 +657,11 @@ final class ControlSizeTests: XCTestCase {
         }
         let box = try XCTUnwrap(union, "not one pane is attached to the window, so the real layout cannot be measured",
                                 file: file, line: line)
-        return box.insetBy(dx: -gap, dy: -gap)
+        // The terminal panes are inset by the status band at their top, so the union of their
+        // bounds is short by one inset at the very top of the layout — add it back.
+        let expanded = box.insetBy(dx: -gap, dy: -gap)
+        let inset = terminalInset(controller)
+        return CGRect(x: expanded.minX, y: expanded.minY - inset,
+                      width: expanded.width, height: expanded.height + inset)
     }
 }

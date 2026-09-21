@@ -307,33 +307,34 @@ final class PaneTitleTests: XCTestCase {
                      "and a pane nobody named has nothing to draw")
     }
 
-    /// The other half of the same rule: **the moment the bar is gone the badge is back, exactly
+    /// The other half of the same rule: **the moment the band is gone the badge is back, exactly
     /// as before** — same truncation, same placement, same gap bitten out of the border.
     ///
-    /// Driven through `PaneAgentStrip.visible`, the one function `PaneChrome` asks, so the two
-    /// cannot come to different answers about whether a bar is on screen this frame.
+    /// Driven through `PaneAgentStrip.band`, the one function `PaneChrome` asks, so the two cannot
+    /// come to different answers about whether a band is reserved this frame. Once the band is
+    /// reserved it is the pane's title bar whether or not an agent is in it, so the border badge
+    /// stays down even for a named, idle pane; it returns only when there is no band at all.
     @MainActor
-    func testTheBadgeComesBackUnchangedWhenTheBarIsNotDrawn() {
-        let agent = AgentStatus(agent: "claude-code", name: "Claude Code", state: .working,
-                                detail: .thinking, since: Date(), evidence: .hook)
-        func badge(padding: Int, status: AgentStatus?, infoStrip: Bool = true)
+    func testTheBadgeComesBackUnchangedWhenTheBandIsGone() {
+        func badge(infoStrip: Bool = true, stripHeight: Int = 16, isTerminal: Bool = true)
             -> PaneTitleBadge.Placement? {
             let title = PaneTitleBadge.borderTitle(
                 custom: "a-very-long-pane-name",
                 enabled: true,
-                barVisible: PaneAgentStrip.visible(status: status, infoStrip: infoStrip,
-                                                   panePadding: padding))
+                barVisible: PaneAgentStrip.band(infoStrip: infoStrip, stripHeight: stripHeight,
+                                                isTerminal: isTerminal) > 0)
             return PaneTitleBadge.place(title: title, topEdgeWidth: 400, overhang: 5,
                                         metrics: metrics)
         }
-        // The reference: a pane with no agent in it at all, which is how the badge has always
-        // looked. Every "the bar is not drawn" case has to reproduce it to the point.
-        let reference = badge(padding: 14, status: nil)
-        XCTAssertNotNil(reference, "precondition: a named pane with no agent draws a badge")
-        XCTAssertNil(badge(padding: 14, status: agent), "an agent at the default padding draws a bar")
-        XCTAssertEqual(badge(padding: 11, status: agent), reference,
-                       "a pane too tightly padded for a bar gets its badge back, unchanged")
-        XCTAssertEqual(badge(padding: 14, status: agent, infoStrip: false), reference,
-                       "[agents] info-strip = false gets its badge back, unchanged")
+        // The reference: no band at all (the switch off), which is how the badge has always
+        // looked. Every "the band is gone" case has to reproduce it to the point.
+        let reference = badge(infoStrip: false)
+        XCTAssertNotNil(reference, "precondition: with no band, a named pane draws a badge")
+        XCTAssertNil(badge(), "a reserved band carries the name; the border stays whole")
+        XCTAssertNil(badge(stripHeight: 24), "…at any band height")
+        XCTAssertEqual(badge(stripHeight: 0), reference,
+                       "strip-height 0 is the off switch: the badge is back, unchanged")
+        XCTAssertEqual(badge(isTerminal: false), reference,
+                       "a browser pane has no band: the badge is back, unchanged")
     }
 }

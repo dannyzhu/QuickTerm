@@ -72,8 +72,8 @@ final class ConfigStoreTests: XCTestCase {
 
 extension ConfigStoreTests {
     func testPanePaddingParsing() {
-        XCTAssertEqual(ConfigStore.parse("").panePadding, 14, "14 by default (Omarchy's own terminal padding)")
-        XCTAssertEqual(ConfigStore.parse("pane-padding = 8").panePadding, 8)
+        XCTAssertEqual(ConfigStore.parse("").panePadding, 8, "8 by default (the status strip reserves its own band)")
+        XCTAssertEqual(ConfigStore.parse("pane-padding = 12").panePadding, 12)
         XCTAssertEqual(ConfigStore.parse("pane-padding = 99").panePadding, 32, "clamped to the upper bound")
         XCTAssertEqual(ConfigStore.parse("pane-padding = -1").panePadding, 0, "clamped to the lower bound")
     }
@@ -81,7 +81,7 @@ extension ConfigStoreTests {
     @MainActor
     func testPanePaddingReachesOverlay() {
         let manager = ThemeManager()
-        XCTAssertTrue(manager.overlayExtra().contains("window-padding-x = 14"), "14 by default")
+        XCTAssertTrue(manager.overlayExtra().contains("window-padding-x = 8"), "8 by default")
         manager.updateFromConfig(passthrough: "", followEngine: false, panePadding: 6)
         XCTAssertTrue(manager.overlayExtra().contains("window-padding-x = 6"))
         XCTAssertTrue(manager.overlayExtra().contains("window-padding-y = 6"))

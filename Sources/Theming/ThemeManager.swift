@@ -17,8 +17,8 @@ final class ThemeManager: ObservableObject {
     /// The config's [ghostty] section (layer 4 of the chain; appended at the very end of the
     /// overlay, so it is the final override).
     private(set) var ghosttyPassthrough = ""
-    /// Terminal padding inside a pane (config `pane-padding`; spec v6 default is 14).
-    private(set) var panePadding = 14
+    /// Terminal padding inside a pane (config `pane-padding`; default 8).
+    private(set) var panePadding = 8
     /// Pane background opacity (config `pane-opacity`, default 0.92 = the inactive baseline);
     /// injected into the engine as background-opacity.
     @Published private(set) var paneOpacity = 0.92
@@ -60,7 +60,7 @@ final class ThemeManager: ObservableObject {
         return min((activeOpacity - paneOpacity) / (1 - paneOpacity), 1)
     }
 
-    func updateFromConfig(passthrough: String, followEngine: Bool, panePadding: Int = 14,
+    func updateFromConfig(passthrough: String, followEngine: Bool, panePadding: Int = 8,
                           paneOpacity: Double = 0.92, inactiveBlur: Double = 2.5,
                           activeOpacity: Double = 0.98, barOpacity: Double = 0.75,
                           dividerOpacity: Double = 0.2, paneGap: Int = 5,
@@ -231,13 +231,16 @@ final class ThemeManager: ObservableObject {
     // ghostty.conf.tpl)
 
     func overlayExtra() -> String {
-        // window-padding-balance splits the sub-row leftover evenly instead of dumping it all at
-        // the bottom (the engine's default), so a pane never shows a fat dead strip below the last
-        // row. It sits in the base overlay, ahead of the [ghostty] passthrough, so a user who wants
-        // the engine default back can still set `window-padding-balance = false` there.
+        // Symmetric terminal padding. The agent status strip does **not** live here: it is reserved
+        // as a SwiftUI inset above the surface (`PaneChrome`), so it never depends on the engine
+        // applying an asymmetric padding and can never overlap the first row.
+        //
+        // We also deliberately do **not** set `window-padding-balance`: it does not split the
+        // sub-row leftover evenly. It caps the top padding at roughly the horizontal padding and
+        // shoves the rest to the bottom (the engine's own comment: "lots of padding at the top
+        // looks bad"), which makes the bottom heavy. Off, only the < 1-cell remainder lands there.
         var lines: [String] = ["window-padding-x = \(panePadding)",
-                               "window-padding-y = \(panePadding)",
-                               "window-padding-balance = true"]
+                               "window-padding-y = \(panePadding)"]
         if followEngineColors {
             // theme = "ghostty": colors and opacity follow ~/.config/ghostty/config entirely.
             // pane-padding is still a QuickTerm feature and is injected as usual; the [ghostty]

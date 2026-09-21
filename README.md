@@ -431,7 +431,7 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 # bar-opacity = 0.75     # 0–1, top status bar background
 # divider-opacity = 0.2  # 0–1, dwindle split divider line (0 hides it)
 # inactive-blur = 2.5    # > 0 enables frosted inactive panes; 0 turns it off
-# pane-padding = 14      # terminal padding in pt, 0–32 (Omarchy's value is 14)
+# pane-padding = 8       # terminal padding in pt, 0–32 (default 8)
 # pane-gap = 5           # 0–20 pt around each pane (neighbours end up 2×gap apart)
 # pane-title = true      # draw the title into the pane's top border (only titles you set; 20 chars max)
 # workspace-title = true # named workspaces show the name instead of the number (12 chars max)
@@ -460,7 +460,9 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 # enabled = ["claude-code", "codex", "gemini"]   # the rule ids to use (three are bundled; ~/.config/quickterm/agents/*.toml overrides or adds)
 # hook-detail = "lifecycle"                      # tools adds Pre/PostToolUse (one process per tool call) and rewrites installed hooks to match
 # auto-install-hooks = "ask"                     # the first time a pane runs an agent whose hooks are missing: ask once per agent, install silently, or never
-# info-strip = true                              # the status bar in the pane's top padding; never resizes the terminal
+# info-strip = true                              # a dedicated status strip reserved at the top of every terminal pane (drawn only when there is an agent or a set title)
+# strip-height = 16                              # status strip height in pt, 0–40 (0 = reserve nothing)
+# strip-font-size = 11                           # status strip text size in pt, 8–24
 # strip-background = "#414868"                   # the bar's background (#rrggbb) for idle, working, done and unknown
 # strip-attention = "#f7768e"                    # the bar's background (#rrggbb) while the agent needs you, or its turn failed
 # strip-text = "#c0caf5"                         # the colour (#rrggbb) of the text drawn on the bar

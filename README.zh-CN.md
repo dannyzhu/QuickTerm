@@ -419,7 +419,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # bar-opacity = 0.75     # 顶部状态条背景透明度（0–1）
 # divider-opacity = 0.2  # dwindle 分隔细线不透明度（0–1；0 隐藏，1 实线）
 # inactive-blur = 2.5    # 非激活 pane 磨砂背景（> 0 开启；0 关闭）
-# pane-padding = 14      # pane 内终端四边留白（pt，0–32；Omarchy 官方值 14）
+# pane-padding = 8       # pane 内终端四边留白（pt，0–32；默认 8）
 # pane-gap = 5           # 每 pane 每边留白 pt（0–20；相邻间距 = 2×gap；scrolling / dwindle 一致）
 # pane-title = true      # 把标题画在 pane 上边框上（只显示手动设过的标题，最长 20 字）
 # workspace-title = true # 起过名的工作区胶囊显示名字而不是序号（最长 12 字）
@@ -448,7 +448,9 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # enabled = ["claude-code", "codex", "gemini"]   # 要用的规则 id 列表（内置三个；~/.config/quickterm/agents/*.toml 可覆盖或新增）
 # hook-detail = "lifecycle"                      # tools 会多装 Pre/PostToolUse（每次工具调用多一个进程），并把已装的钩子改写成同一档
 # auto-install-hooks = "ask"                     # 某个 pane 第一次跑起一个还没装钩子的 agent 时：ask = 每个 agent 问一次 | always = 直接装 | never = 不装
-# info-strip = true                              # 画在 pane 上内边距里的状态条（不会改终端尺寸；内边距小于 12 时不画）
+# info-strip = true                              # 每个终端 pane 顶部常驻一条独立状态带（有 agent 或设过标题时才画内容；与内边距无关）
+# strip-height = 16                              # 状态带高度（pt，0–40；0 = 不预留）
+# strip-font-size = 11                           # 状态带文字大小（pt，8–24）
 # strip-background = "#414868"                   # 状态条底色（#rrggbb）：闲置 / 工作中 / 完成 / 未知都用它
 # strip-attention = "#f7768e"                    # 状态条在「等你动手」和「出错」时的底色（#rrggbb）
 # strip-text = "#c0caf5"                         # 状态条上文字的颜色（#rrggbb）

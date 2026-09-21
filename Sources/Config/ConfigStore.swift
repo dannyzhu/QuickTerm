@@ -236,8 +236,9 @@ enum ConfigStore {
         var themeName: String?
         var workspaces: Int = 5
         /// Terminal padding inside a pane, in pt, injected as the engine's window-padding-x/y.
-        /// The spec v6 default is 14, which is Omarchy's own terminal padding.
-        var panePadding: Int = 14
+        /// Default 8: tight text breathing room. It no longer has to leave room for the agent
+        /// status strip — the strip reserves its own dedicated band (`[agents] strip-height`).
+        var panePadding: Int = 8
         /// Columns visible per screen in the scrolling layout. nil = unset, in which case the
         /// menu selection / UserDefaults decides, defaulting to 2.
         var visibleColumns: Int?
@@ -301,6 +302,9 @@ enum ConfigStore {
         var agentsHookDetail: String = "lifecycle"
         var agentsAutoInstallHooks: String = "ask"
         var agentsInfoStrip: Bool = true
+        /// The dedicated status strip's reserved height (pt) and text size (pt).
+        var agentsStripHeight: Int = AgentSettings.defaultStripHeight
+        var agentsStripFontSize: Int = AgentSettings.defaultStripFontSize
         /// The status bar's three colours, each already normalised to `#rrggbb` by the schema.
         var agentsStripBackground: String = AgentSettings.defaultStripBackground
         var agentsStripAttention: String = AgentSettings.defaultStripAttention
@@ -417,6 +421,8 @@ enum ConfigBindings {
         "agents.hook-detail": { v, s in v.stringValue.map { s.agentsHookDetail = $0 } },
         "agents.auto-install-hooks": { v, s in v.stringValue.map { s.agentsAutoInstallHooks = $0 } },
         "agents.info-strip": { v, s in v.boolValue.map { s.agentsInfoStrip = $0 } },
+        "agents.strip-height": { v, s in v.intValue.map { s.agentsStripHeight = $0 } },
+        "agents.strip-font-size": { v, s in v.intValue.map { s.agentsStripFontSize = $0 } },
         "agents.strip-background": { v, s in v.stringValue.map { s.agentsStripBackground = $0 } },
         "agents.strip-attention": { v, s in v.stringValue.map { s.agentsStripAttention = $0 } },
         "agents.strip-text": { v, s in v.stringValue.map { s.agentsStripText = $0 } },

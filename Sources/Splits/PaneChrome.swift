@@ -47,17 +47,37 @@ struct PaneChrome: ViewModifier {
     /// the line makes it unreadable.
     private var titleColor: Color { surfaceView.focused ? theme.accent : Palette.inactiveTitle }
 
-    /// Is the agent status bar drawn on this pane this frame?
-    ///
-    /// Asked here for one reason: **the bar carries the title**. It spans the whole padding band
-    /// and its first column is the pane's own name, so while it is up the badge on the border
-    /// would repeat that name two points higher and half on top of it. Same inputs as the bar's
-    /// own `body` reads, through the same function, so the two cannot come to different answers
-    /// on the same frame.
-    private var agentBarVisible: Bool {
-        PaneAgentStrip.visible(status: surfaceView.agentStatus,
-                               infoStrip: AgentRegistry.shared.settings.infoStrip,
-                               panePadding: theme.panePadding)
+    private var isTerminal: Bool { surfaceView.kind == .terminal }
+
+    /// The band's drawn height for this pane, in points (0 = no band). > 0 is the reason **the
+    /// border badge stands down**: a live band spans the whole width and its first column is the
+    /// pane's own name, so a badge on the border would repeat it.
+    private var bandHeight: CGFloat {
+        let s = AgentRegistry.shared.settings
+        return PaneAgentStrip.band(infoStrip: s.infoStrip, stripHeight: s.stripHeight,
+                                   isTerminal: isTerminal)
+    }
+
+    /// The top inset the terminal surface is pushed down by. Pushing it down (not overlaying) means
+    /// the band sits *above* the surface and can never land on the first row, whatever the engine
+    /// does. It is the band height minus the terminal's own top padding, which the band reuses, so
+    /// the first row hugs the band instead of a dead gap below it.
+    private var bandTopInset: CGFloat {
+        let s = AgentRegistry.shared.settings
+        return PaneAgentStrip.topReserve(infoStrip: s.infoStrip, stripHeight: s.stripHeight,
+                                         panePadding: theme.panePadding, isTerminal: isTerminal)
+    }
+
+    /// What the strip reserved above the surface is painted with: **the terminal's own
+    /// background, exactly as the engine paints it** — its resolved colour (which follows OSC
+    /// colour changes) at its `background-opacity`, over the same underlay the surface sits on. An
+    /// empty band then reads as more terminal rather than as a differently coloured bar at the
+    /// top of every idle pane; a painted band covers this anyway. Nil for a pane that is not a
+    /// terminal, which reserves no band.
+    private var bandFill: Color? {
+        guard let surface = surfaceView as? Ghostty.SurfaceView else { return nil }
+        let color = surface.backgroundColor ?? surface.derivedConfig.backgroundColor
+        return color.opacity(surface.derivedConfig.backgroundOpacity)
     }
 
     /// The title drawn on the top border: **only an explicitly set one counts** (right-click
@@ -68,7 +88,7 @@ struct PaneChrome: ViewModifier {
     private var titleOnFrame: String? {
         PaneTitleBadge.borderTitle(custom: surfaceView.customTitle,
                                    enabled: theme.paneTitleEnabled,
-                                   barVisible: agentBarVisible)
+                                   barVisible: bandHeight > 0)
     }
 
     /// The red dot: this pane has at least one live `needsUser` notice.
@@ -89,6 +109,12 @@ struct PaneChrome: ViewModifier {
     func body(content: Content) -> some View {
         let mark = noticeMark
         return content
+            // Reserve the status band above the terminal by insetting the surface's top. This
+            // shrinks the hosted surface, so the engine recomputes its rows to fit and the band is
+            // real space above the first row — never an overlay that can land on top of text. Held
+            // whenever the band is on, painted or blank, so an agent coming or going never nudges
+            // the terminal. Background and every edge below span the whole pane.
+            .padding(.top, bandTopInset)
             // Inactive pane: back it with an in-window backdrop blur - what gets frosted is the
             // wallpaper showing through, and the text stays sharp.
             // Active pane: no backdrop = clear glass, with the wallpaper crisp behind it.
@@ -102,12 +128,21 @@ struct PaneChrome: ViewModifier {
                     VisualEffectBlur()
                 }
             }
+            // The strip reserved above the surface (`bandTopInset`), in the terminal's own
+            // background so it joins the terminal below instead of showing the pane underlay as a
+            // bar of its own. Drawn under the status bar, which covers it whenever it paints.
+            .overlay(alignment: .top) {
+                if bandTopInset > 0, let bandFill {
+                    bandFill.frame(height: bandTopInset)
+                }
+            }
             // No more `.border`: the title has to bite a gap out of the top border the way a
             // fieldset legend does, so all four edges are drawn by hand (pixel for pixel identical
             // to the old 2px square-cornered border).
-            // The agent status bar, drawn inside the pane's own top padding (plan §2.11). A
-            // separate overlay because it takes a click, and it reads `surfaceView.agentStatus` —
-            // this pane's, nobody else's. It goes UNDER `PaneFrame`, not over it: the bar is an
+            // The agent status bar, drawn in the top band this modifier reserves above the terminal
+            // (plan §2.11). A separate overlay because it takes a click, and it reads
+            // `surfaceView.agentStatus` — this pane's, nobody else's. It goes UNDER `PaneFrame`,
+            // not over it: the bar is an
             // opaque fill starting one border line in (y = 2), while the red pane mark is a 6pt
             // dot centred on that 2pt line (y = -2…4). Drawn later, the bar would paint over the
             // dot's lower third and sit between the cursor and the dot's tooltip. `PaneFrame`
