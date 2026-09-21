@@ -103,7 +103,8 @@ extension AppDelegate {
     @objc func agentHooksStatusAction(_ sender: NSMenuItem) {
         let alert = NSAlert()
         alert.messageText = L("agents.hooks.status.title")
-        alert.informativeText = Self.hookStatusText()
+        // A report with several paths in it: scrollable and selectable, so it can be copied.
+        alert.setScrollableBody(Self.hookStatusText())
         alert.addButton(withTitle: L("window.button.ok"))
         alert.runModal()
     }
@@ -146,7 +147,9 @@ extension AppDelegate {
         let message = (error as? ControlErrorBody)?.message ?? "\(error)"
         let alert = NSAlert()
         alert.messageText = L("agents.hooks.failed", AgentRegistry.shared.rules[id]?.name ?? id)
-        alert.informativeText = message
+        // An error message is worth copying into a bug report; it is usually short, so a
+        // shallower minimum than a status report.
+        alert.setScrollableBody(message, minLines: 4)
         alert.addButton(withTitle: L("window.button.ok"))
         alert.runModal()
     }

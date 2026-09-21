@@ -20,10 +20,12 @@ extension AppDelegate {
         let entries = ControlActivityLog.shared.recent(40)
         let alert = NSAlert()
         alert.messageText = Lp("window.control-activity.title", count: entries.count, entries.count)
-        alert.informativeText = entries.isEmpty
+        // Up to forty log lines: in a scrollable text area rather than informativeText, so the
+        // alert does not balloon to fit them and a line can be copied out.
+        alert.setScrollableBody(entries.isEmpty
             ? L("window.control-activity.empty",
                 ControlEnvironment.socketPath ?? L("window.control-activity.socket-none"))
-            : entries.map(\.line).joined(separator: "\n")
+            : entries.map(\.line).joined(separator: "\n"))
         alert.addButton(withTitle: L("window.button.ok"))
         if !entries.isEmpty { alert.addButton(withTitle: L("window.control-activity.button.clear")) }
         if alert.runModal() == .alertSecondButtonReturn { ControlActivityLog.shared.clear() }
@@ -48,7 +50,7 @@ extension AppDelegate {
             try process.run()
         } catch {
             alert.messageText = L("window.install-cli.failed-title")
-            alert.informativeText = "\(error)"
+            alert.setScrollableBody("\(error)", minLines: 4)
             alert.runModal()
             return
         }
@@ -59,8 +61,9 @@ extension AppDelegate {
         alert.messageText = process.terminationStatus == 0
             ? L("window.install-cli.installed-title")
             : L("window.install-cli.failed-title")
-        alert.informativeText = (process.terminationStatus == 0 ? stdout : stderr)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // The installer's own output, which names the paths it wrote: scrollable and selectable.
+        alert.setScrollableBody((process.terminationStatus == 0 ? stdout : stderr)
+            .trimmingCharacters(in: .whitespacesAndNewlines))
         alert.runModal()
     }
 }
