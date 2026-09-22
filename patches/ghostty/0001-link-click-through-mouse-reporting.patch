@@ -1,0 +1,71 @@
+diff --git a/src/Surface.zig b/src/Surface.zig
+index 4d66622e3..73882ab74 100644
+--- a/src/Surface.zig
++++ b/src/Surface.zig
+@@ -2678,8 +2678,12 @@ pub fn keyCallback(
+         // 1. mouse reporting is off
+         // OR
+         // 2. mouse reporting is on and we are not reporting shift to the terminal
++        // OR
++        // 3. (QuickTerm) mouse reporting is on and the link modifiers are held: a Cmd-click
++        //    on a URL inside a TUI is "open this", not input for the program.
+         if (self.io.terminal.flags.mouse_event == .none or
+-            (self.mouse.mods.shift and !self.mouseShiftCapture(false)))
++            (self.mouse.mods.shift and !self.mouseShiftCapture(false)) or
++            self.mouseModsWantLink())
+         {
+             // Refresh our link state
+             const pos = self.rt_surface.getCursorPos() catch break :mouse_mods;
+@@ -3991,6 +3995,11 @@ pub fn mouseButtonCallback(
+             // then we do not do a mouse report.
+             if (mods.shift and !shift_capture) break :report;
+ 
++            // (QuickTerm) A click on a link with the link modifiers held is a link click,
++            // never the program's: swallow press and release alike, or the program acts on
++            // the click as well (Claude Code opens the URL itself, in the system browser).
++            if (self.mouse.over_link and self.mouseModsWantLink()) break :report;
++
+             // In any other mouse button scenario without shift pressed we
+             // clear the selection since the underlying application can handle
+             // that in any way (i.e. "scrolling").
+@@ -4492,6 +4501,24 @@ fn mouseModsWithCapture(self: *Surface, mods: input.Mods) input.Mods {
+     return final;
+ }
+ 
++/// (QuickTerm) Whether the mouse modifiers currently held are the ones that make a click a
++/// *link* click: the OSC 8 modifiers (Ctrl, or Super on macOS) or the modifiers of any
++/// configured link. Used to let a link click through even while the program has mouse
++/// reporting on — a Cmd-click on a URL in a TUI is far more often "open this" than input meant
++/// for the program — and the click is then swallowed before it is reported (mirroring the
++/// Shift override), so the program does not also act on it.
++///
++/// Reads only the raw mods, so it needs no lock; Shift held rules a link click out anyway.
++fn mouseModsWantLink(self: *const Surface) bool {
++    const mods = self.mouse.mods;
++    if (mods.equal(input.ctrlOrSuper(.{}))) return true;
++    for (self.config.links) |link| switch (link.highlight) {
++        .always_mods, .hover_mods => |v| if (v.equal(mods)) return true,
++        .always, .hover => {},
++    };
++    return false;
++}
++
+ /// Attempt to invoke the action of any link that is under the
+ /// given position.
+ ///
+@@ -4711,11 +4738,14 @@ pub fn cursorPosCallback(
+     // 1. mouse reporting is off
+     // OR
+     // 2. mouse reporting is on and we are not reporting shift to the terminal
++    // OR
++    // 3. (QuickTerm) mouse reporting is on and the link modifiers are held (mouseModsWantLink)
+     if ((over_link or
+         self.mouse.link_point == null or
+         (self.mouse.link_point != null and !self.mouse.link_point.?.eql(pos_vp))) and
+         (self.io.terminal.flags.mouse_event == .none or
+-            (self.mouse.mods.shift and !self.mouseShiftCapture(false))))
++            (self.mouse.mods.shift and !self.mouseShiftCapture(false)) or
++            self.mouseModsWantLink()))
+     {
+         // If we were previously over a link, we always update. We do this so that if the text
+         // changed underneath us, even if the mouse didn't move, we update the URL hints and state

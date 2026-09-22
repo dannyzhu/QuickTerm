@@ -3,6 +3,8 @@
 #   GHOSTTYKIT_TARGET=native     Native arch (default; fast for development)
 #   GHOSTTYKIT_TARGET=universal  arm64 + x86_64 universal library (for the release DMG; Zig
 #                                cross-compiles, no Rosetta needed)
+#   GHOSTTYKIT_SDK=<path>        Build against this macOS SDK instead of the active one (see the
+#                                SDK section below for why you would)
 set -euo pipefail
 TARGET="${GHOSTTYKIT_TARGET:-native}"
 case "$TARGET" in native|universal) ;; *) echo "error: GHOSTTYKIT_TARGET must be native|universal" >&2; exit 2 ;; esac
@@ -42,8 +44,16 @@ echo "using zig: $("$ZIG" version)"
 # --- the Zig 0.15 linker does not fall back from arm64 to arm64e, so every symbol ends up
 # --- undefined. Build a symlink overlay that copies and patches only the tbd files under
 # --- usr/lib, and point an xcrun shim at it.
-SDK="$(/usr/bin/xcrun --show-sdk-path)"
-OV="$TOOLS/sdk-arm64fix"
+# The SDK to build against. GHOSTTYKIT_SDK overrides the active one: the macOS 27 SDK guards
+# INFINITY in math.h behind __has_include(<float.h>), which Zig 0.15.2's bundled libcxx does not
+# satisfy (random.cpp: "use of undeclared identifier 'INFINITY'"), so on macOS 27 point this at
+# the Command Line Tools' MacOSX26.5.sdk until Ghostty moves to a Zig whose libcxx copes. The
+# result is a static library, so the app itself still builds against the active SDK as usual.
+SDK="${GHOSTTYKIT_SDK:-$(/usr/bin/xcrun --show-sdk-path)}"
+[ -d "$SDK/usr/include" ] || { echo "error: SDK not found: $SDK" >&2; exit 1; }
+echo "using sdk: $SDK"
+# One overlay per SDK, or switching SDKs would leave the symlinks pointing at the previous one
+OV="$TOOLS/sdk-arm64fix-$(basename "$(readlink -f "$SDK")")"
 if [ ! -f "$OV/usr/lib/libSystem.tbd" ] || ! grep -q 'arm64-macos' "$OV/usr/lib/libSystem.tbd"; then
   rm -rf "$OV"; mkdir -p "$OV/usr/lib/system"
   for e in "$SDK"/*; do b="$(basename "$e")"; [ "$b" = "usr" ] || ln -s "$e" "$OV/$b"; done
@@ -71,6 +81,26 @@ SHIM
 chmod +x "$TOOLS/bin/xcrun"
 export QUICKTERM_SDK="$OV"
 export PATH="$TOOLS/bin:$PATH"
+
+# --- Engine patches: QuickTerm's own changes to the vendored engine source, kept as diffs under
+# --- patches/ghostty/ (generated with `git -C vendor/ghostty diff`). Applied idempotently: a
+# --- patch already in place is skipped; one that no longer applies aborts the build rather than
+# --- silently producing an unpatched engine.
+PATCHES="$ROOT/patches/ghostty"
+if [ -d "$PATCHES" ]; then
+  for p in "$PATCHES"/*.patch; do
+    [ -e "$p" ] || continue
+    if git -C "$GHOSTTY" apply --check "$p" 2>/dev/null; then
+      git -C "$GHOSTTY" apply "$p"
+      echo "engine patch applied: $(basename "$p")"
+    elif git -C "$GHOSTTY" apply --reverse --check "$p" 2>/dev/null; then
+      echo "engine patch already applied: $(basename "$p")"
+    else
+      echo "error: engine patch does not apply cleanly: $p" >&2
+      exit 1
+    fi
+  done
+fi
 
 cd "$GHOSTTY"
 echo "building GhosttyKit ($TARGET)…"

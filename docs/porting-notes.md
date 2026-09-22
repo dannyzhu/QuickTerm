@@ -645,3 +645,32 @@ so clicks really do land during that window.
   (the extension can change it at any time, and without a reload after navigation it is still showing the previous page's state). The button always stays
   clickable, disabled only dims it visually, and whether it can actually run is computed **at the moment of the click** against the current tab;
   navigation (`didChangeTabProperties(.URL)`) triggers one more reload.
+
+## Engine patches, and Cmd-clicking a link inside a TUI (2026-09-22)
+
+`vendor/ghostty` is a pinned checkout, not part of this repository, so QuickTerm's own changes to
+the engine live as diffs under `patches/ghostty/` and `scripts/build-ghosttykit.sh` applies them
+before every build. The step is idempotent (`git apply --check` → apply; `--reverse --check` →
+already in place; neither → the build aborts rather than silently shipping an unpatched engine).
+Regenerate a patch after editing the vendored source with
+`git -C vendor/ghostty diff -- src/<file> > patches/ghostty/NNNN-<topic>.patch`.
+
+The first patch fixes Cmd-clicking a link inside a program that has mouse reporting on (Claude
+Code, and any other TUI). Upstream only refreshes the link-under-mouse state when mouse reporting
+is off or Shift is held (`Surface.zig`, the three "we only refresh links if" gates), and a click is
+handled as a link only when that state is set — so with a TUI capturing the mouse, a Cmd-click on a
+URL was reported to the program instead, and the program opened it itself in the system browser.
+QuickTerm's `open_url` handler (`link-opener = browser-pane`) never ran. The patch adds a third
+condition to those gates — the link modifiers are held (`mouseModsWantLink`: the OSC 8 modifiers,
+or any configured link's) — and swallows both press and release of such a click before the mouse
+report, mirroring the existing Shift override, so the program does not also act on it. Shift+Cmd
+click keeps working as before.
+
+Rebuilding the engine on macOS 27 / Xcode 27 fails inside Zig 0.15.2's bundled libcxx
+(`random.cpp`: "use of undeclared identifier 'INFINITY'"): the macOS 27 SDK guards `INFINITY` in
+`math.h` behind `__has_include(<float.h>)`, which that libcxx does not satisfy. Until Ghostty moves
+to a Zig whose libcxx copes, build against the Command Line Tools' older SDK, which defines it
+unconditionally: `GHOSTTYKIT_SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+scripts/build-ghosttykit.sh`. The output is a static library, so the app itself still builds
+against the active SDK; the script keeps one SDK overlay per SDK so switching back and forth does
+not leave stale symlinks.
