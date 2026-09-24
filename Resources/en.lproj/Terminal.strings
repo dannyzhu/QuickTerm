@@ -61,6 +61,24 @@
 "terminal.readonly.detail" = "This terminal is in read-only mode. You can still view, select and scroll through the content, but no input reaches the program running in it.";
 "terminal.readonly.disable" = "Turn Off";
 
+/* MARK: - clipboard confirmation sheet
+ * (Sources/GhosttyEmbed/Features/ClipboardConfirmation/ClipboardConfirmation.swift)
+ *
+ * The engine's three "ask the user first" clipboard requests. Each detail ends by introducing
+ * the text in question, which the sheet shows right under it in a scrollable text area. The
+ * buttons: Paste / Cancel for the paste, Deny / Allow (Control.strings) for the OSC 52 pair.
+ */
+
+"terminal.clipboard.paste.title" = "Paste text that contains a line break?";
+"terminal.clipboard.paste.detail" = "The program you are pasting into does not frame pasted text, so every line break in it would reach the program as a Return, and a shell would run the text line by line. This is what would be pasted:";
+"terminal.clipboard.button.paste" = "Paste";
+
+"terminal.clipboard.read.title" = "Allow the program to read the clipboard?";
+"terminal.clipboard.read.detail" = "A program in this window asked for the clipboard contents (OSC 52). Deny answers it with an empty clipboard. This is what it would receive:";
+
+"terminal.clipboard.write.title" = "Allow the program to write to the clipboard?";
+"terminal.clipboard.write.detail" = "A program in this window wants to replace the clipboard contents (OSC 52). This is what it would put there:";
+
 /* MARK: - accessibility */
 
 "terminal.accessibility.help" = "Terminal content area";

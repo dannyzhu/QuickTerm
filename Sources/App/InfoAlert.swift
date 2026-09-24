@@ -14,10 +14,12 @@ extension NSAlert {
     /// grows the alert a little, and past the cap it scrolls.
     ///
     /// `informativeText` is cleared on purpose: the two would otherwise stack, and the field's own
-    /// wrapping width differs from the text view's.
+    /// wrapping width differs from the text view's. A sentence that has to precede the text goes
+    /// in `intro` instead: it is laid out above the text area, wrapped at the same width, so the
+    /// two read as one column.
     @MainActor
-    func setScrollableBody(_ text: String, width: CGFloat = 546, minLines: Int = 7,
-                           maxLines: Int = 26) {
+    func setScrollableBody(_ text: String, intro: String? = nil, width: CGFloat = 546,
+                           minLines: Int = 7, maxLines: Int = 26) {
         informativeText = ""
 
         let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -64,6 +66,29 @@ extension NSAlert {
         // A fixed frame: the alert lays its accessory out at exactly this size, so the clamp above
         // is what decides how much of the report is visible before scrolling.
         scroll.translatesAutoresizingMaskIntoConstraints = true
-        accessoryView = scroll
+
+        guard let intro, !intro.isEmpty else {
+            accessoryView = scroll
+            return
+        }
+
+        // The intro, in the alert's own body font, measured at the text area's width; the two are
+        // stacked in a plain container with frames, because NSAlert sizes its accessory by frame.
+        let label = NSTextField(wrappingLabelWithString: intro)
+        label.font = font
+        label.textColor = .labelColor
+        label.isSelectable = false
+        label.translatesAutoresizingMaskIntoConstraints = true
+        let bounds = NSRect(x: 0, y: 0, width: width, height: CGFloat.greatestFiniteMagnitude)
+        let introHeight = (label.cell?.cellSize(forBounds: bounds).height ?? lineHeight).rounded(.up)
+        let gap: CGFloat = 8
+
+        let stack = NSView(frame: NSRect(x: 0, y: 0, width: width,
+                                         height: height + gap + introHeight))
+        scroll.frame.origin = .zero
+        label.frame = NSRect(x: 0, y: height + gap, width: width, height: introHeight)
+        stack.addSubview(scroll)
+        stack.addSubview(label)
+        accessoryView = stack
     }
 }

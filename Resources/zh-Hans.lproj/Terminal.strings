@@ -31,6 +31,19 @@
 "terminal.rename.button.ok" = "好";
 "terminal.rename.button.cancel" = "取消";
 
+/* MARK: - clipboard confirmation sheet
+ * (Sources/GhosttyEmbed/Features/ClipboardConfirmation/ClipboardConfirmation.swift) */
+
+"terminal.clipboard.paste.title" = "要粘贴含有换行的文本吗？";
+"terminal.clipboard.paste.detail" = "你正在粘贴的目标程序没有开启括号粘贴模式，文本里的每个换行都会当作回车送给它；如果那是个 shell，就会逐行执行。将要粘贴的内容：";
+"terminal.clipboard.button.paste" = "粘贴";
+
+"terminal.clipboard.read.title" = "允许程序读取剪贴板吗？";
+"terminal.clipboard.read.detail" = "这个窗口里有程序请求读取剪贴板内容（OSC 52）。拒绝会回复它一个空的剪贴板。它将会收到的内容：";
+
+"terminal.clipboard.write.title" = "允许程序写入剪贴板吗？";
+"terminal.clipboard.write.detail" = "这个窗口里有程序想要替换剪贴板内容（OSC 52）。它将要写入的内容：";
+
 /* MARK: - accessibility */
 
 "terminal.readonly.badge" = "只读";

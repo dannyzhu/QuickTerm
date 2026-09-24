@@ -37,6 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The aggregating extension host (BrowserExtensionManager.host is weak, so it has to be held
     /// strongly from here).
     private var extensionHost: AppBrowserExtensionHost?
+    /// Answers the engine's clipboard questions (unsafe paste, OSC 52 read / write); installed
+    /// once the engine exists, for every surface in every window.
+    private(set) var clipboardConfirmation: ClipboardConfirmation?
 
     /// **The three "point this instance somewhere else" overrides, from arguments as well as from
     /// the environment.**
@@ -149,6 +152,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+
+        // The engine hands "ask the user first" clipboard requests to the app as a notification;
+        // without this observer they are never completed (an OSC 52 read leaves the program
+        // waiting on its reply for good).
+        clipboardConfirmation = ClipboardConfirmation()
 
         // The app-level half of live theme switching: the engine's reloadConfig runs exactly once
         // per change. (Each screen's per-surface reload and window appearance are registered by its

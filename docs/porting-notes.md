@@ -674,3 +674,39 @@ unconditionally: `GHOSTTYKIT_SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX
 scripts/build-ghosttykit.sh`. The output is a static library, so the app itself still builds
 against the active SDK; the script keeps one SDK overlay per SDK so switching back and forth does
 not leave stale symlinks.
+
+## Clipboard confirmation: the engine's questions were never answered (2026-09-24)
+
+libghostty makes three clipboard decisions the app's business, through the same callback pair:
+a paste with a line break into a program that is not framing pastes (`clipboard-paste-protection`,
+on by default; shells with bracketed paste are exempt), a program reading the clipboard through
+OSC 52 while `clipboard-read = ask` (the default), and a program writing it while
+`clipboard-write = ask`. The embedding layer's `confirmReadClipboard` / `writeClipboard` post
+`Notification.confirmClipboard` for each; upstream answers it in `BaseTerminalController`
+(`onConfirmClipboardRequest`) with a sheet from `Features/ClipboardConfirmation` — an xib and a
+SwiftUI view. Neither the controller nor the feature was ported, and nothing else observed the
+notification, so every such request was abandoned: the paste vanished, the write was dropped, and
+an OSC 52 read never got its reply — the program (tmux, neovim …) sat waiting on it for good, and
+the engine's request allocation leaked with it.
+
+`Sources/GhosttyEmbed/Features/ClipboardConfirmation/ClipboardConfirmation.swift` is the
+replacement: one app-level observer (installed by `AppDelegate` right after the engine), an
+`NSAlert` sheet on the pane's window built from the catalogs (no xib), the text in question in the
+same scrollable text area the informational alerts use. Two contract points from the engine
+(`apprt/embedded.zig` `completeClipboardRequest`) to keep in mind when touching it:
+
+- a paste or read request **must be completed exactly once, whatever the answer** — the engine
+  frees its request only in `ghostty_surface_complete_clipboard_request`, and a denied OSC 52
+  read is answered with an empty string (confirmed = true), which the engine turns into the empty
+  reply the program is waiting for. A write never goes back to the engine: allow = set the
+  pasteboard, deny = nothing;
+- the request holds the pane weakly. If the pane closes while the sheet is up, the surface (and
+  the engine's request with it) is already gone, so the answer is dropped rather than completed
+  into a freed surface. A pane without a window (a workspace that is not on screen) is denied
+  straight away — answered, not left hanging — and, as upstream, a second request while one is
+  being asked is denied on the spot rather than queued.
+
+The buttons follow the control-plane consent alert rather than upstream: Deny is the default of
+the two OSC 52 questions (a program helping itself to the clipboard gets the same treatment as
+an agent asking to run a command; allowing takes a click), while the unsafe paste keeps Paste on
+Return, since that one is the user's own ⌘V.
