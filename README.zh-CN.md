@@ -32,13 +32,7 @@ QuickTerm 把 [Omarchy](https://omarchy.org) 的 Hyprland 平铺桌面装进一�
 预构建的 DMG 在 [Releases](https://github.com/dannyzhu/QuickTerm/releases) 页面（通用二进制，Apple Silicon 与 Intel 均可，macOS 15.4+）。
 
 1. 打开 DMG，把 **QuickTerm** 拖进 **应用程序**。
-2. 应用是 ad-hoc 签名、未经 Apple 公证，首次打开会被 macOS 拦下。先双击一次，关掉"Apple 无法验证……"的对话框，然后二选一：
-   - 打开 **系统设置 → 隐私与安全性**，拉到底部找到 QuickTerm 的条目，点 **仍要打开**；或
-   - 在终端清除隔离标记（之后不再弹窗）：
-     ```bash
-     xattr -dr com.apple.quarantine /Applications/QuickTerm.app
-     ```
-3. 再次启动即可，首个窗口会在你的主目录打开一个 shell。
+2. 直接启动。应用已用 Developer ID 签名并经 Apple 公证，和其他应用一样正常打开——没有 Gatekeeper 弹窗，也不用右键打开。首个窗口会在你的主目录打开一个 shell。
 
 可选：把 DMG 和 Release 附带的 `.sha256` 文件放在同一目录，运行 `shasum -a 256 -c QuickTerm-<版本>.dmg.sha256` 校验下载。想自己从源码打 DMG，先按[构建](#构建)一节准备好环境，再运行 `scripts/make-release.sh`。
 

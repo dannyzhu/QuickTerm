@@ -32,13 +32,7 @@ QuickTerm puts the feel of [Omarchy](https://omarchy.org)'s Hyprland desktop ins
 Pre-built DMGs are on the [Releases](https://github.com/dannyzhu/QuickTerm/releases) page (universal binary for Apple Silicon and Intel, macOS 15.4+).
 
 1. Open the DMG and drag **QuickTerm** into **Applications**.
-2. The app is ad-hoc signed and not notarized, so macOS blocks the first launch. Double-click it once and dismiss the "Apple could not verify…" dialog, then either:
-   - open **System Settings → Privacy & Security**, scroll down to the QuickTerm entry and click **Open Anyway**, or
-   - clear the quarantine flag from a terminal (no more dialogs after this):
-     ```bash
-     xattr -dr com.apple.quarantine /Applications/QuickTerm.app
-     ```
-3. Launch it again. The first window opens a shell in your home directory.
+2. Launch it. The app is signed with a Developer ID and notarized by Apple, so it opens like any other app — no Gatekeeper dialog, no right-click-to-open. The first window opens a shell in your home directory.
 
 Optional: with the DMG and its `.sha256` file in the same folder, run `shasum -a 256 -c QuickTerm-<version>.dmg.sha256` to verify the download. To build your own DMG from source, follow [Build](#build) and then run `scripts/make-release.sh`.
 
