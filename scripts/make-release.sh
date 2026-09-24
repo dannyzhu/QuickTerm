@@ -83,7 +83,8 @@ if [ "$UPLOAD" = 1 ]; then
   git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null || fail "tag $TAG not pushed: git push origin $TAG"
 fi
 
-# ── 2. Sign (the app is statically linked with no nested code, so no need for deprecated --deep)
+# ── 2. Sign: nested code first (the bundled CLI), then the app. The deprecated --deep would sign
+#      in the wrong order and hand the app's entitlements to everything inside.
 echo "▶ Signing (${IDENTITY})…"
 if [ "$IDENTITY" = "-" ]; then
   codesign --force --sign - "$APP"
@@ -94,10 +95,19 @@ else
   # an ad-hoc signature binds them to the cdhash, which changes every build.
   ENTITLEMENTS="$ROOT/QuickTerm.entitlements"
   [ -f "$ENTITLEMENTS" ] || fail "missing $ENTITLEMENTS (needed for a hardened-runtime signature)"
+  # Nested code first, inside-out: the bundled CLI in SharedSupport is its own Mach-O, and the
+  # notary service rejects the whole app if it is ad-hoc signed, lacks the hardened runtime or a
+  # secure timestamp, or still carries the get-task-allow entitlement Xcode embeds at build time.
+  # It needs no entitlements of its own, and re-signing without --entitlements drops Xcode's.
+  while IFS= read -r -d '' nested; do
+    file "$nested" | grep -q "Mach-O" || continue
+    echo "  signing nested code: ${nested#"$APP"/}"
+    codesign --force --options runtime --timestamp --sign "$IDENTITY" "$nested"
+  done < <(find "$APP/Contents/SharedSupport" "$APP/Contents/Helpers" -type f -perm -u+x -print0 2>/dev/null)
   codesign --force --options runtime --timestamp \
     --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP"
 fi
-codesign --verify --strict "$APP"
+codesign --verify --deep --strict "$APP"
 
 # ── 3. Notarize and staple the .app itself (optional; Apple's recommended order: app, then DMG)
 if [ "$NOTARIZE" = 1 ]; then
