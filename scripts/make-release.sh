@@ -42,7 +42,11 @@ cd "$ROOT"
 [ -d vendor/ghostty/macos/GhosttyKit.xcframework ] || fail "missing GhosttyKit.xcframework, run scripts/build-ghosttykit.sh first"
 find Themes -path '*/backgrounds/*' -type f | grep -q . || fail "missing theme wallpapers, run scripts/fetch-themes.sh first"
 if [ "$UPLOAD" = 1 ]; then
-  git diff --quiet && git diff --cached --quiet || fail "uncommitted changes in the working tree, --upload requires a clean HEAD"
+  # --ignore-submodules=dirty: vendor/ghostty is a submodule that build-ghosttykit.sh deliberately
+  # dirties by applying patches/ghostty/, so dirty content there is expected; a changed submodule
+  # *pointer* is still uncommitted work and still fails the check.
+  git diff --quiet --ignore-submodules=dirty && git diff --cached --quiet --ignore-submodules=dirty \
+    || fail "uncommitted changes in the working tree, --upload requires a clean HEAD"
   command -v gh >/dev/null || fail "missing gh CLI (brew install gh && gh auth login)"
 fi
 
