@@ -349,4 +349,23 @@ final class UpdateControllerTests: XCTestCase {
         XCTAssertTrue(overridden.shouldRelaunch, "NO would abort the install, not skip the relaunch")
         XCTAssertTrue(stock.shouldRelaunch)
     }
+
+    /// The launch check goes out once Sparkle's start-up session has ended, and only then: a
+    /// checkForUpdatesInBackground() sent one turn after start() is refused (the E2E run of
+    /// 2026-09-25 saw "sessionInProgress == YES" on every launch). When the session ends Sparkle
+    /// may start an overdue check of its own in the same turn; that one is left alone.
+    func testLaunchCheckDecision() {
+        typealias Decision = UpdateController.LaunchCheckDecision
+        let now = Date()
+        XCTAssertEqual(UpdateController.launchCheckDecision(canCheck: false, lastCheck: nil, now: now), .skipBusy,
+                       "Sparkle is checking already (its own overdue check)")
+        XCTAssertEqual(UpdateController.launchCheckDecision(canCheck: true, lastCheck: nil, now: now), .check,
+                       "never checked: the launch check runs")
+        XCTAssertEqual(UpdateController.launchCheckDecision(canCheck: true, lastCheck: now.addingTimeInterval(-1), now: now),
+                       Decision.skipRecent, "a check that just finished was the launch check")
+        XCTAssertEqual(UpdateController.launchCheckDecision(canCheck: true, lastCheck: now.addingTimeInterval(-95), now: now),
+                       Decision.check, "a relaunch a minute and a half after the last check checks again")
+        XCTAssertEqual(UpdateController.launchCheckDecision(canCheck: true, lastCheck: now.addingTimeInterval(-86_400), now: now),
+                       Decision.check)
+    }
 }

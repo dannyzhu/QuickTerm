@@ -84,10 +84,14 @@ Ownership and threading: `AppDelegate` creates `UpdateController(enabled:)` befo
 way it passes `stats`. Every screen's bar shows the same state. `start()` is called at the end of
 `applicationDidFinishLaunching`, after `MainMenu.install(delegate:)`; it re-applies the stored
 settings (the first `applyGlobalConfig` runs inside `loadInitialConfig()`, before the updater
-exists) and then, when `checksEnabled`, calls `updater.checkForUpdatesInBackground()` on the next
-main-queue turn (Sparkle's own scheduler only checks at launch when a day has passed since
-`SULastCheckTime`; this call is what makes "at launch" true and what brings the indicator back
-after a relaunch).
+exists) and then, when `checksEnabled`, arms the launch check: Sparkle's own scheduler only
+checks at launch when a day has passed since `SULastCheckTime`, and this check is what makes "at
+launch" true and what brings the indicator back after a relaunch. It cannot go out on the next
+main-queue turn — `updater.start()` opens a session of its own (the probe for a resumable
+installer) and refuses a `checkForUpdatesInBackground()` sent while it runs, which the E2E run
+of 2026-09-25 saw on every launch — so it waits for the first `canCheckForUpdates == true` (KVO),
+hops one more turn, and then sends the check unless Sparkle has meanwhile started an overdue
+check itself or one has just finished (`UpdateController.launchCheckDecision`).
 
 Ported files keep a header naming their origin (Ghostty, MIT); `docs/porting-notes.md` records
 what changed. Updater events are logged with OSLog category `updates`.

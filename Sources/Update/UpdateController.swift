@@ -35,6 +35,9 @@ final class UpdateController {
     private var installCancellable: AnyCancellable?
     private var stateCancellable: AnyCancellable?
     private var notFoundClearTask: DispatchWorkItem?
+    /// The one-shot KVO subscription that fires the launch check once Sparkle's own start-up
+    /// session (its probe for a resumable installer) has ended; nil once it has fired.
+    private var launchCheck: AnyCancellable?
     /// The last transition logged; progress ticks inside one state are not transitions.
     private var loggedState = UpdateController.logDescription(.idle)
 
@@ -115,10 +118,55 @@ final class UpdateController {
         }
         apply(settings)
         // Sparkle's own scheduler checks at launch only when a day has passed since the last check;
-        // this is what makes "at launch" true and what brings an unhandled update back after a
-        // relaunch. Dispatched: start() finishes its own setup asynchronously.
+        // the launch check is what makes "at launch" true and what brings an unhandled update
+        // back after a relaunch. It cannot be sent right away: `updater.start()` opens a session
+        // of its own (the probe for a resumable installer, SPUUpdater
+        // scheduleNextUpdateCheckFiringImmediately:), and a checkForUpdatesInBackground() sent
+        // while it runs is refused with "sessionInProgress == YES" — the E2E run of 2026-09-25
+        // saw exactly that on every launch. `canCheckForUpdates` (KVO-compliant) turns true when
+        // that session ends; the check goes out one turn after its first true, re-checked by
+        // `launchCheckDecision` so an overdue check Sparkle starts itself in that same turn is
+        // left alone.
         if settings.checksEnabled {
-            DispatchQueue.main.async { [weak self] in self?.updater?.checkForUpdatesInBackground() }
+            launchCheck = updater.publisher(for: \.canCheckForUpdates)
+                .filter { $0 }
+                .first()
+                .sink { [weak self] _ in
+                    DispatchQueue.main.async { self?.runLaunchCheck() }
+                }
+        }
+    }
+
+    /// What the launch check should do once Sparkle's start-up session has ended: nothing while
+    /// Sparkle is already checking (its own overdue check starts in the same turn the session
+    /// ends), nothing when a check just finished, otherwise a background check.
+    enum LaunchCheckDecision: Equatable {
+        case check
+        case skipBusy
+        case skipRecent
+    }
+
+    /// A check that ended within this many seconds of the launch counts as the launch check.
+    static let launchCheckGrace: TimeInterval = 5
+
+    static func launchCheckDecision(canCheck: Bool, lastCheck: Date?, now: Date = Date()) -> LaunchCheckDecision {
+        guard canCheck else { return .skipBusy }
+        if let lastCheck, now.timeIntervalSince(lastCheck) < launchCheckGrace { return .skipRecent }
+        return .check
+    }
+
+    private func runLaunchCheck() {
+        launchCheck = nil
+        guard let updater, settings.checksEnabled else { return }
+        switch Self.launchCheckDecision(canCheck: updater.canCheckForUpdates,
+                                        lastCheck: updater.lastUpdateCheckDate) {
+        case .skipBusy:
+            Self.logger.info("launch check: Sparkle is already checking")
+        case .skipRecent:
+            Self.logger.info("launch check: a check just finished")
+        case .check:
+            Self.logger.info("launch check")
+            updater.checkForUpdatesInBackground()
         }
     }
 

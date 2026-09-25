@@ -729,6 +729,11 @@ sheet. What changed against upstream, and why:
   install mode it replies dismiss so the automatic driver stages the update on the next check.
 - The quit confirmation stands aside on `relaunchRequested`, set by every path that asks Sparkle
   to terminate the app.
+- The launch check waits for Sparkle's start-up session to end. `SPUUpdater start` probes for a
+  resumable installer with `sessionInProgress` set, so a `checkForUpdatesInBackground()` one turn
+  after `start()` is refused ("sessionInProgress == YES", seen on every E2E launch of
+  2026-09-25); the check now goes out after the first `canCheckForUpdates == true`, unless
+  Sparkle started an overdue check of its own in that same turn.
 - `updaterShouldRelaunchApplication` always answers YES. A NO is consulted by
   `SPUInstallerDriver.mayUpdateAndRestart` before stage 2 and aborts the installation outright
   (found by the E2E run of 2026-09-25: the app sat idle, the installer sat waiting, and the
