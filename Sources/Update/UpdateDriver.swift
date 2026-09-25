@@ -9,9 +9,17 @@ import Sparkle
 /// Mirrors every Sparkle callback into the view model.
 final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     let viewModel: UpdateViewModel
-    /// Debug-only feed override (`--update-feed-url`); nil = Sparkle reads `SUFeedURL`.
+    /// The feed override (`--update-feed-url`, Debug and E2E builds only:
+    /// `UpdateController.allowsFeedOverride`); nil = Sparkle reads `SUFeedURL`.
     let feedOverride: URL?
     weak var controller: UpdateController?
+    /// Later on a staged update that a manual check resumed: Sparkle follows the `.dismiss` with
+    /// `dismissUpdateInstallation`, but the update stays staged and still installs on quit (spec
+    /// §3), so that one teardown keeps the "quit or restart to finish" state instead of going idle.
+    private var keepInstallingOnDismiss = false
+    /// Restart Now on that kept state: its reply block is spent, so it re-enters through a fresh
+    /// manual check, and the staged update Sparkle resumes for it is answered `.install` at once.
+    private var installOnResume = false
 
     init(viewModel: UpdateViewModel, feedOverride: URL?) {
         self.viewModel = viewModel
@@ -40,13 +48,42 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     }
 
     func showUserInitiatedUpdateCheck(cancellation: @escaping () -> Void) {
+        keepInstallingOnDismiss = false
         viewModel.state = .checking(.init(cancel: cancellation))
     }
 
     func showUpdateFound(with appcastItem: SUAppcastItem, state: SPUUserUpdateState,
                          reply: @escaping @Sendable (SPUUserUpdateChoice) -> Void) {
-        viewModel.state = Self.foundState(item: appcastItem, stage: state.stage,
-                                          userInitiated: state.userInitiated, reply: reply)
+        handleUpdateFound(item: appcastItem, stage: state.stage, userInitiated: state.userInitiated, reply: reply)
+    }
+
+    /// `showUpdateFound` with Sparkle's state unpacked, so tests need no `SPUUserUpdateState`
+    /// (its initializer is unavailable).
+    func handleUpdateFound(item: SUAppcastItem, stage: SPUUserUpdateStage, userInitiated: Bool,
+                           reply: @escaping @Sendable (SPUUserUpdateChoice) -> Void) {
+        let answeredAlready = installOnResume
+        installOnResume = false
+        guard stage == .installing else {
+            viewModel.state = Self.foundState(item: item, stage: stage, userInitiated: userInitiated, reply: reply)
+            return
+        }
+        if answeredAlready {
+            // Restart Now on the kept staged update (`resumeStagedInstall`): Sparkle terminates
+            // the app to install as soon as it has the answer.
+            controller?.noteInstallerTerminating()
+            reply(.install)
+            return
+        }
+        // A staged update keeps its icon after Later (see `keepInstallingOnDismiss`). The reply
+        // is `@Sendable` by Sparkle's signature, but QuickTerm only ever answers on the main
+        // thread (the sheet's buttons, `UpdateState.cancel()`).
+        let answer: @Sendable (SPUUserUpdateChoice) -> Void = { [weak self] choice in
+            if choice == .dismiss {
+                MainActor.assumeIsolated { self?.keepInstallingOnDismiss = true }
+            }
+            reply(choice)
+        }
+        viewModel.state = Self.foundState(item: item, stage: stage, userInitiated: userInitiated, reply: answer)
     }
 
     /// Pure, so tests need no `SPUUserUpdateState`. A staged update (`.installing`) is the
@@ -55,7 +92,7 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
                            reply: @escaping @Sendable (SPUUserUpdateChoice) -> Void) -> UpdateState {
         switch stage {
         case .installing:
-            return .installing(.init(isAutoUpdate: true, version: item.displayVersionString,
+            return .installing(.init(isAutoUpdate: true, userInitiated: userInitiated, version: item.displayVersionString,
                                      restart: { reply(.install) }, later: { reply(.dismiss) },
                                      skip: { reply(.skip) }))
         case .downloaded:
@@ -74,6 +111,7 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     func showUpdateReleaseNotesFailedToDownloadWithError(_ error: any Error) {}
 
     func showUpdateNotFoundWithError(_ error: any Error, acknowledgement: @escaping () -> Void) {
+        installOnResume = false
         acknowledgement()
         viewModel.state = .notFound(.init())
     }
@@ -81,6 +119,7 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     func showUpdaterError(_ error: any Error, acknowledgement: @escaping () -> Void) {
         let nsError = error as NSError
         UpdateController.logger.error("updater error \(nsError.domain, privacy: .public)/\(nsError.code): \(error.localizedDescription, privacy: .public)")
+        installOnResume = false
         acknowledgement()
         viewModel.state = .error(.init(
             error: error,
@@ -126,7 +165,7 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     func showInstallingUpdate(withApplicationTerminated applicationTerminated: Bool,
                               retryTerminatingApplication: @escaping () -> Void) {
         controller?.noteInstallerTerminating()
-        viewModel.state = .installing(.init(isAutoUpdate: false, version: versionInFlight,
+        viewModel.state = .installing(.init(isAutoUpdate: false, userInitiated: false, version: versionInFlight,
                                             restart: retryTerminatingApplication, later: {}, skip: nil))
     }
 
@@ -144,13 +183,32 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     /// `.notFound` and `.error` are already fully acknowledged at that point — no Sparkle session
     /// stands behind them any more — and are QuickTerm's own display from there on, cleared by the
     /// not-found timer, a click, OK or Retry; only every other state actually needs tearing down.
+    ///
+    /// The one exception is Later on a resumed staged update (`keepInstallingOnDismiss`): the
+    /// update still installs on quit, so the state stays `.installing`, re-pointed away from the
+    /// spent reply block — Restart Now resumes it through a fresh check, and Skip is gone until
+    /// then (a resumed sheet offers it again).
     func dismissUpdateInstallation() {
+        installOnResume = false
+        let keep = keepInstallingOnDismiss
+        keepInstallingOnDismiss = false
         switch viewModel.state {
         case .notFound, .error:
             break
+        case .installing(let staged) where keep:
+            viewModel.state = .installing(.init(isAutoUpdate: true, userInitiated: false, version: staged.version,
+                                                restart: { [weak self] in self?.resumeStagedInstall() },
+                                                later: {}, skip: nil))
         default:
             viewModel.state = .idle
         }
+    }
+
+    /// Restart Now on the kept staged update: a manual check makes Sparkle resume the staged
+    /// update (`showUpdateFound(stage: .installing)`), which `handleUpdateFound` then answers.
+    private func resumeStagedInstall() {
+        installOnResume = true
+        controller?.checkForUpdates()
     }
 
     // MARK: SPUUpdaterDelegate
@@ -168,7 +226,7 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
 
     func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
                  immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
-        viewModel.state = .installing(.init(isAutoUpdate: true, version: item.displayVersionString,
+        viewModel.state = .installing(.init(isAutoUpdate: true, userInitiated: false, version: item.displayVersionString,
                                             restart: immediateInstallHandler, later: {}, skip: nil))
         return true
     }

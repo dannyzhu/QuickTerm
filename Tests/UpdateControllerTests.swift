@@ -48,21 +48,26 @@ final class UpdateControllerTests: XCTestCase {
 
     // MARK: relaunchRequested
 
-    func testRelaunchRequestedFollowsTheInstallPaths() {
+    /// Set only when Sparkle is about to terminate the app (spec §4): Restart Now, `showReady`,
+    /// `showInstallingUpdate`. An Install click only starts a download, during which the user's
+    /// own Cmd+Q must still ask about the open panes.
+    func testRelaunchRequestedOnlyWhenSparkleIsAboutToTerminate() {
         var replies: [SPUUserUpdateChoice] = []
         controller.viewModel.state = .updateAvailable(.init(appcastItem: SUAppcastItem.empty(), stage: .notDownloaded,
                                                             userInitiated: true, reply: { replies.append($0) }))
         XCTAssertFalse(controller.relaunchRequested)
         controller.installUpdate()
-        XCTAssertTrue(controller.relaunchRequested, "Install and Relaunch asks for a relaunch")
         XCTAssertEqual(replies, [.install], "the chain confirmed the available state")
+        XCTAssertFalse(controller.relaunchRequested, "Install and Relaunch alone does not bypass the quit confirmation")
         controller.viewModel.state = .downloading(.init(cancel: {}, version: "9", expectedLength: 10, progress: 1))
-        XCTAssertTrue(controller.relaunchRequested, "still set through the download")
+        XCTAssertFalse(controller.relaunchRequested, "nor does the download it starts")
+        driver.showReady(toInstallAndRelaunch: { _ in })
+        XCTAssertTrue(controller.relaunchRequested, "showReady: Sparkle terminates the app next")
         controller.viewModel.state = .idle
         XCTAssertFalse(controller.relaunchRequested, "cancelled: cleared")
 
         var restarted = false
-        controller.viewModel.state = .installing(.init(isAutoUpdate: true, version: "9", restart: { restarted = true }, later: {}, skip: nil))
+        controller.viewModel.state = .installing(.init(isAutoUpdate: true, userInitiated: false, version: "9", restart: { restarted = true }, later: {}, skip: nil))
         XCTAssertFalse(controller.relaunchRequested, "a staged update alone asks for nothing")
         if case .installing(let installing) = controller.viewModel.state { controller.requestRelaunch(installing.restart) }
         XCTAssertTrue(restarted)
@@ -70,18 +75,17 @@ final class UpdateControllerTests: XCTestCase {
 
         controller.viewModel.state = .error(.init(error: NSError(domain: "x", code: 1), kind: .other, retry: {}, dismiss: {}))
         XCTAssertFalse(controller.relaunchRequested, "an error clears it")
-        controller.noteInstallerTerminating()
+        driver.showInstallingUpdate(withApplicationTerminated: false, retryTerminatingApplication: {})
         XCTAssertTrue(controller.relaunchRequested, "Sparkle terminating the app sets it")
     }
 
     /// installUpdate() cancels its confirm-everything sink but must leave `installCancellable` at
     /// nil, or every later Install click is silently ignored until restart (the `== nil` guard).
     /// checkForUpdates() has to do that teardown itself — the test host has no updater, so if the
-    /// teardown depended on one (the old top-of-function `guard let updater`), it would never run,
-    /// and only a later, unrelated state change would happen to reset the chain via the sink's own
-    /// guard. Proven two ways: the download's own `cancel` closure only fires through
-    /// checkForUpdates() itself (not through some other state assignment), and no state is set
-    /// between the check and the second `installUpdate()` — a still-stale chain would block it.
+    /// teardown depended on one (the old top-of-function `guard let updater`), it would never run.
+    /// Proven two ways: the check's own `cancel` closure only fires through checkForUpdates()
+    /// itself, and the next available update is not confirmed until Install is clicked again — a
+    /// stale chain would confirm it on arrival.
     func testInstallUpdateRecoversAfterACheckForUpdatesDuringInstall() {
         var firstReplies: [SPUUserUpdateChoice] = []
         controller.viewModel.state = .updateAvailable(.init(appcastItem: SUAppcastItem.empty(), stage: .notDownloaded,
@@ -90,17 +94,36 @@ final class UpdateControllerTests: XCTestCase {
         XCTAssertEqual(firstReplies, [.install])
 
         var cancelled = false
-        controller.viewModel.state = .downloading(.init(cancel: { cancelled = true }, version: "9", expectedLength: 10, progress: 1))
+        controller.viewModel.state = .checking(.init(cancel: { cancelled = true }))
         controller.checkForUpdates() // no updater in tests: this alone must tear the chain down
-        XCTAssertTrue(cancelled, "checkForUpdates must cancel the in-flight download itself, updater or not")
-        XCTAssertTrue(controller.relaunchRequested, "downloading leaves relaunchRequested as installUpdate() set it")
+        XCTAssertTrue(cancelled, "checkForUpdates must cancel the in-flight check itself, updater or not")
 
         var secondReplies: [SPUUserUpdateChoice] = []
         controller.viewModel.state = .updateAvailable(.init(appcastItem: SUAppcastItem.empty(), stage: .notDownloaded,
                                                             userInitiated: true, reply: { secondReplies.append($0) }))
+        XCTAssertTrue(secondReplies.isEmpty, "the old chain is gone: nothing confirms a new update by itself")
         controller.installUpdate()
         XCTAssertEqual(secondReplies, [.install], "a fresh Install must still go through: checkForUpdates already dropped the stale chain")
-        XCTAssertTrue(controller.relaunchRequested)
+    }
+
+    /// SPUUpdater keeps `canCheckForUpdates` true while a download shows progress, so the menu
+    /// item is live: it shows the running download instead of cancelling it.
+    func testCheckForUpdatesDuringADownloadShowsItsSheet() {
+        var shown = 0
+        controller.showSheet = { shown += 1 }
+        var cancelled = false
+        let downloading = UpdateState.downloading(.init(cancel: { cancelled = true }, version: "9", expectedLength: 10, progress: 1))
+        controller.viewModel.state = downloading
+        controller.checkForUpdates()
+        XCTAssertEqual(controller.viewModel.state, downloading, "the download keeps running")
+        XCTAssertFalse(cancelled)
+        XCTAssertEqual(shown, 1)
+
+        let extracting = UpdateState.extracting(.init(version: "9", progress: 0.5))
+        controller.viewModel.state = extracting
+        controller.checkForUpdates()
+        XCTAssertEqual(controller.viewModel.state, extracting)
+        XCTAssertEqual(shown, 2)
     }
 
     // MARK: not found
@@ -154,7 +177,7 @@ final class UpdateControllerTests: XCTestCase {
         driver.dismissUpdateInstallation()
         XCTAssertTrue(controller.viewModel.state.isIdle, "updateAvailable still tears down")
 
-        controller.viewModel.state = .installing(.init(isAutoUpdate: true, version: "9", restart: {}, later: {}, skip: nil))
+        controller.viewModel.state = .installing(.init(isAutoUpdate: true, userInitiated: false, version: "9", restart: {}, later: {}, skip: nil))
         driver.dismissUpdateInstallation()
         XCTAssertTrue(controller.viewModel.state.isIdle, "installing still tears down")
     }
@@ -164,8 +187,69 @@ final class UpdateControllerTests: XCTestCase {
         let state = UpdateDriver.foundState(item: SUAppcastItem.empty(), stage: .installing, userInitiated: false) { replies.append($0) }
         guard case .installing(let installing) = state else { return XCTFail("expected installing, got \(state)") }
         XCTAssertTrue(installing.isAutoUpdate)
+        XCTAssertFalse(installing.userInitiated)
         installing.restart(); installing.later(); installing.skip?()
         XCTAssertEqual(replies, [.install, .dismiss, .skip])
+        let resumed = UpdateDriver.foundState(item: SUAppcastItem.empty(), stage: .installing, userInitiated: true) { _ in }
+        guard case .installing(let manual) = resumed else { return XCTFail("expected installing, got \(resumed)") }
+        XCTAssertTrue(manual.userInitiated, "a manual check that resumed it: the sheet opens by itself")
+    }
+
+    // MARK: a staged update resumed by a manual check
+
+    /// Later replies `.dismiss`, and Sparkle follows it with `dismissUpdateInstallation`. The
+    /// update still installs on quit (spec §3), so the icon has to stay — like the
+    /// `willInstallUpdateOnQuit` version of the same state.
+    func testLaterOnAResumedStagedUpdateKeepsTheIcon() {
+        var replies: [SPUUserUpdateChoice] = []
+        driver.handleUpdateFound(item: SUAppcastItem.empty(), stage: .installing, userInitiated: true) { replies.append($0) }
+        guard case .installing(let staged) = controller.viewModel.state else { return XCTFail("expected installing") }
+        XCTAssertTrue(staged.userInitiated)
+        staged.later()
+        XCTAssertEqual(replies, [.dismiss])
+        driver.dismissUpdateInstallation()
+        guard case .installing(let kept) = controller.viewModel.state else {
+            return XCTFail("Later keeps a staged update on the bar: it still installs on quit")
+        }
+        XCTAssertEqual(kept.version, staged.version)
+        XCTAssertTrue(kept.isAutoUpdate)
+        XCTAssertFalse(kept.userInitiated)
+        XCTAssertNil(kept.skip, "the reply block behind Skip is spent")
+        driver.dismissUpdateInstallation()
+        XCTAssertTrue(controller.viewModel.state.isIdle, "the mark is honoured once")
+    }
+
+    /// The kept state's reply block is spent: Restart Now there re-enters through a fresh check,
+    /// and the staged update Sparkle resumes for it is installed without asking again.
+    func testRestartNowOnAKeptStagedUpdateInstallsItOnResume() {
+        var replies: [SPUUserUpdateChoice] = []
+        driver.handleUpdateFound(item: SUAppcastItem.empty(), stage: .installing, userInitiated: true) { replies.append($0) }
+        guard case .installing(let staged) = controller.viewModel.state else { return XCTFail("expected installing") }
+        staged.later()
+        driver.dismissUpdateInstallation()
+        guard case .installing(let kept) = controller.viewModel.state else { return XCTFail("expected the kept state") }
+        controller.requestRelaunch(kept.restart)
+        XCTAssertEqual(replies, [.dismiss], "the spent reply block is never called again")
+
+        var resumed: [SPUUserUpdateChoice] = []
+        driver.handleUpdateFound(item: SUAppcastItem.empty(), stage: .installing, userInitiated: true) { resumed.append($0) }
+        XCTAssertEqual(resumed, [.install], "Restart Now was the answer already")
+        XCTAssertTrue(controller.relaunchRequested)
+
+        var again: [SPUUserUpdateChoice] = []
+        driver.handleUpdateFound(item: SUAppcastItem.empty(), stage: .installing, userInitiated: true) { again.append($0) }
+        XCTAssertTrue(again.isEmpty, "only the one resume is answered for the user; the next asks")
+        guard case .installing = controller.viewModel.state else { return XCTFail("expected installing") }
+    }
+
+    func testSkipOnAResumedStagedUpdateGoesIdle() {
+        var replies: [SPUUserUpdateChoice] = []
+        driver.handleUpdateFound(item: SUAppcastItem.empty(), stage: .installing, userInitiated: true) { replies.append($0) }
+        guard case .installing(let staged) = controller.viewModel.state else { return XCTFail("expected installing") }
+        staged.skip?()
+        XCTAssertEqual(replies, [.skip])
+        driver.dismissUpdateInstallation()
+        XCTAssertTrue(controller.viewModel.state.isIdle, "skipped: un-staged, nothing left to show")
     }
 
     func testADownloadedUpdateKeepsItsStage() {
@@ -201,6 +285,36 @@ final class UpdateControllerTests: XCTestCase {
         driver.showInstallingUpdate(withApplicationTerminated: false, retryTerminatingApplication: {})
         guard case .installing(let i) = controller.viewModel.state else { return XCTFail() }
         XCTAssertFalse(i.isAutoUpdate)
+    }
+
+    /// The only way into the `install = true` path: staged by Sparkle's automatic driver, shown as
+    /// "quit or restart to finish", and Restart Now is Sparkle's immediate-install block.
+    func testWillInstallUpdateOnQuitStagesTheUpdate() {
+        let item = SUAppcastItem.empty()
+        let updater = SPUUpdater(hostBundle: .main, applicationBundle: .main, userDriver: driver, delegate: driver)
+        var immediate = 0
+        let handled = driver.updater(updater, willInstallUpdateOnQuit: item, immediateInstallationBlock: { immediate += 1 })
+        XCTAssertTrue(handled, "QuickTerm shows the staged update itself")
+        guard case .installing(let staged) = controller.viewModel.state else { return XCTFail("expected installing") }
+        XCTAssertTrue(staged.isAutoUpdate)
+        XCTAssertFalse(staged.userInitiated, "staged in the background: the icon only")
+        XCTAssertEqual(staged.version, item.displayVersionString)
+        XCTAssertNil(staged.skip)
+        XCTAssertEqual(immediate, 0, "nothing installs until asked")
+        staged.restart()
+        XCTAssertEqual(immediate, 1, "Restart Now invokes the immediate-install block exactly once")
+    }
+
+    func testUpdateInstalledAndRelaunchedAcknowledgesOnceAndGoesIdle() {
+        controller.viewModel.state = .installing(.init(isAutoUpdate: true, userInitiated: false, version: "9", restart: {}, later: {}, skip: nil))
+        var acknowledged = 0
+        driver.showUpdateInstalledAndRelaunched(true) { acknowledged += 1 }
+        XCTAssertEqual(acknowledged, 1)
+        XCTAssertTrue(controller.viewModel.state.isIdle)
+    }
+
+    func testTheTestHostMayOverrideTheFeed() {
+        XCTAssertTrue(UpdateController.allowsFeedOverride, "the test host is a Debug build")
     }
 
     func testPermissionRequestIsAnsweredFromTheSettings() {

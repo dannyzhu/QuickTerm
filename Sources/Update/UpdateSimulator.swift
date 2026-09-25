@@ -51,13 +51,13 @@ enum UpdateSimulator: String, CaseIterable {
             Self.after(1) { viewModel.state = .idle }
         case .staged:
             viewModel.state = .installing(.init(
-                isAutoUpdate: true, version: "9.9.9",
+                isAutoUpdate: true, userInitiated: false, version: "9.9.9",
                 restart: { viewModel.state = .idle },
                 later: {},
                 skip: { viewModel.state = .idle }))
         case .autoUpdate:
             viewModel.state = .installing(.init(
-                isAutoUpdate: true, version: "9.9.9",
+                isAutoUpdate: true, userInitiated: false, version: "9.9.9",
                 restart: { viewModel.state = .idle },
                 later: {},
                 skip: nil))
@@ -114,7 +114,7 @@ enum UpdateSimulator: String, CaseIterable {
                 viewModel.state = .extracting(.init(version: "9.9.9", progress: Double(j) / 5))
                 if j == 5 {
                     after(0.5) {
-                        viewModel.state = .installing(.init(isAutoUpdate: false, version: "9.9.9",
+                        viewModel.state = .installing(.init(isAutoUpdate: false, userInitiated: false, version: "9.9.9",
                                                             restart: { viewModel.state = .idle },
                                                             later: {}, skip: nil))
                     }

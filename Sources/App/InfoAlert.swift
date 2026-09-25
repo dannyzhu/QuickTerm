@@ -74,10 +74,14 @@ extension NSAlert {
 
         // The intro, in the alert's own body font, measured at the text area's width; the two are
         // stacked in a plain container with frames, because NSAlert sizes its accessory by frame.
+        // Selectable so it can be copied, and every https URL in it is a link run: a label draws
+        // and follows `.link` attributes only while it allows editing text attributes.
         let label = NSTextField(wrappingLabelWithString: intro)
         label.font = font
         label.textColor = .labelColor
-        label.isSelectable = false
+        label.isSelectable = true
+        label.allowsEditingTextAttributes = true
+        label.attributedStringValue = Self.linkified(intro, font: font)
         label.translatesAutoresizingMaskIntoConstraints = true
         let bounds = NSRect(x: 0, y: 0, width: width, height: CGFloat.greatestFiniteMagnitude)
         let introHeight = (label.cell?.cellSize(forBounds: bounds).height ?? lineHeight).rounded(.up)
@@ -91,5 +95,23 @@ extension NSAlert {
         stack.addSubview(label)
         accessoryView = stack
         return textView
+    }
+
+    /// `text` in `font` and the label colour, with each `https://` URL in it turned into a `.link`
+    /// run. The font and colour are set on every run explicitly: a selectable label re-renders its
+    /// attributed string on the first click, and runs without them fall back to the system
+    /// defaults.
+    static func linkified(_ text: String, font: NSFont) -> NSAttributedString {
+        let result = NSMutableAttributedString(string: text, attributes: [.font: font, .foregroundColor: NSColor.labelColor])
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
+            return result
+        }
+        let whole = NSRange(text.startIndex..., in: text)
+        for match in detector.matches(in: text, range: whole) {
+            let found = (text as NSString).substring(with: match.range)
+            guard found.lowercased().hasPrefix("https://"), let url = match.url else { continue }
+            result.addAttribute(.link, value: url, range: match.range)
+        }
+        return result
     }
 }

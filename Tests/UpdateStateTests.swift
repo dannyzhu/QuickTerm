@@ -17,7 +17,7 @@ final class UpdateStateTests: XCTestCase {
         XCTAssertTrue(available().isInstallable)
         XCTAssertTrue(UpdateState.downloading(.init(cancel: {}, version: nil, expectedLength: nil, progress: 0)).isInstallable)
         XCTAssertTrue(UpdateState.extracting(.init(version: nil, progress: 0)).isInstallable)
-        XCTAssertTrue(UpdateState.installing(.init(isAutoUpdate: true, version: "9.9.9", restart: {}, later: {}, skip: nil)).isInstallable)
+        XCTAssertTrue(UpdateState.installing(.init(isAutoUpdate: true, userInitiated: false, version: "9.9.9", restart: {}, later: {}, skip: nil)).isInstallable)
         XCTAssertFalse(UpdateState.notFound(.init()).isInstallable)
     }
 
@@ -26,7 +26,7 @@ final class UpdateStateTests: XCTestCase {
         available { choice = $0 }.confirm()
         XCTAssertEqual(choice, .install)
         var restarted = false
-        UpdateState.installing(.init(isAutoUpdate: true, version: nil, restart: { restarted = true }, later: {}, skip: nil)).confirm()
+        UpdateState.installing(.init(isAutoUpdate: true, userInitiated: false, version: nil, restart: { restarted = true }, later: {}, skip: nil)).confirm()
         XCTAssertFalse(restarted, "confirm never restarts on its own; Restart Now is a click")
     }
 

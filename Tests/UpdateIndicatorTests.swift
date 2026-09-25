@@ -32,7 +32,7 @@ final class UpdateIndicatorTests: XCTestCase {
         XCTAssertEqual(downloading.ring!, 0.25, accuracy: 0.001)
         XCTAssertEqual(downloading.tooltipArguments, ["9.9.9", "25"])
 
-        let staged = try XCTUnwrap(UpdateIndicatorGlyph(state: .installing(.init(isAutoUpdate: true, version: "9.9.9", restart: {}, later: {}, skip: nil))))
+        let staged = try XCTUnwrap(UpdateIndicatorGlyph(state: .installing(.init(isAutoUpdate: true, userInitiated: false, version: "9.9.9", restart: {}, later: {}, skip: nil))))
         XCTAssertEqual(staged.symbol, "power.circle")
         XCTAssertEqual(staged.tooltipKey, "update.bar.installing")
 
@@ -48,7 +48,7 @@ final class UpdateIndicatorTests: XCTestCase {
             .checking(.init(cancel: {})), available(), available(stage: .downloaded),
             .downloading(.init(cancel: {}, version: nil, expectedLength: nil, progress: 0)),
             .extracting(.init(version: nil, progress: 0)),
-            .installing(.init(isAutoUpdate: true, version: nil, restart: {}, later: {}, skip: nil)),
+            .installing(.init(isAutoUpdate: true, userInitiated: false, version: nil, restart: {}, later: {}, skip: nil)),
             .notFound(.init()),
             .error(.init(error: NSError(domain: "x", code: 1), kind: .other, retry: {}, dismiss: {})),
         ]

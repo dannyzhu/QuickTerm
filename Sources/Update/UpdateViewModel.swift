@@ -113,6 +113,10 @@ enum UpdateState: Equatable {
         /// scheduled check while staged: a plain quit installs it. False while Sparkle is
         /// terminating the app on the interactive path.
         let isAutoUpdate: Bool
+        /// A manual "Check for Updates…" resumed a staged update (Sparkle's
+        /// `showUpdateFound(stage: .installing, userInitiated: true)`): the sheet opens without a
+        /// click. False for the staged-on-quit state and for Sparkle terminating the app.
+        let userInitiated: Bool
         let version: String?
         /// Terminate and relaunch through the installer now.
         let restart: () -> Void

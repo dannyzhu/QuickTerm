@@ -26,8 +26,9 @@ final class UpdateController {
     private let driver: UpdateDriver
     private(set) var settings = UpdateSettings()
     private(set) var started = false
-    /// A relaunch through the installer was asked for (Install and Relaunch, Restart Now, or Sparkle
-    /// terminating the app to install): the quit confirmation stands aside (`AppDelegate`).
+    /// Sparkle is about to terminate the app to install (Restart Now, `showReady`,
+    /// `showInstallingUpdate`): the quit confirmation stands aside (`AppDelegate`). Not set by an
+    /// Install click, which only starts a download — the user's own Cmd+Q during it still asks.
     private(set) var relaunchRequested = false
     /// Opens the update sheet for the current state; wired by the app once the sheet exists.
     var showSheet: () -> Void = {}
@@ -56,6 +57,18 @@ final class UpdateController {
 
     static var isDebugBuild: Bool {
         #if DEBUG
+        true
+        #else
+        false
+        #endif
+    }
+
+    /// Whether `--update-feed-url` / `QUICKTERM_UPDATE_FEED_URL` is honoured: Debug builds, and the
+    /// Release builds `scripts/make-release.sh` makes for the end-to-end test (`E2E_BUNDLE_ID` /
+    /// `E2E_BUILD_NUMBER` add the `UPDATE_E2E` compilation condition). A shipped release is built
+    /// without either flag and always reads `SUFeedURL`.
+    static var allowsFeedOverride: Bool {
+        #if DEBUG || UPDATE_E2E
         true
         #else
         false
@@ -120,11 +133,16 @@ final class UpdateController {
             // With an update on screen Sparkle routes this to showUpdateInFocus (the sheet).
             guard let updater else { return }
             updater.checkForUpdates()
-        default:
-            // Checking, downloading, not found, error: close it and check afresh. The settle delay
-            // is Ghostty's: one run-loop tick is not enough for Sparkle to end the session.
-            // Dropping the AnyCancellable cancels the sink; installUpdate()'s `== nil` guard needs
-            // this reset, or a later Install click is silently ignored forever.
+        case .downloading, .extracting:
+            // SPUUpdater keeps canCheckForUpdates true while progress is shown, so the menu item
+            // is live here. The user already said Install: show that download instead of
+            // cancelling it (Ghostty's port cancelled and re-checked, losing the download).
+            showSheet()
+        case .checking, .notFound, .error:
+            // Close it and check afresh. The settle delay is Ghostty's: one run-loop tick is not
+            // enough for Sparkle to end the session. Dropping the AnyCancellable cancels the sink;
+            // installUpdate()'s `== nil` guard needs this reset, or a later Install click is
+            // silently ignored forever.
             installCancellable = nil
             viewModel.state.cancel()
             guard updater != nil else { return }
@@ -134,10 +152,10 @@ final class UpdateController {
         }
     }
 
-    /// Install and Relaunch: says yes to every step from here to the installer.
+    /// Install and Relaunch: says yes to every step from here to the installer. The relaunch flag
+    /// is set later, by `showReady` / `showInstallingUpdate`, when Sparkle actually terminates.
     func installUpdate() {
         guard viewModel.state.isInstallable, installCancellable == nil else { return }
-        relaunchRequested = true
         // The sink runs at once with the current state, so the first confirm needs no extra call.
         installCancellable = viewModel.$state.sink { [weak self] state in
             guard let self else { return }

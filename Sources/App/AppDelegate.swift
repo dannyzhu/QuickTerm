@@ -64,7 +64,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var stateFile: String?
         /// `--control-socket` / `QUICKTERM_CONTROL_SOCKET`
         var controlSocket: String?
-        /// `--update-feed-url` / `QUICKTERM_UPDATE_FEED_URL` (Debug builds only, for the E2E test)
+        /// `--update-feed-url` / `QUICKTERM_UPDATE_FEED_URL`: honoured by Debug builds and by the
+        /// end-to-end test's Release builds only (`UpdateController.allowsFeedOverride`)
         var updateFeed: String?
 
         /// The argument names, and the variable each falls back to.
@@ -197,8 +198,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let url = overrides.configURL { ConfigStore.configURLOverride = url }
         // The updater: the gate decides once per launch (docs/superpowers/specs/2026-09-25-auto-update-design.md §8).
         // A Debug build only updates against an explicit feed override, so a build in DerivedData is
-        // never replaced by a release DMG; Release builds ignore the override.
-        let feedOverride: URL? = UpdateController.isDebugBuild ? overrides.updateFeedURL : nil
+        // never replaced by a release DMG. Release builds ignore the override, except the ones
+        // make-release.sh builds for the end-to-end test (the UPDATE_E2E compilation condition).
+        let feedOverride: URL? = UpdateController.allowsFeedOverride ? overrides.updateFeedURL : nil
         let updates = UpdateController(
             enabled: UpdateController.isEnabled(
                 isRunningTests: Self.isRunningTests,

@@ -1,8 +1,9 @@
 import AppKit
 import Combine
 
-/// The window behind a click on the update indicator (and behind a manual check that found
-/// something): the house info alert, one per state, taken down when the state moves on.
+/// The window behind a click on the update indicator (and behind a result the user asked to see:
+/// a manual check's find, failure or resumed staged update): the house info alert, one per state,
+/// taken down when the state moves on.
 ///
 /// A sheet on the key window when there is one, `runModal` otherwise — the same rule the
 /// workspace-title prompt follows. The text is read through `L()` when the alert is built.
@@ -49,6 +50,8 @@ final class UpdateSheet {
     private let currentVersion: String
     private var built: Built?
     private var presentedState: UpdateState?
+    /// The state before the current one, for "was the user watching?" (`stateDidChange`).
+    private var lastState: UpdateState
     private var hostWindow: NSWindow?
     private var runningModal = false
     private var stateCancellable: AnyCancellable?
@@ -62,6 +65,7 @@ final class UpdateSheet {
         self.controller = controller
         self.notes = notes ?? ReleaseNotes.Loader()
         self.currentVersion = currentVersion
+        lastState = controller.viewModel.state
         stateCancellable = controller.viewModel.$state.dropFirst().sink { [weak self] state in
             self?.stateDidChange(state)
         }
@@ -252,12 +256,16 @@ final class UpdateSheet {
     }
 
     /// Takes the current alert down without replying to anything.
+    ///
+    /// `abortModal`, not `stopModal`: this runs from Sparkle callbacks and state changes, never
+    /// from the modal loop's own event handling, and `stopModal` only takes effect from there.
+    /// Either way `runModal` returns `.abort`, which `respond` maps to no button.
     func dismiss() {
         guard let built else { return }
         if let hostWindow {
             hostWindow.endSheet(built.alert.window, returnCode: .abort)
         } else if runningModal {
-            NSApp.stopModal(withCode: .abort)
+            NSApp.abortModal()
         }
         self.built = nil
         presentedState = nil
@@ -265,6 +273,8 @@ final class UpdateSheet {
     }
 
     private func stateDidChange(_ state: UpdateState) {
+        let previous = lastState
+        lastState = state
         if let built, let presentedState, Self.sameCase(presentedState, state) {
             // Same question, new progress: update in place.
             switch state {
@@ -279,23 +289,45 @@ final class UpdateSheet {
             self.presentedState = state
             return
         }
+        // "The user is watching": the transition ends a manual check (`.checking` only ever comes
+        // from `showUserInitiatedUpdateCheck`), or a sheet was up when it arrived — one the user
+        // opened by clicking the icon, or an error sheet whose Retry is running. Read before
+        // `dismiss()` takes the sheet down.
+        let watching = isPresented || Self.isChecking(previous)
         dismiss()
-        // A manual check that found something opens without a click; a scheduled one only lights
-        // the icon. Deferred by one main-queue turn on purpose: this sink runs inside `$state`'s
-        // willSet, before the new value is actually stored, and `present` can block right here —
+        guard Self.presentsByItself(state, watching: watching) else { return }
+        // Deferred by one main-queue turn on purpose: this sink runs inside `$state`'s willSet,
+        // before the new value is actually stored, and `present` can block right here —
         // `makeAlert`'s `runModal` fallback, when there is no key/visible window — with
         // `controller.viewModel.state` still reading the *old* value. An Install click taken
         // inside that nested run loop would then act on the stale state (still "installable",
         // e.g. `.checking`) instead of the update being announced, and the reply would never
         // reach it. Re-reading the stored state after the hop, and presenting only if it is
-        // still the same user-initiated update, avoids that.
-        if case .updateAvailable(let available) = state, available.userInitiated {
-            DispatchQueue.main.async { [weak self] in
-                guard let self, case .updateAvailable(let stillAvailable) = self.controller.viewModel.state,
-                      stillAvailable.userInitiated, !self.isPresented else { return }
-                self.present(self.controller.viewModel.state)
-            }
+        // still the same kind of state and still one to present, avoids that.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isPresented else { return }
+            let current = self.controller.viewModel.state
+            guard Self.sameCase(current, state), Self.presentsByItself(current, watching: watching) else { return }
+            self.present(current)
         }
+    }
+
+    /// Spec §4: a new state opens the sheet by itself only if the user asked to see it —
+    /// `updateAvailable` from a manual check, a staged update a manual check resumed, and an
+    /// error or a staged update the user was watching for. Never "up to date" (§4 rules out a
+    /// modal for it), never checking / downloading / extracting (their progress is on the icon).
+    static func presentsByItself(_ state: UpdateState, watching: Bool) -> Bool {
+        switch state {
+        case .updateAvailable(let available): available.userInitiated
+        case .installing(let installing): installing.userInitiated || watching
+        case .error: watching
+        case .idle, .checking, .downloading, .extracting, .notFound: false
+        }
+    }
+
+    private static func isChecking(_ state: UpdateState) -> Bool {
+        if case .checking = state { return true }
+        return false
     }
 
     private static func sameCase(_ a: UpdateState, _ b: UpdateState) -> Bool {
