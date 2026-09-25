@@ -12,6 +12,13 @@ settings:
     CURRENT_PROJECT_VERSION: "23"
     # xcodegen 2.46 起默认打开脚本沙盒；「Bundle Ghostty Resources」要 rm/cp 到产物目录，沙盒下直接被拒
     ENABLE_USER_SCRIPT_SANDBOXING: false
+# Sparkle is the updater (docs/superpowers/specs/2026-09-25-auto-update-design.md). An exact
+# version: QuickTerm.xcodeproj (and SwiftPM's Package.resolved inside it) is git-ignored, so the
+# pin here is the only pin. scripts/make-release.sh carries the same version for the CLI tools.
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.0
 targets:
   QuickTerm:
     type: application
@@ -38,6 +45,7 @@ targets:
       - sdk: Carbon.framework
       - sdk: CoreText.framework
       - sdk: UniformTypeIdentifiers.framework
+      - package: Sparkle
     info:
       path: Sources/App/Info.plist
       properties:
@@ -57,6 +65,11 @@ targets:
         # 浏览器 pane：允许 http:// 明文页面（本地开发服务器 / 内网）
         NSAppTransportSecurity:
           NSAllowsArbitraryLoadsInWebContent: true
+        # Sparkle (auto-update). The feed is the appcast attached to the latest GitHub release;
+        # SUPublicEDKey is added once the EdDSA key pair exists (the updater stays off until then).
+        SUFeedURL: "https://github.com/dannyzhu/QuickTerm/releases/latest/download/appcast.xml"
+        SUEnableAutomaticChecks: true
+        SUVerifyUpdateBeforeExtraction: true
     settings:
       base:
         OTHER_LDFLAGS: "-lc++"
@@ -143,6 +156,9 @@ targets:
         buildPhase: resources
     dependencies:
       - target: QuickTerm
+      # @testable import QuickTerm exposes Sparkle types (UpdateState carries SUAppcastItem).
+      - package: Sparkle
+        embed: false
       - framework: vendor/ghostty/macos/GhosttyKit.xcframework
         embed: false
       - sdk: Metal.framework
