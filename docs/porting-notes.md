@@ -729,6 +729,11 @@ sheet. What changed against upstream, and why:
   install mode it replies dismiss so the automatic driver stages the update on the next check.
 - The quit confirmation stands aside on `relaunchRequested`, set by every path that asks Sparkle
   to terminate the app.
+- `updaterShouldRelaunchApplication` always answers YES. A NO is consulted by
+  `SPUInstallerDriver.mayUpdateAndRestart` before stage 2 and aborts the installation outright
+  (found by the E2E run of 2026-09-25: the app sat idle, the installer sat waiting, and the
+  update went in only when the process was killed). The E2E build keeps its launch overrides in
+  its own defaults domain across the relaunch instead (`LaunchOverrides.reconciled(with:)`).
 - Check for Updates… during a download or extraction shows that download's sheet; upstream
   cancelled it and checked afresh, losing the download (SPUUpdater keeps the item enabled there).
 - Release notes come from two release assets (`QuickTerm-<v>-notes.md` / `-notes.zh-CN.md`),

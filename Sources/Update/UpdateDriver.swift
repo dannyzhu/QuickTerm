@@ -221,9 +221,13 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     /// nil = Sparkle reads `SUFeedURL` from the Info.plist.
     var feedURLOverrideString: String? { feedOverride?.absoluteString }
 
-    /// Under the E2E feed override Sparkle installs and quits; the tester relaunches by hand with
-    /// the same arguments (Sparkle's relaunch carries neither arguments nor environment).
-    var shouldRelaunch: Bool { feedOverride == nil }
+    /// Always. In Sparkle 2 a NO from `updaterShouldRelaunchApplication` is not "install, then do
+    /// not relaunch": `SPUInstallerDriver.mayUpdateAndRestart` consults it before stage 2 and
+    /// aborts the whole installation when it is NO — the E2E run of 2026-09-25 found the app
+    /// idle with Sparkle's installer left waiting. Sparkle's relaunch carries neither arguments
+    /// nor environment, so the E2E build keeps its launch overrides across the relaunch itself
+    /// (`LaunchOverrides.reconciled(with:)`, UPDATE_E2E only) instead of suppressing it.
+    var shouldRelaunch: Bool { true }
 
     func feedURLString(for updater: SPUUpdater) -> String? {
         feedURLOverrideString

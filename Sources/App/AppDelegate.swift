@@ -121,6 +121,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var stateURL: URL? { Self.expand(stateFile).map { URL(fileURLWithPath: $0) } }
         var controlSocketPath: String? { Self.expand(controlSocket) }
         var updateFeedURL: URL? { updateFeed.flatMap { URL(string: $0) } }
+
+        /// True when this launch named nothing at all.
+        var isEmpty: Bool {
+            configFile == nil && stateFile == nil && controlSocket == nil && updateFeed == nil
+        }
+
+        /// The key the end-to-end build keeps its overrides under, in its own defaults domain
+        /// (the E2E bundle identifier's; the tear-down's `defaults delete` wipes it).
+        static let persistedKey = "e2e.launch-overrides"
+
+        /// The end-to-end build only: the caller sits behind `UPDATE_E2E`, the function is
+        /// compiled everywhere so the tests can reach it. Sparkle relaunches the app after an
+        /// install with neither its arguments nor its environment, and an E2E instance that came
+        /// back bare would open the user's real config, socket and `state.json`. So a launch that
+        /// names any override stores the whole set, and a launch that names none takes the stored
+        /// set back: the relaunched instance keeps running against the scratch locations.
+        func reconciled(with defaults: UserDefaults) -> LaunchOverrides {
+            guard isEmpty else {
+                var stored: [String: String] = [:]
+                for (argument, _, path) in Self.switches {
+                    if let value = self[keyPath: path] { stored[argument] = value }
+                }
+                defaults.set(stored, forKey: Self.persistedKey)
+                return self
+            }
+            guard let stored = defaults.dictionary(forKey: Self.persistedKey) as? [String: String] else {
+                return self
+            }
+            var restored = LaunchOverrides(arguments: [], environment: [:])
+            for (argument, _, path) in Self.switches { restored[keyPath: path] = stored[argument] }
+            return restored
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -189,8 +221,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // QuickTerm.app --args --state-file …` is the only way to start a second instance that
         // macOS treats as a real app (and therefore the only way to test notifications), and
         // `open` does not pass an environment.
-        let overrides = LaunchOverrides(arguments: CommandLine.arguments,
-                                        environment: ProcessInfo.processInfo.environment)
+        let launched = LaunchOverrides(arguments: CommandLine.arguments,
+                                       environment: ProcessInfo.processInfo.environment)
+        #if UPDATE_E2E
+        // The end-to-end build (spec §11): Sparkle's relaunch drops the arguments, so the overrides
+        // ride across it in this build's own defaults domain (`LaunchOverrides.reconciled`).
+        let overrides = launched.reconciled(with: .standard)
+        UpdateController.logger.info("E2E launch overrides (restored: \(launched.isEmpty, privacy: .public)): config=\(overrides.configFile ?? "-", privacy: .public) state=\(overrides.stateFile ?? "-", privacy: .public) socket=\(overrides.controlSocket ?? "-", privacy: .public) feed=\(overrides.updateFeed ?? "-", privacy: .public)")
+        #else
+        let overrides = launched
+        #endif
         // The config file can be pointed elsewhere too: switches like `[control] send-text` can
         // only be read from the config, and smoke-testing a Debug build must never touch the user's
         // real ~/.config/quickterm/config.toml.

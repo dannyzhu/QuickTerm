@@ -343,7 +343,10 @@ final class UpdateControllerTests: XCTestCase {
         let stock = UpdateDriver(viewModel: UpdateViewModel(), feedOverride: nil)
         XCTAssertEqual(overridden.feedURLOverrideString, feed.absoluteString)
         XCTAssertNil(stock.feedURLOverrideString, "nil = Sparkle reads SUFeedURL")
-        XCTAssertFalse(overridden.shouldRelaunch, "the E2E tester relaunches by hand")
+        // A NO here makes Sparkle abort the installation outright (SPUInstallerDriver
+        // mayUpdateAndRestart), so even the E2E override says yes; the E2E build carries its
+        // overrides across the relaunch instead.
+        XCTAssertTrue(overridden.shouldRelaunch, "NO would abort the install, not skip the relaunch")
         XCTAssertTrue(stock.shouldRelaunch)
     }
 }

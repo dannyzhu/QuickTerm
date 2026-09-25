@@ -133,6 +133,42 @@ final class AppSessionTests: XCTestCase {
 
     /// The edges that would silently point a second instance at the user's real files: an empty
     /// value, and a switch with nothing behind it at all.
+    /// The end-to-end build: Sparkle relaunches the app after an install with no arguments, so
+    /// the overrides of the last launch that named any ride across the relaunch in the build's
+    /// own defaults domain. A shipped build never calls this (UPDATE_E2E only).
+    func testLaunchOverridesRideAcrossASparkleRelaunchInTheirOwnDefaultsDomain() throws {
+        typealias Overrides = AppDelegate.LaunchOverrides
+        let suite = "dev.danny.quickterm.tests.launch-overrides.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let bare = Overrides(arguments: ["QuickTerm"], environment: [:])
+        XCTAssertTrue(bare.isEmpty)
+        // Nothing stored yet: a bare launch stays bare.
+        XCTAssertEqual(bare.reconciled(with: defaults), bare)
+
+        // A launch that names overrides stores the whole set and keeps its own values, from
+        // arguments and environment alike.
+        let scratch = Overrides(
+            arguments: ["QuickTerm", "--config-file", "/tmp/e2e/config.toml",
+                        "--state-file", "/tmp/e2e/state.json",
+                        "--update-feed-url", "https://example.invalid/e2e/appcast.xml"],
+            environment: ["QUICKTERM_CONTROL_SOCKET": "/tmp/e2e/control.sock"])
+        XCTAssertFalse(scratch.isEmpty)
+        XCTAssertEqual(scratch.reconciled(with: defaults), scratch)
+
+        // Sparkle's relaunch carries no arguments: the bare launch takes the stored set back.
+        XCTAssertEqual(bare.reconciled(with: defaults), scratch)
+
+        // A later launch that names a different set replaces the stored one, including the
+        // switches it leaves out.
+        let other = Overrides(arguments: ["QuickTerm", "--state-file", "/tmp/other/state.json"],
+                              environment: [:])
+        XCTAssertEqual(other.reconciled(with: defaults), other)
+        XCTAssertEqual(bare.reconciled(with: defaults), other)
+        XCTAssertNil(bare.reconciled(with: defaults).updateFeed)
+    }
+
     func testAnEmptyLaunchOverrideIsNoOverride() {
         typealias Overrides = AppDelegate.LaunchOverrides
 

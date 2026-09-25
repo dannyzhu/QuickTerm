@@ -357,11 +357,15 @@ Operational rules (README "Releasing" / memory):
   `SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG` for Debug) and the end-to-end test's Release
   builds, to which `make-release.sh` adds `UPDATE_E2E` whenever `E2E_BUNDLE_ID` or
   `E2E_BUILD_NUMBER` is set (§11). Those are never uploaded, so a shipped release always reads
-  `SUFeedURL`. When it is set,
-  `updaterShouldRelaunchApplication` returns false: Sparkle installs and quits, and the tester
-  relaunches by hand with the same overrides (Sparkle's relaunch carries neither arguments nor
-  environment, which would otherwise produce an unmarked primary instance on the user's real
-  config, socket and `state.json`).
+  `SUFeedURL`. `updaterShouldRelaunchApplication` always returns true: in Sparkle 2 a NO there
+  is consulted by `SPUInstallerDriver.mayUpdateAndRestart` before stage 2 and aborts the whole
+  installation (the E2E run of 2026-09-25 found the app idle with the installer left waiting),
+  so it cannot mean "install without relaunching". Sparkle's relaunch carries neither arguments
+  nor environment, which would produce an unmarked primary instance on the user's real config,
+  socket and `state.json`; the E2E build therefore keeps its launch overrides in its own
+  defaults domain (`LaunchOverrides.reconciled(with:)`, `UPDATE_E2E` only): a launch that names
+  any override stores the set, a launch that names none takes it back, so the relaunched
+  instance keeps its scratch locations. The tear-down's `defaults delete` wipes it.
 - App Translocation / read-only volume: Sparkle itself refuses to check in those two cases
   (`SURunningTranslocated`, `SURunningFromDiskImageError`) — silently for scheduled checks, and
   through `showUpdaterError` for a manual one. The driver maps those two codes to the sheet "Move
@@ -453,9 +457,9 @@ End to end (before the first updater-enabled release; the user's real QuickTerm 
   it runs untranslocated from a writable place Sparkle can replace in place. It is launched with
   `--update-feed-url <…/releases/download/e2e-<date>/appcast.xml>`, `--state-file`,
   `--control-socket` and `--config-file` pointing at scratch locations; walk: check → indicator
-  → sheet → Install and Relaunch → the app quits (no auto-relaunch under the override) →
-  relaunch by hand with the same arguments → the newer app (build 9002) comes back with the
-  scratch layout restored. Repeat with `install = true` for the staged-on-quit path (Restart Now
+  → sheet → Install and Relaunch → the app quits and Sparkle relaunches it; the relaunched
+  instance takes its overrides back from its defaults domain (§8) → the newer app (build 9002)
+  comes back with the scratch layout restored. Repeat with `install = true` for the staged-on-quit path (Restart Now
   and plain quit). The first run also answers whether Sparkle's Gatekeeper scan accepts the
   unnotarized e2e DMG; if not, notarize the e2e DMG as well.
 - Teardown: `defaults delete dev.danny.quickterm.e2e`, delete the pre-release,
