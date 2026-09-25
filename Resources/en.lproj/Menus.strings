@@ -27,6 +27,7 @@
 /* MARK: - menu (Sources/App/MainMenu.swift) */
 
 "menu.app.about" = "About QuickTerm";
+"menu.app.check-updates" = "Check for Updates…";
 "menu.app.install-cli" = "Install the quickterm Command Line Tool…";
 "menu.app.control-activity" = "Control Plane Activity…";
 "menu.app.hide" = "Hide QuickTerm";

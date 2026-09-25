@@ -236,8 +236,8 @@ extension WorkspaceTests {
     /// a new terminal can be created straight away.
     @MainActor
     func testLastPaneCloseKeepsWindowAndQuitConfirmRule() throws {
-        XCTAssertFalse(AppDelegate.shouldConfirmQuit(openPaneCount: 0), "no panes -> quit straight away")
-        XCTAssertTrue(AppDelegate.shouldConfirmQuit(openPaneCount: 1), "panes open -> confirm")
+        XCTAssertFalse(AppDelegate.shouldConfirmQuit(openPaneCount: 0, relaunchRequested: false), "no panes -> quit straight away")
+        XCTAssertTrue(AppDelegate.shouldConfirmQuit(openPaneCount: 1, relaunchRequested: false), "panes open -> confirm")
 
         let c = try controller
         let home = c.model.activeIndex

@@ -907,7 +907,8 @@ final class MainWindowController: BaseTerminalController {
     func confirmCloseScreen() -> Bool {
         flushPendingCloses()
         let open = model.allPanes.count
-        guard AppDelegate.shouldConfirmQuit(openPaneCount: open), !AppDelegate.isRunningTests else { return true }
+        guard AppDelegate.shouldConfirmQuit(openPaneCount: open, relaunchRequested: false), !AppDelegate.isRunningTests
+        else { return true }
         let alert = NSAlert()
         alert.messageText = L("window.close-screen.title")
         alert.informativeText = Lp("window.close-screen.detail", count: open, open)

@@ -264,16 +264,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Quit semantics (from the user, 2026-09-04): with panes open, confirm; with none, quit
-    /// straight away.
+    /// straight away. A relaunch the user asked the updater for (Install and Relaunch, Restart
+    /// Now) is Sparkle terminating the app on their behalf: no confirmation in front of it.
     /// Both the Cmd+Q menu item and the engine's quit action go through here.
-    static func shouldConfirmQuit(openPaneCount: Int) -> Bool { openPaneCount > 0 }
+    static func shouldConfirmQuit(openPaneCount: Int, relaunchRequested: Bool) -> Bool {
+        !relaunchRequested && openPaneCount > 0
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !Self.isRunningTests, !controllers.isEmpty else { return .terminateNow }
         // A pane that is still fading out has already been closed; it does not count as open.
         for controller in controllers { controller.flushPendingCloses() }
         let open = screens.allPanes.count
-        guard Self.shouldConfirmQuit(openPaneCount: open) else { return .terminateNow }
+        guard Self.shouldConfirmQuit(openPaneCount: open,
+                                     relaunchRequested: session?.updates.relaunchRequested ?? false)
+        else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = L("window.quit.title")
         alert.informativeText = Lp("window.quit.detail", count: open, open)

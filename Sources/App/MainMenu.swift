@@ -41,6 +41,12 @@ enum MainMenu {
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: L("menu.app.about"),
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        // Apple's convention: right under About. Validated through canCheckForUpdates (greyed out
+        // without an updater, i.e. in the test host and in a Debug build without a feed override).
+        let updatesItem = appMenu.addItem(withTitle: L("menu.app.check-updates"),
+                                          action: #selector(AppDelegate.checkForUpdates(_:)),
+                                          keyEquivalent: "")
+        updatesItem.target = delegate
         appMenu.addItem(.separator())
         // The trick VS Code's `code` uses: symlink the bundled quickterm into PATH. It never asks
         // for an admin password.

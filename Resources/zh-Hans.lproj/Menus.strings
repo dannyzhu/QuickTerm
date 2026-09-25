@@ -14,6 +14,7 @@
 /* MARK: - menu (Sources/App/MainMenu.swift) */
 
 "menu.app.about" = "关于 QuickTerm";
+"menu.app.check-updates" = "检查更新…";
 "menu.app.install-cli" = "安装 quickterm 命令行工具…";
 "menu.app.control-activity" = "控制面活动…";
 "menu.app.hide" = "隐藏 QuickTerm";

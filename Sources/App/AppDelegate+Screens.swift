@@ -159,6 +159,8 @@ extension AppDelegate: NSMenuItemValidation {
             let controller = screens.key
             menuItem.state = controller?.joinsAllSpaces == true ? .on : .off
             return controller != nil
+        case #selector(checkForUpdates(_:)):
+            return session?.updates.canCheckForUpdates ?? false
         default:
             return true
         }
