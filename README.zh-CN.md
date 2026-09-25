@@ -460,6 +460,10 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # done = true                 # agent 跑完一轮时，若那个 pane 不在你眼前，发一条 info 通知；info 从不计入 Dock 角标
 # diagnostic-log = false      # 把通知/agent 状态的每一步写到 ~/Library/Logs/QuickTerm/diagnostics.log（只记标题不记正文），用于排查横幅/角标为何不出现
 
+[updates]                   # 自动更新：从 GitHub Releases 取；只检查时状态栏右侧会亮一个图标
+# check = true               # 启动时以及之后约每天一次，到 GitHub Releases 查是否有新版本；install = true 时即使关掉这一项也会检查
+# install = false            # 发现新版本后在后台下载，退出 QuickTerm 时自动安装（隐含 check）；状态栏图标会提示「退出或重启以完成更新」
+
 [keybinds]                  # 动作 = "修饰键+键"；"none" 解绑。动作 id 见 Cmd+K
 # new-terminal = "cmd+return"
 # toggle-float = "cmd+shift+t"

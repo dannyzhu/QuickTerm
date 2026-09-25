@@ -25,6 +25,7 @@ enum ConfigSection: String, CaseIterable, Codable {
     case control
     case agents
     case notifications
+    case updates
     case keybinds
     case ghostty
 
@@ -38,6 +39,7 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .control: "控制面"
         case .agents: "Agent"
         case .notifications: "通知"
+        case .updates: "更新"
         case .keybinds: "快捷键"
         case .ghostty: "引擎透传"
         }
@@ -53,6 +55,7 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .control: "Control plane"
         case .agents: "Agents"
         case .notifications: "Notifications"
+        case .updates: "Updates"
         case .keybinds: "Keybinds"
         case .ghostty: "Ghostty passthrough"
         }
@@ -78,6 +81,10 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .notifications:
             """
             通知中心：谁在等你。红点 / Dock 角标 / 工作区计数只统计「需要你动手」的 pane，不是通知条数。
+            """
+        case .updates:
+            """
+            自动更新：从 GitHub Releases 取。只检查时，状态栏右侧簇会亮一个图标，点开看说明再决定装不装。
             """
         case .keybinds:
             """
@@ -107,6 +114,11 @@ enum ConfigSection: String, CaseIterable, Codable {
             """
             The notification centre: who is waiting for you. The pane mark, the Dock badge and the
             workspace count all count PANES that need you, not notices.
+            """
+        case .updates:
+            """
+            Auto-update from GitHub Releases. With check only, an icon in the status bar's right
+            cluster says a release is out; click it for the notes and the install button.
             """
         case .keybinds:
             """
@@ -862,6 +874,18 @@ enum ConfigSchema {
                       labelZH: "诊断日志", labelEN: "Diagnostic log",
                       helpZH: "为排查通知/角标问题，把通知与 agent 状态的每一步写到 ~/Library/Logs/QuickTerm/diagnostics.log（只记标题不记正文）；默认关",
                       helpEN: "for debugging notifications and the Dock badge, write every notification and agent-state step to ~/Library/Logs/QuickTerm/diagnostics.log (titles only, never bodies); off by default"),
+
+        // MARK: [updates]
+        // Consumed as `UpdateSettings` by `UpdateController.apply(_:)` from
+        // `AppSession.applyGlobalConfig`; the controller never reads the config itself.
+        ConfigKeySpec(.updates, "check", .bool, default: .bool(true),
+                      labelZH: "自动检查更新", labelEN: "Check for updates",
+                      helpZH: "启动时以及之后约每天一次，到 GitHub Releases 查是否有新版本；install = true 时即使关掉这一项也会检查",
+                      helpEN: "at launch and about once a day, ask GitHub Releases whether a newer QuickTerm exists; install = true checks even when this is off"),
+        ConfigKeySpec(.updates, "install", .bool, default: .bool(false),
+                      labelZH: "自动下载安装", labelEN: "Install automatically",
+                      helpZH: "发现新版本后在后台下载，退出 QuickTerm 时自动安装（隐含 check）；状态栏图标会提示「退出或重启以完成更新」",
+                      helpEN: "download a found update in the background and install it when QuickTerm quits (implies check); the status bar icon then says to quit or restart to finish"),
     ]
 
     /// `id` -> the setting.

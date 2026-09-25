@@ -324,6 +324,10 @@ enum ConfigStore {
         var notificationsDone: Bool = true
         /// Off by default: writes the notification/agent-state decision path to a file for debugging.
         var notificationsDiagnosticLog: Bool = false
+        /// `[updates]` — the updater's two switches; `UpdateSettings` is built from them in
+        /// `AppSession.applyGlobalConfig`.
+        var updatesCheck: Bool = true
+        var updatesInstall: Bool = false
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
         var ghosttyPassthrough: String = ""
@@ -426,6 +430,8 @@ enum ConfigBindings {
         "agents.strip-background": { v, s in v.stringValue.map { s.agentsStripBackground = $0 } },
         "agents.strip-attention": { v, s in v.stringValue.map { s.agentsStripAttention = $0 } },
         "agents.strip-text": { v, s in v.stringValue.map { s.agentsStripText = $0 } },
+        "updates.check": { v, s in v.boolValue.map { s.updatesCheck = $0 } },
+        "updates.install": { v, s in v.boolValue.map { s.updatesInstall = $0 } },
     ]
 }
 

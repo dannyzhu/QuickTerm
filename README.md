@@ -472,6 +472,10 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 # done = true                 # a finished agent turn posts an info notice when the pane is not active; never counts toward the Dock badge
 # diagnostic-log = false      # write every notification/agent-state step to ~/Library/Logs/QuickTerm/diagnostics.log (titles only, never bodies), for debugging why a banner or badge did not appear
 
+[updates]                   # auto-update from GitHub Releases; with check only, an icon in the status bar says a release is out
+# check = true               # at launch and about once a day, ask GitHub Releases whether a newer QuickTerm exists; install = true checks even when this is off
+# install = false            # download a found update in the background and install it when QuickTerm quits (implies check); the status bar icon then says to quit or restart to finish
+
 [keybinds]                  # action = "modifiers+key"; "none" unbinds. Action ids: Cmd+K
 # new-terminal = "cmd+return"
 # toggle-float = "cmd+shift+t"
