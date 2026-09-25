@@ -70,6 +70,7 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
         if answeredAlready {
             // Restart Now on the kept staged update (`resumeStagedInstall`): Sparkle terminates
             // the app to install as soon as it has the answer.
+            UpdateController.logger.info("resumed staged update \(item.displayVersionString, privacy: .public): installing now (Restart Now)")
             controller?.noteInstallerTerminating()
             reply(.install)
             return
@@ -158,18 +159,21 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
 
     func showReady(toInstallAndRelaunch reply: @escaping @Sendable (SPUUserUpdateChoice) -> Void) {
         // The user already said Install and Relaunch; nothing to ask again.
+        UpdateController.logger.info("ready to install: replying install, Sparkle terminates the app next")
         controller?.noteInstallerTerminating()
         reply(.install)
     }
 
     func showInstallingUpdate(withApplicationTerminated applicationTerminated: Bool,
                               retryTerminatingApplication: @escaping () -> Void) {
+        UpdateController.logger.info("installing update (application terminated: \(applicationTerminated, privacy: .public))")
         controller?.noteInstallerTerminating()
         viewModel.state = .installing(.init(isAutoUpdate: false, userInitiated: false, version: versionInFlight,
                                             restart: retryTerminatingApplication, later: {}, skip: nil))
     }
 
     func showUpdateInstalledAndRelaunched(_ relaunched: Bool, acknowledgement: @escaping () -> Void) {
+        UpdateController.logger.info("update installed (relaunched: \(relaunched, privacy: .public))")
         acknowledgement()
         viewModel.state = .idle
     }
@@ -196,6 +200,7 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
         case .notFound, .error:
             break
         case .installing(let staged) where keep:
+            UpdateController.logger.info("Later on a resumed staged update: it stays staged and installs on quit")
             viewModel.state = .installing(.init(isAutoUpdate: true, userInitiated: false, version: staged.version,
                                                 restart: { [weak self] in self?.resumeStagedInstall() },
                                                 later: {}, skip: nil))
@@ -226,13 +231,15 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
 
     func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
                  immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
+        UpdateController.logger.info("staged \(item.displayVersionString, privacy: .public) to install on quit")
         viewModel.state = .installing(.init(isAutoUpdate: true, userInitiated: false, version: item.displayVersionString,
                                             restart: immediateInstallHandler, later: {}, skip: nil))
         return true
     }
 
     func updaterShouldRelaunchApplication(_ updater: SPUUpdater) -> Bool {
-        shouldRelaunch
+        UpdateController.logger.info("relaunch after install: \(self.shouldRelaunch, privacy: .public) (feed override: \(self.feedOverride != nil, privacy: .public))")
+        return shouldRelaunch
     }
 
     func updaterWillRelaunchApplication(_ updater: SPUUpdater) {

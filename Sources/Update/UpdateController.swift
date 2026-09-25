@@ -35,6 +35,8 @@ final class UpdateController {
     private var installCancellable: AnyCancellable?
     private var stateCancellable: AnyCancellable?
     private var notFoundClearTask: DispatchWorkItem?
+    /// The last transition logged; progress ticks inside one state are not transitions.
+    private var loggedState = UpdateController.logDescription(.idle)
 
     init(enabled: Bool, feedOverride: URL? = nil, hostBundle: Bundle = .main) {
         let viewModel = UpdateViewModel()
@@ -179,6 +181,11 @@ final class UpdateController {
     }
 
     private func stateDidChange(_ state: UpdateState) {
+        let described = Self.logDescription(state)
+        if described != loggedState {
+            loggedState = described
+            Self.logger.info("state \(described, privacy: .public)")
+        }
         switch state {
         case .idle, .notFound, .error, .updateAvailable:
             relaunchRequested = false
@@ -191,6 +198,23 @@ final class UpdateController {
             let task = DispatchWorkItem { [weak self] in self?.clearNotFound(notFound.id) }
             notFoundClearTask = task
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.notFoundClearDelay, execute: task)
+        }
+    }
+
+    /// One line per state for the `updates` log: the case and what its payload says about the
+    /// update (version, stage, who asked), never the progress figures.
+    static func logDescription(_ state: UpdateState) -> String {
+        switch state {
+        case .idle: "idle"
+        case .checking: "checking"
+        case .updateAvailable(let a):
+            "updateAvailable version=\(a.version) stage=\(a.stage) userInitiated=\(a.userInitiated)"
+        case .downloading(let d): "downloading version=\(d.version ?? "?")"
+        case .extracting(let e): "extracting version=\(e.version ?? "?")"
+        case .installing(let i):
+            "installing version=\(i.version ?? "?") autoUpdate=\(i.isAutoUpdate) userInitiated=\(i.userInitiated)"
+        case .notFound: "notFound"
+        case .error(let f): "error kind=\(f.kind)"
         }
     }
 

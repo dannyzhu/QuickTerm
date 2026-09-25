@@ -313,6 +313,17 @@ final class UpdateControllerTests: XCTestCase {
         XCTAssertTrue(controller.viewModel.state.isIdle)
     }
 
+    /// The `updates` log names each transition by case and payload, never by progress figures.
+    func testTheLogLineOfAState() {
+        XCTAssertEqual(UpdateController.logDescription(.idle), "idle")
+        XCTAssertEqual(UpdateController.logDescription(.installing(.init(isAutoUpdate: true, userInitiated: true, version: "1.6.8",
+                                                                         restart: {}, later: {}, skip: nil))),
+                       "installing version=1.6.8 autoUpdate=true userInitiated=true")
+        XCTAssertEqual(UpdateController.logDescription(.downloading(.init(cancel: {}, version: "1.6.8", expectedLength: 100, progress: 42))),
+                       UpdateController.logDescription(.downloading(.init(cancel: {}, version: "1.6.8", expectedLength: 100, progress: 43))),
+                       "a progress tick is not a transition")
+    }
+
     func testTheTestHostMayOverrideTheFeed() {
         XCTAssertTrue(UpdateController.allowsFeedOverride, "the test host is a Debug build")
     }

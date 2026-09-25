@@ -93,6 +93,7 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .ghostty:
             """
             原样透传给引擎（最高优先级），任意 ghostty 选项。
+            引擎的 auto-update / auto-update-channel 在这里无效：QuickTerm 的更新由 [updates] 管。
             """
         default: nil
         }
@@ -127,6 +128,7 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .ghostty:
             """
             Passed through to the engine verbatim (highest priority); any ghostty option.
+            The engine's auto-update / auto-update-channel keys are ignored: updating is [updates].
             """
         default: nil
         }
