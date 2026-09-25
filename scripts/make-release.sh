@@ -65,7 +65,9 @@ grep -q "exactVersion: $SPARKLE_VERSION" "$ROOT/project.yml" \
 # ── 0. Preflight checks
 cd "$ROOT"
 [ -d vendor/ghostty/macos/GhosttyKit.xcframework ] || fail "missing GhosttyKit.xcframework, run scripts/build-ghosttykit.sh first"
-find Themes -path '*/backgrounds/*' -type f | grep -q . || fail "missing theme wallpapers, run scripts/fetch-themes.sh first"
+# No pipeline here on purpose: under pipefail, `find | grep -q` reports failure when grep exits
+# early and find dies of SIGPIPE.
+[ -n "$(find Themes -path '*/backgrounds/*' -type f 2>/dev/null)" ] || fail "missing theme wallpapers, run scripts/fetch-themes.sh first"
 if [ "$UPLOAD" = 1 ]; then
   # --ignore-submodules=dirty: vendor/ghostty is a submodule that build-ghosttykit.sh deliberately
   # dirties by applying patches/ghostty/, so dirty content there is expected; a changed submodule
@@ -98,8 +100,12 @@ if [ "$IDENTITY" != "-" ]; then
   # 10-minute build.
   PUBLIC_KEY="$(sed -n 's/^ *SUPublicEDKey: *"\{0,1\}\([A-Za-z0-9+/=]*\)"\{0,1\}.*/\1/p' project.yml | head -1)"
   [ -n "$PUBLIC_KEY" ] || fail "project.yml has no SUPublicEDKey: run generate_keys once and add the public key"
-  KEYCHAIN_KEY="$("$SPARKLE_BIN/generate_keys" -p 2>/dev/null | tr -d '[:space:]')" \
-    || fail "generate_keys -p failed: the Sparkle EdDSA private key is not in this login Keychain (run $SPARKLE_BIN/generate_keys once for a new key, or import the backup with generate_keys -f <file>)"
+  # generate_keys prints its real reason (no key, Keychain access denied, no Keychain over SSH)
+  # on stdout, so the failure message carries that text instead of guessing.
+  if ! KEY_OUTPUT="$("$SPARKLE_BIN/generate_keys" -p 2>/dev/null)"; then
+    fail "generate_keys -p failed: ${KEY_OUTPUT:-no output} (the Sparkle EdDSA private key must be readable from this login Keychain: run $SPARKLE_BIN/generate_keys once for a new key, or import the backup with generate_keys -f <file>)"
+  fi
+  KEYCHAIN_KEY="$(printf '%s' "$KEY_OUTPUT" | tr -d '[:space:]')"
   [ "$KEYCHAIN_KEY" = "$PUBLIC_KEY" ] || fail "SUPublicEDKey in project.yml does not match the key in the login Keychain (generate_keys -p)"
   SCRATCH="$(mktemp)"; echo probe > "$SCRATCH"
   "$SPARKLE_BIN/sign_update" "$SCRATCH" >/dev/null || fail "sign_update cannot sign (Keychain locked? run it once by hand and click Always Allow)"
@@ -140,11 +146,17 @@ VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$PLIST
 BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$PLIST")"
 # Sparkle offers an update only when this number is greater than the installed one's. 23 is the
 # build 1.6.7 shipped as, the last release before the updater, so anything at or below it would
-# never be offered to anyone.
+# never be offered to anyone. Enforced for an upload; a local DMG (README's "build your own")
+# only gets a warning, so the check does not block a checkout that has not been bumped yet.
 case "$BUILD_NUMBER" in
   ''|*[!0-9]*) fail "CFBundleVersion '${BUILD_NUMBER}' is not an integer (Sparkle compares it as the build number)" ;;
 esac
-[ "$BUILD_NUMBER" -gt 23 ] || fail "build $BUILD_NUMBER is not greater than 23 (1.6.7's build): bump CURRENT_PROJECT_VERSION in project.yml"
+if [ "$BUILD_NUMBER" -le 23 ]; then
+  if [ "$UPLOAD" = 1 ]; then
+    fail "build $BUILD_NUMBER is not greater than 23 (1.6.7's build): bump CURRENT_PROJECT_VERSION in project.yml"
+  fi
+  echo "warning: build $BUILD_NUMBER is not greater than 23 (1.6.7's build); fine for a local DMG, a release needs a bump" >&2
+fi
 MIN_SYSTEM="$(/usr/libexec/PlistBuddy -c 'Print LSMinimumSystemVersion' "$PLIST")"
 case "$MIN_SYSTEM" in *.*.*) ;; *) MIN_SYSTEM="$MIN_SYSTEM.0" ;; esac
 TAG="v$VERSION"

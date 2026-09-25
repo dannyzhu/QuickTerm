@@ -105,8 +105,8 @@ Scheduled path (Sparkle's background check, at launch and about daily):
 Manual **Check for Updates…** (menu or engine action) whenever the updater exists (§8): it always
 uses Sparkle's interactive driver, whatever the switches, so the states below are the interactive
 ones even when `install = true`. Found → the indicator appears **and the sheet opens straight
-away** (`userInitiated`), also for a staged update the check resumes; none → `notFound` for 5 s
-(no modal); error → `error`, and its sheet opens too (the user is watching, §4). If an update is
+away** (`userInitiated`); none → `notFound` for 5 s (no modal); error → `error`, and its sheet
+opens too (the user is watching, §4). If an update is
 already on screen (session held), Sparkle routes the manual check to `showUpdateInFocus`, which
 raises the sheet. During a download or extraction the menu item stays enabled and shows that
 download's sheet instead of cancelling it.
@@ -124,11 +124,14 @@ Later / Skip / Cancel semantics:
   goes idle.
 - While an update is staged, `willInstallUpdateOnQuit` returns YES, which per
   `SPUUpdaterDelegate.h` stalls the update cycle and prevents further ones: no scheduled check
-  re-delivers it, and the indicator simply persists until the app quits (and installs it). A
-  manual check resumes it as `showUpdateFound` with `stage == .installing`; **Later** there keeps
-  the indicator through Sparkle's follow-up `dismissUpdateInstallation` (it still installs on
-  quit), and since that reply block is then spent, **Restart Now** on the kept state resumes it
-  through a fresh check and answers the resumed question `.install`.
+  re-delivers it, Sparkle's session stays open so `canCheckForUpdates` is NO (the menu item is
+  disabled and the engine action does nothing), and the indicator simply persists until the app
+  quits (and installs it). Sparkle resumes a staged update only in a process that starts while
+  its installer is still pending (a crash or force-quit after staging): the resume arrives as
+  `showUpdateFound` with `stage == .installing`; **Later** there keeps the indicator through
+  Sparkle's follow-up `dismissUpdateInstallation` (it still installs on quit), and since that
+  reply block is then spent, **Restart Now** on the kept state resumes it through a fresh check
+  and answers the resumed question `.install`.
 
 Automatic-mode details: a background download that fails is silent (Sparkle's automatic driver
 reports nothing); the next scheduled check retries. If `/Applications` is not writable by this user,
