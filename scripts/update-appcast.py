@@ -66,13 +66,19 @@ def merge(tree, version, build, min_system, dmg_url, length, signature, notes, n
     for item in channel.findall("item"):
         other = build_of(item)
         short = item.find(q("shortVersionString"))
-        if other is not None and other > build:
-            raise SystemExit("error: build %d is not greater than build %d already in the feed: "
-                             "bump CURRENT_PROJECT_VERSION" % (build, other))
-        if other is not None and other == build:
+        same_version = short is not None and short.text == version
+        # A same build re-publishing the same version (a re-run of this release) replaces the old
+        # item. A same build under a *different* version is a forgotten CURRENT_PROJECT_VERSION
+        # bump, not a re-run: it must fail exactly like a build that went backwards, or Sparkle
+        # (which compares sparkle:version, never shortVersionString) would silently drop the
+        # replaced version from the feed and never offer it to anyone still on it.
+        if other is not None and other == build and same_version:
             channel.remove(item)
             continue
-        if short is not None and short.text == version:
+        if other is not None and other >= build:
+            raise SystemExit("error: build %d is not greater than build %d already in the feed: "
+                             "bump CURRENT_PROJECT_VERSION" % (build, other))
+        if same_version:
             raise SystemExit("error: version %s is already in the feed as build %s" % (version, other))
     item = ET.Element("item")
     ET.SubElement(item, "title").text = "QuickTerm %s" % version
@@ -141,6 +147,17 @@ def self_test():
         raise AssertionError("a reused version must fail")
     except SystemExit as error:
         assert "already in the feed" in str(error), error
+    # A same build under a *changed* version fails too (a forgotten CURRENT_PROJECT_VERSION bump
+    # must not silently replace another release's item just because the build matches).
+    same_build = fixture([23])
+    merge(same_build, "1.6.8", 24, "15.4.0", "https://x/24.dmg", 5, "s24", "n", "https://x/24",
+          datetime(2026, 9, 30, tzinfo=timezone.utc))
+    try:
+        merge(same_build, "1.6.9", 24, "15.4.0", "https://x/24c.dmg", 1, "s", "n", "https://x/24c",
+              datetime.now(timezone.utc))
+        raise AssertionError("a same build under a changed version must fail")
+    except SystemExit as error:
+        assert "CURRENT_PROJECT_VERSION" in str(error), error
     # Pruning keeps the newest 15, and an unparsable date does not crash.
     big = fixture(list(range(1, 17)))
     channel = big.getroot().find("channel")
