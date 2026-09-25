@@ -1,0 +1,19 @@
+/* QuickTerm — English (base) UI strings for the updater (Sources/Update/).
+ *
+ * ONE AREA = ONE TABLE. Every `<Area>.strings` inside a `.lproj` is loaded and merged at
+ * runtime; a key declared in two tables fails LocalizationTests. English is the development
+ * language: every key MUST exist here. Rules (scripts/check-localization.py,
+ * Tests/LocalizationTests.swift): whole sentences only; positional %1$@ only, a literal percent
+ * sign is %%; keys lowercase, dot separated, area first. NSAlert renders values verbatim.
+ */
+
+/* MARK: - status-bar indicator (Sources/Update/UpdateIndicator.swift); %1$@ = version, %2$@ = percent */
+
+"update.bar.checking" = "Checking for updates…";
+"update.bar.available" = "QuickTerm %1$@ is available";
+"update.bar.downloaded" = "QuickTerm %1$@ is downloaded";
+"update.bar.downloading" = "Downloading %1$@: %2$@%%";
+"update.bar.extracting" = "Preparing %1$@…";
+"update.bar.installing" = "Quit or restart to finish updating to %1$@";
+"update.bar.up-to-date" = "You're up to date";
+"update.bar.error" = "Update failed";

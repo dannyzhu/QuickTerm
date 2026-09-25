@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Waybar-style top bar (spec §4.4): 26pt, Monaco 12, monochrome SF Symbols, no rounded corners.
-/// Left: logo + workspace pills. Center: clock. Right: cpu, network, volume, battery.
+/// Left: logo + workspace pills. Center: clock. Right: update indicator (when there is one), cpu, network, volume, battery.
 struct StatusBarView: View {
     /// Bar height (MainWindowController refers to it when converting content-area coordinates).
     static let height: CGFloat = 26
@@ -10,6 +10,7 @@ struct StatusBarView: View {
     @EnvironmentObject private var i18n: Localization
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var stats: SystemStatsService
+    @ObservedObject var updates: UpdateViewModel
     /// The notification centre feeds the `●N` on the pills. Observed rather than pushed onto the
     /// model by a sink: the count is a pure function of the centre's live notices, and `live` is
     /// `@Published`, so every post and every resolution redraws this bar by itself.
@@ -19,6 +20,7 @@ struct StatusBarView: View {
     /// the workspace).
     let onRenameWorkspace: (Int) -> Void
     let onToggleMute: () -> Void
+    let onUpdateClick: () -> Void
 
     @State private var altClock = false
     /// Content width, excluding the 8pt of padding on each side. Whether the pills show names hangs
@@ -203,6 +205,8 @@ struct StatusBarView: View {
 
     private var rightSection: some View {
         HStack(spacing: 14) {
+            // Leftmost on purpose: the four system items keep their places when it comes and goes.
+            UpdateIndicator(model: updates, onClick: onUpdateClick)
             HStack(spacing: 3) {
                 Image(systemName: "cpu")
                 Text("\(stats.cpuPercent)%")

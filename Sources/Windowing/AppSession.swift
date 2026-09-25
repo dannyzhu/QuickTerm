@@ -25,6 +25,10 @@ final class AppSession {
     /// N windows meant N pollers.
     let stats = SystemStatsService()
 
+    /// The updater (Sparkle behind a custom driver). Created by AppDelegate before the session, so
+    /// the gate decides once; every screen's status bar observes `updates.viewModel`.
+    let updates: UpdateController
+
     /// The session archive (multi-screen v5): the single entry point for reading from disk,
     /// migration, and debounced writes
     let sessionStore: SessionStore
@@ -75,9 +79,10 @@ final class AppSession {
     private var pendingScreenReflow: DispatchWorkItem?
 
     init(screens: ScreenRegistry, themeManager: ThemeManager, stateURL: URL? = nil,
-         controlSocketPath: String? = nil) {
+         controlSocketPath: String? = nil, updates: UpdateController = UpdateController(enabled: false)) {
         self.screens = screens
         self.themeManager = themeManager
+        self.updates = updates
         self.sessionStore = SessionStore(screens: screens, url: stateURL)
         let consent = ControlConsent(screens: screens)
         self.controlConsent = consent
@@ -207,6 +212,9 @@ final class AppSession {
         // The notification centre reads its switches from here, never from the config file: one
         // reload, one push, and every sink's `isEnabled` is re-derived in one place.
         NoticeCenter.shared.settings = NoticeSettings(settings)
+        // The updater's two switches, same pattern: one reload, one push. Writes Sparkle's flags
+        // when the updater exists, stores them otherwise.
+        updates.apply(UpdateSettings(settings))
         // The diagnostic log follows `[notifications] diagnostic-log`: turning it on opens the file
         // and writes a launch marker, turning it off closes it. Pushed here for the same reason as
         // the centre's switches — one reload, one place.

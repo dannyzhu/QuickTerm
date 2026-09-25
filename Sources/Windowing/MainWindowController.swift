@@ -21,6 +21,8 @@ final class MainWindowController: BaseTerminalController {
     var keybindings: KeybindingMap { session.keybindings }
     /// The one system-stats poller in the process (injected into RootView)
     var stats: SystemStatsService { session.stats }
+    /// The updater's state, injected into RootView next to `stats`.
+    var updates: UpdateController { session.updates }
     var themeManager: ThemeManager { session.themeManager }
     private var keyMonitor: Any?
     private var mouseMonitor: Any?
@@ -348,14 +350,15 @@ final class MainWindowController: BaseTerminalController {
         }
 
         window.contentView = NSHostingView(rootView: RootView(
-            model: model, ghostty: ghostty, stats: stats,
+            model: model, ghostty: ghostty, stats: stats, updates: updates.viewModel,
             action: { [weak self] op in self?.handleSplitOperation(op) },
             onScrollingDrop: { [weak self] payload, dest, zone in
                 self?.scrollingDrop(payload: payload, destination: dest, zone: zone)
             },
             onSelectWorkspace: { [weak self] i in self?.switchWorkspace(i) },
             onRenameWorkspace: { [weak self] i in self?.promptWorkspaceTitle(i) },
-            onPanelChoose: { [weak self] i in self?.choosePanelItem(i) })
+            onPanelChoose: { [weak self] i in self?.choosePanelItem(i) },
+            onUpdateClick: { [weak self] in self?.session.updates.showSheet() })
             .environmentObject(themeManager)
             // The UI language, for `@EnvironmentObject private var i18n: Localization` in any
             // SwiftUI view: reading a string through it is what re-renders that view when

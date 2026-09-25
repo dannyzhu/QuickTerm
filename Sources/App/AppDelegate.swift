@@ -64,12 +64,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var stateFile: String?
         /// `--control-socket` / `QUICKTERM_CONTROL_SOCKET`
         var controlSocket: String?
+        /// `--update-feed-url` / `QUICKTERM_UPDATE_FEED_URL` (Debug builds only, for the E2E test)
+        var updateFeed: String?
 
         /// The argument names, and the variable each falls back to.
         static let switches: [(argument: String, variable: String, path: WritableKeyPath<LaunchOverrides, String?>)] = [
             ("--config-file", "QUICKTERM_CONFIG_FILE", \.configFile),
             ("--state-file", "QUICKTERM_STATE_FILE", \.stateFile),
             ("--control-socket", "QUICKTERM_CONTROL_SOCKET", \.controlSocket),
+            ("--update-feed-url", "QUICKTERM_UPDATE_FEED_URL", \.updateFeed),
         ]
 
         init(arguments: [String], environment: [String: String]) {
@@ -116,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var configURL: URL? { Self.expand(configFile).map { URL(fileURLWithPath: $0) } }
         var stateURL: URL? { Self.expand(stateFile).map { URL(fileURLWithPath: $0) } }
         var controlSocketPath: String? { Self.expand(controlSocket) }
+        var updateFeedURL: URL? { updateFeed.flatMap { URL(string: $0) } }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -191,10 +195,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // real ~/.config/quickterm/config.toml.
         // This has to be set before loadInitialConfig.
         if let url = overrides.configURL { ConfigStore.configURLOverride = url }
+        // The updater: the gate decides once per launch (docs/superpowers/specs/2026-09-25-auto-update-design.md §8).
+        // A Debug build only updates against an explicit feed override, so a build in DerivedData is
+        // never replaced by a release DMG; Release builds ignore the override.
+        let feedOverride: URL? = UpdateController.isDebugBuild ? overrides.updateFeedURL : nil
+        let updates = UpdateController(
+            enabled: UpdateController.isEnabled(
+                isRunningTests: Self.isRunningTests,
+                hasPublicKey: UpdateController.hasPublicKey(in: .main),
+                isDebugBuild: UpdateController.isDebugBuild,
+                feedOverride: feedOverride),
+            feedOverride: feedOverride)
         let session = AppSession(
             screens: screens, themeManager: themeManager,
             stateURL: overrides.stateURL,
-            controlSocketPath: overrides.controlSocketPath)
+            controlSocketPath: overrides.controlSocketPath,
+            updates: updates)
         self.session = session
         // The notification centre, before the config is loaded: `loadInitialConfig()` pushes
         // `[notifications]` through `AppSession.applyGlobalConfig`, and a sink registered after
@@ -220,6 +236,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         MainMenu.install(delegate: self)
         NSApp.activate(ignoringOtherApps: true)
+
+        // Last: the updater. It re-applies the settings loadInitialConfig() stored and, when checks
+        // are on, checks once now (Sparkle's own scheduler would wait for the daily interval).
+        session.updates.start()
+        #if DEBUG
+        // QUICKTERM_UPDATE_SIMULATE=happyPath|notFound|error|slowDownload|cancelDuringDownload|
+        // cancelDuringChecking|staged|autoUpdate drives the indicator and the sheet without a server.
+        if let scenario = ProcessInfo.processInfo.environment["QUICKTERM_UPDATE_SIMULATE"].flatMap(UpdateSimulator.init(rawValue:)),
+           !Self.isRunningTests {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { scenario.simulate(with: session.updates.viewModel) }
+        }
+        #endif
     }
 
     // MARK: config.toml live reload (watching and the global half belong to AppSession; only the

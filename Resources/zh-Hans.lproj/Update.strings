@@ -1,0 +1,16 @@
+/* QuickTerm — Simplified Chinese UI strings for the updater (Sources/Update/).
+ *
+ * Same key set as en.lproj/Update.strings (Tests/LocalizationTests.swift pins that). Positional
+ * arguments (%1$@, %2$@ …) may be reordered; the SET of indices must match the English value.
+ */
+
+/* MARK: - status-bar indicator (Sources/Update/UpdateIndicator.swift) */
+
+"update.bar.checking" = "正在检查更新…";
+"update.bar.available" = "QuickTerm %1$@ 可用";
+"update.bar.downloaded" = "QuickTerm %1$@ 已下载";
+"update.bar.downloading" = "正在下载 %1$@：%2$@%%";
+"update.bar.extracting" = "正在准备 %1$@…";
+"update.bar.installing" = "退出或重启以完成更新到 %1$@";
+"update.bar.up-to-date" = "已是最新版本";
+"update.bar.error" = "更新失败";

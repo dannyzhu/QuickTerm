@@ -6,7 +6,7 @@ import SwiftUI
 /// It lives here as pure functions for the same reason as `PaneTitleBadge`: a view cannot measure
 /// "does not fit". The status bar has three sections - on the left the logo, the pills and the
 /// control-plane flash; in the middle the clock (centered independently in a ZStack, unaffected by
-/// either side's width); on the right cpu / network / volume / battery. The moment the pills start
+/// either side's width); on the right the update indicator (when there is one), cpu / network / volume / battery. The moment the pills start
 /// showing names the left section gets longer, and when it grows far enough to run into the clock
 /// SwiftUI does not complain: it squeezes and truncates the `Text`, and the whole bar looks broken.
 /// So "does it fit" has to be answered before anything is drawn, and answered for **the whole row

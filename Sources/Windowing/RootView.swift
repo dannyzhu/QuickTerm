@@ -247,12 +247,15 @@ struct RootView: View {
     @EnvironmentObject private var i18n: Localization
     let ghostty: Ghostty.App
     let stats: SystemStatsService
+    let updates: UpdateViewModel
     let action: (TerminalSplitOperation) -> Void
     let onScrollingDrop: (PaneView, PaneView, TerminalSplitDropZone) -> Void
     let onSelectWorkspace: (Int) -> Void
     /// Right-click on a workspace pill: name or rename it
     let onRenameWorkspace: (Int) -> Void
     let onPanelChoose: (Int) -> Void
+    /// A click on the update indicator in the status bar
+    let onUpdateClick: () -> Void
 
     var body: some View {
         ZStack {
@@ -275,10 +278,11 @@ struct RootView: View {
         VStack(spacing: 0) {
             if model.barVisible {
                 StatusBarView(
-                    model: model, stats: stats,
+                    model: model, stats: stats, updates: updates,
                     onSelectWorkspace: onSelectWorkspace,
                     onRenameWorkspace: onRenameWorkspace,
-                    onToggleMute: { [weak stats] in stats?.toggleMute() })
+                    onToggleMute: { [weak stats] in stats?.toggleMute() },
+                    onUpdateClick: onUpdateClick)
             }
             ZStack {
                 switch model.layout {
