@@ -70,7 +70,11 @@ enum UpdateSimulator: String, CaseIterable {
 
     private static func check(_ viewModel: UpdateViewModel, then next: @escaping () -> Void) {
         viewModel.state = .checking(.init(cancel: { viewModel.state = .idle }))
-        after(2, next)
+        after(2) {
+            // A cancel in the meantime already moved the state on; don't resurrect it.
+            guard case .checking = viewModel.state else { return }
+            next()
+        }
     }
 
     /// An available 9.9.9 whose Install starts a scripted download.
@@ -94,6 +98,8 @@ enum UpdateSimulator: String, CaseIterable {
                                                      expectedLength: total, progress: UInt64(i * 100)))
                 if i == steps {
                     after(0.5) {
+                        // A cancel in the meantime already moved the state on; don't overwrite it.
+                        guard case .downloading = viewModel.state else { return }
                         if thenCancel { viewModel.state = .idle } else { extract(viewModel) }
                     }
                 }

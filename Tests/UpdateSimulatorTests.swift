@@ -34,6 +34,17 @@ final class UpdateSimulatorTests: XCTestCase {
         XCTAssertTrue(wait { if case .installing = model.state { return true }; return false })
     }
 
+    func testCancelDuringCheckingStaysIdle() {
+        let model = UpdateViewModel()
+        UpdateSimulator.happyPath.simulate(with: model)
+        guard case .checking = model.state else { return XCTFail("happyPath starts with checking") }
+        model.state.cancel()
+        XCTAssertTrue(model.state.isIdle)
+        // Spin past the scaled 2 s check delay; the cancelled scenario must not resurrect it.
+        XCTAssertFalse(wait(until: { !model.state.isIdle }, timeout: 0.2))
+        XCTAssertTrue(model.state.isIdle, "a cancelled check must not resurrect into .updateAvailable")
+    }
+
     func testNotFoundAndErrorScenarios() {
         let model = UpdateViewModel()
         UpdateSimulator.notFound.simulate(with: model)
