@@ -11,15 +11,15 @@
 Rules (docs/superpowers/specs/2026-09-25-auto-update-design.md §7): the new build number must be
 strictly greater than every build already in the feed (a forgotten CURRENT_PROJECT_VERSION bump
 would otherwise publish an update no client is ever offered); an item with the same build is
-replaced; a version string may not reappear under another build; the feed keeps the newest 15
-items; pubDate is in the one shape Sparkle parses; the description carries the English notes as
-Markdown text declared plain-text (QuickTerm's own driver flattens it, nothing else renders it).
+replaced only when it is the same version (a re-run of this release); a version string may not
+reappear under another build; the feed keeps the newest 15 items; pubDate is in the one shape
+Sparkle parses; the description carries the English notes as Markdown text declared plain-text
+(QuickTerm's own driver flattens it, nothing else renders it).
 Written with ElementTree, so no CDATA and no hand escaping.
 """
 
 import argparse
 import os
-import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
