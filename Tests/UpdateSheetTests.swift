@@ -15,6 +15,14 @@ final class UpdateSheetTests: XCTestCase {
         sheet = UpdateSheet(controller: controller, notes: ReleaseNotes.Loader(), currentVersion: "1.6.7")
     }
 
+    /// A failed assertion must never leave a real sheet attached to the test host's window for
+    /// the next test to trip over.
+    override func tearDown() {
+        sheet.dismiss()
+        controller.viewModel.state = .idle
+        super.tearDown()
+    }
+
     private func available(userInitiated: Bool = false, stage: UpdateState.UpdateAvailable.Stage = .notDownloaded,
                            reply: @escaping @Sendable (SPUUserUpdateChoice) -> Void = { _ in }) -> UpdateState {
         .updateAvailable(.init(appcastItem: SUAppcastItem.empty(), stage: stage, userInitiated: userInitiated, reply: reply))
@@ -109,10 +117,17 @@ final class UpdateSheetTests: XCTestCase {
 
     func testAManualFindOpensTheSheetByItself() {
         controller.viewModel.state = available(userInitiated: true)
+        // The auto-present is deferred by one main-queue turn (Finding 2): `stateDidChange` runs
+        // inside `$state`'s willSet, before the new value is stored, and presenting synchronously
+        // there could read stale state back out of the controller. So right after the assignment
+        // nothing has opened yet.
+        XCTAssertFalse(sheet.isPresented, "the present is deferred, not synchronous")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         XCTAssertTrue(sheet.isPresented)
         sheet.dismiss()
         controller.viewModel.state = .idle
         controller.viewModel.state = available(userInitiated: false)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         XCTAssertFalse(sheet.isPresented, "a scheduled find only lights the icon")
     }
 
@@ -123,5 +138,25 @@ final class UpdateSheetTests: XCTestCase {
         sheet.present()
         XCTAssertEqual(controller.viewModel.state, .idle)
         XCTAssertFalse(sheet.isPresented)
+    }
+
+    /// Finding 1: `AppSession.updateSheet` has to be built eagerly (a stored `let`, not `lazy`)
+    /// so a manual "Check for Updates…" that finds something can open the sheet by itself even
+    /// when nobody has ever clicked the indicator to force the `lazy` property into existence.
+    /// This goes through the live session rather than a fresh `UpdateSheet`, so it would have
+    /// caught a `lazy` regression the other tests (which all construct their own `sheet` in
+    /// `setUp`) cannot.
+    func testALiveSessionOpensTheSheetWithoutTouchingItFirst() throws {
+        let session = try XCTUnwrap((NSApp.delegate as? AppDelegate)?.session)
+        defer {
+            session.updateSheet.dismiss()
+            session.updates.viewModel.state = .idle
+        }
+        // Deliberately not touching `session.updateSheet` before this: if it were still `lazy`,
+        // nothing would have subscribed to `$state` yet and this assignment would be a no-op as
+        // far as the sheet is concerned.
+        session.updates.viewModel.state = available(userInitiated: true)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertTrue(session.updateSheet.isPresented)
     }
 }

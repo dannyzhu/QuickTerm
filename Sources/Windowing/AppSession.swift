@@ -29,8 +29,11 @@ final class AppSession {
     /// the gate decides once; every screen's status bar observes `updates.viewModel`.
     let updates: UpdateController
 
-    /// The sheet behind the indicator; built lazily because it reads the bundle version.
-    private(set) lazy var updateSheet = UpdateSheet(controller: updates)
+    /// The sheet behind the indicator. Built eagerly in `init` (not `lazy`): its own init is what
+    /// subscribes to `updates.viewModel.$state`, and a manual "Check for Updates…" that finds
+    /// something has to open the sheet on its own, with nobody having clicked the indicator yet
+    /// to force a `lazy` property into existence first.
+    let updateSheet: UpdateSheet
 
     /// The session archive (multi-screen v5): the single entry point for reading from disk,
     /// migration, and debounced writes
@@ -86,6 +89,7 @@ final class AppSession {
         self.screens = screens
         self.themeManager = themeManager
         self.updates = updates
+        self.updateSheet = UpdateSheet(controller: updates)
         self.sessionStore = SessionStore(screens: screens, url: stateURL)
         let consent = ControlConsent(screens: screens)
         self.controlConsent = consent

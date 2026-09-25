@@ -281,9 +281,20 @@ final class UpdateSheet {
         }
         dismiss()
         // A manual check that found something opens without a click; a scheduled one only lights
-        // the icon.
+        // the icon. Deferred by one main-queue turn on purpose: this sink runs inside `$state`'s
+        // willSet, before the new value is actually stored, and `present` can block right here —
+        // `makeAlert`'s `runModal` fallback, when there is no key/visible window — with
+        // `controller.viewModel.state` still reading the *old* value. An Install click taken
+        // inside that nested run loop would then act on the stale state (still "installable",
+        // e.g. `.checking`) instead of the update being announced, and the reply would never
+        // reach it. Re-reading the stored state after the hop, and presenting only if it is
+        // still the same user-initiated update, avoids that.
         if case .updateAvailable(let available) = state, available.userInitiated {
-            present(state)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, case .updateAvailable(let stillAvailable) = self.controller.viewModel.state,
+                      stillAvailable.userInitiated, !self.isPresented else { return }
+                self.present(self.controller.viewModel.state)
+            }
         }
     }
 
