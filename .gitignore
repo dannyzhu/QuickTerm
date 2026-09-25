@@ -21,3 +21,6 @@ Themes/*/backgrounds/
 
 # 覆盖率/性能采样临时文件
 *.profraw
+
+# SDD scratch workspaces (superpowers subagent-driven development)
+.superpowers/
