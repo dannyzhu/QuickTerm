@@ -33,6 +33,7 @@ Pre-built DMGs are on the [Releases](https://github.com/dannyzhu/QuickTerm/relea
 
 1. Open the DMG and drag **QuickTerm** into **Applications**.
 2. Launch it. The app is signed with a Developer ID and notarized by Apple, so it opens like any other app — no Gatekeeper dialog, no right-click-to-open. The first window opens a shell in your home directory.
+3. From the first updater-enabled release on, QuickTerm keeps itself up to date: it checks GitHub Releases about once a day and shows an icon in the status bar when a newer version is out (see `[updates]` under Configuration). Versions up to 1.6.7 have no updater — install this one by hand once.
 
 Optional: with the DMG and its `.sha256` file in the same folder, run `shasum -a 256 -c QuickTerm-<version>.dmg.sha256` to verify the download. To build your own DMG from source, follow [Build](#build) and then run `scripts/make-release.sh`.
 
@@ -407,6 +408,12 @@ Full agent-facing documentation, including the addressing grammar and the exit-c
 
 Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents/AGENTS.quickterm.md) into your project root as `AGENTS.md` to let your coding agent drive QuickTerm.
 
+### Releasing
+
+One-time, on the release Mac: run Sparkle's `generate_keys` (from `.tools/sparkle-2.10.0/bin` after a first `scripts/make-release.sh`, or the SwiftPM artifacts), put the printed public key into `project.yml` as `SUPublicEDKey`, back the private key up with `generate_keys -x <file>` to offline storage, and run `sign_update` once by hand so the Keychain prompt is answered with *Always Allow*.
+
+Per release: bump `MARKETING_VERSION` **and** `CURRENT_PROJECT_VERSION` in `project.yml` (Sparkle compares the build number; the script refuses a build that is not greater than the feed's), write `docs/releases/v<version>.md` and `docs/releases/v<version>.zh-CN.md`, commit, tag `v<version>`, push the tag, then `SIGN_IDENTITY=… NOTARY_PROFILE=… scripts/make-release.sh --notarize --upload`. The script publishes the DMG, its checksum, both notes files and `appcast.xml` as one draft-then-published release and verifies the live feed. If a release has to be pulled, re-run the appcast step against the release that becomes latest — the feed URL always follows the newest release.
+
 ## Configuration
 
 `~/.config/quickterm/config.toml` — created with a commented template the first time you press `Cmd+,`. It hot-reloads on save.
@@ -497,7 +504,7 @@ Ghostty's configuration is assembled in five layers, later ones override earlier
 
 1. libghostty built-in defaults
 2. QuickTerm's bundled fallback (`ghostty-default.conf`: Monaco 15, the Builtin Pastel Dark theme, copy-on-select, 100M scrollback, option-as-alt …) — loaded **only when you have no Ghostty config file at all**; it steps aside entirely as soon as one exists
-3. **`~/.config/ghostty/config`** — loaded with Ghostty's own rules, including `config-file` includes. Fonts, cursor, scrollback, shell integration and terminal-level `keybind =` lines all apply.
+3. **`~/.config/ghostty/config`** — loaded with Ghostty's own rules, including `config-file` includes. Fonts, cursor, scrollback, shell integration and terminal-level `keybind =` lines all apply. The engine's own `auto-update` and `auto-update-channel` keys are ignored: QuickTerm's `[updates]` section decides.
 4. QuickTerm's overlay (`~/Library/Application Support/QuickTerm/engine-overlay.conf`, regenerated on theme change): colours and palette from the active theme, `window-padding-x/y`, `background-opacity`, `unfocused-split-opacity`, and `window-vsync = false` (see Troubleshooting). Set `theme = "ghostty"` to keep only the padding.
 5. The `[ghostty]` section of `config.toml`, appended last.
 

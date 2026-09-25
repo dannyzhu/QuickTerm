@@ -710,3 +710,25 @@ The buttons follow the control-plane consent alert rather than upstream: Deny is
 the two OSC 52 questions (a program helping itself to the clipboard gets the same treatment as
 an agent asking to run a command; allowing takes a click), while the unsafe paste keeps Paste on
 Return, since that one is the user's own ⌘V.
+
+## Auto-update: Sparkle behind Ghostty's driver, in QuickTerm's own UI (2026-09-25)
+
+Upstream's `Features/Update` (controller, `SPUUserDriver`, delegate, view model, simulator) is
+ported into `Sources/Update/` with the presentation replaced: no titlebar pill, no popover, no
+xib — the status bar's right cluster gets an indicator and a click opens the house `NSAlert`
+sheet. What changed against upstream, and why:
+
+- `UpdateDriver` drops the `SPUStandardUserDriver` fallback and the terminal-window observers;
+  `showUpdateFound` branches on `SPUUserUpdateState.stage` (a staged update is "quit or restart to
+  finish", not "78 MB available"); `showUpdateInFocus` opens the sheet (without it Sparkle keeps
+  `canCheckForUpdates` false while an update is on screen); errors and not-found are acknowledged
+  at once so no Sparkle session is ever held by a view.
+- `UpdateController.updater` is optional: the test host, a build without `SUPublicEDKey` and a
+  Debug build without `--update-feed-url` have no Sparkle at all and one code path.
+- "Later" in check-only mode replies nothing (the reply block is retained), so the icon stays; in
+  install mode it replies dismiss so the automatic driver stages the update on the next check.
+- The quit confirmation stands aside on `relaunchRequested`, set by every path that asks Sparkle
+  to terminate the app.
+- Release notes come from two release assets (`QuickTerm-<v>-notes.md` / `-notes.zh-CN.md`),
+  not from the appcast; `docs/releases/v<v>.zh-CN.md` is required from now on.
+- The design and its review are in `docs/superpowers/specs/2026-09-25-auto-update-design.md`.

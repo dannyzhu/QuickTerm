@@ -33,6 +33,7 @@ QuickTerm 把 [Omarchy](https://omarchy.org) 的 Hyprland 平铺桌面装进一�
 
 1. 打开 DMG，把 **QuickTerm** 拖进 **应用程序**。
 2. 直接启动。应用已用 Developer ID 签名并经 Apple 公证，和其他应用一样正常打开——没有 Gatekeeper 弹窗，也不用右键打开。首个窗口会在你的主目录打开一个 shell。
+3. 从第一个带更新器的版本起，QuickTerm 会自己保持最新：大约每天到 GitHub Releases 查一次，有新版本时状态栏亮一个图标（见「配置」里的 `[updates]`）。1.6.7 及更早版本没有更新器——这一次请手动安装。
 
 可选：把 DMG 和 Release 附带的 `.sha256` 文件放在同一目录，运行 `shasum -a 256 -c QuickTerm-<版本>.dmg.sha256` 校验下载。想自己从源码打 DMG，先按[构建](#构建)一节准备好环境，再运行 `scripts/make-release.sh`。
 
@@ -395,6 +396,12 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 
 给 agent 的即插即用说明：把 [`docs/agents/AGENTS.quickterm.md`](docs/agents/AGENTS.quickterm.md) 复制到你项目根目录当 `AGENTS.md`，你的编码 agent 就能驱动 QuickTerm。
 
+### 发版
+
+一次性（在发版的 Mac 上）：运行 Sparkle 的 `generate_keys`（第一次跑过 `scripts/make-release.sh` 后在 `.tools/sparkle-2.10.0/bin`，或 SwiftPM 的 artifacts 里），把打印出的公钥填进 `project.yml` 的 `SUPublicEDKey`，用 `generate_keys -x <文件>` 把私钥备份到离线位置，再手动跑一次 `sign_update`，在钥匙串提示里选「始终允许」。
+
+每次发版：在 `project.yml` 里同时升 `MARKETING_VERSION` **和** `CURRENT_PROJECT_VERSION`（Sparkle 比的是构建号；构建号不大于 feed 里已有的，脚本会拒绝），写好 `docs/releases/v<版本>.md` 与 `docs/releases/v<版本>.zh-CN.md`，提交、打 `v<版本>` tag、推送 tag，然后 `SIGN_IDENTITY=… NOTARY_PROFILE=… scripts/make-release.sh --notarize --upload`。脚本把 DMG、校验和、两份说明和 `appcast.xml` 作为一个「先草稿、再发布」的 release 一次发出，并回读线上 feed 校验。如果某个 release 要撤下，就对新的最新 release 重跑 appcast 那一步——feed 地址永远跟着最新的 release。
+
 ## 配置
 
 `~/.config/quickterm/config.toml` —— 首次按 `Cmd+,` 会生成带注释的模板；保存即热重载。
@@ -485,7 +492,7 @@ Ghostty 的配置按五层合成，后者覆盖前者：
 
 1. libghostty 内置默认值
 2. QuickTerm 内置兜底（`ghostty-default.conf`：Monaco 15、Builtin Pastel Dark 主题、copy-on-select、1 亿行 scrollback、option-as-alt 等）—— **仅当你完全没有 Ghostty 配置文件时**加载；一旦有了自己的配置，这一层整体让位
-3. **`~/.config/ghostty/config`** —— 按 Ghostty 原生规则加载，含 `config-file` 递归包含。字体、光标、滚动、shell 集成、终端级 `keybind =` 全部生效。
+3. **`~/.config/ghostty/config`** —— 按 Ghostty 原生规则加载，含 `config-file` 递归包含。字体、光标、滚动、shell 集成、终端级 `keybind =` 全部生效。引擎自己的 `auto-update` / `auto-update-channel` 两个键不生效：由 QuickTerm 的 `[updates]` 节决定。
 4. QuickTerm 覆盖层（`~/Library/Application Support/QuickTerm/engine-overlay.conf`，切主题时重写）：当前主题的配色与 palette、`window-padding-x/y`、`background-opacity`、`unfocused-split-opacity`，以及 `window-vsync = false`（见故障排查）。`theme = "ghostty"` 时只保留 padding。
 5. `config.toml` 的 `[ghostty]` 段，追加在最后。
 
