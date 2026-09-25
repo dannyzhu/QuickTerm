@@ -74,6 +74,27 @@ final class UpdateControllerTests: XCTestCase {
         XCTAssertTrue(controller.relaunchRequested, "Sparkle terminating the app sets it")
     }
 
+    /// installUpdate() cancels its confirm-everything sink but must leave `installCancellable` at
+    /// nil, or every later Install click is silently ignored until restart (the `== nil` guard).
+    func testInstallUpdateRecoversAfterACheckForUpdatesDuringInstall() {
+        var firstReplies: [SPUUserUpdateChoice] = []
+        controller.viewModel.state = .updateAvailable(.init(appcastItem: SUAppcastItem.empty(), stage: .notDownloaded,
+                                                            userInitiated: true, reply: { firstReplies.append($0) }))
+        controller.installUpdate()
+        XCTAssertEqual(firstReplies, [.install])
+
+        controller.viewModel.state = .downloading(.init(cancel: {}, version: "9", expectedLength: 10, progress: 1))
+        controller.checkForUpdates() // no updater in tests, so this only tears down the install chain
+        controller.viewModel.state = .idle
+
+        var secondReplies: [SPUUserUpdateChoice] = []
+        controller.viewModel.state = .updateAvailable(.init(appcastItem: SUAppcastItem.empty(), stage: .notDownloaded,
+                                                            userInitiated: true, reply: { secondReplies.append($0) }))
+        controller.installUpdate()
+        XCTAssertEqual(secondReplies, [.install], "a fresh Install must still go through after the earlier re-check")
+        XCTAssertTrue(controller.relaunchRequested)
+    }
+
     // MARK: not found
 
     func testNotFoundClearsItselfAfterTheDelay() {
@@ -105,6 +126,29 @@ final class UpdateControllerTests: XCTestCase {
         XCTAssertEqual(failure.kind, .translocated)
         failure.dismiss()
         XCTAssertTrue(controller.viewModel.state.isIdle)
+    }
+
+    /// Sparkle's abortUpdate calls dismissUpdateInstallation one run-loop turn after
+    /// showUpdateNotFoundWithError / showUpdaterError acknowledge it; that must not erase the
+    /// state QuickTerm is still displaying (the 5 s timer / a click / Retry / OK do that instead).
+    /// Every other state is a live Sparkle session and still tears down to idle.
+    func testDismissUpdateInstallationLeavesAcknowledgedStatesAlone() {
+        driver.showUpdateNotFoundWithError(NSError(domain: "SUSparkleErrorDomain", code: 1001)) {}
+        driver.dismissUpdateInstallation()
+        guard case .notFound = controller.viewModel.state else { return XCTFail("expected notFound to survive dismissUpdateInstallation") }
+
+        driver.showUpdaterError(NSError(domain: "SUSparkleErrorDomain", code: 1005)) {}
+        driver.dismissUpdateInstallation()
+        guard case .error = controller.viewModel.state else { return XCTFail("expected error to survive dismissUpdateInstallation") }
+
+        controller.viewModel.state = .updateAvailable(.init(appcastItem: SUAppcastItem.empty(), stage: .notDownloaded,
+                                                            userInitiated: false, reply: { _ in }))
+        driver.dismissUpdateInstallation()
+        XCTAssertTrue(controller.viewModel.state.isIdle, "updateAvailable still tears down")
+
+        controller.viewModel.state = .installing(.init(isAutoUpdate: true, version: "9", restart: {}, later: {}, skip: nil))
+        driver.dismissUpdateInstallation()
+        XCTAssertTrue(controller.viewModel.state.isIdle, "installing still tears down")
     }
 
     func testAStagedUpdateMapsToInstalling() {

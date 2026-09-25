@@ -117,7 +117,9 @@ final class UpdateController {
         default:
             // Checking, downloading, not found, error: close it and check afresh. The settle delay
             // is Ghostty's: one run-loop tick is not enough for Sparkle to end the session.
-            installCancellable?.cancel()
+            // Dropping the AnyCancellable cancels the sink; installUpdate()'s `== nil` guard needs
+            // this reset, or a later Install click is silently ignored forever.
+            installCancellable = nil
             viewModel.state.cancel()
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self] in
                 self?.updater?.checkForUpdates()

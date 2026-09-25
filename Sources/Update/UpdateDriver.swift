@@ -139,8 +139,18 @@ final class UpdateDriver: NSObject, SPUUserDriver, SPUUpdaterDelegate {
         controller?.showSheet()
     }
 
+    /// Sparkle's `abortUpdate` calls this after acknowledging `showUpdateNotFoundWithError` /
+    /// `showUpdaterError` (SPUUIBasedUpdateDriver.m), one run-loop turn after the state was set.
+    /// `.notFound` and `.error` are already fully acknowledged at that point — no Sparkle session
+    /// stands behind them any more — and are QuickTerm's own display from there on, cleared by the
+    /// not-found timer, a click, OK or Retry; only every other state actually needs tearing down.
     func dismissUpdateInstallation() {
-        viewModel.state = .idle
+        switch viewModel.state {
+        case .notFound, .error:
+            break
+        default:
+            viewModel.state = .idle
+        }
     }
 
     // MARK: SPUUpdaterDelegate
