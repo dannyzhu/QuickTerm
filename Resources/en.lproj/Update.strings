@@ -17,3 +17,29 @@
 "update.bar.installing" = "Quit or restart to finish updating to %1$@";
 "update.bar.up-to-date" = "You're up to date";
 "update.bar.error" = "Update failed";
+
+/* MARK: - the sheet (Sources/Update/UpdateSheet.swift); %1$@ = version unless said otherwise */
+
+"update.sheet.checking.title" = "Checking for updates…";
+"update.sheet.available.title" = "QuickTerm %1$@ is available";
+/* %1$@ = the running version, %2$@ = the new version, %3$@ = its size, %4$@ = its release date */
+"update.sheet.available.intro" = "You have %1$@. Version %2$@, %3$@, released %4$@.";
+/* %1$@ = the running version, %2$@ = the new version, %3$@ = its size */
+"update.sheet.available.intro-undated" = "You have %1$@. Version %2$@, %3$@.";
+"update.sheet.downloaded.intro" = "Version %1$@ is already downloaded.";
+/* %1$@ = the release page URL */
+"update.sheet.notes.github" = "Full notes on GitHub: %1$@";
+"update.sheet.notes.loading" = "Loading release notes…";
+"update.sheet.notes.unavailable" = "The release notes could not be loaded.";
+"update.sheet.downloading.title" = "Downloading QuickTerm %1$@…";
+"update.sheet.extracting.title" = "Preparing QuickTerm %1$@…";
+"update.sheet.installing.title" = "QuickTerm %1$@ is ready";
+"update.sheet.installing.intro" = "Quit or restart QuickTerm to finish the update. Restart Now installs it and brings QuickTerm back.";
+"update.sheet.error.title" = "Update failed";
+"update.sheet.translocated.title" = "QuickTerm can't update from here";
+"update.sheet.translocated.intro" = "Move QuickTerm to the Applications folder, then check for updates again.";
+"update.sheet.button.install" = "Install and Relaunch";
+"update.sheet.button.later" = "Later";
+"update.sheet.button.skip" = "Skip This Version";
+"update.sheet.button.restart" = "Restart Now";
+"update.sheet.button.retry" = "Retry";

@@ -29,6 +29,9 @@ final class AppSession {
     /// the gate decides once; every screen's status bar observes `updates.viewModel`.
     let updates: UpdateController
 
+    /// The sheet behind the indicator; built lazily because it reads the bundle version.
+    private(set) lazy var updateSheet = UpdateSheet(controller: updates)
+
     /// The session archive (multi-screen v5): the single entry point for reading from disk,
     /// migration, and debounced writes
     let sessionStore: SessionStore
@@ -93,6 +96,13 @@ final class AppSession {
         // that, the first scan reports every screen and every pane that already exists as if it had
         // just been created.
         ControlEventBus.shared.attach(screens: screens)
+        // `showSheet` is a nonisolated `() -> Void` on the plain-class `UpdateController`, but
+        // `UpdateSheet.present()` is `@MainActor`. Sparkle (and the app's own UI) only ever calls
+        // it from the main thread, so `assumeIsolated` is correct rather than a `Task { @MainActor
+        // in ... }` hop, which would show the sheet a run-loop turn late.
+        updates.showSheet = { [weak self] in
+            MainActor.assumeIsolated { self?.updateSheet.present() }
+        }
     }
 
     deinit {

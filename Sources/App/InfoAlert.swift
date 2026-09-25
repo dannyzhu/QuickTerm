@@ -17,9 +17,9 @@ extension NSAlert {
     /// wrapping width differs from the text view's. A sentence that has to precede the text goes
     /// in `intro` instead: it is laid out above the text area, wrapped at the same width, so the
     /// two read as one column.
-    @MainActor
+    @MainActor @discardableResult
     func setScrollableBody(_ text: String, intro: String? = nil, width: CGFloat = 546,
-                           minLines: Int = 7, maxLines: Int = 26) {
+                           minLines: Int = 7, maxLines: Int = 26) -> NSTextView? {
         informativeText = ""
 
         let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -46,7 +46,7 @@ extension NSAlert {
         // Measure at this width, then clamp. The line height comes from the layout manager for
         // the font actually in use, not from a guess.
         guard let layout = textView.layoutManager, let container = textView.textContainer else {
-            return
+            return nil
         }
         layout.ensureLayout(for: container)
         let lineHeight = layout.defaultLineHeight(for: font)
@@ -69,7 +69,7 @@ extension NSAlert {
 
         guard let intro, !intro.isEmpty else {
             accessoryView = scroll
-            return
+            return textView
         }
 
         // The intro, in the alert's own body font, measured at the text area's width; the two are
@@ -90,5 +90,6 @@ extension NSAlert {
         stack.addSubview(scroll)
         stack.addSubview(label)
         accessoryView = stack
+        return textView
     }
 }

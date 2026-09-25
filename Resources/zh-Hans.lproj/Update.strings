@@ -14,3 +14,26 @@
 "update.bar.installing" = "退出或重启以完成更新到 %1$@";
 "update.bar.up-to-date" = "已是最新版本";
 "update.bar.error" = "更新失败";
+
+/* MARK: - the sheet (Sources/Update/UpdateSheet.swift) */
+
+"update.sheet.checking.title" = "正在检查更新…";
+"update.sheet.available.title" = "QuickTerm %1$@ 可用";
+"update.sheet.available.intro" = "当前 %1$@。新版本 %2$@，%3$@，发布于 %4$@。";
+"update.sheet.available.intro-undated" = "当前 %1$@。新版本 %2$@，%3$@。";
+"update.sheet.downloaded.intro" = "版本 %1$@ 已下载完成。";
+"update.sheet.notes.github" = "完整说明见 GitHub：%1$@";
+"update.sheet.notes.loading" = "正在加载更新说明…";
+"update.sheet.notes.unavailable" = "更新说明加载失败。";
+"update.sheet.downloading.title" = "正在下载 QuickTerm %1$@…";
+"update.sheet.extracting.title" = "正在准备 QuickTerm %1$@…";
+"update.sheet.installing.title" = "QuickTerm %1$@ 已就绪";
+"update.sheet.installing.intro" = "退出或重启 QuickTerm 即可完成更新。「现在重启」会立即安装并重新打开 QuickTerm。";
+"update.sheet.error.title" = "更新失败";
+"update.sheet.translocated.title" = "QuickTerm 无法从当前位置更新";
+"update.sheet.translocated.intro" = "请把 QuickTerm 移到「应用程序」文件夹，再重新检查更新。";
+"update.sheet.button.install" = "立即更新并重启";
+"update.sheet.button.later" = "稍后";
+"update.sheet.button.skip" = "跳过此版本";
+"update.sheet.button.restart" = "现在重启";
+"update.sheet.button.retry" = "重试";
