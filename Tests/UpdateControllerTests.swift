@@ -363,6 +363,10 @@ final class UpdateControllerTests: XCTestCase {
                        "never checked: the launch check runs")
         XCTAssertEqual(UpdateController.launchCheckDecision(canCheck: true, lastCheck: now.addingTimeInterval(-1), now: now),
                        Decision.skipRecent, "a check that just finished was the launch check")
+        XCTAssertEqual(UpdateController.launchCheckDecision(canCheck: true, lastCheck: now.addingTimeInterval(-29), now: now),
+                       Decision.skipRecent, "Sparkle's own overdue check stamps the date when it starts, and a slow fetch takes a while")
+        XCTAssertEqual(UpdateController.launchCheckDecision(canCheck: true, lastCheck: now.addingTimeInterval(-31), now: now),
+                       Decision.check)
         XCTAssertEqual(UpdateController.launchCheckDecision(canCheck: true, lastCheck: now.addingTimeInterval(-95), now: now),
                        Decision.check, "a relaunch a minute and a half after the last check checks again")
         XCTAssertEqual(UpdateController.launchCheckDecision(canCheck: true, lastCheck: now.addingTimeInterval(-86_400), now: now),

@@ -124,16 +124,17 @@ final class UpdateController {
         // scheduleNextUpdateCheckFiringImmediately:), and a checkForUpdatesInBackground() sent
         // while it runs is refused with "sessionInProgress == YES" — the E2E run of 2026-09-25
         // saw exactly that on every launch. `canCheckForUpdates` (KVO-compliant) turns true when
-        // that session ends; the check goes out one turn after its first true, re-checked by
-        // `launchCheckDecision` so an overdue check Sparkle starts itself in that same turn is
-        // left alone.
+        // that session ends, but only for a moment: every settings write (`apply` just above, and
+        // again on each config reload) makes Sparkle reset its cycle a second later, which is
+        // another probe session and another false. So the check waits until the flag has held
+        // true for a full second, and `launchCheckDecision` still leaves an overdue check that
+        // Sparkle started by itself alone.
         if settings.checksEnabled {
             launchCheck = updater.publisher(for: \.canCheckForUpdates)
+                .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
                 .filter { $0 }
                 .first()
-                .sink { [weak self] _ in
-                    DispatchQueue.main.async { self?.runLaunchCheck() }
-                }
+                .sink { [weak self] _ in self?.runLaunchCheck() }
         }
     }
 
@@ -146,8 +147,10 @@ final class UpdateController {
         case skipRecent
     }
 
-    /// A check that ended within this many seconds of the launch counts as the launch check.
-    static let launchCheckGrace: TimeInterval = 5
+    /// A check that started within this many seconds counts as the launch check: Sparkle's own
+    /// overdue check at start-up stamps `lastUpdateCheckDate` when it begins, and a slow feed
+    /// fetch can keep it running for a while before the flag settles.
+    static let launchCheckGrace: TimeInterval = 30
 
     static func launchCheckDecision(canCheck: Bool, lastCheck: Date?, now: Date = Date()) -> LaunchCheckDecision {
         guard canCheck else { return .skipBusy }

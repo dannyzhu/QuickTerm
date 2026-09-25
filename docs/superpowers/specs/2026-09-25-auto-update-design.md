@@ -89,9 +89,10 @@ checks at launch when a day has passed since `SULastCheckTime`, and this check i
 launch" true and what brings the indicator back after a relaunch. It cannot go out on the next
 main-queue turn — `updater.start()` opens a session of its own (the probe for a resumable
 installer) and refuses a `checkForUpdatesInBackground()` sent while it runs, which the E2E run
-of 2026-09-25 saw on every launch — so it waits for the first `canCheckForUpdates == true` (KVO),
-hops one more turn, and then sends the check unless Sparkle has meanwhile started an overdue
-check itself or one has just finished (`UpdateController.launchCheckDecision`).
+of 2026-09-25 saw on every launch — so it watches `canCheckForUpdates` (KVO) and sends the check
+once the flag has held true for a full second (each settings write makes Sparkle reset its
+cycle a second later, which is another probe session), unless Sparkle has meanwhile started an
+overdue check itself or one started less than 30 s ago (`UpdateController.launchCheckDecision`).
 
 Ported files keep a header naming their origin (Ghostty, MIT); `docs/porting-notes.md` records
 what changed. Updater events are logged with OSLog category `updates`.

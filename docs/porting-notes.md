@@ -732,8 +732,9 @@ sheet. What changed against upstream, and why:
 - The launch check waits for Sparkle's start-up session to end. `SPUUpdater start` probes for a
   resumable installer with `sessionInProgress` set, so a `checkForUpdatesInBackground()` one turn
   after `start()` is refused ("sessionInProgress == YES", seen on every E2E launch of
-  2026-09-25); the check now goes out after the first `canCheckForUpdates == true`, unless
-  Sparkle started an overdue check of its own in that same turn.
+  2026-09-25); the check now goes out once `canCheckForUpdates` has held true for a second
+  (every settings write makes Sparkle re-probe a second later), unless Sparkle started an
+  overdue check of its own or a check began less than 30 s ago.
 - `updaterShouldRelaunchApplication` always answers YES. A NO is consulted by
   `SPUInstallerDriver.mayUpdateAndRestart` before stage 2 and aborts the installation outright
   (found by the E2E run of 2026-09-25: the app sat idle, the installer sat waiting, and the
