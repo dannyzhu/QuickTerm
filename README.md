@@ -97,6 +97,14 @@ Tests (59 cases, run inside the app as test host):
 xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug test
 ```
 
+### Releasing
+
+One-time, on the release Mac: run Sparkle's `generate_keys` from `build/release/SourcePackages/artifacts/sparkle/Sparkle/bin/` (any `scripts/make-release.sh` build fetches the Sparkle package there; the script downloads the same tools into `.tools/sparkle-2.10.0/bin/` only when that folder is missing), put the printed public key into `project.yml` as `SUPublicEDKey`, back the private key up with `generate_keys -x <file>` to offline storage (`generate_keys -f <file>` imports it on another Mac), and run `sign_update` once by hand so the Keychain prompt is answered with *Always Allow*.
+
+Per release: bump `MARKETING_VERSION` **and** `CURRENT_PROJECT_VERSION` in `project.yml` (Sparkle compares the build number; the script refuses a build that is not greater than the feed's, or not above 23, the build of 1.6.7), write `docs/releases/v<version>.md` and `docs/releases/v<version>.zh-CN.md`, commit, tag `v<version>`, push the tag, then `SIGN_IDENTITY=… NOTARY_PROFILE=… scripts/make-release.sh --notarize --upload`. The script publishes the DMG, its checksum, both notes files and `appcast.xml` as one draft-then-published release and verifies the live feed. If a run stops after the draft was created, run the same command again: it re-uploads the assets and publishes the draft.
+
+The first release with the updater adds `--first-release`: 1.6.7, the release before it, has no `appcast.xml`, and without the flag an upload refuses to start a new feed. Every later release builds its appcast from its predecessor's, so it must not pass the flag. To pull a release, delete it: the feed reverts by itself, because each release's appcast is its predecessor's plus its own item.
+
 ## Using QuickTerm
 
 ### Layouts
@@ -407,12 +415,6 @@ Tool annotations (`readOnlyHint` / `destructiveHint` / `idempotentHint`) are map
 Full agent-facing documentation, including the addressing grammar and the exit-code table: [`docs/agents/quickterm-cli.md`](docs/agents/quickterm-cli.md).
 
 Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents/AGENTS.quickterm.md) into your project root as `AGENTS.md` to let your coding agent drive QuickTerm.
-
-### Releasing
-
-One-time, on the release Mac: run Sparkle's `generate_keys` (from `.tools/sparkle-2.10.0/bin` after a first `scripts/make-release.sh`, or the SwiftPM artifacts), put the printed public key into `project.yml` as `SUPublicEDKey`, back the private key up with `generate_keys -x <file>` to offline storage, and run `sign_update` once by hand so the Keychain prompt is answered with *Always Allow*.
-
-Per release: bump `MARKETING_VERSION` **and** `CURRENT_PROJECT_VERSION` in `project.yml` (Sparkle compares the build number; the script refuses a build that is not greater than the feed's), write `docs/releases/v<version>.md` and `docs/releases/v<version>.zh-CN.md`, commit, tag `v<version>`, push the tag, then `SIGN_IDENTITY=… NOTARY_PROFILE=… scripts/make-release.sh --notarize --upload`. The script publishes the DMG, its checksum, both notes files and `appcast.xml` as one draft-then-published release and verifies the live feed. If a release has to be pulled, re-run the appcast step against the release that becomes latest — the feed URL always follows the newest release.
 
 ## Configuration
 

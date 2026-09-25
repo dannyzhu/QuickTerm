@@ -729,6 +729,8 @@ sheet. What changed against upstream, and why:
   install mode it replies dismiss so the automatic driver stages the update on the next check.
 - The quit confirmation stands aside on `relaunchRequested`, set by every path that asks Sparkle
   to terminate the app.
+- Check for Updates… during a download or extraction shows that download's sheet; upstream
+  cancelled it and checked afresh, losing the download (SPUUpdater keeps the item enabled there).
 - Release notes come from two release assets (`QuickTerm-<v>-notes.md` / `-notes.zh-CN.md`),
   not from the appcast; `docs/releases/v<v>.zh-CN.md` is required from now on.
 - The design and its review are in `docs/superpowers/specs/2026-09-25-auto-update-design.md`.

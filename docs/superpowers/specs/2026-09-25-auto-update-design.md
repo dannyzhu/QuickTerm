@@ -105,9 +105,11 @@ Scheduled path (Sparkle's background check, at launch and about daily):
 Manual **Check for Updates…** (menu or engine action) whenever the updater exists (§8): it always
 uses Sparkle's interactive driver, whatever the switches, so the states below are the interactive
 ones even when `install = true`. Found → the indicator appears **and the sheet opens straight
-away** (`userInitiated`); none → `notFound` for 5 s (no modal); error → `error`. If an update is
+away** (`userInitiated`), also for a staged update the check resumes; none → `notFound` for 5 s
+(no modal); error → `error`, and its sheet opens too (the user is watching, §4). If an update is
 already on screen (session held), Sparkle routes the manual check to `showUpdateInFocus`, which
-raises the sheet.
+raises the sheet. During a download or extraction the menu item stays enabled and shows that
+download's sheet instead of cancelling it.
 
 Later / Skip / Cancel semantics:
 
@@ -120,9 +122,13 @@ Later / Skip / Cancel semantics:
   friends) and the icon goes idle. Skip is also offered for a staged update and un-stages it.
 - **Cancel** during checking / downloading / extracting calls the state's cancel block; the icon
   goes idle.
-- Sparkle's impatient reminder while an update is staged: scheduled checks run every
-  `max(24 h, 7 d)` and each one re-delivers `showUpdateFound` with `stage == .installing`; the
-  indicator is already showing, nothing else happens.
+- While an update is staged, `willInstallUpdateOnQuit` returns YES, which per
+  `SPUUpdaterDelegate.h` stalls the update cycle and prevents further ones: no scheduled check
+  re-delivers it, and the indicator simply persists until the app quits (and installs it). A
+  manual check resumes it as `showUpdateFound` with `stage == .installing`; **Later** there keeps
+  the indicator through Sparkle's follow-up `dismissUpdateInstallation` (it still installs on
+  quit), and since that reply block is then spent, **Restart Now** on the kept state resumes it
+  through a fresh check and answers the resumed question `.install`.
 
 Automatic-mode details: a background download that fails is silent (Sparkle's automatic driver
 reports nothing); the next scheduled check retries. If `/Applications` is not writable by this user,
@@ -166,13 +172,15 @@ Rules
   (`window.endSheet` / `NSApp.abortModal`); the new state re-presents only if it is one the user
   asked to see (a manual check, a click) or `updateAvailable` arriving from a manual check.
   While a download runs the sheet is closed and progress lives on the icon; a click reopens it.
-- **Install and Relaunch** routes through `updateController.installUpdate()`; **Restart Now** sets
-  `relaunchRequested` and then invokes Sparkle's immediate-install block. Both set
-  `relaunchRequested = true`; `showInstallingUpdate` sets it too; dismiss, skip, cancel and error
-  clear it. Sparkle terminates the app with an ordinary quit event, so this flag is what
-  `applicationShouldTerminate` consults (§8). If the user still cancels the quit, Sparkle calls
-  `showInstallingUpdate(withApplicationTerminated: false, retry:)`; the state stays `installing`
-  and the sheet's **Restart Now** calls the retry block.
+- **Install and Relaunch** routes through `updateController.installUpdate()`, which starts the
+  download; **Restart Now** sets `relaunchRequested` and then invokes Sparkle's immediate-install
+  block. `relaunchRequested = true` means Sparkle is about to terminate the app, so only Restart
+  Now, `showReady` (whose reply is `.install`) and `showInstallingUpdate` set it; the Install
+  click does not, and the user's own Cmd+Q during the download still asks about open panes.
+  Dismiss, skip, cancel and error clear it. Sparkle terminates the app with an ordinary quit
+  event, so this flag is what `applicationShouldTerminate` consults (§8). If the user still
+  cancels the quit, Sparkle calls `showInstallingUpdate(withApplicationTerminated: false, retry:)`;
+  the state stays `installing` and the sheet's **Restart Now** calls the retry block.
 - After the app quits on Install and Relaunch, Sparkle's own small progress window ("Updating…",
   Sparkle-localized) may appear while files are copied. Accepted: it only exists while QuickTerm is
   not running.
@@ -238,10 +246,11 @@ Rules
   (heading text kept on its own line), `- ` list markers turned into `• `, inline code / emphasis
   markers stripped, `[text](url)` shown as `text (url)`, fenced code kept verbatim. No web view.
   The appcast fallback text goes through the same reducer.
-- The appcast item carries the English notes in `<description>` marked as Markdown with the
-  attribute Sparkle 2.10 documents for it (the implementer checks `SUAppcastItem.h` of the pinned
-  version) and `<sparkle:fullReleaseNotesLink>` to the GitHub release page; `sparkle:releaseNotesLink`
-  is deliberately absent, so `showUpdateReleaseNotes` is never called and stays a no-op.
+- The appcast item carries the English notes' Markdown source in `<description
+  sparkle:descriptionFormat="plain-text">` (`SUAppcastItem.h` of 2.10 documents only `html` and
+  `plain-text`; QuickTerm's own driver flattens the Markdown, nothing else renders it) and
+  `<sparkle:fullReleaseNotesLink>` to the GitHub release page; `sparkle:releaseNotesLink` is
+  deliberately absent, so `showUpdateReleaseNotes` is never called and stays a no-op.
 
 ## 7. Release pipeline
 
@@ -299,15 +308,16 @@ Per release (`scripts/make-release.sh`)
    `sparkle:shortVersionString` = `CFBundleShortVersionString`, `sparkle:minimumSystemVersion` =
    the built app's `LSMinimumSystemVersion` (three components), `pubDate` in Sparkle's only
    accepted shape `E, dd MMM yyyy HH:mm:ss Z` (en_US), the English notes as `<description>`
-   (Markdown, §6), `<sparkle:fullReleaseNotesLink>`, `<enclosure url="https://github.com/dannyzhu/QuickTerm/releases/download/v<ver>/QuickTerm-<ver>.dmg" length=… type="application/x-apple-diskimage" sparkle:edSignature=…>` —
+   (plain-text, §6), `<sparkle:fullReleaseNotesLink>`, `<enclosure url="https://github.com/dannyzhu/QuickTerm/releases/download/v<ver>/QuickTerm-<ver>.dmg" length=… type="application/x-apple-diskimage" sparkle:edSignature=…>` —
    keep the newest 15 items, sorted tolerantly (document order when a `pubDate` fails to parse).
    Then verify the DMG against the item (signature, length) before anything is uploaded.
 4. `--upload`: create the release **as a draft** with the DMG, `.sha256`, both notes assets and
    `appcast.xml`, then `gh release edit --draft=false`. Drafts are excluded from `latest`, so the
    feed URL switches atomically and never points at a release without its appcast. An existing
-   release for the tag is updated with `--clobber` for all five assets. After publishing,
-   `curl -fsSL` the live feed and assert it contains the new `sparkle:version`, `length` and
-   `sparkle:edSignature` (fail loudly otherwise).
+   release for the tag is updated with `--clobber` for all five assets, and one that is still a
+   draft (an interrupted publish) is then published. After publishing, `curl -fsSL` the live feed
+   and assert it contains the new `sparkle:version`, `length` and `sparkle:edSignature`, retrying
+   six times 10 s apart for GitHub's redirect to catch up (fail loudly otherwise).
 5. Without `--upload` the appcast is written locally only, so the dry run exercises the same code
    path.
 
@@ -318,13 +328,14 @@ Operational rules (README "Releasing" / memory):
 
 - Every DMG handed to anyone, test builds included, gets its own higher `CURRENT_PROJECT_VERSION`;
   the script enforces "strictly greater" against the feed.
-- Rollback: deleting the latest release makes `latest` fall back to the previous one, whose
-  appcast still advertises the deleted DMG — re-run the appcast step against the now-latest
-  release (`gh release upload <prev-tag> appcast.xml --clobber`) with the bad item removed.
+- Rollback happens by itself: deleting the latest release makes `latest` fall back to the
+  previous one, and since each release's appcast is its predecessor's plus its own item, that
+  appcast never advertised the deleted DMG.
 - Any release made by hand without `appcast.xml` breaks the feed for every client until fixed;
   releases are made with the script.
 - Checklist: bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION`, write both notes files,
-  commit, tag, push the tag, `make-release.sh --notarize --upload`.
+  commit, tag, push the tag, `make-release.sh --notarize --upload` (plus `--first-release` for the
+  first updater release only: 1.6.7 has no appcast to build on).
 
 ## 8. Security and edge cases
 
@@ -338,8 +349,12 @@ Operational rules (README "Releasing" / memory):
   `build/` behaves like the shipped app (it carries the real feed URL); a Debug app in DerivedData
   is never replaced by a release DMG.
 - Feed override: a fourth `LaunchOverrides` switch, `--update-feed-url` /
-  `QUICKTERM_UPDATE_FEED_URL`, honoured under `#if DEBUG` only (xcodegen sets
-  `SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG` for Debug). When it is set,
+  `QUICKTERM_UPDATE_FEED_URL`, honoured only where `UpdateController.allowsFeedOverride` is
+  compiled true, `#if DEBUG || UPDATE_E2E`: Debug builds (xcodegen sets
+  `SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG` for Debug) and the end-to-end test's Release
+  builds, to which `make-release.sh` adds `UPDATE_E2E` whenever `E2E_BUNDLE_ID` or
+  `E2E_BUILD_NUMBER` is set (§11). Those are never uploaded, so a shipped release always reads
+  `SUFeedURL`. When it is set,
   `updaterShouldRelaunchApplication` returns false: Sparkle installs and quits, and the tester
   relaunches by hand with the same overrides (Sparkle's relaunch carries neither arguments nor
   environment, which would otherwise produce an unmarked primary instance on the user's real
@@ -402,8 +417,8 @@ Unit (XCTest, updater absent in the test host)
 - State → icon / colour / tooltip-key mapping, including the `stage` variants; `notFound`
   auto-clears through the controller and calls the acknowledgement exactly once; a click
   acknowledges early.
-- `relaunchRequested`: set by Install and Relaunch (via `installUpdate()`), by Restart Now and by
-  `showInstallingUpdate`; cleared by dismiss / skip / cancel / error;
+- `relaunchRequested`: set by Restart Now, `showReady` and `showInstallingUpdate` (Sparkle about to
+  terminate the app), not by Install and Relaunch; cleared by dismiss / skip / cancel / error;
   `shouldConfirmQuit(openPaneCount:relaunchRequested:)` false while set.
 - Later in check-only mode keeps the reply block and the state; Later in install mode replies
   `.dismiss`.
@@ -420,24 +435,28 @@ Unit (XCTest, updater absent in the test host)
 
 End to end (before the first updater-enabled release; the user's real QuickTerm may keep running)
 
-- Two Release-configuration builds from `make-release.sh` without `--upload`, with
-  `E2E_BUNDLE_ID=dev.danny.quickterm.e2e` and `E2E_BUILD_NUMBER=9001` / `9002` passed through to
-  `xcodebuild` (`PRODUCT_BUNDLE_IDENTIFIER`, `CURRENT_PROJECT_VERSION`); build numbers in the 9000s
-  are never released. The older app is copied out of `build/` before it is launched (Sparkle
-  replaces the bundle in place).
-- The newer DMG plus an appcast made by `update-appcast.py --first-release` are attached to a
-  temporary **pre-release** (`e2e-<date>`, excluded from `latest`), on a private scratch repository
-  if the user prefers; the feed is therefore served over https with no ATS exception. Deleted
-  afterwards.
-- Launch the older app with `--update-feed-url <…/releases/download/e2e-<date>/appcast.xml>`,
-  `--state-file`, `--control-socket` and `--config-file` pointing at scratch locations; walk:
-  check → indicator → sheet → Install and Relaunch → the app quits (no relaunch under the
-  override) → relaunch by hand with the same arguments → the newer app comes back with the
+- Both apps are Release builds made by `make-release.sh` (never with `--upload`, which the E2E
+  variables refuse) with `E2E_BUNDLE_ID=dev.danny.quickterm.e2e` and `E2E_BUILD_NUMBER=9001` /
+  `9002`. The script passes them to `xcodebuild` (`PRODUCT_BUNDLE_IDENTIFIER`,
+  `CURRENT_PROJECT_VERSION`) and adds the `UPDATE_E2E` compilation condition, so these builds go
+  through the real signing and appcast path and still honour `--update-feed-url` (§8). Build
+  numbers in the 9000s are never released.
+- The 9002 run's DMG and the appcast it wrote (with `--first-release`; its enclosure URL edited
+  to point at the pre-release asset) are attached by hand to a temporary **pre-release**
+  (`e2e-<date>`, excluded from `latest`), on a private scratch repository if the user prefers;
+  the feed is therefore served over https with no ATS exception. Deleted afterwards.
+- The 9001 app is copied out of `build/` before the second build wipes it, into `/Applications`
+  under its own name (`/Applications/QuickTerm E2E.app`, never over the installed QuickTerm), so
+  it runs untranslocated from a writable place Sparkle can replace in place. It is launched with
+  `--update-feed-url <…/releases/download/e2e-<date>/appcast.xml>`, `--state-file`,
+  `--control-socket` and `--config-file` pointing at scratch locations; walk: check → indicator
+  → sheet → Install and Relaunch → the app quits (no auto-relaunch under the override) →
+  relaunch by hand with the same arguments → the newer app (build 9002) comes back with the
   scratch layout restored. Repeat with `install = true` for the staged-on-quit path (Restart Now
   and plain quit). The first run also answers whether Sparkle's Gatekeeper scan accepts the
   unnotarized e2e DMG; if not, notarize the e2e DMG as well.
-- Teardown: `defaults delete dev.danny.quickterm.e2e`, delete the pre-release and the scratch
-  files.
+- Teardown: `defaults delete dev.danny.quickterm.e2e`, delete the pre-release,
+  `/Applications/QuickTerm E2E.app` and the scratch files.
 - `make-release.sh` dry run (no `--upload`) produces `build/appcast.xml` that validates against
   the DMG's signature and size.
 

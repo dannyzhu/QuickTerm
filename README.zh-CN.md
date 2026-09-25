@@ -94,6 +94,14 @@ LaunchServices 注册，macOS 会把它发的每一条横幅都拒掉，测了�
 xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug test
 ```
 
+### 发版
+
+一次性（在发版的 Mac 上）：从 `build/release/SourcePackages/artifacts/sparkle/Sparkle/bin/` 运行 Sparkle 的 `generate_keys`（任何一次 `scripts/make-release.sh` 构建都会把 Sparkle 包拉到那里；只有那个目录不存在时，脚本才把同一套工具下载到 `.tools/sparkle-2.10.0/bin/`），把打印出的公钥填进 `project.yml` 的 `SUPublicEDKey`，用 `generate_keys -x <文件>` 把私钥备份到离线位置（换 Mac 时用 `generate_keys -f <文件>` 导入），再手动跑一次 `sign_update`，在钥匙串提示里选「始终允许」。
+
+每次发版：在 `project.yml` 里同时升 `MARKETING_VERSION` **和** `CURRENT_PROJECT_VERSION`（Sparkle 比的是构建号；构建号不大于 feed 里已有的、或不大于 1.6.7 的构建号 23，脚本都会拒绝），写好 `docs/releases/v<版本>.md` 与 `docs/releases/v<版本>.zh-CN.md`，提交、打 `v<版本>` tag、推送 tag，然后 `SIGN_IDENTITY=… NOTARY_PROFILE=… scripts/make-release.sh --notarize --upload`。脚本把 DMG、校验和、两份说明和 `appcast.xml` 作为一个「先草稿、再发布」的 release 一次发出，并回读线上 feed 校验。如果脚本在建好草稿之后中断，原样再跑一次同一条命令：它会重传资产并把草稿发布出去。
+
+第一个带更新功能的版本要加 `--first-release`：它之前的 1.6.7 没有 `appcast.xml`，不加这个参数，上传时脚本拒绝新起一份 feed。之后每个版本都在上一个版本的 appcast 上生成自己的，不能再加这个参数。要撤下某个 release，直接删掉它即可：feed 会自己退回去，因为每个 release 的 appcast 都是上一个的加上它自己这一条。
+
 ## 使用
 
 ### 布局
@@ -395,12 +403,6 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 完整的 agent 文档（寻址语法、退出码表、经验法则）：[`docs/agents/quickterm-cli.md`](docs/agents/quickterm-cli.md)。
 
 给 agent 的即插即用说明：把 [`docs/agents/AGENTS.quickterm.md`](docs/agents/AGENTS.quickterm.md) 复制到你项目根目录当 `AGENTS.md`，你的编码 agent 就能驱动 QuickTerm。
-
-### 发版
-
-一次性（在发版的 Mac 上）：运行 Sparkle 的 `generate_keys`（第一次跑过 `scripts/make-release.sh` 后在 `.tools/sparkle-2.10.0/bin`，或 SwiftPM 的 artifacts 里），把打印出的公钥填进 `project.yml` 的 `SUPublicEDKey`，用 `generate_keys -x <文件>` 把私钥备份到离线位置，再手动跑一次 `sign_update`，在钥匙串提示里选「始终允许」。
-
-每次发版：在 `project.yml` 里同时升 `MARKETING_VERSION` **和** `CURRENT_PROJECT_VERSION`（Sparkle 比的是构建号；构建号不大于 feed 里已有的，脚本会拒绝），写好 `docs/releases/v<版本>.md` 与 `docs/releases/v<版本>.zh-CN.md`，提交、打 `v<版本>` tag、推送 tag，然后 `SIGN_IDENTITY=… NOTARY_PROFILE=… scripts/make-release.sh --notarize --upload`。脚本把 DMG、校验和、两份说明和 `appcast.xml` 作为一个「先草稿、再发布」的 release 一次发出，并回读线上 feed 校验。如果某个 release 要撤下，就对新的最新 release 重跑 appcast 那一步——feed 地址永远跟着最新的 release。
 
 ## 配置
 
