@@ -108,11 +108,17 @@ final class UpdateController {
     }
 
     /// Check for Updates… (menu item, engine keybind action).
+    ///
+    /// The state switch runs before the updater is even consulted: tearing down whatever is in
+    /// flight (`installCancellable`, the current state's own `cancel()`) must not depend on
+    /// Sparkle being present, or a disabled controller (no updater: the test host, a build
+    /// without a public key) would leave a stale install chain behind forever, wedging every
+    /// later Install click. Only the actual re-check needs an updater to send it to.
     func checkForUpdates() {
-        guard let updater else { return }
         switch viewModel.state {
         case .idle, .updateAvailable, .installing:
             // With an update on screen Sparkle routes this to showUpdateInFocus (the sheet).
+            guard let updater else { return }
             updater.checkForUpdates()
         default:
             // Checking, downloading, not found, error: close it and check afresh. The settle delay
@@ -121,6 +127,7 @@ final class UpdateController {
             // this reset, or a later Install click is silently ignored forever.
             installCancellable = nil
             viewModel.state.cancel()
+            guard updater != nil else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self] in
                 self?.updater?.checkForUpdates()
             }

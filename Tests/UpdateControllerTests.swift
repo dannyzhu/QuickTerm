@@ -76,6 +76,12 @@ final class UpdateControllerTests: XCTestCase {
 
     /// installUpdate() cancels its confirm-everything sink but must leave `installCancellable` at
     /// nil, or every later Install click is silently ignored until restart (the `== nil` guard).
+    /// checkForUpdates() has to do that teardown itself — the test host has no updater, so if the
+    /// teardown depended on one (the old top-of-function `guard let updater`), it would never run,
+    /// and only a later, unrelated state change would happen to reset the chain via the sink's own
+    /// guard. Proven two ways: the download's own `cancel` closure only fires through
+    /// checkForUpdates() itself (not through some other state assignment), and no state is set
+    /// between the check and the second `installUpdate()` — a still-stale chain would block it.
     func testInstallUpdateRecoversAfterACheckForUpdatesDuringInstall() {
         var firstReplies: [SPUUserUpdateChoice] = []
         controller.viewModel.state = .updateAvailable(.init(appcastItem: SUAppcastItem.empty(), stage: .notDownloaded,
@@ -83,15 +89,17 @@ final class UpdateControllerTests: XCTestCase {
         controller.installUpdate()
         XCTAssertEqual(firstReplies, [.install])
 
-        controller.viewModel.state = .downloading(.init(cancel: {}, version: "9", expectedLength: 10, progress: 1))
-        controller.checkForUpdates() // no updater in tests, so this only tears down the install chain
-        controller.viewModel.state = .idle
+        var cancelled = false
+        controller.viewModel.state = .downloading(.init(cancel: { cancelled = true }, version: "9", expectedLength: 10, progress: 1))
+        controller.checkForUpdates() // no updater in tests: this alone must tear the chain down
+        XCTAssertTrue(cancelled, "checkForUpdates must cancel the in-flight download itself, updater or not")
+        XCTAssertTrue(controller.relaunchRequested, "downloading leaves relaunchRequested as installUpdate() set it")
 
         var secondReplies: [SPUUserUpdateChoice] = []
         controller.viewModel.state = .updateAvailable(.init(appcastItem: SUAppcastItem.empty(), stage: .notDownloaded,
                                                             userInitiated: true, reply: { secondReplies.append($0) }))
         controller.installUpdate()
-        XCTAssertEqual(secondReplies, [.install], "a fresh Install must still go through after the earlier re-check")
+        XCTAssertEqual(secondReplies, [.install], "a fresh Install must still go through: checkForUpdates already dropped the stale chain")
         XCTAssertTrue(controller.relaunchRequested)
     }
 
