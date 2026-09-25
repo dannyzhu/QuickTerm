@@ -41,6 +41,8 @@
 	<true/>
 	<key>SUFeedURL</key>
 	<string>https://github.com/dannyzhu/QuickTerm/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>kUAtzbZ2aa3lgQ+YiK83Ux8k5tl/9aeBR0l2smgJ8vs=</string>
 	<key>SUVerifyUpdateBeforeExtraction</key>
 	<true/>
 </dict>

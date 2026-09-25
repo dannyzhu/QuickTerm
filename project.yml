@@ -65,11 +65,16 @@ targets:
         # 浏览器 pane：允许 http:// 明文页面（本地开发服务器 / 内网）
         NSAppTransportSecurity:
           NSAllowsArbitraryLoadsInWebContent: true
-        # Sparkle (auto-update). The feed is the appcast attached to the latest GitHub release;
-        # SUPublicEDKey is added once the EdDSA key pair exists (the updater stays off until then).
+        # Sparkle (auto-update). The feed is the appcast attached to the latest GitHub release.
+        # SUPublicEDKey is the public half of the EdDSA pair generated on 2026-09-25 with Sparkle's
+        # generate_keys; the private half lives only in the release Mac's login Keychain (and its
+        # offline backup) and never enters the repository. Without this key the updater stays off
+        # (UpdateController.isEnabled), and scripts/make-release.sh checks it against the Keychain
+        # and against the built app's Info.plist before every release.
         SUFeedURL: "https://github.com/dannyzhu/QuickTerm/releases/latest/download/appcast.xml"
         SUEnableAutomaticChecks: true
         SUVerifyUpdateBeforeExtraction: true
+        SUPublicEDKey: "kUAtzbZ2aa3lgQ+YiK83Ux8k5tl/9aeBR0l2smgJ8vs="
     settings:
       base:
         OTHER_LDFLAGS: "-lc++"
