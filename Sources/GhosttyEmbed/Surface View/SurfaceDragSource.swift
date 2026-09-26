@@ -150,6 +150,13 @@ extension Ghostty {
             return true
         }
 
+        /// QuickTerm: the other half of the `modifiers` log — whether SwiftUI actually mounted
+        /// the overlay when `commandHeld` turned true.
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            ModifierState.logger.debug("drag source \(self.window == nil ? "unmounted" : "mounted", privacy: .public) for pane \(self.surfaceView?.id.uuidString ?? "-", privacy: .public)")
+        }
+
         override func mouseDown(with event: NSEvent) {
             // Consume the mouseDown event to prevent it from propagating to the
             // window's drag handler. This fixes issue #10110 where grab handles

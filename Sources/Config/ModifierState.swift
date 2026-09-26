@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 
 /// Global modifier-key state, updated by `MainWindowController`'s mouse and scroll-wheel
 /// monitors. `TerminalSplitLeaf` reads it to float the drag-source overlay while Cmd is held
@@ -15,7 +16,18 @@ import AppKit
 /// scroll-wheel event.
 final class ModifierState: ObservableObject {
     static let shared = ModifierState()
+    /// Every transition is logged, with where it came from and what the keyboard state says at
+    /// that moment: a machine on which Cmd+drag "does nothing" (reported 2026-09-27 for a Mac
+    /// mini, not reproducible here) can then show in `log stream --predicate 'category ==
+    /// "modifiers"'` whether the events reaching the app carry the Command flag at all.
+    static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "dev.danny.quickterm",
+                               category: "modifiers")
     @Published var commandHeld = false
+
+    /// Which event fed a `sync`, for the log line.
+    enum Source: String {
+        case flagsChanged, mouse, scroll, activate
+    }
 
     private init() {
         let center = NotificationCenter.default
@@ -31,8 +43,10 @@ final class ModifierState: ObservableObject {
 
     /// Re-sync from the authoritative current modifier state (`NSEvent.modifierFlags` needs no
     /// Accessibility permission). Idempotent: an unchanged value publishes nothing.
-    func sync(_ flags: NSEvent.ModifierFlags = NSEvent.modifierFlags) {
+    func sync(_ flags: NSEvent.ModifierFlags = NSEvent.modifierFlags, source: Source = .activate) {
         let held = flags.contains(.command)
-        if commandHeld != held { commandHeld = held }
+        guard commandHeld != held else { return }
+        commandHeld = held
+        Self.logger.info("command held: \(held, privacy: .public) (from \(source.rawValue, privacy: .public); keyboard state says \(NSEvent.modifierFlags.contains(.command), privacy: .public))")
     }
 }

@@ -459,8 +459,11 @@ final class MainWindowController: BaseTerminalController {
             // overlay eating the scroll wheel.
             // N controllers write the same value, which is idempotent; writing only on a real
             // change saves the redundant @Published notifications.
-            ModifierState.shared.sync(event.modifierFlags)
+            ModifierState.shared.sync(event.modifierFlags,
+                                      source: event.type == .flagsChanged ? .flagsChanged : .mouse)
             if event.type == .flagsChanged {
+                let owner = event.window === self.window ? "this" : event.window == nil ? "none" : "other"
+                ModifierState.logger.debug("flagsChanged: command=\(event.modifierFlags.contains(.command), privacy: .public) window=\(owner, privacy: .public)")
                 // Only the controller of the event's own window resets the cursor.
                 guard event.window == nil || event.window === self.window else { return event }
                 if !event.modifierFlags.contains(.command), self.floatingDrag == nil { self.resetFloatingCursor() }
@@ -531,7 +534,7 @@ final class MainWindowController: BaseTerminalController {
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             // The wheel resyncs the Cmd state too: the old bug where missing one release meant
             // "the terminal never scrolls again" heals itself here.
-            ModifierState.shared.sync(event.modifierFlags)
+            ModifierState.shared.sync(event.modifierFlags, source: .scroll)
             guard let self, let window = self.window, event.window === window,
                   let content = window.contentView else { return event }
             let p = content.convert(event.locationInWindow, from: nil)
