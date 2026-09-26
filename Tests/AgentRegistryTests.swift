@@ -46,6 +46,7 @@ final class AgentRegistryTests: XCTestCase {
 
     [notifications]
     "Demo needs your permission" = "blocked:approval"
+    "Demo finished"              = "done"
     """
 
     /// A second agent, for the pane that runs two. Same shape, different id and process name —
@@ -483,5 +484,239 @@ final class AgentRegistryTests: XCTestCase {
         center.flushActivityPass()
         XCTAssertNil(registry.status(pane: pane.id))
         XCTAssertEqual(center.history.last?.resolution, .paneClosed)
+    }
+
+    // MARK: Stragglers of a session that ended
+
+    /// The trace of 2026-09-26: Claude Code's `Stop` and `SessionEnd` hooks run asynchronously
+    /// and raced each other at exit, the `Stop` reaching the socket 50 ms after the `SessionEnd`.
+    /// It built the status back, and nothing ever took it down again.
+    func testAStopArrivingAfterSessionEndDoesNotResurrectTheAgent() throws {
+        let pane = try addPane()
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .done)
+        XCTAssertTrue(registry.apply(hook("SessionEnd", session: "s1"), pane: pane.id).changed)
+        XCTAssertNil(registry.status(pane: pane.id))
+
+        now = now.addingTimeInterval(0.05)
+        let straggler = registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        XCTAssertFalse(straggler.changed)
+        XCTAssertNil(registry.status(pane: pane.id), "a session that ended stays ended")
+
+        // A new session in the same pane is not a straggler, grace or no grace.
+        now = now.addingTimeInterval(1)
+        registry.apply(hook("SessionStart", session: "s2"), pane: pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .idle)
+        XCTAssertEqual(registry.status(pane: pane.id)?.sessionID, "s2")
+    }
+
+    func testAStragglerAfterTheGraceIsAnOrdinaryEvent() throws {
+        let pane = try addPane()
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        registry.apply(hook("SessionEnd", session: "s1"), pane: pane.id)
+        now = now.addingTimeInterval(AgentStateReducer.releasedSessionGrace)
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .done,
+                       "past the grace a hook is a hook: the agent evidently is still there")
+    }
+
+    /// The same race after the process itself has gone: the child exiting released the status,
+    /// and its last async hook arrives afterwards.
+    func testAHookAfterTheChildExitedDoesNotResurrectTheAgentEither() throws {
+        let pane = try addPane()
+        registry.apply(hook("PreToolUse", tool: "Bash", session: "s1"), pane: pane.id)
+        registry.apply(.childExited, pane: pane.id)
+        XCTAssertNil(registry.status(pane: pane.id))
+        now = now.addingTimeInterval(0.05)
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        XCTAssertNil(registry.status(pane: pane.id))
+    }
+
+    /// A `SessionEnd` for a session nobody had heard of still says its late `Stop` is not news.
+    func testASessionEndForAnUnknownSessionStillShadowsItsStragglers() throws {
+        let pane = try addPane()
+        registry.apply(hook("SessionEnd", session: "s1"), pane: pane.id)
+        XCTAssertNil(registry.status(pane: pane.id))
+        now = now.addingTimeInterval(0.05)
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        XCTAssertNil(registry.status(pane: pane.id))
+    }
+
+    /// The agent's own "task complete" text races the exit the same way as its `Stop`. Dropped,
+    /// and answered as consumed: the terminal has no banner to post for it.
+    func testAStragglerTextIsConsumedNotHandedToTheTerminal() throws {
+        let pane = try addPane()
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        registry.apply(hook("SessionEnd", session: "s1"), pane: pane.id)
+        now = now.addingTimeInterval(0.2)
+        let answer = registry.observeEngine(pane: pane.id, .notification(title: "Demo finished", body: ""))
+        XCTAssertEqual(answer, .consumed)
+        XCTAssertNil(registry.status(pane: pane.id))
+        XCTAssertEqual(sink.posted.count, 1, "the done notice the Stop posted, and nothing more")
+    }
+
+    /// Two agents in one pane (`claude` from inside a `codex` shell tool): the other agent's live
+    /// status must not clear the released one's tombstone, or the released one's straggler
+    /// comes back — and outlives the other.
+    func testAnotherAgentsStatusDoesNotClearTheReleasedAgentsTombstone() throws {
+        try loadTwoRules()
+        let pane = try addPane()
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        registry.apply(hook("SessionEnd", session: "s1"), pane: pane.id)
+        XCTAssertNil(registry.status(pane: pane.id))
+
+        now = now.addingTimeInterval(0.02)
+        registry.apply(.hook(agent: "other", payload: AgentEventPayload(
+            hookEventName: "SessionStart", sessionID: "o1")), pane: pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.agent, "other")
+
+        now = now.addingTimeInterval(0.03)
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.agent, "other",
+                       "demo's straggler is still demo's straggler")
+    }
+
+    /// **A refusal is total, the tombstone included.** A forged `SessionEnd` is refused by the
+    /// origin gate; if it still left a tombstone, the owner's own next hooks would be dropped as
+    /// stragglers and its alarm could never be taken down.
+    func testARefusedSessionEndLeavesNoTombstone() throws {
+        let pane = try addPane()
+        let origin = NoticeOrigin(lineageRoot: 4242, sessionID: "s1")
+        registry.apply(hook("PermissionRequest", tool: "Bash", session: "s1"), pane: pane.id,
+                       origin: origin)
+        XCTAssertEqual(center.live.count, 1)
+
+        now += 1
+        let forged = registry.apply(hook("SessionEnd", session: "s1"), pane: pane.id,
+                                    origin: NoticeOrigin(lineageRoot: 77, sessionID: "s1"))
+        XCTAssertEqual(forged.refused.count, 1)
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .blocked)
+
+        now += 1
+        let owner = registry.apply(hook("Stop", session: "s1"), pane: pane.id, origin: origin)
+        XCTAssertEqual(owner.resolved, 1, "the owner's Stop is not a straggler of a forged end")
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .done)
+    }
+
+    /// An agent asking for the user is alive: a resumed session's approval prompt inside the grace
+    /// raises its alarm, ends the tombstone, and the `Stop` that follows resolves it.
+    func testAnApprovalPromptOfTheEndedSessionIsNeverAStraggler() throws {
+        let pane = try addPane()
+        let origin = NoticeOrigin(lineageRoot: 4242, sessionID: "s1")
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id, origin: origin)
+        registry.apply(hook("SessionEnd", session: "s1"), pane: pane.id, origin: origin)
+
+        now = now.addingTimeInterval(0.5)
+        let prompt = registry.apply(hook("PermissionRequest", tool: "Bash", session: "s1"),
+                                    pane: pane.id, origin: origin)
+        XCTAssertTrue(prompt.changed)
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .blocked)
+        XCTAssertNotNil(prompt.noticePosted, "the alarm is raised")
+
+        now = now.addingTimeInterval(0.5)
+        let stop = registry.apply(hook("Stop", session: "s1"), pane: pane.id, origin: origin)
+        XCTAssertEqual(stop.resolved, 1, "the prompt ended the tombstone: its Stop is a Stop again")
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .done)
+    }
+
+    /// The `SessionEnd` that leaves the tombstone also triggers a scan pass, and that pass can
+    /// still find the process tearing down. The `unknown` it writes must not end the tombstone,
+    /// or the `Stop` landing 50 ms later builds `done` back after all.
+    func testAScanCreatedStatusDoesNotEndTheTombstone() throws {
+        let pane = try addPane()
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        registry.apply(hook("SessionEnd", session: "s1"), pane: pane.id)
+        registry.apply(.processes([42]), pane: pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.evidence, .process)
+
+        now = now.addingTimeInterval(0.05)
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .unknown,
+                       "the straggler is still a straggler behind a presence-only status")
+        registry.apply(.processes([]), pane: pane.id)
+        XCTAssertNil(registry.status(pane: pane.id), "and the process going away releases the presence")
+    }
+
+    /// Only this agent's own text is a straggler: a text no rule maps stays the terminal's to
+    /// post, and a text mapped to an approval prompt is the live agent it says it is.
+    func testOnlyTheAgentsOwnTextIsAStraggler() throws {
+        let pane = try addPane()
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        registry.apply(hook("SessionEnd", session: "s1"), pane: pane.id)
+
+        now = now.addingTimeInterval(0.5)
+        XCTAssertEqual(registry.observeEngine(pane: pane.id, .notification(title: "Tests passed", body: "")),
+                       .ignored, "somebody else's notice is not consumed")
+        XCTAssertEqual(registry.observeEngine(pane: pane.id,
+                                              .notification(title: "Demo needs your permission", body: "")),
+                       .consumed)
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .blocked, "a prompt is a live agent")
+    }
+
+    /// A `SessionEnd` that arrives after presence loss already released the session passes, and
+    /// re-anchors the tombstone: the `Stop` that races *it* is still inside the grace.
+    func testASessionEndAfterPresenceLossReanchorsTheTombstone() throws {
+        let pane = try addPane()
+        registry.apply(.processes([42]), pane: pane.id)
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        registry.apply(.processes([]), pane: pane.id)
+        XCTAssertNil(registry.status(pane: pane.id))
+
+        now = now.addingTimeInterval(AgentStateReducer.releasedSessionGrace - 1)
+        XCTAssertFalse(registry.apply(hook("SessionEnd", session: "s1"), pane: pane.id).changed)
+        now = now.addingTimeInterval(2)
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        XCTAssertNil(registry.status(pane: pane.id),
+                     "past the first grace, inside the one the SessionEnd re-anchored")
+    }
+
+    /// The order the app really produces: the `SessionEnd` leaves the tombstone, the pass it
+    /// triggered still finds the process and writes `unknown`, the next pass finds it gone and
+    /// releases *that* — a release that knows no session — and only then the slow `Stop` lands.
+    /// The blind release must not have replaced the session's tombstone.
+    func testABlindReleaseDoesNotReplaceTheSessionsTombstone() throws {
+        let pane = try addPane()
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        registry.apply(hook("SessionEnd", session: "s1"), pane: pane.id)
+        registry.apply(.processes([42]), pane: pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.evidence, .process)
+        registry.apply(.processes([]), pane: pane.id)
+        XCTAssertNil(registry.status(pane: pane.id))
+
+        now = now.addingTimeInterval(0.05)
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        XCTAssertNil(registry.status(pane: pane.id), "the session's own tombstone still stands")
+    }
+
+    /// `/clear` fires SessionEnd(old) and SessionStart(new) back to back; when the new session's
+    /// start wins the race, the old session's end must not take the new session down.
+    func testTheOldSessionsEndDoesNotReleaseTheNewSession() throws {
+        let pane = try addPane()
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        registry.apply(hook("SessionStart", session: "s2"), pane: pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.sessionID, "s2")
+
+        now = now.addingTimeInterval(0.05)
+        XCTAssertFalse(registry.apply(hook("SessionEnd", session: "s1"), pane: pane.id).changed)
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .idle, "the new session keeps its status")
+        // And the old session's straggler is still a straggler.
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .idle)
+        XCTAssertEqual(registry.status(pane: pane.id)?.sessionID, "s2")
+    }
+
+    /// A pane that closes takes its tombstone with it: the id is never reused, but the map must
+    /// not grow with every pane that closed just after a release.
+    func testAClosedPaneDropsItsTombstone() throws {
+        let pane = try addPane()
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        registry.apply(hook("SessionEnd", session: "s1"), pane: pane.id)
+        locator.entries[pane.id] = nil
+        registry.dropPanesThatAreGone()
+
+        now = now.addingTimeInterval(0.05)
+        registry.apply(hook("Stop", session: "s1"), pane: pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .done,
+                       "without the tombstone the hook is an ordinary hook again")
     }
 }

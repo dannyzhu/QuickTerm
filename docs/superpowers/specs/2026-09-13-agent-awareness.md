@@ -49,6 +49,25 @@ verdict, not a failure, to every one of them**: Claude Code reads it as "block t
 prompt / do not stop", Gemini's `BeforeAgent` and `BeforeTool` and Codex do the same and have no
 `async` to soften it. Our hook therefore exits 0 whatever happens (§3.3).
 
+The hooks are asynchronous, so they race each other: at exit, Claude Code's `Stop` and `SessionEnd`
+run concurrently and reach the socket in either order (on 2026-09-26 the `Stop` arrived 50 ms after
+the `SessionEnd` and rebuilt a "done" status that nothing could ever take down). A release therefore
+leaves a **tombstone** in the registry, per pane and per agent, for
+`AgentStateReducer.releasedSessionGrace` (5 s, the hooks' own timeout): a hook of that agent carrying
+the released session's id, and a desktop notification that this agent's own rule file maps to a
+state, are stragglers and are dropped (answered as consumed, so the terminal posts no banner for the
+text). Never: anything mapped to `blocked` (an agent asking for the user is alive — `claude
+--continue` keeps the session id, and a resumed session's approval prompt must get through); a hook
+mapped to a release (another end of the same session passes, reduces to nothing and re-anchors the
+tombstone); a hook when the release never learned a session id (a status the scan or a text created:
+nothing to compare, so it shadows the agent's text only); a hook with another session id; a text no
+rule of this agent maps, which belongs to whatever printed it (`AgentStateReducer.isStraggler`). The
+tombstone is written by every release the origin gate let through — a `SessionEnd` for a session
+nobody had heard of included, a refused (forged) one not — and is cleared when that agent's own live
+status is written again from a hook, a report or a text (a status the scan created leaves it: the
+`SessionEnd` itself triggers a pass that still finds the process tearing down; another agent's
+status in the same pane leaves it too), swept when expired, and dropped with the pane.
+
 ### 2.2 The agents also announce themselves over the terminal
 
 Independently of hooks, the three emit desktop notifications (OSC 9 / 99 / 777) that libghostty
@@ -75,6 +94,15 @@ What the design takes from that (reviewer finding, accepted):
 
 - The scan finds agents by our marker but never the pane's shell itself. "Presence" means "an agent
   process carrying `QUICKTERM_PANE`", never "a shell is running here".
+- A process is looked at when a rule file names it by the resolved executable's basename
+  (`process`) or by a fragment of its resolved path (`process-path`), both read from the one
+  `proc_pidpath`. The fragment exists for a launcher that is a symlink: Claude Code's native install
+  runs `~/.local/share/claude/versions/<v>` through `~/.local/bin/claude`, and **every** kernel
+  reading of that process — `proc_pidpath`, `proc_name`, `p_comm`, `ps -o ucomm` — names the
+  target (measured 2026-09-26 on macOS 27), so the basename is `2.1.282`; only `argv[0]` inside
+  `KERN_PROCARGS2` carries the launcher's name, and that buffer is exactly what the name test
+  exists to keep unread. Until 2026-09-26 the scan never saw the agent at all, so `seenByScan`
+  stayed false and a status the hooks had left behind had nothing to release it.
 - The scan is restricted to **QuickTerm's own descendants**: `proc_listchildpids` walked recursively
   from `getpid()`, then `KERN_PROCARGS2` on those pids only. It never reads the environment of an
   unrelated process (a Chrome helper, a node server — where secrets live). The README states exactly
@@ -158,10 +186,11 @@ No screen text. `pane capture-text` stays a CLI feature for agents that want it;
 calls it.
 
 The process scan runs on a background queue over **QuickTerm's own descendants only** (§2.3): on
-every hook event, every notification, every `commandFinished` (OSC 133) and a slow heartbeat (every
-5 s while the app is active), and posts results to the main actor. It keeps nothing but pid, name,
-argv[0] and our marker; the environment buffer it had to read for the marker is discarded in the
-same call.
+every hook event, every `commandFinished` (OSC 133) and a 5 s heartbeat that runs whether or not the
+app is active (owner decision Q7), and posts results to the main actor. It keeps nothing but pid, the
+executable's file name and our marker; the environment buffer it had to read for the marker is
+discarded in the same call, and `argv[0]` — the one reading that would name a symlinked launcher — is
+never taken from it (`process-path` covers that case, §2.3).
 
 ### 3.2 `AgentRegistry` — adapters, mostly as data
 

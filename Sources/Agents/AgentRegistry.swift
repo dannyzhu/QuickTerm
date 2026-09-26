@@ -61,6 +61,14 @@ final class AgentRegistry: NoticeSink {
     private var noticeIDs: [UUID: UUID] = [:]
     /// What the last scan pass found in each pane, per rule (plan §2.5).
     private var presence: [UUID: AgentPresence] = [:]
+    /// Per pane and per agent, the session that last ended there, for
+    /// `AgentStateReducer.releasedSessionGrace`: its stragglers (a `Stop` whose async hook lost
+    /// the race against the `SessionEnd`, the "task complete" text printed on the way out) are
+    /// dropped instead of building the status back. Per agent, because two agents share a pane
+    /// (`claude` from inside a `codex` shell tool) and one's live status must not clear the
+    /// other's tombstone. Written only by a signal the origin gate let through, cleared when that
+    /// agent's live status is written again, swept when expired, and dropped with the pane.
+    private var tombstones: [UUID: [String: AgentStateReducer.ReleasedSession]] = [:]
     /// The request behind that notice, kept for the `.resolveFullyAndRearm` policy: re-arming
     /// means posting **the same thing again**, origin included, not a fresh guess.
     private var lastAlarm: [UUID: NoticeRequest] = [:]
@@ -162,6 +170,7 @@ final class AgentRegistry: NoticeSink {
         statuses.removeAll()
         noticeIDs.removeAll()
         presence.removeAll()
+        tombstones.removeAll()
         lastAlarm.removeAll()
         askedThisLaunch.removeAll()
         for timer in rearmTimers.values { timer.cancel() }
@@ -195,9 +204,12 @@ final class AgentRegistry: NoticeSink {
     func observeEngine(pane: UUID, _ signal: EngineSignal) -> EngineSignalOutcome {
         switch signal {
         case .notification(let title, let body):
-            let consumed = applyDetailed(.notification(title: title, body: body),
-                                         pane: pane, origin: nil).kind != .none
-            return consumed ? .consumed : .ignored
+            // A straggler of a session that ended is consumed too: the text is the agent's, and
+            // the terminal has no business posting a banner the agent's own `done` notice
+            // already covered (or the `done` switch turned off).
+            let applied = applyDetailed(.notification(title: title, body: body),
+                                        pane: pane, origin: nil)
+            return applied.kind != .none || applied.straggler ? .consumed : .ignored
         case .commandFinished:
             // A scan trigger, never a state: a command finishing says nothing about an agent, but
             // it is a cheap moment to notice one appearing or going away.
@@ -215,10 +227,12 @@ final class AgentRegistry: NoticeSink {
 
     private func applyDetailed(_ signal: PaneSignal, pane: UUID,
                                origin: NoticeOrigin?) -> (outcome: AgentApplyOutcome,
-                                                          kind: AgentReduction.Kind) {
-        guard settings.detect else { return (AgentApplyOutcome(), .none) }
+                                                          kind: AgentReduction.Kind,
+                                                          straggler: Bool) {
+        guard settings.detect else { return (AgentApplyOutcome(), .none, false) }
         let now = clock()
         let current = statuses[pane]
+        sweepTombstones(pane: pane, now: now)
 
         // Every hook is also a hint that the process tree may have changed (an agent just
         // started, or is about to stop).
@@ -227,23 +241,26 @@ final class AgentRegistry: NoticeSink {
 
         guard let (rules, reduction) = reduceAgainstCandidates(signal, pane: pane,
                                                               current: current, now: now) else {
-            return (AgentApplyOutcome(status: current), .none)
+            return (AgentApplyOutcome(status: current), .none, false)
         }
 
         switch reduction.kind {
         case .none:
             // Bookkeeping only (a `lastHookAt` bumped by an unmapped event, a `seenByScan` the
             // scan just confirmed): kept in the registry, never published, so nothing redraws.
+            // A `SessionEnd` for a session nobody had heard of lands here too, and still says
+            // its stragglers are not news.
             if let status = reduction.status { statuses[pane] = status }
+            remember(reduction.released, pane: pane, now: now)
             maybeOfferHookInstall(rules, pane: pane, reduction: reduction)
-            return (AgentApplyOutcome(status: reduction.status), .none)
+            return (AgentApplyOutcome(status: reduction.status), .none, reduction.straggler)
 
         case .evidenceUpgrade:
             // The hook caught up with the OSC text describing the same prompt. The strip learns
             // the tool name and the better evidence; the alarm already on screen is about this
             // very prompt and is left exactly as it is.
             writeStatus(reduction.status, pane: pane)
-            return (AgentApplyOutcome(status: reduction.status), .evidenceUpgrade)
+            return (AgentApplyOutcome(status: reduction.status), .evidenceUpgrade, false)
 
         case .changed, .released:
             // **The origin gate runs before anything is stored** (plan §1.4, §2.2). A refusal has
@@ -251,11 +268,23 @@ final class AgentRegistry: NoticeSink {
             // `origin_mismatch` but still left the pane in `done` would make the agent's own next
             // `Stop` — the same state, from the same rule — reduce to `.none`, never reach the
             // resolution path, and the alarm we promise to keep live would be one nobody could
-            // ever take down. Refused with nothing to resolve = this signal never happened.
+            // ever take down. Refused with nothing to resolve = this signal never happened — the
+            // tombstone included: a forged `SessionEnd` that left one behind would have the
+            // owner's own next hooks dropped as stragglers.
             if current?.needsUser == true, reduction.status?.needsUser != true,
                let forecast = resolutionForecast(signal, pane: pane, origin: origin),
                forecast.resolved == 0, !forecast.refused.isEmpty {
-                return (AgentApplyOutcome(status: current, refused: forecast.refused), .none)
+                return (AgentApplyOutcome(status: current, refused: forecast.refused), .none, false)
+            }
+
+            // A session that ended stays ended for the grace window; a live status written for
+            // an agent ends its own tombstone, and only its own — unless the scan wrote it: the
+            // `SessionEnd` that left the tombstone also triggers a pass, which still finds the
+            // process tearing down, and an `unknown` from that pass must not lift the tombstone
+            // for the `Stop` that lands 50 ms later.
+            remember(reduction.released, pane: pane, now: now)
+            if reduction.kind == .changed, let status = reduction.status, status.evidence != .process {
+                tombstones[pane]?[status.agent] = nil
             }
 
             var outcome = AgentApplyOutcome(status: reduction.status, changed: true)
@@ -267,8 +296,28 @@ final class AgentRegistry: NoticeSink {
             maybeOfferHookInstall(rules, pane: pane, reduction: reduction)
             // Any real signal about this pane makes a pending re-arm moot: the world has moved on.
             rearmTimers.removeValue(forKey: pane)?.cancel()
-            return (outcome, reduction.kind)
+            return (outcome, reduction.kind, false)
         }
+    }
+
+    /// Keeps a release as the pane's tombstone for that agent. A release that knows no session
+    /// never replaces one that does inside the grace: the specific fact is the better one.
+    private func remember(_ released: AgentStateReducer.ReleasedSession?, pane: UUID, now: Date) {
+        guard let released else { return }
+        if released.session == nil, let existing = tombstones[pane]?[released.agent],
+           existing.session != nil,
+           now.timeIntervalSince(existing.at) < AgentStateReducer.releasedSessionGrace {
+            return
+        }
+        tombstones[pane, default: [:]][released.agent] = released
+    }
+
+    /// Expired tombstones are inert, but a pane that outlives many sessions would otherwise
+    /// collect one per agent for ever.
+    private func sweepTombstones(pane: UUID, now: Date) {
+        guard let mine = tombstones[pane] else { return }
+        let live = mine.filter { now.timeIntervalSince($0.value.at) < AgentStateReducer.releasedSessionGrace }
+        tombstones[pane] = live.isEmpty ? nil : live
     }
 
     /// What the centre would say about this signal taking the pane out of `needsUser`, with the
@@ -316,10 +365,25 @@ final class AgentRegistry: NoticeSink {
             return presenceCandidate(found, current: current, now: now)
         }
         var fallback: (AgentRules, AgentReduction)?
+        var dropped: AgentRules?
         for rules in candidates {
+            // A straggler of a session that already ended is not this rule's to reduce: it would
+            // build a status back that nothing could ever take down again.
+            if AgentStateReducer.isStraggler(signal, rules: rules, released: tombstones[pane]?[rules.id],
+                                             now: now) {
+                dropped = dropped ?? rules
+                continue
+            }
             let reduction = AgentStateReducer.reduce(signal, rules: rules, current: current, now: now)
             if reduction.kind != .none { return (rules, reduction) }
             if fallback == nil { fallback = (rules, reduction) }
+        }
+        if let dropped {
+            // Consumed by the agent whose session ended, even though nothing moved: the caller
+            // (the engine's ear, `agent-event`) must not treat it as unclaimed.
+            var reduction = fallback?.1 ?? AgentReduction(status: current, kind: .none)
+            reduction.straggler = true
+            return (fallback?.0 ?? dropped, reduction)
         }
         return fallback
     }
@@ -502,6 +566,7 @@ final class AgentRegistry: NoticeSink {
         statuses[pane] = nil
         noticeIDs[pane] = nil
         presence[pane] = nil
+        tombstones[pane] = nil
         lastAlarm[pane] = nil
         rearmTimers.removeValue(forKey: pane)?.cancel()
     }
@@ -509,7 +574,11 @@ final class AgentRegistry: NoticeSink {
     /// Called by the scan with the panes it can still see: anything we hold that the locator no
     /// longer finds is gone, whether or not the scan mentioned it.
     func dropPanesThatAreGone() {
-        for pane in statuses.keys where locator.locate(pane) == nil { paneClosed(pane) }
+        // Every map keyed by pane, not just the statuses: a pane that closed right after a
+        // release has no status and no notice, and would otherwise keep its tombstone and its
+        // last presence for the life of the process.
+        let known = Set(statuses.keys).union(tombstones.keys).union(presence.keys)
+        for pane in known where locator.locate(pane) == nil { paneClosed(pane) }
     }
 
     // MARK: The re-arm policy (Q1(c), off by default)

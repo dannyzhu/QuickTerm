@@ -16,6 +16,7 @@ final class AgentRulesTests: XCTestCase {
     id = "demo"
     name = "Demo Agent"
     process = ["demo", "demo-cli"]
+    process-path = ["/.local/share/demo/versions/"]
 
     [fields]
     session = "$.session_id"
@@ -58,6 +59,7 @@ final class AgentRulesTests: XCTestCase {
         XCTAssertEqual(rules.id, "demo")
         XCTAssertEqual(rules.name, "Demo Agent")
         XCTAssertEqual(rules.process, ["demo", "demo-cli"])
+        XCTAssertEqual(rules.processPath, ["/.local/share/demo/versions/"])
         XCTAssertEqual(rules.fields.summary,
                        [AgentFieldPath(head: "tool_input", sub: "command"),
                         AgentFieldPath(head: "message", sub: nil)])
@@ -186,6 +188,9 @@ final class AgentRulesTests: XCTestCase {
         XCTAssertFalse(byID["claude-code"]?.notifications.isEmpty ?? true)
         XCTAssertTrue(byID["codex"]?.notifications.isEmpty ?? false)
         XCTAssertTrue(byID["gemini"]?.notifications.isEmpty ?? false)
+        // The native install is a symlink whose target's file name is a version number: without
+        // this fragment the scan never sees Claude Code at all (2026-09-26).
+        XCTAssertEqual(byID["claude-code"]?.processPath, ["/.local/share/claude/versions/"])
     }
 
     /// A user file replaces a bundled one **whole** when the id matches, and adds an agent when

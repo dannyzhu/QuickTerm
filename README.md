@@ -349,7 +349,7 @@ launch.
 
 **What the scan reads.** When an agent has no hooks installed, QuickTerm falls back to looking for it — and
 that fallback is deliberately almost blind. It walks **only QuickTerm's own descendant processes**, keeps a
-pid and an executable name, matches that name against the `process` list in a rule file, and throws the
+pid and an executable name, matches that name against a rule file's `process` list (and the resolved path against its `process-path` fragments, for a launcher that is a symlink), and throws the
 argument buffer away in the same call. No command lines, no environment, no other user's processes, nothing
 outside this app's own process tree. All it can ever conclude is "something by that name is running in this
 pane", which is reported as the state `unknown` — the honest answer. The precise states only ever come from

@@ -5,6 +5,10 @@
 id = "claude-code"
 name = "Claude Code"
 process = ["claude"]
+# The native install (claude.ai/install.sh) is a symlink, ~/.local/bin/claude ->
+# ~/.local/share/claude/versions/<v>, and the kernel names the process after the target, so the
+# basename is a version number: the path is what says "claude".
+process-path = ["/.local/share/claude/versions/"]
 
 [fields]
 session = "$.session_id"

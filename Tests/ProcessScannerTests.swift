@@ -23,6 +23,8 @@ final class ProcessScannerTests: XCTestCase {
     /// so the walk happens on the calling thread and there is no concurrency here to check.
     private final class FakeTree: @unchecked Sendable {
         var children: [pid_t: [pid_t]] = [:]
+        /// What `proc_pidpath` answers for a pid: a bare name in most cases, a whole resolved
+        /// path where the case is about one.
         var names: [pid_t: String] = [:]
         /// The `QUICKTERM_PANE` a pid's environment carries, if any.
         var panes: [pid_t: UUID] = [:]
@@ -444,7 +446,8 @@ final class ProcessScannerTests: XCTestCase {
         XCTAssertEqual(status.evidence, .process)
         XCTAssertTrue(recorder.pids.contains(child.processIdentifier))
         for pid in recorder.pids {
-            XCTAssertEqual(ProcessScan.executableName(of: pid), "quickterm",
+            XCTAssertEqual(ProcessScan.executablePath(of: pid).map { ($0 as NSString).lastPathComponent },
+                           "quickterm",
                            "a real pass may only read the buffer of a process a rule file names")
         }
     }
@@ -454,5 +457,81 @@ final class ProcessScannerTests: XCTestCase {
     private final class PidRecorder: @unchecked Sendable {
         private(set) var pids: [pid_t] = []
         func record(_ pid: pid_t) { pids.append(pid) }
+    }
+
+    // MARK: A launcher that is a symlink
+
+    /// Claude Code's native install is a symlink: `~/.local/bin/claude` runs
+    /// `~/.local/share/claude/versions/2.1.282`, and every kernel reading of the process —
+    /// `proc_pidpath`, `proc_name`, `p_comm` — names the target (measured 2026-09-26), so the
+    /// basename is a version number and `process = ["claude"]` never matched. That kept the scan
+    /// from ever seeing the agent, which left its status with nothing to release it once a late
+    /// hook had built it back. A `process-path` fragment is what recognises it.
+    func testASymlinkedLauncherIsRecognisedByItsPath() throws {
+        registry.reloadRulesForTesting([try AgentRules.parse(Self.ruleText.replacingOccurrences(
+            of: "process = [\"claude\"]",
+            with: "process = [\"claude\"]\nprocess-path = [\"/.local/share/claude/versions/\"]"))])
+        registry.settings.enabled = ["demo"]
+        let pane = try addPane().id
+        let other = try addPane().id
+        let tree = syntheticTree(pane: pane, otherPane: other)
+        tree.names[1002] = "/Users/someone/.local/share/claude/versions/2.1.282"
+        // The same file elsewhere in the tree (the other pane's `node` slot, marker and all),
+        // under neither a listed name nor a listed path: never read.
+        tree.names[1005] = "/opt/elsewhere/2.1.282"
+        let scanner = makeScanner()
+        scanner.listChildren = tree.listChildren
+        scanner.readName = tree.readName
+        scanner.readArguments = tree.readArguments
+
+        scanner.scanNow()
+        let result = try XCTUnwrap(scanner.lastResult)
+
+        XCTAssertEqual(tree.argumentsRead, [1002],
+                       "the path fragment is enough to be looked at; a path no rule lists still is not")
+        XCTAssertEqual(result.matches, [ProcessScan.Match(pid: 1002, name: "2.1.282", pane: pane)],
+                       "the name reported is the file's, whatever matched")
+        XCTAssertEqual(result.byPane, [pane: ["demo": [1002]]],
+                       "attributed to the rule that listed the path")
+    }
+
+    /// A rule that lists only a path fragment is still a reason to walk the tree.
+    func testARuleWithOnlyAPathFragmentIsScanned() throws {
+        registry.reloadRulesForTesting([try AgentRules.parse(Self.ruleText.replacingOccurrences(
+            of: "process = [\"claude\"]",
+            with: "process = []\nprocess-path = [\"/.local/share/claude/versions/\"]"))])
+        registry.settings.enabled = ["demo"]
+        let pane = try addPane().id
+        let tree = syntheticTree(pane: pane, otherPane: try addPane().id)
+        tree.names[1002] = "/Users/someone/.local/share/claude/versions/2.1.282"
+        let scanner = makeScanner()
+        scanner.listChildren = tree.listChildren
+        scanner.readName = tree.readName
+        scanner.readArguments = tree.readArguments
+
+        scanner.scanNow()
+        let result = try XCTUnwrap(scanner.lastResult)
+
+        XCTAssertEqual(result.byPane, [pane: ["demo": [1002]]])
+        XCTAssertFalse(tree.namesRead.isEmpty, "the walk happened")
+    }
+
+    /// The app answers whole paths, the other cases bare names: the basename lookup has to be the
+    /// last path component, not the string the reader returned.
+    func testAWholePathIsMatchedByItsFileName() throws {
+        let pane = try addPane().id
+        let other = try addPane().id
+        let tree = syntheticTree(pane: pane, otherPane: other)
+        tree.names[1002] = "/opt/homebrew/bin/claude"
+        let scanner = makeScanner()
+        scanner.listChildren = tree.listChildren
+        scanner.readName = tree.readName
+        scanner.readArguments = tree.readArguments
+
+        scanner.scanNow()
+        let result = try XCTUnwrap(scanner.lastResult)
+
+        XCTAssertEqual(tree.argumentsRead, [1002])
+        XCTAssertEqual(result.matches, [ProcessScan.Match(pid: 1002, name: "claude", pane: pane)])
     }
 }

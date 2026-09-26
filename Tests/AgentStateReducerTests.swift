@@ -223,4 +223,64 @@ final class AgentStateReducerTests: XCTestCase {
         XCTAssertEqual(result.kind, .changed)
         XCTAssertEqual(result.status?.agent, "demo")
     }
+
+    // MARK: 5. A session that ended stays ended
+
+    /// The trace of 2026-09-26: Claude Code's `Stop` reached the socket 50 ms after its
+    /// `SessionEnd`, and built the status back with nothing left to take it down. A release
+    /// leaves a tombstone, and the reducer says which later signals are that session's stragglers.
+    func testAReleaseLeavesATombstoneAndNamesItsStragglers() throws {
+        let live = reduce(hook("Stop", session: "s1")).status
+        let end = reduce(hook("SessionEnd", session: "s1"), current: live)
+        XCTAssertEqual(end.kind, .released)
+        let tomb = try XCTUnwrap(end.released)
+        XCTAssertEqual(tomb, AgentStateReducer.ReleasedSession(agent: "demo", session: "s1", at: now))
+
+        func straggler(_ signal: PaneSignal, after offset: TimeInterval,
+                       rules: AgentRules? = nil) -> Bool {
+            AgentStateReducer.isStraggler(signal, rules: rules ?? self.rules, released: tomb,
+                                          now: now.addingTimeInterval(offset))
+        }
+        XCTAssertTrue(straggler(hook("Stop", session: "s1"), after: 0.05), "the Stop that lost the race")
+        XCTAssertTrue(straggler(hook("Stop", session: "s1"),
+                                after: AgentStateReducer.releasedSessionGrace - 0.001),
+                      "the last instant inside the grace")
+        XCTAssertTrue(straggler(.notification(title: "Demo finished", body: ""), after: 1),
+                      "the text printed on the way out races the exit the same way")
+        XCTAssertFalse(straggler(.notification(title: "Tests passed", body: ""), after: 1),
+                       "a text this agent's rules do not map belongs to whatever printed it")
+        XCTAssertFalse(straggler(.notification(title: "Demo needs your permission", body: ""), after: 1),
+                       "an agent asking for the user is alive, by text as by hook")
+        XCTAssertFalse(straggler(hook("SessionEnd", session: "s1"), after: 1),
+                       "another end of the same session passes and re-anchors the tombstone")
+        XCTAssertFalse(straggler(hook("SessionStart", session: "s2"), after: 0.05), "a new session")
+        XCTAssertFalse(straggler(hook("PermissionRequest", tool: "Bash", session: "s1"), after: 0.05),
+                       "an agent asking for the user is alive: a resumed session's prompt is never dropped")
+        XCTAssertFalse(straggler(hook("Stop", session: "s1"),
+                                 after: AgentStateReducer.releasedSessionGrace), "the grace has passed")
+        XCTAssertFalse(straggler(.childExited, after: 0.05), "a child exiting is about the present")
+        let other = try AgentRules.parse(Self.text.replacingOccurrences(of: "id = \"demo\"",
+                                                                        with: "id = \"other\""))
+        XCTAssertFalse(straggler(hook("Stop", session: "s1"), after: 0.05, rules: other),
+                       "another agent's hook")
+
+        // A SessionEnd nobody had a status for still leaves a tombstone; so does the child exiting.
+        XCTAssertEqual(reduce(hook("SessionEnd", session: "s3")).released?.session, "s3")
+        // Another session's end is not this status's end (`/clear`: SessionEnd(old) and
+        // SessionStart(new) arrive in either order): the old session gets its tombstone, the new
+        // session keeps its status.
+        let fresh = reduce(hook("SessionStart", session: "s2")).status
+        let stale = reduce(hook("SessionEnd", session: "s1"), current: fresh)
+        XCTAssertEqual(stale.kind, .none)
+        XCTAssertEqual(stale.status, fresh)
+        XCTAssertEqual(stale.released?.session, "s1")
+        XCTAssertEqual(reduce(.childExited, current: live).released?.session, "s1")
+        // A tombstone that knows no session id has nothing to compare a hook against: it shadows
+        // the agent's text, not its hooks — a SessionStart of a new session must get through.
+        let blind = AgentStateReducer.ReleasedSession(agent: "demo", session: nil, at: now)
+        XCTAssertFalse(AgentStateReducer.isStraggler(hook("SessionStart", session: "s9"), rules: rules,
+                                                     released: blind, now: now))
+        XCTAssertTrue(AgentStateReducer.isStraggler(.notification(title: "Demo finished", body: ""),
+                                                    rules: rules, released: blind, now: now))
+    }
 }

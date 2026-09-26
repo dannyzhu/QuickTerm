@@ -173,8 +173,13 @@ struct AgentRules: Equatable {
 
     var id: String
     var name: String
-    /// Executable basenames the process scan matches (`proc_pidpath`).
+    /// Executable basenames the process scan matches (the last component of `proc_pidpath`).
     var process: [String]
+    /// Fragments of the resolved executable path the scan matches with `contains`, for a
+    /// launcher that is a symlink: Claude Code's native install runs
+    /// `~/.local/share/claude/versions/<v>` through `~/.local/bin/claude`, and every kernel
+    /// reading of that process names the target, so its basename is a version number.
+    var processPath: [String]
     var fields: Fields
     var hooks: [String: HookRule]
     /// Matched by `hasPrefix`, **in file order**, first match wins.
@@ -184,7 +189,7 @@ struct AgentRules: Equatable {
     // MARK: Loading
 
     private static let tableNames: Set<String> = ["fields", "hooks", "notifications", "install"]
-    private static let rootKeys: Set<String> = ["id", "name", "process"]
+    private static let rootKeys: Set<String> = ["id", "name", "process", "process-path"]
     private static let fieldKeys: Set<String> = ["session", "message", "tool", "error", "summary"]
     private static let installKeys: Set<String> = ["shape", "config", "lifecycle", "tools"]
 
@@ -204,6 +209,7 @@ struct AgentRules: Equatable {
             throw AgentRulesError.unknown(key: entry.key)
         }
         let process = document.root("process")?.listValue ?? []
+        let processPath = document.root("process-path")?.listValue ?? []
 
         var fields = Fields()
         for entry in document.table("fields")?.entries ?? [] {
@@ -243,8 +249,8 @@ struct AgentRules: Equatable {
                                               reason: "\(event) is installed but not mapped under [hooks]")
             }
         }
-        return AgentRules(id: id, name: name, process: process, fields: fields, hooks: hooks,
-                          notifications: notifications, install: install)
+        return AgentRules(id: id, name: name, process: process, processPath: processPath,
+                          fields: fields, hooks: hooks, notifications: notifications, install: install)
     }
 
     private static func rejectUnknownTables(_ document: AgentRulesTOML.Document) throws {

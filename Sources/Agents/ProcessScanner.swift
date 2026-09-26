@@ -12,10 +12,16 @@ import Foundation
 /// 1. **Descendants only.** The walk starts at QuickTerm's own pid and follows
 ///    `proc_listchildpids`; a process that is not ours is never even named.
 /// 2. **Named processes only.** Of those descendants, the argument buffer is read *only* for a
-///    process whose executable basename a loaded rule file lists. This is the rule that matters:
-///    `KERN_PROCARGS2` hands over another program's whole environment, which is where its secrets
-///    live, and the basename test costs one `proc_pidpath` and keeps us out of every buffer we
-///    have no business in.
+///    process a loaded rule file names: by the resolved executable's basename (`process`), or by
+///    a fragment of its resolved path (`process-path`), both taken from the one `proc_pidpath`.
+///    The path fragment is what keeps a launcher that is a symlink visible: Claude Code's native
+///    install runs `~/.local/share/claude/versions/2.1.282` through `~/.local/bin/claude`, and
+///    every kernel reading of that process — `proc_pidpath`, `proc_name`, `p_comm` — names the
+///    target, `2.1.282` (measured 2026-09-26); only `argv[0]` inside `KERN_PROCARGS2` carries the
+///    launcher's name, and that buffer is exactly what must not be read before the name test.
+///    This is the rule that matters: `KERN_PROCARGS2` hands over another program's whole
+///    environment, which is where its secrets live, and the name test costs one `proc_pidpath`
+///    and keeps us out of every buffer we have no business in.
 /// 3. **Nothing is kept.** A pass yields `(pid, name, pane)` per match. The buffer is released
 ///    before the next pid is looked at, and nothing else from it is ever copied out.
 ///
@@ -33,9 +39,17 @@ struct ProcessScan {
     /// A process we were allowed to look at, and the one thing it told us.
     struct Match: Equatable {
         var pid: pid_t
-        /// The executable basename, which is also the reason we read it at all.
+        /// The resolved executable's basename — the reason we read it, or for a `process-path`
+        /// match simply what the file is called.
         var name: String
         var pane: UUID
+    }
+
+    /// A `process-path` entry: a fragment of the resolved executable path and the enabled rules
+    /// that list it.
+    struct PathRule: Equatable {
+        var fragment: String
+        var rules: Set<String>
     }
 
     struct Result: Equatable {
@@ -54,10 +68,14 @@ struct ProcessScan {
     var root: pid_t
     /// Executable basename → the ids of the **enabled** rules that name it. Two things in one
     /// map, because they are one question: whether a process is worth looking at, and whose it is
-    /// if it is. Empty means there is nothing to look for, and then the walk does not happen at
-    /// all.
+    /// if it is. With `rulesByPath` empty as well there is nothing to look for, and then the walk
+    /// does not happen at all.
     var rulesByName: [String: Set<String>]
+    /// Path fragments → rules, in rule order. Matched with `contains` against the whole resolved
+    /// path, after the basename lookup; a process may be owned through both.
+    var rulesByPath: [PathRule]
     var listChildren: ChildLister
+    /// The resolved executable path (`proc_pidpath`); a case may answer a bare name.
     var readName: NameReader
     var readArguments: ArgumentReader
 
@@ -66,7 +84,7 @@ struct ProcessScan {
     func run() -> Result {
         var result = Result()
         // No rules, no reason to touch the process table.
-        guard !rulesByName.isEmpty else { return result }
+        guard !rulesByName.isEmpty || !rulesByPath.isEmpty else { return result }
 
         var visited: Set<pid_t> = [root]
         var frontier: [pid_t] = [root]
@@ -89,7 +107,11 @@ struct ProcessScan {
     /// The name test comes first and the buffer second, always — reversing these two lines is the
     /// one change in this file that would break the promise in the README.
     private func inspect(_ pid: pid_t, into result: inout Result) {
-        guard let name = readName(pid), let owners = rulesByName[name] else { return }
+        guard let path = readName(pid) else { return }
+        let name = (path as NSString).lastPathComponent
+        var owners = rulesByName[name] ?? []
+        for entry in rulesByPath where path.contains(entry.fragment) { owners.formUnion(entry.rules) }
+        guard !owners.isEmpty else { return }
         // The buffer lives exactly as long as this statement: it is the only place in QuickTerm
         // that has ever held another program's environment, and it is gone before the next pid.
         guard let pane = readArguments(pid).flatMap(Self.paneMarker(in:)) else { return }
@@ -170,15 +192,15 @@ struct ProcessScan {
         return found
     }
 
-    /// The executable's basename. The cheap reading that keeps `argumentBuffer` away from
-    /// everything that is not an agent.
-    static func executableName(of pid: pid_t) -> String? {
+    /// The resolved executable path, symlinks followed. The cheap reading that keeps
+    /// `argumentBuffer` away from everything that is not an agent.
+    static func executablePath(of pid: pid_t) -> String? {
         // `PROC_PIDPATHINFO_MAXSIZE` is a macro (`4 * MAXPATHLEN`) that Swift does not import.
         var buffer = [CChar](repeating: 0, count: 4 * Int(PATH_MAX))
         let read = proc_pidpath(pid, &buffer, UInt32(buffer.count))
         guard read > 0 else { return nil }
         let path = String(cString: buffer)
-        return path.isEmpty ? nil : (path as NSString).lastPathComponent
+        return path.isEmpty ? nil : path
     }
 
     /// `sysctl KERN_PROCARGS2` — what `ps -E` reads. nil for a platform binary (macOS hides its
@@ -230,7 +252,7 @@ final class ProcessScanner {
     // MARK: Seams (the app uses the defaults; cases replace them)
 
     var listChildren: ProcessScan.ChildLister = { ProcessScan.children(of: $0) }
-    var readName: ProcessScan.NameReader = { ProcessScan.executableName(of: $0) }
+    var readName: ProcessScan.NameReader = { ProcessScan.executablePath(of: $0) }
     var readArguments: ProcessScan.ArgumentReader = { ProcessScan.argumentBuffer(of: $0) }
     /// Where the walk starts. `getpid()` in the app; a synthetic root in a case.
     var root: pid_t = getpid()
@@ -356,14 +378,22 @@ final class ProcessScanner {
     private func makeScan() -> ProcessScan? {
         guard registry.settings.detect else { return nil }
         var rulesByName: [String: Set<String>] = [:]
+        var rulesByPath: [ProcessScan.PathRule] = []
         for rules in registry.activeRules {
             // One basename may belong to more than one rule (two rule files both driven by
             // `node`), and then a process is presence for both until a hook says which.
             for name in rules.process { rulesByName[name, default: []].insert(rules.id) }
+            for fragment in rules.processPath {
+                if let index = rulesByPath.firstIndex(where: { $0.fragment == fragment }) {
+                    rulesByPath[index].rules.insert(rules.id)
+                } else {
+                    rulesByPath.append(ProcessScan.PathRule(fragment: fragment, rules: [rules.id]))
+                }
+            }
         }
-        guard !rulesByName.isEmpty else { return nil }
-        return ProcessScan(root: root, rulesByName: rulesByName, listChildren: listChildren,
-                           readName: readName, readArguments: readArguments)
+        guard !rulesByName.isEmpty || !rulesByPath.isEmpty else { return nil }
+        return ProcessScan(root: root, rulesByName: rulesByName, rulesByPath: rulesByPath,
+                           listChildren: listChildren, readName: readName, readArguments: readArguments)
     }
 
     private func deliver(_ result: ProcessScan.Result) {
