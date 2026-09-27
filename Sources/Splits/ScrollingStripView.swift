@@ -274,6 +274,10 @@ struct ScrollingPaneCell: View {
                             isHovering: $dragSourceHovering)
                     }
                 }
+                // QuickTerm: the grab hand, as SwiftUI's pointer style on this persistent cell (GrabPointer).
+                .modifier(Ghostty.GrabPointer(surfaceView: surfaceView,
+                                              active: modifierState.commandHeld || dragSourceDragging,
+                                              dragging: dragSourceDragging))
                 .modifier(PaneChrome(surfaceView: surfaceView, floating: floating))
                 .opacity(faded ? 0 : 1)
                 .allowsHitTesting(!closing)

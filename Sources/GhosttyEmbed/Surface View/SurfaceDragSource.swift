@@ -40,27 +40,44 @@ extension Ghostty {
         /// Binding that reflects whether the mouse is hovering over this view.
         @Binding var isHovering: Bool
 
-        /// QuickTerm: the terminal reports the pointer is over a link. Cmd+click opens it, so the
-        /// link pointer shows instead of the grab hand.
-        @State private var overLink = false
-
         var body: some View {
             SurfaceDragSourceViewRepresentable(
                 surfaceView: surfaceView,
                 isDragging: $isDragging,
                 isHovering: $isHovering)
-            // QuickTerm: the cursor is SwiftUI's own pointer style, not an AppKit cursor rect.
-            // Inside an NSHostingView SwiftUI owns the cursor: whatever AppKit sets from the
-            // overlay — a cursor rect, `cursorUpdate`, a direct `NSCursor.set()` — is overridden by
-            // SwiftUI's next hover pass, and with a pointer that stands still that pass never runs
-            // again, so the terminal's I-beam stayed. Reproduced in a lab window on 2026-09-27
-            // (`NSCursor.currentSystem` after mounting under a stationary pointer: I-beam with the
-            // AppKit rects, the open hand with this modifier), after the same symptom had survived
-            // three releases of AppKit-side attempts on a Mac mini driven by a mouse; a trackpad's
-            // constant jitter had hidden it on the development MacBook.
-            .backport.pointerStyle(isDragging ? .grabActive : (overLink ? .link : .grabIdle))
-            .onReceive(pointerStyles) { overLink = $0 == .link }
+            // QuickTerm: no pointer style here — see `GrabPointer`, which the pane cell wears.
             .preference(key: DraggingSurfaceKey.self, value: isDragging ? surfaceView.id : nil)
+        }
+    }
+
+    /// QuickTerm: the grab hand over a pane while Cmd is held (or a drag is in flight), as
+    /// SwiftUI's own pointer style on the **persistent** pane cell.
+    ///
+    /// Inside an NSHostingView SwiftUI owns the cursor: whatever AppKit sets from the overlay — a
+    /// cursor rect, `cursorUpdate`, a direct `NSCursor.set()` — is overridden by SwiftUI's next
+    /// hover pass, and with a pointer that stands still that pass never runs again, so the
+    /// terminal's I-beam stayed (three releases of AppKit-side attempts, a Mac mini driven by a
+    /// mouse; a trackpad's constant jitter had hidden it on the development MacBook). Putting the
+    /// style on the overlay itself was not enough either: a style on a view that is added and
+    /// removed is flaky on removal (the hand lingered on every pane but the last one unmounted,
+    /// and the second press sometimes showed nothing). Measured in a lab window on 2026-09-27
+    /// with the pointer pinned: the style on the removed overlay flickered between hand, arrow
+    /// and I-beam across two press/release rounds; the same style toggled to nil on the
+    /// persistent cell gave the hand while held and the I-beam after release every time, and a
+    /// nil style leaves the terminal's own link pointer alone.
+    struct GrabPointer: ViewModifier {
+        let surfaceView: PaneView
+        /// Cmd held, or a drag from this pane in flight (the overlay stays mounted for it).
+        let active: Bool
+        let dragging: Bool
+        /// The terminal reports the pointer is over a link: Cmd+click opens it, so the link
+        /// pointer shows instead of the grab hand.
+        @State private var overLink = false
+
+        func body(content: Content) -> some View {
+            content
+                .backport.pointerStyle(active ? (dragging ? .grabActive : (overLink ? .link : .grabIdle)) : nil)
+                .onReceive(pointerStyles) { overLink = $0 == .link }
         }
 
         private var pointerStyles: AnyPublisher<CursorStyle, Never> {

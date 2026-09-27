@@ -738,9 +738,14 @@ sheet. What changed against upstream, and why:
   showed the hand only over whichever pane's overlay had mounted last (2026-09-27, after three
   releases of AppKit-side attempts). Reproduced in a scratch AppKit+SwiftUI window by reading
   `NSCursor.currentSystem` after mounting under a stationary pointer: I-beam with the rects, the
-  open hand with `.pointerStyle(.grabIdle)` on the representable. The overlay now uses
-  `.backport.pointerStyle` (`.grabActive` while dragging, `.link` over a link, `.grabIdle`
-  otherwise); the cursor rect stays as upstream has it but is not what the user sees.
+  open hand with `.pointerStyle(.grabIdle)`. And the style has to live on a **persistent** view:
+  on the overlay representable itself (added and removed with Cmd) it was flaky on removal — the
+  hand lingered on every pane but the last one unmounted, and a second press sometimes showed
+  nothing — while the same style toggled to `nil` on the pane cell (`GrabPointer`, `.grabActive`
+  while dragging, `.link` over a link, `.grabIdle` otherwise) gave the hand while held and the
+  I-beam after release every time, with the pointer pinned in the lab. A `nil` style leaves the
+  terminal's own link pointer alone. The cursor rect stays as upstream has it but is not what
+  the user sees.
 - **The pane drag type must be declared in QuickTerm's own Info.plist.** The port kept Ghostty's
   `UTType(exportedAs: "com.mitchellh.ghosttySurfaceId")` for the drag-and-drop pasteboard type
   without a `UTExportedTypeDeclarations` entry. Launch Services still knew the type on every
