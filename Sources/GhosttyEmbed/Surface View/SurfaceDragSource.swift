@@ -176,10 +176,24 @@ extension Ghostty {
         /// back the same way, or the hand would linger until the next mouse move.
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            ModifierState.logger.debug("drag source \(self.window == nil ? "unmounted" : "mounted", privacy: .public) for pane \(self.surfaceView?.id.uuidString ?? "-", privacy: .public)")
+            ModifierState.logger.debug("drag source \(self.window == nil ? "unmounted" : "mounted", privacy: .public) for pane \(self.surfaceView?.id.uuidString ?? "-", privacy: .public) frame=\(NSStringFromRect(self.frame), privacy: .public) pointerInside=\(self.pointerIsInside, privacy: .public)")
             guard let window else { return }
             window.invalidateCursorRects(for: self)
-            if pointerIsInside { grabCursor.set() }
+            showGrabCursorIfPointerInside()
+        }
+
+        /// SwiftUI adds the overlay to the window first and lays it out afterwards, so at mount
+        /// time its frame can still be empty and the check above misses the very pane the
+        /// pointer is over — on a Mac mini with a two-pane split, the hand appeared over one pane
+        /// and not the other (2026-09-27). The frame arriving is the moment the check is true.
+        override func setFrameSize(_ newSize: NSSize) {
+            super.setFrameSize(newSize)
+            showGrabCursorIfPointerInside()
+        }
+
+        private func showGrabCursorIfPointerInside() {
+            guard window != nil, !bounds.isEmpty, pointerIsInside else { return }
+            grabCursor.set()
         }
 
         override func viewWillMove(toWindow newWindow: NSWindow?) {
