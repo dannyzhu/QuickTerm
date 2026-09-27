@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 /// Conformance to `Transferable` enables drag-and-drop.
 extension PaneView: Transferable {   // QuickTerm: every pane type is draggable
     static var transferRepresentation: some TransferRepresentation {
-        DataRepresentation(contentType: .ghosttySurfaceId) { surface in
+        DataRepresentation(contentType: .quickTermPaneId) { surface in
             withUnsafeBytes(of: surface.id.uuid) { Data($0) }
         } importing: { data in
             guard data.count == 16 else {
@@ -45,14 +45,20 @@ extension PaneView: Transferable {   // QuickTerm: every pane type is draggable
 }
 
 extension UTType {
-    /// A format that encodes the bare UUID only for the surface. This can be used if you have
-    /// a way to look up a surface by ID.
-    static let ghosttySurfaceId = UTType(exportedAs: "com.mitchellh.ghosttySurfaceId")
+    /// A format that encodes the bare UUID only for the pane. This can be used if you have a way
+    /// to look up a pane by ID.
+    ///
+    /// QuickTerm: its own identifier, declared in the app's Info.plist (`UTExportedTypeDeclarations`
+    /// in project.yml). The port kept Ghostty's `com.mitchellh.ghosttySurfaceId` without declaring
+    /// it, and that only worked on a Mac where Ghostty.app is installed and declares the type for
+    /// Launch Services; on a Mac without it the type was unknown, every drop target refused the
+    /// drag, and Cmd+drag of a tiled pane did nothing (Mac mini, 2026-09-27).
+    static let quickTermPaneId = UTType(exportedAs: "dev.danny.quickterm.pane")
 }
 
 #if canImport(AppKit)
 extension NSPasteboard.PasteboardType {
-    /// Pasteboard type for dragging surface IDs.
-    static let ghosttySurfaceId = NSPasteboard.PasteboardType(UTType.ghosttySurfaceId.identifier)
+    /// Pasteboard type for dragging pane IDs.
+    static let quickTermPaneId = NSPasteboard.PasteboardType(UTType.quickTermPaneId.identifier)
 }
 #endif

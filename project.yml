@@ -75,6 +75,15 @@ targets:
         SUEnableAutomaticChecks: true
         SUVerifyUpdateBeforeExtraction: true
         SUPublicEDKey: "kUAtzbZ2aa3lgQ+YiK83Ux8k5tl/9aeBR0l2smgJ8vs="
+        # The pasteboard type behind Cmd+drag of a pane (SurfaceView+Transferable.swift). An
+        # exported UTType has to be declared here, or Launch Services does not know it and every
+        # drop target refuses the drag. The port used Ghostty's own identifier, which Ghostty.app
+        # declares in its Info.plist, so the omission was invisible on a Mac with Ghostty
+        # installed and broke Cmd+drag on one without (Mac mini, 2026-09-27).
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: dev.danny.quickterm.pane
+            UTTypeDescription: QuickTerm pane identifier
+            UTTypeConformsTo: [public.data]
     settings:
       base:
         OTHER_LDFLAGS: "-lc++"

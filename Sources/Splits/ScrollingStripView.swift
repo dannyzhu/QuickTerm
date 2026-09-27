@@ -249,7 +249,7 @@ struct ScrollingPaneCell: View {
                     // do nothing.
                     if !floating {
                         Color.clear.onDrop(
-                            of: [.ghosttySurfaceId],
+                            of: [.quickTermPaneId],
                             delegate: StripDropDelegate(
                                 zone: $dropZone,
                                 viewSize: geo.size,
@@ -303,7 +303,7 @@ private struct StripDropDelegate: DropDelegate {
     /// the "not allowed" badge, rather than failing silently.
     func validateDrop(info: DropInfo) -> Bool {
         guard PaneDragState.shared.allowsDrop(on: destination) else { return false }
-        return info.hasItemsConforming(to: [.ghosttySurfaceId])
+        return info.hasItemsConforming(to: [.quickTermPaneId])
     }
 
     func dropEntered(info: DropInfo) {
@@ -324,7 +324,7 @@ private struct StripDropDelegate: DropDelegate {
         let dropZone = TerminalSplitDropZone.calculate(at: info.location, in: viewSize)
         zone = nil
         guard PaneDragState.shared.allowsDrop(on: destination) else { return false }
-        guard let provider = info.itemProviders(for: [.ghosttySurfaceId]).first else { return false }
+        guard let provider = info.itemProviders(for: [.quickTermPaneId]).first else { return false }
         _ = provider.loadTransferable(type: PaneView.self) { [weak destination] result in
             if case .success(let source) = result {
                 DispatchQueue.main.async {

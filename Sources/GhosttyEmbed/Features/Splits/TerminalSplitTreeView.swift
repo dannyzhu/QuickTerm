@@ -389,7 +389,7 @@ private struct TerminalSplitLeaf: View {
                 // so it is a proper invalid drop zone.
                 if !isSelfDragging {
                     Color.clear
-                        .onDrop(of: [.ghosttySurfaceId], delegate: SplitDropDelegate(
+                        .onDrop(of: [.quickTermPaneId], delegate: SplitDropDelegate(
                             dropState: $dropState,
                             viewSize: geometry.size,
                             destinationSurface: surfaceView,
@@ -454,7 +454,7 @@ private struct TerminalSplitLeaf: View {
         func validateDrop(info: DropInfo) -> Bool {
             // QuickTerm: cross-window drops are refused outright; a pane lives in exactly one window
             guard PaneDragState.shared.allowsDrop(on: destinationSurface) else { return false }
-            return info.hasItemsConforming(to: [.ghosttySurfaceId])
+            return info.hasItemsConforming(to: [.quickTermPaneId])
         }
 
         func dropEntered(info: DropInfo) {
@@ -487,7 +487,7 @@ private struct TerminalSplitLeaf: View {
             guard PaneDragState.shared.allowsDrop(on: destinationSurface) else { return false }
 
             // Load the dropped surface asynchronously using Transferable
-            let providers = info.itemProviders(for: [.ghosttySurfaceId])
+            let providers = info.itemProviders(for: [.quickTermPaneId])
             guard let provider = providers.first else { return false }
 
             // Capture action before the async closure

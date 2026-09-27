@@ -45,5 +45,18 @@
 	<string>kUAtzbZ2aa3lgQ+YiK83Ux8k5tl/9aeBR0l2smgJ8vs=</string>
 	<key>SUVerifyUpdateBeforeExtraction</key>
 	<true/>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>QuickTerm pane identifier</string>
+			<key>UTTypeIdentifier</key>
+			<string>dev.danny.quickterm.pane</string>
+		</dict>
+	</array>
 </dict>
 </plist>

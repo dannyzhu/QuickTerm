@@ -729,6 +729,14 @@ sheet. What changed against upstream, and why:
   install mode it replies dismiss so the automatic driver stages the update on the next check.
 - The quit confirmation stands aside on `relaunchRequested`, set by every path that asks Sparkle
   to terminate the app.
+- **The pane drag type must be declared in QuickTerm's own Info.plist.** The port kept Ghostty's
+  `UTType(exportedAs: "com.mitchellh.ghosttySurfaceId")` for the drag-and-drop pasteboard type
+  without a `UTExportedTypeDeclarations` entry. Launch Services still knew the type on every
+  development Mac, because Ghostty.app declares it; on a Mac without Ghostty the type was unknown,
+  `onDrop(of:)` / `hasItemsConforming(to:)` refused every drag, and Cmd+drag of a tiled pane did
+  nothing while the floating-pane drag (which never touches the pasteboard) worked (Mac mini,
+  2026-09-27). The type is now QuickTerm's own, `dev.danny.quickterm.pane`, declared in
+  project.yml; `PaneDragTypeTests` pins the declaration.
 - The launch check waits for Sparkle's start-up session to end. `SPUUpdater start` probes for a
   resumable installer with `sessionInProgress` set, so a `checkForUpdatesInBackground()` one turn
   after `start()` is refused ("sessionInProgress == YES", seen on every E2E launch of
