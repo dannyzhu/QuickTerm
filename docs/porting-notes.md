@@ -729,6 +729,18 @@ sheet. What changed against upstream, and why:
   install mode it replies dismiss so the automatic driver stages the update on the next check.
 - The quit confirmation stands aside on `relaunchRequested`, set by every path that asks Sparkle
   to terminate the app.
+- **Cursors inside the SwiftUI hierarchy are SwiftUI's to set.** The Cmd drag-source overlay's
+  grab hand was an AppKit cursor rect (`resetCursorRects`), which upstream also relies on. Inside
+  an `NSHostingView` SwiftUI owns the cursor: a cursor rect, a `.cursorUpdate` tracking area or a
+  direct `NSCursor.set()` from the overlay is overridden by SwiftUI's next hover pass, and with a
+  pointer that stands still that pass never runs again, so the terminal's I-beam stayed. A
+  trackpad's constant jitter hid it on the development MacBook; a Mac mini driven by a mouse
+  showed the hand only over whichever pane's overlay had mounted last (2026-09-27, after three
+  releases of AppKit-side attempts). Reproduced in a scratch AppKit+SwiftUI window by reading
+  `NSCursor.currentSystem` after mounting under a stationary pointer: I-beam with the rects, the
+  open hand with `.pointerStyle(.grabIdle)` on the representable. The overlay now uses
+  `.backport.pointerStyle` (`.grabActive` while dragging, `.link` over a link, `.grabIdle`
+  otherwise); the cursor rect stays as upstream has it but is not what the user sees.
 - **The pane drag type must be declared in QuickTerm's own Info.plist.** The port kept Ghostty's
   `UTType(exportedAs: "com.mitchellh.ghosttySurfaceId")` for the drag-and-drop pasteboard type
   without a `UTExportedTypeDeclarations` entry. Launch Services still knew the type on every

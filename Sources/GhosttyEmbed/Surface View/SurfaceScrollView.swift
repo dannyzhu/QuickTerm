@@ -143,15 +143,13 @@ class SurfaceScrollView: NSView {
                 }
             }
             .store(in: &cancellables)
-        // QuickTerm: the document cursor stands aside while Cmd is held. `documentCursor` is a
-        // cursor rect of the scroll view, and AppKit resolves overlapping cursor rects by the
-        // order in which they were last rebuilt: whenever anything invalidates rects after the
-        // Cmd drag-source overlay has set its own (another pane's overlay mounting, a pointer
-        // style change), the terminal's I-beam won over the overlay's hand for the pane under a
-        // pointer that then stayed still — on a Mac mini with a mouse and a two-pane split, the
-        // hand showed over one pane and not the other while both dragged fine (2026-09-27). With
-        // no document cursor during the hold the overlay's rect is the only one over the pane,
-        // and the terminal's own cursor comes straight back when Cmd is released.
+        // QuickTerm: the document cursor stands aside while Cmd is held. The hand over the pane
+        // is SwiftUI's pointer style on the drag-source overlay (SurfaceDragSource), and the
+        // terminal's I-beam is an AppKit cursor rect of this scroll view: with no document cursor
+        // during the hold nothing of the terminal's competes with the hand, and putting it back
+        // when Cmd is released invalidates the window's cursor rects, which is what brings the
+        // I-beam back under a pointer that has not moved (measured in a lab window, 2026-09-27:
+        // with the document cursor left in place the hand lingered after the release).
         surfaceView.$pointerStyle
             .combineLatest(ModifierState.shared.$commandHeld)
             .receive(on: DispatchQueue.main)

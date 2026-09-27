@@ -40,12 +40,32 @@ extension Ghostty {
         /// Binding that reflects whether the mouse is hovering over this view.
         @Binding var isHovering: Bool
 
+        /// QuickTerm: the terminal reports the pointer is over a link. Cmd+click opens it, so the
+        /// link pointer shows instead of the grab hand.
+        @State private var overLink = false
+
         var body: some View {
             SurfaceDragSourceViewRepresentable(
                 surfaceView: surfaceView,
                 isDragging: $isDragging,
                 isHovering: $isHovering)
+            // QuickTerm: the cursor is SwiftUI's own pointer style, not an AppKit cursor rect.
+            // Inside an NSHostingView SwiftUI owns the cursor: whatever AppKit sets from the
+            // overlay — a cursor rect, `cursorUpdate`, a direct `NSCursor.set()` — is overridden by
+            // SwiftUI's next hover pass, and with a pointer that stands still that pass never runs
+            // again, so the terminal's I-beam stayed. Reproduced in a lab window on 2026-09-27
+            // (`NSCursor.currentSystem` after mounting under a stationary pointer: I-beam with the
+            // AppKit rects, the open hand with this modifier), after the same symptom had survived
+            // three releases of AppKit-side attempts on a Mac mini driven by a mouse; a trackpad's
+            // constant jitter had hidden it on the development MacBook.
+            .backport.pointerStyle(isDragging ? .grabActive : (overLink ? .link : .grabIdle))
+            .onReceive(pointerStyles) { overLink = $0 == .link }
             .preference(key: DraggingSurfaceKey.self, value: isDragging ? surfaceView.id : nil)
+        }
+
+        private var pointerStyles: AnyPublisher<CursorStyle, Never> {
+            (surfaceView as? Ghostty.SurfaceView)?.$pointerStyle.eraseToAnyPublisher()
+                ?? Just(CursorStyle.default).eraseToAnyPublisher()
         }
     }
 
@@ -150,8 +170,11 @@ extension Ghostty {
             return true
         }
 
-        /// QuickTerm: the cursor this overlay shows — the link pointer over a link (Cmd+click
-        /// opens it), the closed hand while a drag is tracked, the open hand otherwise.
+        /// QuickTerm: the cursor this overlay would show through AppKit's cursor rects — the link
+        /// pointer over a link (Cmd+click opens it), the closed hand while a drag is tracked, the
+        /// open hand otherwise. The rect is kept as upstream has it, but inside an NSHostingView
+        /// it is SwiftUI's pointer style on the representable (see `SurfaceDragSource`) that the
+        /// user actually sees.
         private var grabCursor: NSCursor {
             if !isTracking, let terminal = surfaceView as? Ghostty.SurfaceView, terminal.pointerStyle == .link {
                 return .pointingHand
@@ -159,54 +182,18 @@ extension Ghostty {
             return isTracking ? .closedHand : .openHand
         }
 
-        /// Whether the pointer is over this overlay right now (no event needed).
+        /// Whether the pointer is over this overlay right now (for the log).
         private var pointerIsInside: Bool {
             guard let window else { return false }
             return bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
         }
 
-        /// QuickTerm: the hand has to appear the moment the overlay mounts, not on the next
-        /// cursor-rect rebuild. A cursor rect only takes effect once the window re-evaluates its
-        /// rects, and nothing asks for that when a view is added under a stationary pointer: on a
-        /// trackpad the pointer never quite stands still and the terminal's own pointer-style
-        /// changes invalidate the rects along the way, so it looked fine on the development
-        /// MacBook; with a mouse on a Mac mini the pointer sits still, Cmd+drag worked and the
-        /// cursor never changed (2026-09-27). So: invalidate on mount, and set the cursor
-        /// directly while the pointer is already over the pane. On unmount, hand the cursor
-        /// back the same way, or the hand would linger until the next mouse move.
+        /// QuickTerm: part of the `modifiers` log — whether SwiftUI mounted the overlay when
+        /// `commandHeld` turned true, with its frame and whether the pointer was over it.
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             ModifierState.logger.debug("drag source \(self.window == nil ? "unmounted" : "mounted", privacy: .public) for pane \(self.surfaceView?.id.uuidString ?? "-", privacy: .public) frame=\(NSStringFromRect(self.frame), privacy: .public) pointerInside=\(self.pointerIsInside, privacy: .public)")
-            guard let window else { return }
-            window.invalidateCursorRects(for: self)
-            showGrabCursorIfPointerInside()
-        }
-
-        /// SwiftUI adds the overlay to the window first and lays it out afterwards, so at mount
-        /// time its frame can still be empty and the check above misses the very pane the
-        /// pointer is over — on a Mac mini with a two-pane split, the hand appeared over one pane
-        /// and not the other (2026-09-27). The frame arriving is the moment the check is true.
-        override func setFrameSize(_ newSize: NSSize) {
-            super.setFrameSize(newSize)
-            showGrabCursorIfPointerInside()
-        }
-
-        private func showGrabCursorIfPointerInside() {
-            guard window != nil, !bounds.isEmpty, pointerIsInside else { return }
-            grabCursor.set()
-        }
-
-        override func viewWillMove(toWindow newWindow: NSWindow?) {
-            super.viewWillMove(toWindow: newWindow)
-            guard newWindow == nil, let window, pointerIsInside else { return }
-            NSCursor.arrow.set()
-            window.resetCursorRects()   // the terminal and web views set their own cursor again
-        }
-
-        /// The `.cursorUpdate` tracking option: AppKit asks the view under the pointer for its
-        /// cursor whenever the pointer enters the area, independently of cursor rects.
-        override func cursorUpdate(with event: NSEvent) {
-            grabCursor.set()
+            window?.invalidateCursorRects(for: self)
         }
 
         override func mouseDown(with event: NSEvent) {
@@ -249,12 +236,10 @@ extension Ghostty {
             // To update our tracking area we just recreate it all.
             trackingAreas.forEach { removeTrackingArea($0) }
 
-            // Add our tracking area for mouse events. QuickTerm: `.cursorUpdate` as well, so the
-            // hand does not depend on the window rebuilding its cursor rects (see
-            // viewDidMoveToWindow).
+            // Add our tracking area for mouse events
             addTrackingArea(NSTrackingArea(
                 rect: bounds,
-                options: [.mouseEnteredAndExited, .cursorUpdate, .activeInActiveApp],
+                options: [.mouseEnteredAndExited, .activeInActiveApp],
                 owner: self,
                 userInfo: nil
             ))
