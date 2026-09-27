@@ -1309,6 +1309,10 @@ final class MainWindowController: BaseTerminalController {
     @discardableResult
     func beginFloatingDrag(with event: NSEvent) -> Bool {
         guard let hit = floatingDragHit(event) else { return false }
+        // Part of the `modifiers` log (see ModifierState): a Cmd+click that a floating pane
+        // claims never reaches the tiled pane's drag source underneath.
+        let claimed = model.floating[hit.index]
+        ModifierState.logger.debug("Cmd+click claimed by floating pane \(claimed.pane.id.uuidString, privacy: .public) rect=\(NSStringFromRect(claimed.rect), privacy: .public) edges=\(hit.edges.rawValue, privacy: .public)")
         let idx = hit.edges.isMove ? raiseFloating(at: hit.index) : hit.index
         floatingDrag = FloatingDragSession(pane: model.floating[idx].pane, edges: hit.edges, down: event)
         if hit.edges.isMove { NSCursor.closedHand.set(); floatingCursorActive = true }

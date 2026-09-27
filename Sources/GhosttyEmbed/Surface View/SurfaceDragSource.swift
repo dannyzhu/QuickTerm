@@ -164,6 +164,7 @@ extension Ghostty {
             // Don't call super - the drag will be initiated in mouseDragged.
             // QuickTerm: remember it; if no drag happens, mouse-up forwards it as a click
             pendingClick = event
+            ModifierState.logger.debug("drag source: mouse down on pane \(self.surfaceView?.id.uuidString ?? "-", privacy: .public)")
         }
 
         /// QuickTerm: releasing without crossing the threshold is a plain click, so press and
@@ -237,7 +238,11 @@ extension Ghostty {
             }
 
             // Create our dragging item from our transferable
-            guard let pasteboardItem = surfaceView.pasteboardItem() else { return }
+            guard let pasteboardItem = surfaceView.pasteboardItem() else {
+                ModifierState.logger.error("drag source: no pasteboard item for pane \(surfaceView.id.uuidString, privacy: .public), the drag cannot start")
+                return
+            }
+            ModifierState.logger.debug("drag source: threshold crossed on pane \(surfaceView.id.uuidString, privacy: .public), snapshot \(surfaceView.asImage == nil ? "missing" : "ok", privacy: .public)")
             let item = NSDraggingItem(pasteboardWriter: pasteboardItem)
 
             // Create a scaled preview image from the surface snapshot
@@ -294,6 +299,7 @@ extension Ghostty {
             _ session: NSDraggingSession,
             willBeginAt screenPoint: NSPoint
         ) {
+            ModifierState.logger.debug("drag source: session began")
             isTracking = true
 
             // Reset our escape tracking
@@ -343,6 +349,7 @@ extension Ghostty {
                 }
             }
 
+            ModifierState.logger.debug("drag source: session ended, operation=\(operation.rawValue, privacy: .public) escape=\(self.dragCancelledByEscape, privacy: .public)")
             isTracking = false
             onDragStateChanged?(false)
             PaneDragState.shared.end()   // QuickTerm: pop the drag-source registration
