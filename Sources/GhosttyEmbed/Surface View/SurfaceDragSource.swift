@@ -150,11 +150,49 @@ extension Ghostty {
             return true
         }
 
-        /// QuickTerm: the other half of the `modifiers` log — whether SwiftUI actually mounted
-        /// the overlay when `commandHeld` turned true.
+        /// QuickTerm: the cursor this overlay shows — the link pointer over a link (Cmd+click
+        /// opens it), the closed hand while a drag is tracked, the open hand otherwise.
+        private var grabCursor: NSCursor {
+            if !isTracking, let terminal = surfaceView as? Ghostty.SurfaceView, terminal.pointerStyle == .link {
+                return .pointingHand
+            }
+            return isTracking ? .closedHand : .openHand
+        }
+
+        /// Whether the pointer is over this overlay right now (no event needed).
+        private var pointerIsInside: Bool {
+            guard let window else { return false }
+            return bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        }
+
+        /// QuickTerm: the hand has to appear the moment the overlay mounts, not on the next
+        /// cursor-rect rebuild. A cursor rect only takes effect once the window re-evaluates its
+        /// rects, and nothing asks for that when a view is added under a stationary pointer: on a
+        /// trackpad the pointer never quite stands still and the terminal's own pointer-style
+        /// changes invalidate the rects along the way, so it looked fine on the development
+        /// MacBook; with a mouse on a Mac mini the pointer sits still, Cmd+drag worked and the
+        /// cursor never changed (2026-09-27). So: invalidate on mount, and set the cursor
+        /// directly while the pointer is already over the pane. On unmount, hand the cursor
+        /// back the same way, or the hand would linger until the next mouse move.
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             ModifierState.logger.debug("drag source \(self.window == nil ? "unmounted" : "mounted", privacy: .public) for pane \(self.surfaceView?.id.uuidString ?? "-", privacy: .public)")
+            guard let window else { return }
+            window.invalidateCursorRects(for: self)
+            if pointerIsInside { grabCursor.set() }
+        }
+
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            super.viewWillMove(toWindow: newWindow)
+            guard newWindow == nil, let window, pointerIsInside else { return }
+            NSCursor.arrow.set()
+            window.resetCursorRects()   // the terminal and web views set their own cursor again
+        }
+
+        /// The `.cursorUpdate` tracking option: AppKit asks the view under the pointer for its
+        /// cursor whenever the pointer enters the area, independently of cursor rects.
+        override func cursorUpdate(with event: NSEvent) {
+            grabCursor.set()
         }
 
         override func mouseDown(with event: NSEvent) {
@@ -197,10 +235,12 @@ extension Ghostty {
             // To update our tracking area we just recreate it all.
             trackingAreas.forEach { removeTrackingArea($0) }
 
-            // Add our tracking area for mouse events
+            // Add our tracking area for mouse events. QuickTerm: `.cursorUpdate` as well, so the
+            // hand does not depend on the window rebuilding its cursor rects (see
+            // viewDidMoveToWindow).
             addTrackingArea(NSTrackingArea(
                 rect: bounds,
-                options: [.mouseEnteredAndExited, .activeInActiveApp],
+                options: [.mouseEnteredAndExited, .cursorUpdate, .activeInActiveApp],
                 owner: self,
                 userInfo: nil
             ))
@@ -212,11 +252,7 @@ extension Ghostty {
             // goes through the hit view's own rects (this overlay's), so simply "adding no rect" is
             // not enough: that walks up this overlay's responder chain and never reaches the
             // terminal scroll view's documentCursor.
-            if !isTracking, let terminal = surfaceView as? Ghostty.SurfaceView, terminal.pointerStyle == .link {
-                addCursorRect(bounds, cursor: .pointingHand)
-                return
-            }
-            addCursorRect(bounds, cursor: isTracking ? .closedHand : .openHand)
+            addCursorRect(bounds, cursor: grabCursor)
         }
 
         override func mouseEntered(with event: NSEvent) {
