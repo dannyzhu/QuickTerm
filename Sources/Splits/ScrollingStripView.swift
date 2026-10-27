@@ -8,7 +8,6 @@ import SwiftUI
 struct ScrollingStripView: View {
     let strip: ScrollingStrip
     let workspaceIndex: Int
-    let pan: WorkspaceModel.StripPanEvent?
     let onDrop: (PaneView, PaneView, TerminalSplitDropZone) -> Void
     /// Panes currently fading out; once the fade finishes the controller removes them and the strip
     /// reflows.
@@ -16,7 +15,6 @@ struct ScrollingStripView: View {
 
     @EnvironmentObject var theme: ThemeManager   // pane-gap (the floor on the peek moves with it)
     @State private var offset: CGFloat = 0
-    @State private var lastPanSerial: Int = -1
     /// Pane identities seen so far: used on a structural change to recognize a just-inserted column
     /// (see revealTarget).
     @State private var knownPaneIDs: Set<UUID>?
@@ -53,13 +51,11 @@ struct ScrollingStripView: View {
                         }
                     }
                     .frame(height: geo.size.height, alignment: .top)
+                    // Inside the offset: a swap's before and after frames ignore the scrolling.
+                    .coordinateSpace(.named(PaneSwapAnimation.space))
                     .offset(x: -offset)
                     .onPreferenceChange(FocusedStripPaneKey.self) { focusedID in
                         scrollToFocus(id: focusedID, viewport: geo.size.width)
-                    }
-                    .onChange(of: pan) {
-                        // Panning only means anything once the strip is laid out.
-                        applyPan(viewport: geo.size.width)
                     }
                 }
             }
@@ -87,7 +83,7 @@ struct ScrollingStripView: View {
                 // Cmd+Ctrl+= reset, drag-resize, window resize): only pull the offset back into
                 // legal range, never chase focus - chasing would hijack a manual pan.
                 // Same column count = a pure width change: clamp per event with **no animation**,
-                // tracking the hand (the same treatment applyPan gives an in-flight gesture).
+                // tracking the hand.
                 // Cmd+right-drag resizing writes a width per event, and with the strip parked at
                 // the right end every one of those events triggers a clamp: animated, each frame
                 // restarts a 0.15s easeOut, so the viewport drags a tail behind it and the right
@@ -182,34 +178,6 @@ struct ScrollingStripView: View {
             return
         }
         withAnimation(.easeOut(duration: 0.15)) { offset = target }
-    }
-
-    /// Two-finger horizontal pan (a side feature): the strip tracks the fingers while swiping and
-    /// snaps to the nearest column's left edge when the gesture ends.
-    /// With content that does not overflow (one column, or two centered ones) there is nothing to
-    /// pan, so this is ignored outright.
-    private func applyPan(viewport: CGFloat) {
-        guard let pan, pan.serial != lastPanSerial else { return }
-        lastPanSerial = pan.serial
-        let total = strip.totalWidth(viewport: viewport, gap: columnGap)
-        guard total > viewport else { return }
-        let maxOffset = total - viewport
-        if pan.ended {
-            // Snap to the nearest "column left edge − peek" (the same alignment rule focus
-            // scrolling uses).
-            let widths = strip.columnWidths(viewport: viewport, gap: columnGap)
-            let peek = ScrollingStrip.peekPoints(viewport: viewport, paneGap: theme.paneGap)
-            var x: CGFloat = 0
-            var best: CGFloat = 0
-            for width in widths {
-                let candidate = x - peek
-                if abs(candidate - offset) < abs(best - offset) { best = candidate }
-                x += width + columnGap
-            }
-            withAnimation(.easeOut(duration: 0.15)) { offset = min(max(best, 0), maxOffset) }
-        } else {
-            offset = min(max(offset - pan.delta, 0), maxOffset)
-        }
     }
 }
 

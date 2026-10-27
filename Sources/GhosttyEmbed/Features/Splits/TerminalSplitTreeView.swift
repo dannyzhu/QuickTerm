@@ -46,6 +46,8 @@ struct TerminalSplitTreeView: View {
                 action: action,
                 appearingPane: appearingPane,
                 closingPanes: closingPanes)
+            // QuickTerm: the space pane frames are measured in for the swap slide (PaneChrome).
+            .coordinateSpace(.named(PaneSwapAnimation.space))
             // QuickTerm: no more .id(structuralIdentity) on the whole tree — that made any
             // structural change rebuild every pane (the entire app flashes, every pane replays its
             // pop-in, the first-responder view leaves the window). What upstream issue 7546 was
@@ -228,7 +230,10 @@ private struct SplitBranchView: View {
                             .frame(width: size?.width, height: size?.height, alignment: .topLeading)
                             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
                                    alignment: .topLeading)
-                            .clipped()
+                            // QuickTerm: clip only while a split animation runs. At rest the child
+                            // fills its slot exactly, and an unclipped slot is what lets the swap
+                            // slide carry a pane across the divider without being cut off.
+                            .clipped(antialiased: false, when: animating && !settled || side != nil)
                             // No mouse during the animation: clipped only trims what is drawn, so
                             // the part of the survivor that overflows into the closing side's slot
                             // while pinned at its final size is still clickable and hoverable, and
@@ -261,7 +266,7 @@ private struct SplitBranchView: View {
                             // proposal expands the frame and overflows centered.
                             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity,
                                    alignment: align)
-                            .clipped()
+                            .clipped(antialiased: false, when: animating && !settled || side != nil)
                             .opacity(animating ? progress : 1)
                             .allowsHitTesting(side == nil)
                     },
@@ -588,5 +593,20 @@ enum TerminalSplitDropZone: String, Equatable {
                 .fill(overlayColor)
                 .padding(geometry.size.width * 0.15)
         }
+    }
+}
+
+private extension View {
+    /// QuickTerm: `.clipped()` only when `condition` holds. Same view identity either way (the
+    /// clip shape is swapped for an unbounded one), so toggling it never remounts the pane.
+    func clipped(antialiased: Bool, when condition: Bool) -> some View {
+        clipShape(ConditionalClip(enabled: condition), style: FillStyle(antialiased: antialiased))
+    }
+}
+
+private struct ConditionalClip: Shape {
+    var enabled: Bool
+    func path(in rect: CGRect) -> Path {
+        Path(enabled ? rect : rect.insetBy(dx: -100_000, dy: -100_000))
     }
 }

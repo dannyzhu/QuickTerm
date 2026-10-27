@@ -29,6 +29,9 @@ struct PaneChrome: ViewModifier {
     /// this frame on their own. One source, no cache to fall out of date.
     @ObservedObject private var notices = NoticeCenter.shared
     @State private var appeared: Bool
+    /// The swap slide: the transform that puts the pane back where it was, animated to identity.
+    @State private var swapOffset: CGSize = .zero
+    @State private var swapScale = CGSize(width: 1, height: 1)
 
     /// Surfaces that have already played the popin: a view remounted by a layout change must not
     /// replay it, or the whole screen "flashes" at once.
@@ -169,6 +172,18 @@ struct PaneChrome: ViewModifier {
             }
             // pane-gap of breathing room on every side (the same in both layouts)
             .padding(theme.gapsEnabled ? theme.paneGap : 0)
+            // The layout frame is measured *before* the swap transform below, so it is always where
+            // the layout put the pane, never where the slide has it drawn this frame.
+            .background {
+                GeometryReader { geo in
+                    let frame = geo.frame(in: .named(PaneSwapAnimation.space))
+                    Color.clear
+                        .onAppear { layoutFrameChanged(frame) }
+                        .onChange(of: frame) { _, new in layoutFrameChanged(new) }
+                }
+            }
+            .scaleEffect(x: swapScale.width, y: swapScale.height, anchor: .topLeading)
+            .offset(swapOffset)
             .scaleEffect(appeared ? 1 : 0.87)
             .opacity(appeared ? 1 : 0)
             .onAppear {
@@ -176,6 +191,29 @@ struct PaneChrome: ViewModifier {
                 Self.popped.insert(surfaceView.id)
                 withAnimation(.easeOut(duration: 0.2)) { appeared = true }
             }
+    }
+
+    /// A new layout frame. If a swap just moved this pane, start drawn at the old frame (translated
+    /// and scaled onto it) and slide into the new one over `swap-animation-duration`.
+    private func layoutFrameChanged(_ frame: CGRect) {
+        surfaceView.layoutFrame = frame
+        guard let pending = surfaceView.pendingSwap else { return }
+        surfaceView.pendingSwap = nil
+        let duration = theme.swapAnimationDuration
+        guard pending.until > Date(), duration > 0,
+              let start = PaneSwapAnimation.transform(from: pending.from, to: frame) else { return }
+        var jump = Transaction()
+        jump.disablesAnimations = true
+        withTransaction(jump) {
+            swapOffset = start.offset
+            swapScale = start.scale
+        }
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: duration)) {
+                swapOffset = .zero
+                swapScale = CGSize(width: 1, height: 1)
+            }
+        }
     }
 
     /// How far the title may stick out above the border: the enclosing slot is `.clipped()`, so
@@ -291,5 +329,27 @@ private struct PaneFrame: View {
             x = max(x, min(gap.end, w))
         }
         if x < w { path.addRect(CGRect(x: x, y: 0, width: w - x, height: line)) }
+    }
+}
+
+/// The geometry of the Cmd+Shift+arrow swap slide.
+enum PaneSwapAnimation {
+    /// The coordinate space both layouts declare on their content (`TerminalSplitTreeView`, the
+    /// scrolling strip's HStack inside its offset), so a pane's frame before and after a swap are
+    /// comparable whatever the strip is scrolled to.
+    static let space = "quickterm.pane-layout"
+
+    /// How long a swap's "you were here" stays valid: the new layout lands within a frame or two.
+    static let pendingWindow: TimeInterval = 0.5
+
+    /// The transform that draws a pane laid out at `to` exactly over `from`: scale anchored at the
+    /// top-leading corner, then offset. nil when nothing moved, or a frame is degenerate.
+    static func transform(from: CGRect, to: CGRect) -> (offset: CGSize, scale: CGSize)? {
+        guard to.width > 1, to.height > 1, from.width > 1, from.height > 1 else { return nil }
+        let offset = CGSize(width: from.minX - to.minX, height: from.minY - to.minY)
+        let scale = CGSize(width: from.width / to.width, height: from.height / to.height)
+        let moved = abs(offset.width) > 0.5 || abs(offset.height) > 0.5
+            || abs(scale.width - 1) > 0.001 || abs(scale.height - 1) > 0.001
+        return moved ? (offset, scale) : nil
     }
 }

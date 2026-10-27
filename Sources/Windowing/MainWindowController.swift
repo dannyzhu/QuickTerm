@@ -94,7 +94,8 @@ final class MainWindowController: BaseTerminalController {
     private var floatingCursorActive = false
     /// Width of the draggable resize band around a floating pane, in points
     static let floatingEdgeBand: CGFloat = 14
-    private var stripPanSerial = 0
+    /// Two-finger horizontal swipes in the scrolling layout, turned into one-column steps.
+    private var swipeStep = SwipeStep()
     /// This screen's index (0 = the first screen, whose title is always `QuickTerm`); once closed
     /// the index can be reused by a new screen.
     let screenIndex: Int
@@ -570,13 +571,11 @@ final class MainWindowController: BaseTerminalController {
                 return event
             }
             if case .scrolling = self.model.layout,
-               abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY),
-               abs(event.scrollingDeltaX) > 0.5 || event.phase == .ended || event.momentumPhase == .ended {
-                self.stripPanSerial += 1
-                self.model.stripPan = .init(
-                    delta: event.scrollingDeltaX,
-                    ended: event.phase == .ended || event.momentumPhase == .ended,
-                    serial: self.stripPanSerial)
+               abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) || self.swipeStep.inGesture {
+                if let step = self.swipeStep.feed(deltaX: event.scrollingDeltaX, phase: event.phase,
+                                                  momentum: event.momentumPhase, at: event.timestamp) {
+                    self.moveFocus(step)
+                }
                 return nil
             }
             return event
@@ -1316,6 +1315,23 @@ final class MainWindowController: BaseTerminalController {
             at: point)
     }
 
+    /// Scrolling layout: a column that only peeks in at the left or right edge of the screen is
+    /// focused by a click, not by hover — the mouse passing over the sliver on its way somewhere
+    /// else used to slide the whole strip. A pane is "peeking" when part of it lies outside the
+    /// content area; once a click has brought it fully into view, hover works on it again. Dwindle
+    /// and the floating layer are unaffected: every pane there is always fully on screen.
+    override func paneTakesHoverFocus(_ pane: PaneView) -> Bool {
+        guard case .scrolling = model.layout, model.layout.paneList.contains(where: { $0 === pane }),
+              let content = window?.contentView, pane.window != nil else { return true }
+        return Self.isFullyVisible(pane.convert(pane.bounds, to: content), in: content.bounds)
+    }
+
+    /// Fully on screen, horizontally, give or take a point of rounding (columns are laid out on
+    /// fractional offsets). Only the horizontal edges count: the strip never scrolls vertically.
+    static func isFullyVisible(_ frame: CGRect, in viewport: CGRect) -> Bool {
+        frame.minX >= viewport.minX - 1 && frame.maxX <= viewport.maxX + 1
+    }
+
     /// Window coordinates to normalized top-left content coordinates (the content area is
     /// contentView minus the status bar at the top, which is the same coordinate system RootView's
     /// floating-layer GeometryReader uses).
@@ -1773,6 +1789,12 @@ final class MainWindowController: BaseTerminalController {
 
     private func swapFocused(_ direction: ScrollingStrip.Direction) {
         guard let focused = focusedPane else { return }
+        // The slide (PaneChrome): every tiled pane remembers where it is now, and the ones the
+        // swap moves play from there. A pane that does not move lets its note expire unused.
+        let until = Date().addingTimeInterval(PaneSwapAnimation.pendingWindow)
+        for pane in model.layout.paneList {
+            pane.pendingSwap = pane.layoutFrame.map { ($0, until) }
+        }
         switch model.layout {
         case .dwindle(let tree):
             guard let node = tree.root?.node(view: focused),
@@ -2408,5 +2430,59 @@ extension MainWindowController: BrowserExtensionHost {
     @discardableResult
     func openBrowserWindow(url: URL?) -> BrowserPaneView? {
         openBrowserPane(url: url ?? BrowserPaneView.settings.homeURL, from: focusedPane)
+    }
+}
+
+/// **A two-finger swipe is one column** (scrolling layout). The swipe moves focus to the
+/// neighbouring column, and the strip's scroll-follow slides that column into place exactly as a
+/// click on it would — the strip never comes to rest between columns.
+///
+/// Fingers moving left move the content left, revealing the column on the right; the direction
+/// follows `scrollingDeltaX`, so it agrees with "natural scrolling" like every other scroll view.
+/// One gesture is one step however far it goes: once the step is taken the rest of the gesture,
+/// and the momentum after it, are swallowed. A wheel or mouse that sends no gesture phases steps
+/// once per `cooldown`.
+struct SwipeStep {
+    /// Points of horizontal travel before a gesture counts as a swipe.
+    static let threshold: CGFloat = 30
+    static let cooldown: TimeInterval = 0.35
+
+    private var travel: CGFloat = 0
+    private var stepped = false
+    private var lastPhaselessStep: TimeInterval = -.greatestFiniteMagnitude
+    /// A trackpad gesture (or its momentum) is in flight: its vertical wobble belongs to it too.
+    private(set) var inGesture = false
+
+    /// Feed one scroll event; answers the direction to step, or nil.
+    mutating func feed(deltaX: CGFloat, phase: NSEvent.Phase, momentum: NSEvent.Phase,
+                       at time: TimeInterval) -> ScrollingStrip.Direction? {
+        if !momentum.isEmpty {
+            // The fling after the fingers lift: never a second step.
+            inGesture = !(momentum.contains(.ended) || momentum.contains(.cancelled))
+            return nil
+        }
+        if phase.contains(.began) || phase.contains(.mayBegin) {
+            travel = 0
+            stepped = false
+            inGesture = true
+        }
+        if phase.contains(.ended) || phase.contains(.cancelled) {
+            travel = 0
+            inGesture = false
+            return nil
+        }
+        if phase.isEmpty {
+            // No gesture phases (a mouse with a horizontal wheel): one step per cooldown.
+            travel += deltaX
+            guard abs(travel) >= Self.threshold, time - lastPhaselessStep >= Self.cooldown else { return nil }
+            lastPhaselessStep = time
+            defer { travel = 0 }
+            return travel < 0 ? .right : .left
+        }
+        guard !stepped else { return nil }
+        travel += deltaX
+        guard abs(travel) >= Self.threshold else { return nil }
+        stepped = true
+        return travel < 0 ? .right : .left
     }
 }

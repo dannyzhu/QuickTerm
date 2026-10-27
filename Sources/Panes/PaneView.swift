@@ -96,6 +96,18 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
         NoticeCenter.noteActivityChange()
     }
 
+    // MARK: - Swap animation
+
+    /// Where the chrome last laid this pane out, in `PaneSwapAnimation.space` (layout coordinates:
+    /// a scrolling strip's offset is not in it). Written by `PaneChrome`, read by the controller
+    /// just before a swap.
+    var layoutFrame: CGRect?
+
+    /// "You were just here": set by the controller on a swap, consumed by the chrome the next time
+    /// the pane's layout frame changes, which then plays the slide from here. Stale after `until`,
+    /// so a pane whose frame did not change never replays it on some later, unrelated resize.
+    var pendingSwap: (from: CGRect, until: Date)?
+
     // MARK: - Zoom and find
 
     /// Whether this pane is the zoomed one in its workspace. **Written only by
@@ -255,6 +267,7 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
               window.isKeyWindow,
               controller.focusFollowsMouse,
               !holdsFirstResponder(of: window),          // trust the real FR, not a stale `focused`
+              controller.paneTakesHoverFocus(self),
               controller.paneMayReclaimFocus(self) else { return }
         // That last condition: inserting a new pane makes the neighbours rebuild their tracking areas
         // and AppKit synthesizes one mouseMoved. With the mouse sitting over the old pane, hover would
