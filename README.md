@@ -221,7 +221,8 @@ Every action below can be rebound in `config.toml` (see [Configuration](#configu
 | `Cmd+←↑↓→` | `focus-*` | Move focus |
 | `Cmd+Shift+←↑↓→` | `swap-*` | Swap pane / column; viewport follows |
 | `Cmd+J` | `toggle-split-dir` | Merge/split column (scrolling) · flip split (dwindle) |
-| `Cmd+F` | `toggle-zoom` | Zoom pane to fill the content area |
+| `Cmd+Shift+F` | `toggle-zoom` | Zoom pane to fill the content area; a zoomed pane shows a shrink icon in its top-right corner, click it to un-zoom |
+| `Cmd+F` | `find` | Find in the pane: a terminal highlights every match (Return / Shift+Return step through them and wrap around), a browser pane finds in the page |
 | `Cmd+Ctrl+←↑↓→` | `resize-*` | Resize — column width in scrolling (left/right only), all four directions in dwindle; `Shift` gives fine steps in dwindle |
 | `Cmd+Ctrl+=` | `equalize` | Equalise all / reset column widths |
 | `Alt+Tab` / `Alt+Shift+Tab`, `Cmd+]` / `Cmd+[` | `cycle-pane-next` / `-prev` | Cycle panes |

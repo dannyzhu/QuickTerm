@@ -55,6 +55,7 @@
 "menu.pane.focus-down" = "Focus Down";
 "menu.pane.toggle-split-direction" = "Toggle Split Direction";
 "menu.pane.toggle-zoom" = "Zoom Pane";
+"menu.pane.find" = "Find in Pane";
 "menu.pane.equalize" = "Equalize All";
 
 "menu.window" = "Window";

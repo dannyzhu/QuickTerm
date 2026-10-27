@@ -313,6 +313,8 @@ final class MainWindowController: BaseTerminalController {
             publisher.dropFirst().sink { [weak self] in
                 guard let self else { return }
                 self.scheduleFocusReconcile()
+                // @Published fires in willSet: read the zoom state once it has settled.
+                DispatchQueue.main.async { [weak self] in self?.syncZoomFlags() }
                 // Any change to the layout, the floating layer or the active workspace queues a
                 // debounced save. 1.5.x saved only on quit, so a crash or a force quit threw the
                 // whole session away.
@@ -650,6 +652,31 @@ final class MainWindowController: BaseTerminalController {
             isFullscreen: isSimpleFullscreen,
             joinAllSpaces: joinsAllSpaces,
             focusedPaneID: focusedPane.flatMap { closing.contains($0.id) ? nil : $0.id })
+    }
+
+    /// Mirror "which pane is zoomed" onto every pane's `isZoomed`, so the chrome can draw the zoom
+    /// badge without reading the layout.
+    func syncZoomFlags() {
+        guard !isClosed else { return }
+        for (index, layout) in model.layouts.enumerated() {
+            let zoomed = ControlStateEncoder.zoomedPaneID(in: layout)
+            for pane in layout.paneList { pane.setZoomed(pane.id == zoomed) }
+            if model.floatings.indices.contains(index) {
+                for floating in model.floatings[index] { floating.pane.setZoomed(false) }
+            }
+        }
+    }
+
+    /// The zoom badge's click: un-zoom whatever is zoomed in the active workspace.
+    func exitZoom() {
+        switch model.layout {
+        case .dwindle(let tree):
+            guard tree.zoomed != nil else { return }
+            model.layout = .dwindle(SplitTree(root: tree.root, zoomed: nil))
+        case .scrolling(let strip):
+            guard let zoomed = strip.zoomedPane else { return }
+            model.layout = .scrolling(strip.togglingZoom(zoomed))
+        }
     }
 
     /// One "archived content changed" subscription per pane (a terminal's cwd through `$pwd`, a
@@ -1102,6 +1129,16 @@ final class MainWindowController: BaseTerminalController {
                     root: tree.root, zoomed: tree.zoomed == node ? nil : node))
             case .scrolling(let strip):
                 model.layout = .scrolling(strip.togglingZoom(focused))
+            }
+
+        case .find:
+            // Terminal: the engine's search bar; browser: WebKit's find in page. The scratchpad
+            // has no chrome to carry a bar, so it is skipped and the focused tiled pane is used.
+            if let window, let terminal = window.firstResponder as? Ghostty.SurfaceView,
+               terminal !== model.scratchpadSurface {
+                terminal.showFindBar()
+            } else {
+                focusedPane?.showFindBar()
             }
 
         case .equalize:

@@ -96,6 +96,31 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
         NoticeCenter.noteActivityChange()
     }
 
+    // MARK: - Zoom and find
+
+    /// Whether this pane is the zoomed one in its workspace. **Written only by
+    /// `MainWindowController.syncZoomFlags()`**, which runs on every layout change; the chrome
+    /// draws the zoom badge from it.
+    private(set) var isZoomed = false
+
+    func setZoomed(_ zoomed: Bool) {
+        guard isZoomed != zoomed else { return }
+        objectWillChange.send()
+        isZoomed = zoomed
+    }
+
+    /// Whether the pane's find bar (Cmd+F) is open. A subclass that has one overrides this, and
+    /// sends `objectWillChange` when it changes.
+    var findBarOpen: Bool { false }
+
+    /// Open the find bar, or give its field focus again when it is already open.
+    func showFindBar() {}
+
+    /// How far down from the pane's top edge its own content starts, for anything the chrome
+    /// draws in the corner: 0 for a terminal (the agent band is the chrome's own business), the
+    /// tab bar and toolbar for a browser.
+    var contentTopInset: CGFloat { 0 }
+
     // MARK: - Agent status
 
     /// What the AI agent running in this pane is doing, or nil when there is none (plan §2.5).

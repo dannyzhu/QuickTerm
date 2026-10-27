@@ -1,0 +1,105 @@
+diff --git a/src/terminal/search/screen.zig b/src/terminal/search/screen.zig
+index 74828d879..d0d5c9aa1 100644
+--- a/src/terminal/search/screen.zig
++++ b/src/terminal/search/screen.zig
+@@ -684,11 +684,11 @@ pub const ScreenSearch = struct {
+ 
+     pub const Select = enum {
+         /// Next selection, in reverse order (newest to oldest),
+-        /// non-wrapping.
++        /// wrapping (QuickTerm).
+         next,
+ 
+         /// Prev selection, in forward order (oldest to newest),
+-        /// non-wrapping.
++        /// wrapping (QuickTerm).
+         prev,
+     };
+ 
+@@ -740,13 +740,12 @@ pub const ScreenSearch = struct {
+             return true;
+         };
+ 
+-        const next_idx = prev.idx + 1;
+         const active_len = self.active_results.items.len;
+         const history_len = self.history_results.items.len;
+-        if (next_idx >= active_len + history_len) {
+-            // No more matches. We don't wrap or reset the match currently.
+-            return false;
+-        }
++        // (QuickTerm) Wrap around: past the oldest match comes the newest again, so holding
++        // Return in the find bar cycles through every match.
++        if (active_len + history_len == 0) return false;
++        const next_idx = if (prev.idx + 1 >= active_len + history_len) 0 else prev.idx + 1;
+         const hl: FlattenedHighlight = if (next_idx < active_len)
+             self.active_results.items[active_len - 1 - next_idx]
+         else
+@@ -800,14 +799,11 @@ pub const ScreenSearch = struct {
+             return true;
+         };
+ 
+-        // Can't go below zero
+-        if (prev.idx == 0) {
+-            // No more matches. We don't wrap or reset the match currently.
+-            return false;
+-        }
+-
+-        const next_idx = prev.idx - 1;
+         const active_len = self.active_results.items.len;
++        const history_len = self.history_results.items.len;
++        // (QuickTerm) Wrap around: before the newest match comes the oldest again.
++        if (active_len + history_len == 0) return false;
++        const next_idx = if (prev.idx == 0) active_len + history_len - 1 else prev.idx - 1;
+         const hl: FlattenedHighlight = if (next_idx < active_len)
+             self.active_results.items[active_len - 1 - next_idx]
+         else
+@@ -1083,18 +1079,24 @@ test "select next" {
+         } }, t.screens.active.pages.pointFromPin(.screen, sel.end).?);
+     }
+ 
+-    // Next match (no wrap)
++    // (QuickTerm) Next match wraps back to the first
+     _ = try search.select(.next);
+     {
+         const sel = search.selectedMatch().?.untracked();
+         try testing.expectEqual(point.Point{ .screen = .{
+             .x = 0,
+-            .y = 0,
++            .y = 2,
+         } }, t.screens.active.pages.pointFromPin(.screen, sel.start).?);
++    }
++
++    // (QuickTerm) And prev wraps back to the last
++    _ = try search.select(.prev);
++    {
++        const sel = search.selectedMatch().?.untracked();
+         try testing.expectEqual(point.Point{ .screen = .{
+-            .x = 3,
++            .x = 0,
+             .y = 0,
+-        } }, t.screens.active.pages.pointFromPin(.screen, sel.end).?);
++        } }, t.screens.active.pages.pointFromPin(.screen, sel.start).?);
+     }
+ }
+ 
+@@ -1278,18 +1280,14 @@ test "select prev" {
+         } }, t.screens.active.pages.pointFromPin(.screen, sel.end).?);
+     }
+ 
+-    // Prev match (no wrap, stays at newest)
++    // (QuickTerm) Prev match wraps back to the oldest
+     _ = try search.select(.prev);
+     {
+         const sel = search.selectedMatch().?.untracked();
+         try testing.expectEqual(point.Point{ .screen = .{
+             .x = 0,
+-            .y = 2,
++            .y = 0,
+         } }, t.screens.active.pages.pointFromPin(.screen, sel.start).?);
+-        try testing.expectEqual(point.Point{ .screen = .{
+-            .x = 3,
+-            .y = 2,
+-        } }, t.screens.active.pages.pointFromPin(.screen, sel.end).?);
+     }
+ }
+ 

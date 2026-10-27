@@ -82,3 +82,25 @@
 /* MARK: - accessibility */
 
 "terminal.accessibility.help" = "Terminal content area";
+
+/* MARK: - find bar
+ * (Sources/Splits/PaneFindBar.swift)
+ *
+ * Cmd+F inside a pane: the field's placeholder, the match counter ("3/12", and "0" when nothing
+ * matched), and the tooltips of the previous / next / close buttons.
+ */
+
+"terminal.find.placeholder" = "Find";
+"terminal.find.counter" = "%1$@/%2$@";
+"terminal.find.no-match" = "No matches";
+"terminal.find.previous" = "Previous match (Shift+Return)";
+"terminal.find.next" = "Next match (Return)";
+"terminal.find.close" = "Close (Esc)";
+
+/* MARK: - zoom badge
+ * (Sources/Splits/PaneZoomBadge.swift)
+ *
+ * The icon in the top-right corner of a zoomed pane; clicking it un-zooms.
+ */
+
+"terminal.zoom.exit" = "Exit zoom (Cmd+Shift+F)";

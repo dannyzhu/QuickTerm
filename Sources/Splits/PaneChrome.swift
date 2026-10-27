@@ -157,6 +157,16 @@ struct PaneChrome: ViewModifier {
             .overlay {
                 if let mark { PaneNoticeMarkTooltip(mark: mark) }
             }
+            // The zoom badge: says the pane is zoomed, and un-zooms on a click. Below the agent
+            // band (or a browser's toolbar), so it never covers the band's elapsed time.
+            .overlay {
+                if surfaceView.isZoomed {
+                    PaneZoomBadge(contentTop: max(bandHeight, surfaceView.contentTopInset),
+                                  findBarOpen: surfaceView.findBarOpen) {
+                        (surfaceView.controller as? MainWindowController)?.exitZoom()
+                    }
+                }
+            }
             // pane-gap of breathing room on every side (the same in both layouts)
             .padding(theme.gapsEnabled ? theme.paneGap : 0)
             .scaleEffect(appeared ? 1 : 0.87)

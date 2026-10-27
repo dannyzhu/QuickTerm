@@ -53,7 +53,7 @@ struct KeybindingMap {
 
     static let defaults: [KeyCombo: WMAction] = [
         KeyCombo(key: "return", .command): .newTerminal,
-        KeyCombo(key: "b", [.command, .shift]): .fileManager,   // Omarchy Super+Shift+F; Cmd+F is toggle-zoom
+        KeyCombo(key: "b", [.command, .shift]): .fileManager,   // Omarchy Super+Shift+F; Cmd+Shift+F is toggle-zoom
         KeyCombo(key: "b", .command): .newBrowser,              // Omarchy Super+B
         KeyCombo(key: "[", [.command, .shift]): .webBack,
         KeyCombo(key: "]", [.command, .shift]): .webForward,
@@ -77,7 +77,8 @@ struct KeybindingMap {
         KeyCombo(key: "up", [.command, .shift]): .swapUp,
         KeyCombo(key: "down", [.command, .shift]): .swapDown,
         KeyCombo(key: "j", .command): .toggleSplitDirection,
-        KeyCombo(key: "f", .command): .toggleZoom,
+        KeyCombo(key: "f", [.command, .shift]): .toggleZoom,
+        KeyCombo(key: "f", .command): .find,
         KeyCombo(key: "=", [.command, .control]): .equalize,
         KeyCombo(key: "left", [.command, .control]): .resizeLeft,
         KeyCombo(key: "right", [.command, .control]): .resizeRight,
