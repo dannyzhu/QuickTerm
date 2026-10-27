@@ -444,7 +444,7 @@ final class AgentRegistry: NoticeSink {
 
         DiagnosticLog.shared.note(
             "agent",
-            "\(rules.id) signal=\(signal.label) state=\(before?.state.rawValue ?? "none")→\(after?.state.rawValue ?? "none") needsUser=\(wasNeedsUser)→\(isNeedsUser)")
+            "\(rules.id) pane=\(describePane(pane)) signal=\(signal.label) state=\(before?.state.rawValue ?? "none")→\(after?.state.rawValue ?? "none") needsUser=\(wasNeedsUser)→\(isNeedsUser)")
 
         if isNeedsUser, !wasNeedsUser, let status = after {
             let request = NoticeRequest(
@@ -501,6 +501,15 @@ final class AgentRegistry: NoticeSink {
                                       evidence: .composed, title: L("notice.agent.done", status.name),
                                       body: nil, bodySensitive: false))
         }
+    }
+
+    /// `t3 (2E6E1B94, screen 1 workspace 2)` for the diagnostic log: the handle alone cannot show
+    /// a status landing on the wrong pane, because the handle is all the log ever printed.
+    private func describePane(_ pane: UUID) -> String {
+        let id = String(pane.uuidString.prefix(8))
+        guard let found = locator.locate(pane) else { return "\(locator.handle(pane) ?? "?") (\(id), gone)" }
+        let handle = locator.handle(pane) ?? "?"
+        return "\(handle) (\(id), screen \(found.controller.screenIndex + 1) workspace \(found.workspace + 1))"
     }
 
     /// The notice title. **Payload-free by construction**: the agent's name, what it is waiting
