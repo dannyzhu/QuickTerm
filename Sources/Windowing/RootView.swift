@@ -292,10 +292,13 @@ struct RootView: View {
                     ScrollingStripView(
                         strip: strip,
                         workspaceIndex: model.activeIndex,
-                        savedOffset: { [weak model] in model?.stripOffsets[$0] },
+                        savedOffset: model.stripOffsets[model.activeIndex],
                         saveOffset: { [weak model] in model?.stripOffsets[$0] = $1 },
                         onDrop: onScrollingDrop,
                         closingPanes: model.closingPanes)
+                        // One strip per workspace: a switch mounts a fresh strip that starts at
+                        // the offset this workspace was left at (see ScrollingStripView.offset).
+                        .id(model.activeIndex)
                         // Outer margin matches the inter-pane gap
                         .padding(theme.gapsEnabled ? theme.paneGap : 0)
                 }

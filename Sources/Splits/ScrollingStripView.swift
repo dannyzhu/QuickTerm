@@ -8,17 +8,25 @@ import SwiftUI
 struct ScrollingStripView: View {
     let strip: ScrollingStrip
     let workspaceIndex: Int
-    /// Each workspace's strip offset, kept across switches (the model owns it; see
-    /// `WorkspaceModel.stripOffsets`).
-    var savedOffset: (Int) -> CGFloat? = { _ in nil }
-    var saveOffset: (Int, CGFloat) -> Void = { _, _ in }
+    /// Writes this workspace's offset back to the model on every change
+    /// (`WorkspaceModel.stripOffsets`), so leaving and coming back finds it there.
+    let saveOffset: (Int, CGFloat) -> Void
     let onDrop: (PaneView, PaneView, TerminalSplitDropZone) -> Void
     /// Panes currently fading out; once the fade finishes the controller removes them and the strip
     /// reflows.
     var closingPanes: Set<UUID> = []
 
     @EnvironmentObject var theme: ThemeManager   // pane-gap (the floor on the peek moves with it)
-    @State private var offset: CGFloat = 0
+    /// **Starts at the workspace's saved offset**, not at 0: RootView gives every workspace its own
+    /// strip identity, so a switch mounts a fresh view, and the first frame it draws is already
+    /// where the workspace was left. Restoring it afterwards (onChange) drew one frame at the old
+    /// position and then slid, which is the flicker this replaces.
+    @State private var offset: CGFloat
+    /// When this strip was mounted. Alignment in the first moments after a mount — focus landing
+    /// on the restored pane, a first visit with nothing saved — jumps instead of sliding, so
+    /// switching workspaces never shows the strip in motion.
+    @State private var mountedAt = Date()
+    static let settleWindow: TimeInterval = 0.4
     /// Pane identities seen so far: used on a structural change to recognize a just-inserted column
     /// (see revealTarget).
     @State private var knownPaneIDs: Set<UUID>?
@@ -26,6 +34,18 @@ struct ScrollingStripView: View {
     // The gap between columns comes from adjacent PaneChrome pane-gap paddings composing into
     // 2x gap (= gaps_in x 2).
     private let columnGap: CGFloat = 0
+
+    init(strip: ScrollingStrip, workspaceIndex: Int, savedOffset: CGFloat?,
+         saveOffset: @escaping (Int, CGFloat) -> Void,
+         onDrop: @escaping (PaneView, PaneView, TerminalSplitDropZone) -> Void,
+         closingPanes: Set<UUID> = []) {
+        self.strip = strip
+        self.workspaceIndex = workspaceIndex
+        self.saveOffset = saveOffset
+        self.onDrop = onDrop
+        self.closingPanes = closingPanes
+        _offset = State(initialValue: savedOffset ?? 0)
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -75,7 +95,11 @@ struct ScrollingStripView: View {
                 // Record the existing identities on first mount: only panes that show up later
                 // count as newly inserted.
                 knownPaneIDs = Set(strip.paneList.map(\.id))
+                // A saved offset can be stale (columns resized or closed while away): pull it into
+                // range, without motion.
+                clampOffset(viewport: geo.size.width, animated: false)
             }
+            .onChange(of: offset) { _, new in saveOffset(workspaceIndex, new) }
             .onChange(of: strip.layoutSignature) {
                 // Realign after a structural change (insert/remove a column, Cmd+Shift+direction
                 // swap, merge/split): a newly inserted column wins, otherwise current focus, so the
@@ -93,18 +117,6 @@ struct ScrollingStripView: View {
                 // restarts a 0.15s easeOut, so the viewport drags a tail behind it and the right
                 // edge opens up empty.
                 clampOffset(viewport: geo.size.width, animated: old.count != new.count)
-            }
-            .onChange(of: workspaceIndex) { old, new in
-                // A new workspace is a whole new strip: relearn the identities, and put the strip
-                // back where this workspace was left (columns 2 and 3 stay 2 and 3), instead of
-                // starting from column 1. Then only make sure the focused column is in view.
-                saveOffset(old, offset)
-                knownPaneIDs = Set(strip.paneList.map(\.id))
-                var jump = Transaction()
-                jump.disablesAnimations = true
-                withTransaction(jump) { offset = savedOffset(new) ?? 0 }
-                clampOffset(viewport: geo.size.width, animated: false)
-                scrollToFocus(id: currentFocusedID(), viewport: geo.size.width)
             }
         }
         .clipped()
@@ -163,6 +175,12 @@ struct ScrollingStripView: View {
             return
         }
         guard abs(target - offset) > 0.5 else { return }
+        guard Date().timeIntervalSince(mountedAt) > Self.settleWindow else {
+            var jump = Transaction()
+            jump.disablesAnimations = true
+            withTransaction(jump) { offset = target }
+            return
+        }
         withAnimation(.easeOut(duration: 0.15)) { offset = target }
     }
 
