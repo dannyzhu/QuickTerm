@@ -264,6 +264,7 @@ enum ConfigStore {
         /// Show the name in the workspace pill (on by default). Only workspaces that were given
         /// a name show one, truncated to 12 characters.
         var workspaceTitle: Bool = true
+        var swapAnimationDuration: Double = 0.5
         /// The file manager program the `file-manager` action runs in a new pane. A bare name is
         /// looked up in PATH and in the usual install directories; an absolute path also works.
         var fileManagerCommand: String = FileManagerLaunch.defaultProgram
@@ -392,6 +393,7 @@ enum ConfigBindings {
         "appearance.pane-gap": { v, s in v.intValue.map { s.paneGap = $0 } },
         "appearance.pane-title": { v, s in v.boolValue.map { s.paneTitle = $0 } },
         "appearance.workspace-title": { v, s in v.boolValue.map { s.workspaceTitle = $0 } },
+        "appearance.swap-animation-duration": { v, s in v.doubleValue.map { s.swapAnimationDuration = $0 } },
         "workspace.workspaces": { v, s in v.intValue.map { s.workspaces = $0 } },
         "workspace.visible-columns": { v, s in s.visibleColumns = v.intValue },
         "terminal.file-manager-command": { v, s in v.stringValue.map { s.fileManagerCommand = $0 } },

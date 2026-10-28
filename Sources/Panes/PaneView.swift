@@ -96,6 +96,43 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
         NoticeCenter.noteActivityChange()
     }
 
+    // MARK: - Swap animation
+
+    /// Where the chrome last laid this pane out, in `PaneSwapAnimation.space` (layout coordinates:
+    /// a scrolling strip's offset is not in it). Written by `PaneChrome`, read by the controller
+    /// just before a swap.
+    var layoutFrame: CGRect?
+
+    /// "You were just here": set by the controller on a swap, consumed by the chrome the next time
+    /// the pane's layout frame changes, which then plays the slide from here. Stale after `until`,
+    /// so a pane whose frame did not change never replays it on some later, unrelated resize.
+    var pendingSwap: (from: CGRect, until: Date)?
+
+    // MARK: - Zoom and find
+
+    /// Whether this pane is the zoomed one in its workspace. **Written only by
+    /// `MainWindowController.syncZoomFlags()`**, which runs on every layout change; the chrome
+    /// draws the zoom badge from it.
+    private(set) var isZoomed = false
+
+    func setZoomed(_ zoomed: Bool) {
+        guard isZoomed != zoomed else { return }
+        objectWillChange.send()
+        isZoomed = zoomed
+    }
+
+    /// Whether the pane's find bar (Cmd+F) is open. A subclass that has one overrides this, and
+    /// sends `objectWillChange` when it changes.
+    var findBarOpen: Bool { false }
+
+    /// Open the find bar, or give its field focus again when it is already open.
+    func showFindBar() {}
+
+    /// How far down from the pane's top edge its own content starts, for anything the chrome
+    /// draws in the corner: 0 for a terminal (the agent band is the chrome's own business), the
+    /// tab bar and toolbar for a browser.
+    var contentTopInset: CGFloat { 0 }
+
     // MARK: - Agent status
 
     /// What the AI agent running in this pane is doing, or nil when there is none (plan §2.5).
@@ -230,6 +267,7 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
               window.isKeyWindow,
               controller.focusFollowsMouse,
               !holdsFirstResponder(of: window),          // trust the real FR, not a stale `focused`
+              controller.paneTakesHoverFocus(self),
               controller.paneMayReclaimFocus(self) else { return }
         // That last condition: inserting a new pane makes the neighbours rebuild their tracking areas
         // and AppKit synthesizes one mouseMoved. With the mouse sitting over the old pane, hover would

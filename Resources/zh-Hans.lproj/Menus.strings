@@ -44,6 +44,7 @@
 "menu.pane.focus-down" = "焦点下移";
 "menu.pane.toggle-split-direction" = "切换分裂方向";
 "menu.pane.toggle-zoom" = "Pane 缩放";
+"menu.pane.find" = "在 Pane 内搜索";
 "menu.pane.equalize" = "全部等分";
 
 "menu.window" = "窗口";

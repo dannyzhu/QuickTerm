@@ -218,7 +218,8 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `Cmd+←↑↓→` | `focus-*` | 移动焦点 |
 | `Cmd+Shift+←↑↓→` | `swap-*` | 换位（视口自动跟随） |
 | `Cmd+J` | `toggle-split-dir` | 併列/拆列（scrolling）· 翻转分裂（dwindle） |
-| `Cmd+F` | `toggle-zoom` | pane 占满内容区 |
+| `Cmd+Shift+F` | `toggle-zoom` | pane 占满内容区；放大的 pane 右上角有缩小图标，点击退出放大 |
+| `Cmd+F` | `find` | 在 pane 内搜索：终端高亮全部匹配（回车 / ⇧回车逐个定位，到头循环），浏览器 pane 搜索当前网页 |
 | `Cmd+Ctrl+←↑↓→` | `resize-*` | 调整大小——scrolling 只调列宽（左右），dwindle 四向；`Shift` 微调仅 dwindle 生效 |
 | `Cmd+Ctrl+=` | `equalize` | 全部等分 / 列宽重置 |
 | `Alt+Tab` / `Alt+Shift+Tab`、`Cmd+]` / `Cmd+[` | `cycle-pane-next` / `-prev` | 循环 pane |
@@ -426,6 +427,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # pane-gap = 5           # 每 pane 每边留白 pt（0–20；相邻间距 = 2×gap；scrolling / dwindle 一致）
 # pane-title = true      # 把标题画在 pane 上边框上（只显示手动设过的标题，最长 20 字）
 # workspace-title = true # 起过名的工作区胶囊显示名字而不是序号（最长 12 字）
+# swap-animation-duration = 0.5  # Cmd+Shift+方向键交换 pane 时的滑动动画秒数（0–3；0 = 不要动画）
 
 [workspace]
 # workspaces = 5       # 1–10

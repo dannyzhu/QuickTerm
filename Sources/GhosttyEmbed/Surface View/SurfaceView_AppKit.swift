@@ -531,6 +531,15 @@ extension Ghostty {
             progressReportTimer?.invalidate()
         }
 
+        // QuickTerm: the find bar (Cmd+F) is the engine's search state.
+        override var findBarOpen: Bool { searchState != nil }
+
+        /// QuickTerm: Cmd+F. The engine's own `start_search` opens the bar (or, when it is already
+        /// open, posts `ghosttySearchFocus` so the field takes focus again).
+        override func showFindBar() {
+            _ = surfaceModel?.perform(action: "start_search")
+        }
+
         override func focusDidChange(_ focused: Bool) {
             guard let surface = self.surface else { return }
             guard self.focused != focused else { return }

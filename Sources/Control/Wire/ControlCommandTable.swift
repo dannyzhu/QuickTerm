@@ -935,7 +935,7 @@ enum ControlCommandTable {
     /// The replacement path for these actions is Phase 2's `app set theme ...` / `app set
     /// background ...`.
     static let interactiveActions: Set<WMAction> = [
-        .themePicker, .backgroundMenu, .keybindingHelp, .mainMenu, .openSettings, .webExtensions,
+        .themePicker, .backgroundMenu, .keybindingHelp, .mainMenu, .openSettings, .webExtensions, .find,
     ]
 
     /// Actions that destroy something of the user's: closing a pane ends the processes inside it.
@@ -955,6 +955,7 @@ enum ControlCommandTable {
         case .keybindingHelp, .mainMenu: "This is an overlay panel for humans. The machine-readable list is in quickterm describe --json."
         case .openSettings: "It launches an external editor. Edit ~/.config/quickterm/config.toml directly instead."
         case .webExtensions: "It pops up an NSMenu and holds the main thread. Manage extensions inside QuickTerm itself."
+        case .find: "The find bar is typed into by a human. To read a pane's text, use quickterm pane capture-text instead."
         default: "This action needs keyboard interaction and cannot be run over the socket."
         }
     }

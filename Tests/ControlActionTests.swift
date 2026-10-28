@@ -17,19 +17,19 @@ final class ControlActionTests: XCTestCase {
         }
     }
 
-    func testActionCountIsStillSixtySeven() {
-        // The spec says 67 (22 of them hide inside multi-case-per-line declarations). If the
+    func testActionCountIsStillSixtyEight() {
+        // The spec said 67; `find` (Cmd+F) is the 68th (22 of them hide inside multi-case-per-line declarations). If the
         // number moves, somebody has to come and change this line on purpose and review the new
         // action's classification while they are at it — rather than an unclassified action
         // quietly slipping in
-        XCTAssertEqual(WMAction.allCases.count, 67)
+        XCTAssertEqual(WMAction.allCases.count, 68)
     }
 
     func testInteractiveActionsAreRefused() {
         // The ones that open an overlay panel or pop up a menu leave the UI stuck halfway when
         // they are driven over the socket (NSMenu.popUp goes further and blocks the main thread)
         let expected: Set<WMAction> = [.themePicker, .backgroundMenu, .keybindingHelp,
-                                       .mainMenu, .openSettings, .webExtensions]
+                                       .mainMenu, .openSettings, .webExtensions, .find]
         XCTAssertEqual(ControlCommandTable.interactiveActions, expected)
         for action in expected {
             XCTAssertEqual(ControlCommandTable.actionClass(action), .interactive, "\(action.rawValue)")

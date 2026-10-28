@@ -52,6 +52,7 @@ enum WMAction: String, CaseIterable {
     case openSettings = "open-settings"
     case exitFullscreen = "exit-fullscreen"
     case toggleFloat = "toggle-float"
+    case find = "find"
 
     /// The workspace index (0-based) for the goto/move family; nil for every other action.
     var workspaceIndex: Int? {
@@ -165,6 +166,7 @@ enum WMAction: String, CaseIterable {
         case .openSettings: "打开配置文件（QuickTerm + ghostty）"
         case .exitFullscreen: "退出全屏（仅全屏时生效）"
         case .toggleFloat: "pane 浮动 ⇄ 平铺（⌘拖中间移动、⌘拖四边/四角缩放、⌘右拖调大小）"
+        case .find: "在 pane 内搜索（终端：高亮匹配，回车下一个、⇧回车上一个，循环；浏览器：网页查找）"
         }
     }
 
@@ -240,6 +242,7 @@ enum WMAction: String, CaseIterable {
         case .openSettings: "Open the config files (QuickTerm + ghostty)"
         case .exitFullscreen: "Exit fullscreen (only while fullscreen)"
         case .toggleFloat: "Toggle pane float / tile (Cmd-drag the middle to move, the edges or corners to resize, Cmd-right-drag to resize)"
+        case .find: "Find in the pane (terminal: highlight matches, Return for next, Shift+Return for previous, wrapping; browser: find in page)"
         }
     }
 }

@@ -228,15 +228,6 @@ final class WorkspaceModel: ObservableObject {
     // The Cmd+K cheat sheet data (the controller fills it from the currently effective mapping when
     // the panel opens)
     @Published var keybindingRows: [(combo: String, action: WMAction)] = []
-
-    // Two-finger horizontal panning on the scrolling canvas (an incidental feature): the
-    // controller's scroll-wheel monitor posts it and the view consumes it.
-    @Published var stripPan: StripPanEvent?
-    struct StripPanEvent: Equatable {
-        var delta: CGFloat
-        var ended: Bool
-        var serial: Int
-    }
 }
 
 struct RootView: View {
@@ -295,7 +286,6 @@ struct RootView: View {
                     ScrollingStripView(
                         strip: strip,
                         workspaceIndex: model.activeIndex,
-                        pan: model.stripPan,
                         onDrop: onScrollingDrop,
                         closingPanes: model.closingPanes)
                         // Outer margin matches the inter-pane gap

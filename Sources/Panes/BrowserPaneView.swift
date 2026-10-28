@@ -1,4 +1,6 @@
 import AppKit
+import Combine
+import SwiftUI
 import WebKit
 
 /// A browser pane: multiple tabs (one WKWebView per tab, sharing a process pool and the login state),
@@ -417,6 +419,96 @@ final class BrowserPaneView: PaneView {
     /// Hover-to-focus is driven by the container's tracking area; an override of WKWebView's
     /// mouseMoved never receives the events.
     override var installsHoverTracking: Bool { true }
+
+    // MARK: - Find in page (Cmd+F)
+
+    /// The find bar's needle and counter; nil while the bar is closed.
+    final class FindState: ObservableObject {
+        @Published var needle = ""
+        @Published var counter: String?
+        let focusRequests = PassthroughSubject<Void, Never>()
+    }
+
+    private(set) var findState: FindState?
+    private var findHost: NSView?
+    private var findNeedleSubscription: AnyCancellable?
+
+    override var findBarOpen: Bool { findState != nil }
+    /// The tab bar and toolbar sit above the page: the zoom badge goes below them.
+    override var contentTopInset: CGFloat { isFlipped ? webArea.frame.minY : bounds.maxY - webArea.frame.maxY }
+
+    /// Open the find bar over the page, or give its field focus again. WebKit's own find in page
+    /// does the matching (`WKWebView.find`), which highlights the hit and scrolls to it and wraps
+    /// at both ends; there is no case toggle, to match the terminal.
+    override func showFindBar() {
+        if let findState {
+            findState.focusRequests.send()
+            return
+        }
+        let state = FindState()
+        findState = state
+        let bar = PaneFindBar(
+            needle: Binding(get: { state.needle }, set: { state.needle = $0 }),
+            counter: nil,
+            focusRequests: state.focusRequests.eraseToAnyPublisher(),
+            onNavigate: { [weak self] forward in self?.findInPage(forward: forward) },
+            onEscape: { [weak self] in self?.closeFindBar() },
+            onClose: { [weak self] in self?.closeFindBar() })
+        let host = NSHostingView(rootView: BrowserFindBarHost(state: state, bar: bar)
+            .environmentObject(Localization.shared))
+        host.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(host, positioned: .above, relativeTo: webArea)
+        NSLayoutConstraint.activate([
+            host.topAnchor.constraint(equalTo: webArea.topAnchor, constant: PaneFindBar.inset),
+            host.trailingAnchor.constraint(equalTo: webArea.trailingAnchor, constant: -PaneFindBar.inset),
+        ])
+        findHost = host
+        // Typing finds as you go, from the top of the page: a changed needle is a new search.
+        findNeedleSubscription = state.$needle.dropFirst().removeDuplicates()
+            .debounce(for: .milliseconds(150), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in self?.findInPage(forward: true) }
+        objectWillChange.send()
+    }
+
+    func closeFindBar() {
+        guard findState != nil else { return }
+        findNeedleSubscription = nil
+        findHost?.removeFromSuperview()
+        findHost = nil
+        findState = nil
+        clearFindHighlight()
+        window?.makeFirstResponder(webView)
+        objectWillChange.send()
+    }
+
+    /// Take WebKit's find highlight down. It is WebKit's own overlay, not the page's selection, and
+    /// neither clearing the selection nor an empty `find("")` removes it (measured on macOS 27); a
+    /// find that matches nothing does. The needle is one no page can contain.
+    private func clearFindHighlight() {
+        webView.find(Self.unmatchableNeedle, configuration: WKFindConfiguration()) { _ in }
+    }
+
+    private static let unmatchableNeedle = "\u{1}quickterm-find-clear-\(UUID().uuidString)\u{1}"
+
+    private func findInPage(forward: Bool) {
+        guard let state = findState else { return }
+        let needle = state.needle
+        guard !needle.isEmpty else {
+            state.counter = nil
+            clearFindHighlight()
+            return
+        }
+        let config = WKFindConfiguration()
+        config.backwards = !forward
+        config.caseSensitive = false
+        config.wraps = true
+        webView.find(needle, configuration: config) { [weak state] result in
+            guard let state, state.needle == needle else { return }
+            // WebKit says whether there was a match, not how many: the counter only ever says
+            // "none", which is the one thing a user would otherwise have to guess.
+            state.counter = result.matchFound ? nil : L("terminal.find.no-match")
+        }
+    }
 
     // MARK: - Construction
 
@@ -1792,5 +1884,17 @@ final class BrowserWebView: WKWebView {
         let result = super.resignFirstResponder()
         if result { pane?.paneDidResignFirstResponder() }
         return result
+    }
+}
+
+/// The browser's find bar with its counter bound to the pane's `FindState`.
+private struct BrowserFindBarHost: View {
+    @ObservedObject var state: BrowserPaneView.FindState
+    let bar: PaneFindBar
+
+    var body: some View {
+        PaneFindBar(needle: $state.needle, counter: state.counter, focusRequests: bar.focusRequests,
+                    onNavigate: bar.onNavigate, onEscape: bar.onEscape, onClose: bar.onClose)
+            .fixedSize()
     }
 }

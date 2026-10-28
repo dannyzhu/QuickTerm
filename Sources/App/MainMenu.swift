@@ -108,7 +108,8 @@ enum MainMenu {
         paneMenu.addItem(wm(.focusDown, title: L("menu.pane.focus-down"), key: String(UnicodeScalar(NSDownArrowFunctionKey)!), delegate: delegate))
         paneMenu.addItem(.separator())
         paneMenu.addItem(wm(.toggleSplitDirection, title: L("menu.pane.toggle-split-direction"), key: "j", delegate: delegate))
-        paneMenu.addItem(wm(.toggleZoom, title: L("menu.pane.toggle-zoom"), key: "f", delegate: delegate))
+        paneMenu.addItem(wm(.toggleZoom, title: L("menu.pane.toggle-zoom"), key: "f", modifiers: [.command, .shift], delegate: delegate))
+        paneMenu.addItem(wm(.find, title: L("menu.pane.find"), key: "f", delegate: delegate))
         paneMenu.addItem(wm(.equalize, title: L("menu.pane.equalize"), key: "=", modifiers: [.command, .control], delegate: delegate))
         main.setSubmenu(paneMenu, for: paneItem)
 

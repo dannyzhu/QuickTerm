@@ -277,7 +277,8 @@ final class AppSession {
             dividerOpacity: settings.dividerOpacity,
             paneGap: settings.paneGap,
             paneTitle: settings.paneTitle,
-            workspaceTitle: settings.workspaceTitle)
+            workspaceTitle: settings.workspaceTitle,
+            swapAnimationDuration: settings.swapAnimationDuration)
         if let name = settings.themeName, name != "ghostty",
            let theme = themeManager.themes.first(where: { $0.name == name }),
            theme != themeManager.current {

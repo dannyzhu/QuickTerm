@@ -94,7 +94,8 @@ final class MainWindowController: BaseTerminalController {
     private var floatingCursorActive = false
     /// Width of the draggable resize band around a floating pane, in points
     static let floatingEdgeBand: CGFloat = 14
-    private var stripPanSerial = 0
+    /// Two-finger horizontal swipes in the scrolling layout, turned into one-column steps.
+    private var swipeStep = SwipeStep()
     /// This screen's index (0 = the first screen, whose title is always `QuickTerm`); once closed
     /// the index can be reused by a new screen.
     let screenIndex: Int
@@ -313,6 +314,8 @@ final class MainWindowController: BaseTerminalController {
             publisher.dropFirst().sink { [weak self] in
                 guard let self else { return }
                 self.scheduleFocusReconcile()
+                // @Published fires in willSet: read the zoom state once it has settled.
+                DispatchQueue.main.async { [weak self] in self?.syncZoomFlags() }
                 // Any change to the layout, the floating layer or the active workspace queues a
                 // debounced save. 1.5.x saved only on quit, so a crash or a force quit threw the
                 // whole session away.
@@ -568,13 +571,13 @@ final class MainWindowController: BaseTerminalController {
                 return event
             }
             if case .scrolling = self.model.layout,
-               abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY),
-               abs(event.scrollingDeltaX) > 0.5 || event.phase == .ended || event.momentumPhase == .ended {
-                self.stripPanSerial += 1
-                self.model.stripPan = .init(
-                    delta: event.scrollingDeltaX,
-                    ended: event.phase == .ended || event.momentumPhase == .ended,
-                    serial: self.stripPanSerial)
+               abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) || self.swipeStep.inGesture {
+                // The fingers' own direction: with "natural scrolling" off macOS flips the delta.
+                let fingers = event.isDirectionInvertedFromDevice ? event.scrollingDeltaX : -event.scrollingDeltaX
+                if let step = self.swipeStep.feed(deltaX: fingers, phase: event.phase,
+                                                  momentum: event.momentumPhase, at: event.timestamp) {
+                    self.revealHiddenColumn(step)
+                }
                 return nil
             }
             return event
@@ -650,6 +653,31 @@ final class MainWindowController: BaseTerminalController {
             isFullscreen: isSimpleFullscreen,
             joinAllSpaces: joinsAllSpaces,
             focusedPaneID: focusedPane.flatMap { closing.contains($0.id) ? nil : $0.id })
+    }
+
+    /// Mirror "which pane is zoomed" onto every pane's `isZoomed`, so the chrome can draw the zoom
+    /// badge without reading the layout.
+    func syncZoomFlags() {
+        guard !isClosed else { return }
+        for (index, layout) in model.layouts.enumerated() {
+            let zoomed = ControlStateEncoder.zoomedPaneID(in: layout)
+            for pane in layout.paneList { pane.setZoomed(pane.id == zoomed) }
+            if model.floatings.indices.contains(index) {
+                for floating in model.floatings[index] { floating.pane.setZoomed(false) }
+            }
+        }
+    }
+
+    /// The zoom badge's click: un-zoom whatever is zoomed in the active workspace.
+    func exitZoom() {
+        switch model.layout {
+        case .dwindle(let tree):
+            guard tree.zoomed != nil else { return }
+            model.layout = .dwindle(SplitTree(root: tree.root, zoomed: nil))
+        case .scrolling(let strip):
+            guard let zoomed = strip.zoomedPane else { return }
+            model.layout = .scrolling(strip.togglingZoom(zoomed))
+        }
     }
 
     /// One "archived content changed" subscription per pane (a terminal's cwd through `$pwd`, a
@@ -1104,6 +1132,16 @@ final class MainWindowController: BaseTerminalController {
                 model.layout = .scrolling(strip.togglingZoom(focused))
             }
 
+        case .find:
+            // Terminal: the engine's search bar; browser: WebKit's find in page. The scratchpad
+            // has no chrome to carry a bar, so it is skipped and the focused tiled pane is used.
+            if let window, let terminal = window.firstResponder as? Ghostty.SurfaceView,
+               terminal !== model.scratchpadSurface {
+                terminal.showFindBar()
+            } else {
+                focusedPane?.showFindBar()
+            }
+
         case .equalize:
             switch model.layout {
             case .dwindle(let tree): model.layout = .dwindle(tree.equalized())
@@ -1277,6 +1315,23 @@ final class MainWindowController: BaseTerminalController {
             paneFloatIndex: model.floating.firstIndex { $0.pane === pane },
             floatingRects: model.floating.map(\.rect),
             at: point)
+    }
+
+    /// Scrolling layout: a column that only peeks in at the left or right edge of the screen is
+    /// focused by a click, not by hover — the mouse passing over the sliver on its way somewhere
+    /// else used to slide the whole strip. A pane is "peeking" when part of it lies outside the
+    /// content area; once a click has brought it fully into view, hover works on it again. Dwindle
+    /// and the floating layer are unaffected: every pane there is always fully on screen.
+    override func paneTakesHoverFocus(_ pane: PaneView) -> Bool {
+        guard case .scrolling = model.layout, model.layout.paneList.contains(where: { $0 === pane }),
+              let content = window?.contentView, pane.window != nil else { return true }
+        return Self.isFullyVisible(pane.convert(pane.bounds, to: content), in: content.bounds)
+    }
+
+    /// Fully on screen, horizontally, give or take a point of rounding (columns are laid out on
+    /// fractional offsets). Only the horizontal edges count: the strip never scrolls vertically.
+    static func isFullyVisible(_ frame: CGRect, in viewport: CGRect) -> Bool {
+        frame.minX >= viewport.minX - 1 && frame.maxX <= viewport.maxX + 1
     }
 
     /// Window coordinates to normalized top-left content coordinates (the content area is
@@ -1734,8 +1789,47 @@ final class MainWindowController: BaseTerminalController {
         if let target { requestFocus(to: target, from: focused) }
     }
 
+    /// A two-finger swipe: bring in the nearest column hidden past that edge of the screen, and
+    /// focus it. Which pane is focused now does not matter — with 2 and 3 on screen, a swipe that
+    /// reveals the right side brings in 4 (and focuses it) even when 2 had focus. The strip's
+    /// scroll-follow then slides 4 fully into view by the smallest scroll, so 3 and 4 are shown.
+    private func revealHiddenColumn(_ direction: ScrollingStrip.Direction) {
+        guard case .scrolling(let strip) = model.layout, let content = window?.contentView else { return }
+        let spans: [ClosedRange<CGFloat>?] = strip.columns.map { column in
+            guard let pane = column.panes.first, pane.window != nil else { return nil }
+            let frame = pane.convert(pane.bounds, to: content)
+            return frame.minX...frame.maxX
+        }
+        guard let index = Self.hiddenColumn(spans: spans, viewport: content.bounds.minX...content.bounds.maxX,
+                                            direction: direction) else { return }
+        let column = strip.columns[index]
+        let row = focusedPane.flatMap { strip.position(of: $0)?.row } ?? 0
+        requestFocus(to: column.panes[min(row, column.panes.count - 1)], from: focusedPane)
+    }
+
+    /// The nearest column that is not fully on screen past `direction`'s edge (`.right` = the
+    /// leftmost one sticking out on the right). `spans` are the columns' horizontal extents in
+    /// window coordinates, nil for one that is not laid out; a point of rounding is not "hidden".
+    static func hiddenColumn(spans: [ClosedRange<CGFloat>?], viewport: ClosedRange<CGFloat>,
+                             direction: ScrollingStrip.Direction) -> Int? {
+        switch direction {
+        case .right:
+            return spans.indices.first { spans[$0].map { $0.upperBound > viewport.upperBound + 1 } ?? false }
+        case .left:
+            return spans.indices.last { spans[$0].map { $0.lowerBound < viewport.lowerBound - 1 } ?? false }
+        case .up, .down:
+            return nil
+        }
+    }
+
     private func swapFocused(_ direction: ScrollingStrip.Direction) {
         guard let focused = focusedPane else { return }
+        // The slide (PaneChrome): every tiled pane remembers where it is now, and the ones the
+        // swap moves play from there. A pane that does not move lets its note expire unused.
+        let until = Date().addingTimeInterval(PaneSwapAnimation.pendingWindow)
+        for pane in model.layout.paneList {
+            pane.pendingSwap = pane.layoutFrame.map { ($0, until) }
+        }
         switch model.layout {
         case .dwindle(let tree):
             guard let node = tree.root?.node(view: focused),
@@ -2371,5 +2465,58 @@ extension MainWindowController: BrowserExtensionHost {
     @discardableResult
     func openBrowserWindow(url: URL?) -> BrowserPaneView? {
         openBrowserPane(url: url ?? BrowserPaneView.settings.homeURL, from: focusedPane)
+    }
+}
+
+/// **A two-finger swipe is one column** (scrolling layout). The swipe brings in the column hidden
+/// past one edge and focuses it (`revealHiddenColumn`), and the strip's scroll-follow slides it into
+/// place exactly as a click on it would — the strip never comes to rest between columns.
+///
+/// `deltaX` is the fingers' own movement: fingers moving left reveal the column on the right.
+/// One gesture is one step however far it goes: once the step is taken the rest of the gesture,
+/// and the momentum after it, are swallowed. A wheel or mouse that sends no gesture phases steps
+/// once per `cooldown`.
+struct SwipeStep {
+    /// Points of horizontal travel before a gesture counts as a swipe.
+    static let threshold: CGFloat = 30
+    static let cooldown: TimeInterval = 0.35
+
+    private var travel: CGFloat = 0
+    private var stepped = false
+    private var lastPhaselessStep: TimeInterval = -.greatestFiniteMagnitude
+    /// A trackpad gesture (or its momentum) is in flight: its vertical wobble belongs to it too.
+    private(set) var inGesture = false
+
+    /// Feed one scroll event; answers the direction to step, or nil.
+    mutating func feed(deltaX: CGFloat, phase: NSEvent.Phase, momentum: NSEvent.Phase,
+                       at time: TimeInterval) -> ScrollingStrip.Direction? {
+        if !momentum.isEmpty {
+            // The fling after the fingers lift: never a second step.
+            inGesture = !(momentum.contains(.ended) || momentum.contains(.cancelled))
+            return nil
+        }
+        if phase.contains(.began) || phase.contains(.mayBegin) {
+            travel = 0
+            stepped = false
+            inGesture = true
+        }
+        if phase.contains(.ended) || phase.contains(.cancelled) {
+            travel = 0
+            inGesture = false
+            return nil
+        }
+        if phase.isEmpty {
+            // No gesture phases (a mouse with a horizontal wheel): one step per cooldown.
+            travel += deltaX
+            guard abs(travel) >= Self.threshold, time - lastPhaselessStep >= Self.cooldown else { return nil }
+            lastPhaselessStep = time
+            defer { travel = 0 }
+            return travel < 0 ? .right : .left
+        }
+        guard !stepped else { return nil }
+        travel += deltaX
+        guard abs(travel) >= Self.threshold else { return nil }
+        stepped = true
+        return travel < 0 ? .right : .left
     }
 }

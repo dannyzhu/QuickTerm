@@ -21,7 +21,7 @@ final class KeybindingMapTests: XCTestCase {
             ("left", [.command, .shift], .swapLeft), ("right", [.command, .shift], .swapRight),
             ("up", [.command, .shift], .swapUp), ("down", [.command, .shift], .swapDown),
             ("j", .command, .toggleSplitDirection),
-            ("f", .command, .toggleZoom),
+            ("f", [.command, .shift], .toggleZoom), ("f", .command, .find),
             ("=", [.command, .control], .equalize),
             ("left", [.command, .control], .resizeLeft), ("right", [.command, .control], .resizeRight),
             ("up", [.command, .control], .resizeUp), ("down", [.command, .control], .resizeDown),

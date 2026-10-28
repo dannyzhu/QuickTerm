@@ -53,3 +53,13 @@
 "terminal.readonly.disable" = "关掉";
 
 "terminal.accessibility.help" = "终端内容区域";
+
+"terminal.find.placeholder" = "搜索";
+/* same-as-english: a match counter ("3/12") has no words to translate */
+"terminal.find.counter" = "%1$@/%2$@";
+"terminal.find.no-match" = "无匹配";
+"terminal.find.previous" = "上一个匹配（⇧回车）";
+"terminal.find.next" = "下一个匹配（回车）";
+"terminal.find.close" = "关闭（Esc）";
+
+"terminal.zoom.exit" = "退出放大（⌘⇧F）";

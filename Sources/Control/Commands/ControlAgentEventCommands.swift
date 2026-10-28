@@ -81,6 +81,10 @@ extension ControlCommandRunner {
 
         let origin = NoticeOrigin(lineageRoot: ControlLineage.root(of: ctx.peer.pid),
                                   sessionID: payload.sessionID)
+        AgentEventTrace.note(agent: id, event: payload.hookEventName, pane: paneID, handle: handle,
+                             screen: entry.controller.screenIndex + 1, workspace: entry.workspace + 1,
+                             peer: ctx.peer.pid, lineageRoot: origin.lineageRoot,
+                             session: payload.sessionID)
         let outcome = registry.apply(.hook(agent: id, payload: payload), pane: paneID, origin: origin)
 
         // Every refusal is an entry in the activity log naming the peer: that log is the record
@@ -117,5 +121,38 @@ extension ControlCommandRunner {
             resolved: outcome.resolved)
         // No echo: there was no target to resolve. The pane is in the payload, by handle.
         return (nil, payloadOut)
+    }
+}
+
+/// **The cross-pane check behind the agent-state diagnostics.** Every hook names its pane by the
+/// `QUICKTERM_PANE` it inherited, and the pane token only proves that value was handed out by this
+/// launch — not that the process is still in the pane it was handed to. The lineage root (the
+/// pane's own `login`, a direct child of QuickTerm) is what the process tree says. One lineage
+/// root reporting for two panes, or one pane hearing from two lineage roots, is the shape of a
+/// status landing on the wrong pane, and the line says `MISMATCH` so it can be grepped for.
+@MainActor
+enum AgentEventTrace {
+    private static var paneByRoot: [pid_t: UUID] = [:]
+    private static var rootByPane: [UUID: pid_t] = [:]
+
+    static func note(agent: String, event: String, pane: UUID, handle: String, screen: Int,
+                     workspace: Int, peer: pid_t, lineageRoot: pid_t?, session: String?) {
+        var flags: [String] = []
+        if let root = lineageRoot {
+            if let other = paneByRoot[root], other != pane {
+                flags.append("MISMATCH root \(root) reported for \(String(other.uuidString.prefix(8))) before")
+            }
+            if let other = rootByPane[pane], other != root {
+                flags.append("MISMATCH pane reported from root \(other) before")
+            }
+            paneByRoot[root] = pane
+            rootByPane[pane] = root
+        }
+        let id = String(pane.uuidString.prefix(8))
+        let line = "\(agent) event=\(event) pane=\(handle) (\(id), screen \(screen) workspace \(workspace)) "
+            + "peer=\(peer) root=\(lineageRoot.map(String.init) ?? "none") "
+            + "session=\(session.map { String($0.prefix(8)) } ?? "none")"
+            + (flags.isEmpty ? "" : " " + flags.joined(separator: "; "))
+        DiagnosticLog.shared.note("hook", line)
     }
 }

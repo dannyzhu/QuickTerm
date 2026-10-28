@@ -635,6 +635,10 @@ enum ConfigSchema {
                       labelZH: "工作区名字", labelEN: "Workspace title",
                       helpZH: "起过名的工作区胶囊显示名字而不是序号（最长 12 字；放不下就整排回到序号）",
                       helpEN: "named workspaces show the name instead of the number (12 chars max)"),
+        ConfigKeySpec(.appearance, "swap-animation-duration", .double(min: 0.0, max: 3.0), default: .double(0.5),
+                      labelZH: "交换动画时长", labelEN: "Swap animation",
+                      helpZH: "Cmd+Shift+方向键交换 pane 时的滑动动画秒数（0–3；0 = 不要动画）",
+                      helpEN: "seconds the Cmd+Shift+arrow pane swap slides for (0–3; 0 = no animation)"),
 
         // MARK: [workspace]
         ConfigKeySpec(.workspace, "workspaces", .int(min: 1, max: 10), default: .int(5),
