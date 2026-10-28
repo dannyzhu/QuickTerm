@@ -278,7 +278,7 @@ extension ConfigStoreTests {
     func testGhosttyFallbackResourceBundled() throws {
         let path = try XCTUnwrap(GhosttyDefaultConfig.bundledPath, "the bundle has to contain ghostty-default.conf")
         let text = try String(contentsOfFile: path, encoding: .utf8)
-        for key in ["font-family = Monaco", "font-size = 15", "theme = Builtin Pastel Dark",
+        for key in ["font-family = Monaco", "font-family = PingFang SC", "font-size = 15", "theme = Builtin Pastel Dark",
                     "copy-on-select = clipboard", "scrollback-limit = 100000000"] {
             XCTAssertTrue(text.contains(key), "missing \(key)")
         }
