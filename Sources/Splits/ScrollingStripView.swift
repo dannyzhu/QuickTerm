@@ -8,6 +8,10 @@ import SwiftUI
 struct ScrollingStripView: View {
     let strip: ScrollingStrip
     let workspaceIndex: Int
+    /// Each workspace's strip offset, kept across switches (the model owns it; see
+    /// `WorkspaceModel.stripOffsets`).
+    var savedOffset: (Int) -> CGFloat? = { _ in nil }
+    var saveOffset: (Int, CGFloat) -> Void = { _, _ in }
     let onDrop: (PaneView, PaneView, TerminalSplitDropZone) -> Void
     /// Panes currently fading out; once the fade finishes the controller removes them and the strip
     /// reflows.
@@ -90,10 +94,16 @@ struct ScrollingStripView: View {
                 // edge opens up empty.
                 clampOffset(viewport: geo.size.width, animated: old.count != new.count)
             }
-            .onChange(of: workspaceIndex) {
-                // A new workspace is a whole new strip: relearn the identities.
+            .onChange(of: workspaceIndex) { old, new in
+                // A new workspace is a whole new strip: relearn the identities, and put the strip
+                // back where this workspace was left (columns 2 and 3 stay 2 and 3), instead of
+                // starting from column 1. Then only make sure the focused column is in view.
+                saveOffset(old, offset)
                 knownPaneIDs = Set(strip.paneList.map(\.id))
-                offset = 0
+                var jump = Transaction()
+                jump.disablesAnimations = true
+                withTransaction(jump) { offset = savedOffset(new) ?? 0 }
+                clampOffset(viewport: geo.size.width, animated: false)
                 scrollToFocus(id: currentFocusedID(), viewport: geo.size.width)
             }
         }

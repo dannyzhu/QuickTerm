@@ -1725,10 +1725,17 @@ final class MainWindowController: BaseTerminalController {
         flushPendingCloses()
         model.appearingPane = nil
         guard index != model.activeIndex else { return }
+        // Remember where focus was in the workspace being left. Read **before** the switch: after
+        // it, the first responder still belongs to this workspace's pane, which is no longer in
+        // `paneList`, and `focusedPane` falls back to the first pane of the new one.
+        if let focused = focusedPane, paneList.contains(where: { $0 === focused }) {
+            model.lastFocused[model.activeIndex] = focused.id
+        }
         // A value-semantics switch: instant, no animation (faithful to Omarchy).
         model.switchTo(index)
-        if let focused = focusedPane {
-            requestFocus(to: focused)
+        let remembered = model.lastFocused[index].flatMap { id in paneList.first { $0.id == id } }
+        if let target = remembered ?? focusedPane {
+            requestFocus(to: target)
         }
     }
 

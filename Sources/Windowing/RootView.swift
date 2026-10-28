@@ -22,6 +22,12 @@ final class WorkspaceModel: ObservableObject {
     private var alternates: [WorkspaceLayout?] = []
     @Published var activeIndex: Int = 0
     @Published var barVisible = true
+    /// What each workspace looked like when it was last left: its focused pane and, in the
+    /// scrolling layout, how far the strip was scrolled. Restored on the way back in, so a
+    /// workspace comes back showing columns 2 and 3 with 3 focused, not reset to column 1. Not
+    /// persisted (a restart restores focus through `focusedPaneID` and re-reveals it).
+    var lastFocused: [Int: UUID] = [:]
+    var stripOffsets: [Int: CGFloat] = [:]
 
     init() {
         layouts = (0..<Self.workspaceCount).map { _ in .empty }
@@ -286,6 +292,8 @@ struct RootView: View {
                     ScrollingStripView(
                         strip: strip,
                         workspaceIndex: model.activeIndex,
+                        savedOffset: { [weak model] in model?.stripOffsets[$0] },
+                        saveOffset: { [weak model] in model?.stripOffsets[$0] = $1 },
                         onDrop: onScrollingDrop,
                         closingPanes: model.closingPanes)
                         // Outer margin matches the inter-pane gap
