@@ -118,24 +118,26 @@ struct PaneZoomBadge: View {
     @EnvironmentObject private var i18n: Localization
     @State private var hovered = false
 
-    static let size: CGFloat = 26
+    static let size: CGFloat = 39
+    /// The same distance from the top and the right edge: half the badge's width.
+    static let margin: CGFloat = size / 2
     /// Room the find bar takes at the top: its 26pt buttons, 8pt padding on each side, the inset.
     static let findBarClearance: CGFloat = 26 + 16 + PaneFindBar.inset
 
     var body: some View {
         Button(action: onExit) {
             Image(systemName: "arrow.down.right.and.arrow.up.left")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 18, weight: .semibold))
                 .frame(width: Self.size, height: Self.size)
-                .background(RoundedRectangle(cornerRadius: 6).fill(.black.opacity(hovered ? 0.55 : 0.35)))
+                .background(RoundedRectangle(cornerRadius: 9).fill(.black.opacity(hovered ? 0.55 : 0.35)))
                 .foregroundStyle(.white.opacity(hovered ? 1 : 0.8))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
         .help(i18n("terminal.zoom.exit"))
-        .padding(.top, contentTop + PaneFindBar.inset + (findBarOpen ? Self.findBarClearance : 0))
-        .padding(.trailing, PaneFindBar.inset)
+        .padding(.top, contentTop + Self.margin + (findBarOpen ? Self.findBarClearance : 0))
+        .padding(.trailing, Self.margin)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
     }
 }

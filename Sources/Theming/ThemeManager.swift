@@ -44,7 +44,7 @@ final class ThemeManager: ObservableObject {
     /// layer, read by StatusBarView).
     @Published private(set) var workspaceTitleEnabled = true
     /// Seconds the Cmd+Shift+arrow swap slides for (config `swap-animation-duration`); 0 = none.
-    @Published private(set) var swapAnimationDuration: Double = 1.0
+    @Published private(set) var swapAnimationDuration: Double = 0.5
 
     var frostedInactive: Bool { opacityEnabled && inactiveBlur > 0 }
 
@@ -67,7 +67,7 @@ final class ThemeManager: ObservableObject {
                           activeOpacity: Double = 0.98, barOpacity: Double = 0.75,
                           dividerOpacity: Double = 0.2, paneGap: Int = 5,
                           paneTitle: Bool = true, workspaceTitle: Bool = true,
-                          swapAnimationDuration: Double = 1.0) {
+                          swapAnimationDuration: Double = 0.5) {
         self.paneGap = CGFloat(paneGap)  // pure UI layer
         self.swapAnimationDuration = swapAnimationDuration  // pure UI layer
         paneTitleEnabled = paneTitle  // pure UI layer

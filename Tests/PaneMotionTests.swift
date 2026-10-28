@@ -70,3 +70,24 @@ final class PaneMotionTests: XCTestCase {
         XCTAssertFalse(MainWindowController.isFullyVisible(CGRect(x: -440, y: 0, width: 480, height: 800), in: viewport))
     }
 }
+
+/// Which column a swipe brings in: the nearest one hidden past that edge, whatever has focus.
+final class HiddenColumnTests: XCTestCase {
+    private let viewport: ClosedRange<CGFloat> = 0 ... 1000
+
+    @MainActor
+    func testSwipeBringsInTheNearestHiddenColumn() {
+        // Columns 1–4, 480pt wide: 2 and 3 on a 1000pt screen, 1 and 4 peeking in at the edges.
+        let spans: [ClosedRange<CGFloat>?] = [-460 ... 20, 20 ... 500, 500 ... 980, 980 ... 1460]
+        XCTAssertEqual(MainWindowController.hiddenColumn(spans: spans, viewport: viewport, direction: .right), 3)
+        XCTAssertEqual(MainWindowController.hiddenColumn(spans: spans, viewport: viewport, direction: .left), 0)
+    }
+
+    @MainActor
+    func testNothingHiddenOnThatSideMeansNoStep() {
+        let flush: [ClosedRange<CGFloat>?] = [0 ... 500, 500 ... 1000, 1000 ... 1500]
+        XCTAssertNil(MainWindowController.hiddenColumn(spans: flush, viewport: viewport, direction: .left))
+        XCTAssertEqual(MainWindowController.hiddenColumn(spans: flush, viewport: viewport, direction: .right), 2)
+        XCTAssertNil(MainWindowController.hiddenColumn(spans: flush, viewport: viewport, direction: .up))
+    }
+}

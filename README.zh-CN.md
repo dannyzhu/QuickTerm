@@ -427,7 +427,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # pane-gap = 5           # 每 pane 每边留白 pt（0–20；相邻间距 = 2×gap；scrolling / dwindle 一致）
 # pane-title = true      # 把标题画在 pane 上边框上（只显示手动设过的标题，最长 20 字）
 # workspace-title = true # 起过名的工作区胶囊显示名字而不是序号（最长 12 字）
-# swap-animation-duration = 1.0  # Cmd+Shift+方向键交换 pane 时的滑动动画秒数（0–3；0 = 不要动画）
+# swap-animation-duration = 0.5  # Cmd+Shift+方向键交换 pane 时的滑动动画秒数（0–3；0 = 不要动画）
 
 [workspace]
 # workspaces = 5       # 1–10

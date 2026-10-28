@@ -416,15 +416,8 @@ extension Ghostty {
                     let action = forward ? "navigate_search:next" : "navigate_search:previous"
                     ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8)))
                 },
-                onEscape: {
-                    if searchState.needle.isEmpty {
-                        onClose()
-                    } else {
-#if canImport(AppKit)
-                        Ghostty.moveFocus(to: surfaceView)
-#endif
-                    }
-                },
+                // One Esc closes the bar (and hands focus back to the terminal), needle or not.
+                onEscape: onClose,
                 onClose: onClose,
                 nextIsUp: true)
             .padding(PaneFindBar.inset)

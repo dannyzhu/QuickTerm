@@ -476,10 +476,15 @@ final class BrowserPaneView: PaneView {
         findHost?.removeFromSuperview()
         findHost = nil
         findState = nil
-        // An empty find clears WebKit's highlight.
-        webView.find("", configuration: WKFindConfiguration()) { _ in }
+        clearFindHighlight()
         window?.makeFirstResponder(webView)
         objectWillChange.send()
+    }
+
+    /// WebKit's find marks the hit by **selecting** it, and an empty `find` does not undo that:
+    /// the highlight is the page's selection, so clearing the selection is what takes it down.
+    private func clearFindHighlight() {
+        webView.evaluateJavaScript("window.getSelection() && window.getSelection().removeAllRanges()") { _, _ in }
     }
 
     private func findInPage(forward: Bool) {
@@ -487,7 +492,7 @@ final class BrowserPaneView: PaneView {
         let needle = state.needle
         guard !needle.isEmpty else {
             state.counter = nil
-            webView.find("", configuration: WKFindConfiguration()) { _ in }
+            clearFindHighlight()
             return
         }
         let config = WKFindConfiguration()

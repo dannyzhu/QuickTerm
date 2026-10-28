@@ -439,7 +439,7 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 # pane-gap = 5           # 0–20 pt around each pane (neighbours end up 2×gap apart)
 # pane-title = true      # draw the title into the pane's top border (only titles you set; 20 chars max)
 # workspace-title = true # named workspaces show the name instead of the number (12 chars max)
-# swap-animation-duration = 1.0  # seconds the Cmd+Shift+arrow pane swap slides for (0–3; 0 = no animation)
+# swap-animation-duration = 0.5  # seconds the Cmd+Shift+arrow pane swap slides for (0–3; 0 = no animation)
 
 [workspace]
 # workspaces = 5       # 1–10

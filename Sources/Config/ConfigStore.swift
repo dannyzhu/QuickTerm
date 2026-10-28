@@ -264,7 +264,7 @@ enum ConfigStore {
         /// Show the name in the workspace pill (on by default). Only workspaces that were given
         /// a name show one, truncated to 12 characters.
         var workspaceTitle: Bool = true
-        var swapAnimationDuration: Double = 1.0
+        var swapAnimationDuration: Double = 0.5
         /// The file manager program the `file-manager` action runs in a new pane. A bare name is
         /// looked up in PATH and in the usual install directories; an absolute path also works.
         var fileManagerCommand: String = FileManagerLaunch.defaultProgram
