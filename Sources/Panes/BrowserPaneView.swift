@@ -481,11 +481,14 @@ final class BrowserPaneView: PaneView {
         objectWillChange.send()
     }
 
-    /// WebKit's find marks the hit by **selecting** it, and an empty `find` does not undo that:
-    /// the highlight is the page's selection, so clearing the selection is what takes it down.
+    /// Take WebKit's find highlight down. It is WebKit's own overlay, not the page's selection, and
+    /// neither clearing the selection nor an empty `find("")` removes it (measured on macOS 27); a
+    /// find that matches nothing does. The needle is one no page can contain.
     private func clearFindHighlight() {
-        webView.evaluateJavaScript("window.getSelection() && window.getSelection().removeAllRanges()") { _, _ in }
+        webView.find(Self.unmatchableNeedle, configuration: WKFindConfiguration()) { _ in }
     }
+
+    private static let unmatchableNeedle = "\u{1}quickterm-find-clear-\(UUID().uuidString)\u{1}"
 
     private func findInPage(forward: Bool) {
         guard let state = findState else { return }
