@@ -40,6 +40,33 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertEqual(c.paneList.count, ws0Count, "workspace 1 is unchanged after switching back")
     }
 
+    /// Regression: leaving a scrolling workspace and coming back has to bring back the pane that
+    /// had focus (and the columns that were on screen), not reset to the first column.
+    func testSwitchingBackRestoresTheFocusedPane() throws {
+        let c = try controller
+        c.switchWorkspace(3)
+        c.perform(.newTerminal)
+        c.perform(.newTerminal)
+        c.perform(.newTerminal)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        let panes = c.paneList
+        XCTAssertEqual(panes.count, 3)
+        let third = try XCTUnwrap(panes.last)
+        c.requestFocus(to: third)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertTrue(c.focusedPane === third, "precondition: the third column has focus")
+
+        c.switchWorkspace(4)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        c.switchWorkspace(3)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertTrue(c.focusedPane === third, "coming back focuses the pane that had focus, not the first one")
+
+        // Cleanup
+        for pane in c.paneList { c.closePane(pane, confirmIfNeeded: false, animated: false) }
+        c.model.switchTo(0)
+    }
+
     func testSwitchOutOfBoundsIsSafe() throws {
         let c = try controller
         let before = c.model.activeIndex
