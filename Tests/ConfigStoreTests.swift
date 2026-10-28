@@ -278,7 +278,7 @@ extension ConfigStoreTests {
     func testGhosttyFallbackResourceBundled() throws {
         let path = try XCTUnwrap(GhosttyDefaultConfig.bundledPath, "the bundle has to contain ghostty-default.conf")
         let text = try String(contentsOfFile: path, encoding: .utf8)
-        for key in ["font-family = Monaco", "font-family = PingFang SC", "font-size = 15", "theme = Builtin Pastel Dark",
+        for key in ["font-family = Monaco", "font-codepoint-map = U+3000-U+303F,U+3400-U+4DBF,U+4E00-U+9FFF,U+F900-U+FAFF,U+FF00-U+FFEF=PingFang SC", "font-size = 15", "theme = Builtin Pastel Dark",
                     "copy-on-select = clipboard", "scrollback-limit = 100000000"] {
             XCTAssertTrue(text.contains(key), "missing \(key)")
         }
@@ -286,6 +286,8 @@ extension ConfigStoreTests {
         // mention these keys):
         // shell integration stays on detect, and there are no tab keybindings.
         let active = text.split(separator: "\n").filter { !$0.hasPrefix("#") }.joined(separator: "\n")
+        // Monaco has no bold face: a second font-family would hand bold Latin text to that family.
+        XCTAssertFalse(active.contains("font-family = PingFang"), "Chinese goes through font-codepoint-map")
         XCTAssertFalse(active.contains("shell-integration = none"), "that would break cwd inheritance and confirmation-free closing")
         XCTAssertFalse(active.contains("previous_tab"),
                        "QuickTerm has no tabs, and this would override the engine's start/end-of-line keys")

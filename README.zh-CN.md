@@ -495,7 +495,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 Ghostty 的配置按五层合成，后者覆盖前者：
 
 1. libghostty 内置默认值
-2. QuickTerm 内置兜底（`ghostty-default.conf`：Monaco 15（中文用苹方 PingFang SC）、Builtin Pastel Dark 主题、copy-on-select、1 亿行 scrollback、option-as-alt 等）—— **仅当你完全没有 Ghostty 配置文件时**加载；一旦有了自己的配置，这一层整体让位
+2. QuickTerm 内置兜底（`ghostty-default.conf`：Monaco 15（中文映射到苹方 PingFang SC）、Builtin Pastel Dark 主题、copy-on-select、1 亿行 scrollback、option-as-alt 等）—— **仅当你完全没有 Ghostty 配置文件时**加载；一旦有了自己的配置，这一层整体让位
 3. **`~/.config/ghostty/config`** —— 按 Ghostty 原生规则加载，含 `config-file` 递归包含。字体、光标、滚动、shell 集成、终端级 `keybind =` 全部生效。引擎自己的 `auto-update` / `auto-update-channel` 两个键不生效：由 QuickTerm 的 `[updates]` 节决定。
 4. QuickTerm 覆盖层（`~/Library/Application Support/QuickTerm/engine-overlay.conf`，切主题时重写）：当前主题的配色与 palette、`window-padding-x/y`、`background-opacity`、`unfocused-split-opacity`，以及 `window-vsync = false`（见故障排查）。`theme = "ghostty"` 时只保留 padding。
 5. `config.toml` 的 `[ghostty]` 段，追加在最后。
