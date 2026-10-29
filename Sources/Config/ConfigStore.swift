@@ -268,6 +268,7 @@ enum ConfigStore {
         /// The file manager program the `file-manager` action runs in a new pane. A bare name is
         /// looked up in PATH and in the usual install directories; an absolute path also works.
         var fileManagerCommand: String = FileManagerLaunch.defaultProgram
+        var watchGhosttyConfig: Bool = true
         /// Browser panes: home page, search template, user agent ("safari" to masquerade,
         /// "webkit" not to, or a custom string) and the Web Inspector.
         var browserHome: String = "https://www.google.com"
@@ -397,6 +398,7 @@ enum ConfigBindings {
         "workspace.workspaces": { v, s in v.intValue.map { s.workspaces = $0 } },
         "workspace.visible-columns": { v, s in s.visibleColumns = v.intValue },
         "terminal.file-manager-command": { v, s in v.stringValue.map { s.fileManagerCommand = $0 } },
+        "terminal.watch-ghostty-config": { v, s in v.boolValue.map { s.watchGhosttyConfig = $0 } },
         "browser.home": { v, s in v.stringValue.map { s.browserHome = $0 } },
         "browser.search": { v, s in v.stringValue.map { s.browserSearch = $0 } },
         "browser.user-agent": { v, s in v.stringValue.map { s.browserUserAgent = $0 } },
@@ -474,4 +476,97 @@ final class ConfigWatcher {
     }
 
     deinit { source?.cancel() }
+}
+
+/// **Watches the user's Ghostty config files** (`[terminal] watch-ghostty-config`), so a saved
+/// `~/.config/ghostty/config` takes effect without Cmd+Shift+, or a restart.
+///
+/// It watches the *directories* of every path libghostty would read
+/// (`GhosttyDefaultConfig.userConfigCandidates`), for the same reason `ConfigWatcher` does: an
+/// editor that saves by atomic replace never writes to the old file. A directory that does not
+/// exist yet is covered by watching its nearest existing parent, and the set is rebuilt after
+/// every event, so creating `~/.config/ghostty/` and then the file in it is caught too (the
+/// fallback config then steps aside on the very next reload).
+///
+/// Reloads only when the **content** of the files the engine would load changed: a save fires
+/// several events, and a directory event also fires for unrelated files next to the config.
+final class GhosttyConfigWatcher {
+    private var sources: [DispatchSourceFileSystemObject] = []
+    private var lastSnapshot: String
+    private let onChange: () -> Void
+    private let snapshot: () -> String
+    private let directories: () -> [URL]
+    private var pending = false
+
+    /// What the engine would load right now, in load order: the path and content of each user
+    /// file. A change in either (a file appearing, disappearing or being edited) is a change.
+    static func currentSnapshot() -> String {
+        GhosttyDefaultConfig.userConfigFiles().map { url in
+            url.path + "\n" + ((try? String(contentsOf: url, encoding: .utf8)) ?? "")
+        }.joined(separator: "\n\u{0}\n")
+    }
+
+    /// The directories to watch: each candidate's own directory, or its nearest existing parent.
+    static func watchedDirectories() -> [URL] {
+        let fm = FileManager.default
+        var seen = Set<String>()
+        var out: [URL] = []
+        for file in GhosttyDefaultConfig.userConfigCandidates() {
+            var dir = file.deletingLastPathComponent()
+            var isDir: ObjCBool = false
+            while !(fm.fileExists(atPath: dir.path, isDirectory: &isDir) && isDir.boolValue),
+                  dir.pathComponents.count > 1 {
+                dir = dir.deletingLastPathComponent()
+            }
+            if seen.insert(dir.path).inserted { out.append(dir) }
+        }
+        return out
+    }
+
+    init(snapshot: @escaping () -> String = GhosttyConfigWatcher.currentSnapshot,
+         directories: @escaping () -> [URL] = GhosttyConfigWatcher.watchedDirectories,
+         onChange: @escaping () -> Void) {
+        self.snapshot = snapshot
+        self.directories = directories
+        self.onChange = onChange
+        lastSnapshot = snapshot()
+        rewatch()
+    }
+
+    deinit { for source in sources { source.cancel() } }
+
+    private func rewatch() {
+        for source in sources { source.cancel() }
+        sources = directories().compactMap { dir in
+            let fd = open(dir.path, O_EVTONLY)
+            guard fd >= 0 else { return nil }
+            let source = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: fd, eventMask: [.write, .rename, .delete], queue: .main)
+            source.setEventHandler { [weak self] in self?.scheduleCheck() }
+            source.setCancelHandler { close(fd) }
+            source.resume()
+            return source
+        }
+    }
+
+    /// One check per burst: an atomic save is a create, a rename and a delete in quick succession.
+    private func scheduleCheck() {
+        guard !pending else { return }
+        pending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self else { return }
+            self.pending = false
+            self.check()
+        }
+    }
+
+    /// Reload when the content changed. Public for the tests, which drive it without waiting on
+    /// the file system.
+    func check() {
+        rewatch()   // a directory may have appeared (or gone) since the last event
+        let now = snapshot()
+        guard now != lastSnapshot else { return }
+        lastSnapshot = now
+        onChange()
+    }
 }

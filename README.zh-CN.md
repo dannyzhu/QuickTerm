@@ -435,6 +435,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 
 [terminal]
 # file-manager-command = "yazi"  # 文件管理器程序（Cmd+Shift+B 在新 pane 里运行；名字或绝对路径，lf/ranger 亦可）
+# watch-ghostty-config = true     # 保存 Ghostty 配置文件（~/.config/ghostty/config 等）后自动重新加载，已打开的 pane 也会更新；关掉后改为手动按 Cmd+Shift+,
 
 [browser]
 # home = "https://www.google.com"                # 浏览器 pane（Cmd+B）打开的首页

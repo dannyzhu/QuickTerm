@@ -71,6 +71,8 @@ final class AppSession {
 
     /// The one config.toml watcher in the process
     private var configWatcher: ConfigWatcher?
+    /// Present while `[terminal] watch-ghostty-config` is on (the default).
+    private var ghosttyConfigWatcher: GhosttyConfigWatcher?
     /// Deduplicate by content: saving from an editor fires several filesystem events in a row.
     private var lastConfigContent: String?
 
@@ -183,6 +185,20 @@ final class AppSession {
         }
     }
 
+    /// Start or stop watching the user's Ghostty config files. Never in a test host: a suite must
+    /// not reload engines because the developer happened to edit their own Ghostty config.
+    private func applyGhosttyConfigWatch(_ enabled: Bool) {
+        guard enabled, !AppDelegate.isRunningTests else {
+            ghosttyConfigWatcher = nil
+            return
+        }
+        guard ghosttyConfigWatcher == nil else { return }
+        ghosttyConfigWatcher = GhosttyConfigWatcher { [weak self] in
+            AppDelegate.logger.notice("ghostty config changed on disk: reloading the engine")
+            self?.themeManager.reloadEngineConfig()
+        }
+    }
+
     /// Reload only when the file content actually changed (a save fires several events), then run
     /// one apply
     func reloadConfigFile() {
@@ -266,6 +282,7 @@ final class AppSession {
         // `DispatchQueue.main.async`, and `restoreSession()` runs to completion synchronously on
         // the main thread, so no queued block can slip in between.
         controlServer.apply(control)
+        applyGhosttyConfigWatch(settings.watchGhosttyConfig)
         themeManager.updateFromConfig(
             passthrough: settings.ghosttyPassthrough,
             followEngine: settings.themeName == "ghostty",

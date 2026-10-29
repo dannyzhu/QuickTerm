@@ -304,6 +304,14 @@ final class ThemeManager: ObservableObject {
 
     private func writeOverlay(notify: Bool = true) {
         EngineOverlay.install(extra: overlayExtra())
-        if notify { for listener in overlayListeners { listener.action() } }
+        if notify { reloadEngineConfig() }
+    }
+
+    /// Hot-reload the engine's whole config chain on every screen (the app once, then each
+    /// surface), the same as a changed overlay does. Also what a saved Ghostty config file
+    /// triggers (`GhosttyConfigWatcher`): the engine re-reads every layer from disk, so the user's
+    /// own file is picked up along with the overlay.
+    func reloadEngineConfig() {
+        for listener in overlayListeners { listener.action() }
     }
 }
