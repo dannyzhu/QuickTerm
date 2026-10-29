@@ -658,6 +658,10 @@ enum ConfigSchema {
                       helpZH: "文件管理器程序（Cmd+Shift+B 在新 pane 里运行；名字或绝对路径，lf/ranger 亦可）",
                       helpEN: "program for the file-manager action (Cmd+Shift+B); name or absolute path",
                       legacy: [ConfigKeyRef("", "file-manager-command")]),
+        ConfigKeySpec(.terminal, "watch-ghostty-config", .bool, default: .bool(true),
+                      labelZH: "自动重载 Ghostty 配置", labelEN: "Watch Ghostty config",
+                      helpZH: "保存 Ghostty 配置文件（~/.config/ghostty/config 等）后自动重新加载，已打开的 pane 也会更新；关掉后改为手动按 Cmd+Shift+,",
+                      helpEN: "reload the Ghostty config file (~/.config/ghostty/config etc.) as soon as it is saved, open panes included; off = reload by hand with Cmd+Shift+,"),
 
         // MARK: [browser]
         ConfigKeySpec(.browser, "home", .string, default: .string("https://www.google.com"),

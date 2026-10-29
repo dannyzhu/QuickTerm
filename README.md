@@ -447,6 +447,7 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 
 [terminal]
 # file-manager-command = "yazi"  # program for the file-manager action (Cmd+Shift+B); name or absolute path
+# watch-ghostty-config = true     # reload the Ghostty config file (~/.config/ghostty/config etc.) as soon as it is saved, open panes included; off = reload by hand with Cmd+Shift+,
 
 [browser]
 # home = "https://www.google.com"                # page a new browser pane (Cmd+B) opens
