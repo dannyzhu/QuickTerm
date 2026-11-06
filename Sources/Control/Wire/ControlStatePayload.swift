@@ -413,7 +413,7 @@ struct ControlNoticesPayload: Codable, Equatable {
 /// **name** — is payload-free and always readable, because deciding whether to interrupt the
 /// user is precisely what this record exists for.
 struct ControlAgentRecord: Codable, Equatable {
-    /// The rule id (`claude-code` | `codex` | `gemini` | a user rule file's id).
+    /// The rule id (`claude-code` | `codex` | `gemini` | `kiro-cli` | a user rule file's id).
     var id: String
     /// The display name from the rule file (`Claude Code`).
     var name: String

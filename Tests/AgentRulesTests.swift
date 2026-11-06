@@ -191,6 +191,8 @@ final class AgentRulesTests: XCTestCase {
         XCTAssertEqual(byID["codex"]?.resume?.latest, ["codex", "resume", "--last"])
         XCTAssertNotNil(byID["gemini"])
         XCTAssertNil(byID["gemini"]?.resume)
+        XCTAssertEqual(byID["kiro-cli"]?.resume?.session, ["kiro-cli", "chat", "--resume-id", "{session}"])
+        XCTAssertEqual(byID["kiro-cli"]?.resume?.latest, ["kiro-cli", "chat", "--resume"])
     }
 
     /// Every way a `[resume]` table can be wrong is a rejection of the whole file.
@@ -231,7 +233,7 @@ final class AgentRulesTests: XCTestCase {
         let result = AgentRulesLoader.load(userDirectory: nil)
         XCTAssertEqual(result.failures.count, 0,
                        "a bundled rule file failed to load: \(result.failures)")
-        XCTAssertEqual(result.rules.map(\.id), ["claude-code", "codex", "gemini"])
+        XCTAssertEqual(result.rules.map(\.id), ["claude-code", "codex", "gemini", "kiro-cli"])
         for rules in result.rules {
             XCTAssertFalse(rules.name.isEmpty)
             XCTAssertFalse(rules.process.isEmpty, "\(rules.id) names no process")
@@ -246,9 +248,40 @@ final class AgentRulesTests: XCTestCase {
         XCTAssertFalse(byID["claude-code"]?.notifications.isEmpty ?? true)
         XCTAssertTrue(byID["codex"]?.notifications.isEmpty ?? false)
         XCTAssertTrue(byID["gemini"]?.notifications.isEmpty ?? false)
+        XCTAssertTrue(byID["kiro-cli"]?.notifications.isEmpty ?? false)
         // The native install is a symlink whose target's file name is a version number: without
         // this fragment the scan never sees Claude Code at all (2026-09-26).
         XCTAssertEqual(byID["claude-code"]?.processPath, ["/.local/share/claude/versions/"])
+    }
+
+    /// kiro-cli (spec decisions 14, 22): its V3 triggers, a standalone hook file, the chat
+    /// process for presence, and both resume forms. No prompt text is read (`message` unset).
+    func testKiroRuleFileLoads() throws {
+        let result = AgentRulesLoader.load(userDirectory: nil)
+        let kiro = try XCTUnwrap(result.rules.first { $0.id == "kiro-cli" }, "\(result.failures)")
+        XCTAssertEqual(kiro.name, "Kiro CLI")
+        XCTAssertEqual(kiro.process, ["kiro-cli-chat"])
+        XCTAssertEqual(kiro.processPath, ["/Library/Application Support/kiro-cli/"])
+        XCTAssertEqual(kiro.fields.session, [AgentFieldPath(head: "session_id", sub: nil)])
+        XCTAssertEqual(kiro.fields.tool, [AgentFieldPath(head: "tool_name", sub: nil)])
+        XCTAssertEqual(kiro.fields.summary, [AgentFieldPath(head: "tool_input", sub: "command")])
+        XCTAssertTrue(kiro.fields.message.isEmpty, "kiro sends no message; a prompt is the user's text")
+        XCTAssertTrue(kiro.fields.error.isEmpty)
+        XCTAssertEqual(kiro.hooks, [
+            "SessionStart": .plain(.state(.idle, nil)),
+            "UserPromptSubmit": .plain(.state(.working, .thinking)),
+            "PreToolUse": .plain(.state(.working, .tool)),
+            "PostToolUse": .plain(.state(.working, .thinking)),
+            "Stop": .plain(.state(.done, nil)),
+            "SessionEnd": .plain(.released),
+        ])
+        let install = try XCTUnwrap(kiro.install)
+        XCTAssertEqual(install.shape, .kiro)
+        XCTAssertEqual(install.config, "~/.kiro/hooks/quickterm-agent-state.json")
+        XCTAssertEqual(install.lifecycle, ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop"])
+        XCTAssertEqual(install.tools, ["PreToolUse", "PostToolUse"])
+        XCTAssertEqual(kiro.resume?.session, ["kiro-cli", "chat", "--resume-id", "{session}"])
+        XCTAssertEqual(kiro.resume?.latest, ["kiro-cli", "chat", "--resume"])
     }
 
     /// A user file replaces a bundled one **whole** when the id matches, and adds an agent when

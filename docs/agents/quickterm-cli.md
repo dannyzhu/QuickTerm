@@ -552,7 +552,8 @@ has the user's attention pending, so say so and wait rather than asking a second
 ### Hooks: `quickterm hooks`
 
 The precise signal comes from a small hook script QuickTerm installs into the agent's **own** config file
-(Claude Code's `settings.json`, Codex's `hooks.json`, Gemini's `settings.json`). The script does nothing at
+(Claude Code's `settings.json`, Codex's `hooks.json`, Gemini's `settings.json`; for Kiro CLI a standalone
+`~/.kiro/hooks/quickterm-agent-state.json`). The script does nothing at
 all when it is not running inside a QuickTerm pane, so the same entry is harmless in Terminal.app, VS Code,
 tmux or CI.
 

@@ -174,10 +174,12 @@ enum AgentPayloadFixtures {
                         "PermissionRequest", "Stop", "Interrupt", "SessionEnd"]
     static let gemini = ["SessionStart", "BeforeAgent", "AfterAgent", "BeforeTool", "AfterTool",
                          "Notification", "SessionEnd"]
+    static let kiroCLI = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop",
+                          "SessionEnd"]
 
     static var all: [(String, String)] {
         claudeCode.map { ("claude-code", $0) } + codex.map { ("codex", $0) }
-            + gemini.map { ("gemini", $0) }
+            + gemini.map { ("gemini", $0) } + kiroCLI.map { ("kiro-cli", $0) }
     }
 
     /// The eight keys `AgentEventPayload` encodes — the whitelist, by its wire spelling.

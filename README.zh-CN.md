@@ -336,7 +336,7 @@ quickterm agents list                  # 每个 pane 的 agent 在干什么
 
 **安装器会写什么。** 一个小小的 `sh` 脚本放在 `~/.config/quickterm/hooks/quickterm-agent-state.sh`，外加在 agent
 **自己**的配置文件里每个生命周期事件一条条目——Claude Code 是 `~/.claude/settings.json`，Codex 是
-`~/.codex/hooks.json`，Gemini 是 `~/.gemini/settings.json`。每条都带 QuickTerm 的标记，`hooks uninstall` 只删带标记
+`~/.codex/hooks.json`，Gemini 是 `~/.gemini/settings.json`；Kiro CLI 单独一个文件 `~/.kiro/hooks/quickterm-agent-state.json`，卸载后里面没别的东西就整个删掉。每条都带 QuickTerm 的标记，`hooks uninstall` 只删带标记
 的那些：你自己写的钩子一根手指都不碰。脚本里 `quickterm` 二进制的路径是**安装时写死的，绝不从环境变量里读**——钩子每
 次提问都会跑，让项目的 `.envrc` 或者 Makefile 来决定跑的是哪个二进制，等于给任意代码开了一扇门。不在 QuickTerm 里时
 （环境里没有控制 socket），脚本立刻 exit 0 什么也不做，所以同一条配置在 Terminal.app、VS Code、tmux 或 CI 里都无害。
@@ -347,8 +347,8 @@ quickterm agents list                  # 每个 pane 的 agent 在干什么
 调用里把参数缓冲区丢掉。不读命令行，不读环境变量，不看别人的进程，不碰这个 app 进程树以外的任何东西。它至多只能得出
 "这个 pane 里跑着一个叫这个名字的东西"，于是报的状态就是 `unknown`——这是诚实的答案。精确的状态只可能来自 agent 自己。
 
-**规则文件是什么。** 哪个事件对应哪个状态、工具名和消息在钩子载荷的哪个字段，都写在 TOML 规则文件里——app 内置三份
-（`claude-code`、`codex`、`gemini`），`~/.config/quickterm/agents/*.toml` 里的会与它们一起加载，所以支持一个新 agent
+**规则文件是什么。** 哪个事件对应哪个状态、工具名和消息在钩子载荷的哪个字段，都写在 TOML 规则文件里——app 内置四份
+（`claude-code`、`codex`、`gemini`、`kiro-cli`），`~/.config/quickterm/agents/*.toml` 里的会与它们一起加载，所以支持一个新 agent
 是加一个文件，不是发一个版本。从钩子进到 QuickTerm 的字段只有一张白名单（事件名、session id、工具名、错误类型、消息，
 以及 `tool_input` 里取值为字符串的条目），每个都截到 200 字符——绝不包括 transcript 路径、工作目录或文件内容。
 
@@ -452,7 +452,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 
 [agents]                    # 识别 pane 里的 AI agent；进程扫描只看 QuickTerm 自己的子进程
 # detect = true                                  # 识别终端 pane 里的 AI agent（钩子、OSC 回退、进程扫描）
-# enabled = ["claude-code", "codex", "gemini"]   # 要用的规则 id 列表（内置三个；~/.config/quickterm/agents/*.toml 可覆盖或新增）
+# enabled = ["claude-code", "codex", "gemini", "kiro-cli"]   # 要用的规则 id 列表（内置四个；~/.config/quickterm/agents/*.toml 可覆盖或新增）
 # hook-detail = "lifecycle"                      # tools 会多装 Pre/PostToolUse（每次工具调用多一个进程），并把已装的钩子改写成同一档
 # auto-install-hooks = "ask"                     # 某个 pane 第一次跑起一个还没装钩子的 agent 时：ask = 每个 agent 问一次 | always = 直接装 | never = 不装
 # info-strip = true                              # 每个终端 pane 顶部常驻一条独立状态带（有 agent 或设过标题时才画内容；与内边距无关）

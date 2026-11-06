@@ -145,11 +145,12 @@ struct AgentRules: Equatable {
         }
     }
 
-    /// Which JSON shape this agent's config file takes (plan §2.6). The three differ in one
-    /// entry key and one timeout unit, which is exactly why this is a value and not three
+    /// Which JSON shape this agent's config file takes (plan §2.6). Claude Code, Codex and Gemini
+    /// differ in one entry key and one timeout unit; kiro-cli keeps a flat list in a standalone
+    /// file. All of it is data in `HookConfigShape`, which is why this is a value and not four
     /// installers.
     enum Shape: String, Equatable {
-        case claude, codex, gemini
+        case claude, codex, gemini, kiro
     }
 
     /// What the installer writes, and where. Absent for a rule file describing an agent with no
@@ -343,7 +344,7 @@ struct AgentRules: Equatable {
         }
         guard let shape = Shape(rawValue: rawShape) else {
             throw AgentRulesError.invalid(key: "[install] shape",
-                                          reason: "\(rawShape) is not claude / codex / gemini")
+                                          reason: "\(rawShape) is not claude / codex / gemini / kiro")
         }
         guard let config = table.value("config")?.stringValue, !config.isEmpty else {
             throw AgentRulesError.missing(key: "[install] config")

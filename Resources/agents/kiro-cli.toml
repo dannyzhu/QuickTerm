@@ -1,0 +1,43 @@
+# QuickTerm agent rules — Kiro CLI (kiro-cli, V3 engine).
+id = "kiro-cli"
+name = "Kiro CLI"
+# The chat runs as `kiro-cli-chat`; the V3 engine also runs a Node process (process.title `kiro`)
+# from under ~/Library/Application Support/kiro-cli/, which only the path fragment can name.
+# Both still need confirming in a live session.
+process = ["kiro-cli-chat"]
+process-path = ["/Library/Application Support/kiro-cli/"]
+
+# kiro sends session_id, hook_event_name and cwd on every event, plus tool_name / tool_input on the
+# tool events. No `message`: the only free text it sends is the user's own prompt.
+[fields]
+session = "$.session_id"
+tool    = "$.tool_name"
+summary = ["$.tool_input.command"]
+
+# kiro has no permission or notification hook, so an approval prompt is not visible to QuickTerm:
+# the pane stays `working:tool` while kiro waits for the user. A gap in kiro's hook set, not a
+# missing mapping.
+[hooks]
+SessionStart     = "idle"
+UserPromptSubmit = "working:thinking"
+PreToolUse       = "working:tool"
+PostToolUse      = "working:thinking"
+Stop             = "done"
+SessionEnd       = "released"
+
+# [notifications] is deliberately empty: kiro's OSC wording, if it has any, is not recorded.
+
+# A standalone global hook file (V3: every ~/.kiro/hooks/*.json runs for every workspace), so no
+# file of kiro's own is edited. The hook script always exits 0 and prints nothing, which matters
+# here: a Stop hook that exits 1 makes kiro continue.
+[install]
+shape     = "kiro"
+config    = "~/.kiro/hooks/quickterm-agent-state.json"
+lifecycle = ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop"]
+tools     = ["PreToolUse", "PostToolUse"]
+
+# Session restore: how to start this agent again in a pane after a relaunch. Argument arrays, each
+# element one word; {session} is the hook-reported session id, checked before it is used.
+[resume]
+session = ["kiro-cli", "chat", "--resume-id", "{session}"]
+latest  = ["kiro-cli", "chat", "--resume"]

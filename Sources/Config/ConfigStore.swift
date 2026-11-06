@@ -300,7 +300,7 @@ enum ConfigStore {
         /// `[agents]` — agent awareness (plan §2.10). `AgentSettings` is built from these eight
         /// in `AppSession.applyGlobalConfig`; the registry never reads the config itself.
         var agentsDetect: Bool = true
-        var agentsEnabled: [String] = ["claude-code", "codex", "gemini"]
+        var agentsEnabled: [String] = ["claude-code", "codex", "gemini", "kiro-cli"]
         var agentsHookDetail: String = "lifecycle"
         var agentsAutoInstallHooks: String = "ask"
         var agentsInfoStrip: Bool = true

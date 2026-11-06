@@ -340,7 +340,7 @@ quickterm agents list                  # what each pane's agent is doing
 
 **What the installer writes.** One small `sh` script at `~/.config/quickterm/hooks/quickterm-agent-state.sh`,
 and one entry per lifecycle event in the agent's *own* config file — `~/.claude/settings.json` for Claude
-Code, `~/.codex/hooks.json` for Codex, `~/.gemini/settings.json` for Gemini. Every entry carries QuickTerm's
+Code, `~/.codex/hooks.json` for Codex, `~/.gemini/settings.json` for Gemini; Kiro CLI gets a file of its own, `~/.kiro/hooks/quickterm-agent-state.json`, which uninstall deletes once it holds nothing else. Every entry carries QuickTerm's
 marker, and `hooks uninstall` removes only the marked ones: your own hooks are never touched. The script's
 path to the `quickterm` binary is **baked in at install time and never read from the environment** — a hook
 runs on every prompt, and a project `.envrc` or a Makefile choosing which binary that is would be a fine way
@@ -358,7 +358,7 @@ pane", which is reported as the state `unknown` — the honest answer. The preci
 the agent itself.
 
 **What a rule file is.** Which events mean which state, and where in the hook payload the tool name and the
-message are, live in TOML rule files — three ship inside the app (`claude-code`, `codex`, `gemini`) and
+message are, live in TOML rule files — four ship inside the app (`claude-code`, `codex`, `gemini`, `kiro-cli`) and
 anything in `~/.config/quickterm/agents/*.toml` is loaded beside them, so a new agent is a file, not a
 release. Only a whitelist of fields ever crosses from a hook into QuickTerm (the event name, a session id, a
 tool name, an error type, a message, and string-valued entries of `tool_input`), each clamped to 200
@@ -464,7 +464,7 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 
 [agents]                    # recognise the AI agent in each pane; the scan reads only QuickTerm's own descendants
 # detect = true                                  # recognise agents in terminal panes (hooks, OSC fallback, process scan)
-# enabled = ["claude-code", "codex", "gemini"]   # the rule ids to use (three are bundled; ~/.config/quickterm/agents/*.toml overrides or adds)
+# enabled = ["claude-code", "codex", "gemini", "kiro-cli"]   # the rule ids to use (four are bundled; ~/.config/quickterm/agents/*.toml overrides or adds)
 # hook-detail = "lifecycle"                      # tools adds Pre/PostToolUse (one process per tool call) and rewrites installed hooks to match
 # auto-install-hooks = "ask"                     # the first time a pane runs an agent whose hooks are missing: ask once per agent, install silently, or never
 # info-strip = true                              # a dedicated status strip reserved at the top of every terminal pane (drawn only when there is an agent or a set title)

@@ -1,0 +1,6 @@
+{
+  "session_id": "sess_3f6c1e2a-8b4d-4c7e-9a15-2d0b7e6f4a91",
+  "hook_event_name": "UserPromptSubmit",
+  "cwd": "/Users/danny/repo",
+  "prompt": "run the test suite"
+}

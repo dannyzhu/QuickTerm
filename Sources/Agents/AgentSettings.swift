@@ -8,7 +8,7 @@ struct AgentSettings: Equatable {
     /// consumed, no scan runs.
     var detect = true
     /// The rule ids to use. A loaded rule whose id is not in here is inert.
-    var enabled: [String] = ["claude-code", "codex", "gemini"]
+    var enabled: [String] = ["claude-code", "codex", "gemini", "kiro-cli"]
     /// `lifecycle` | `tools` — which events the installer writes.
     var hookDetail = "lifecycle"
     /// `ask` | `always` | `never`.
