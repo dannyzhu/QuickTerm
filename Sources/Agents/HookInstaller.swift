@@ -379,7 +379,7 @@ extension AgentRegistry {
     /// must report the file it can see either way.
     ///
     /// Id order rather than load order because load order is the registry's own private business;
-    /// id order is stable, and for the three bundled files it is the same list.
+    /// id order is stable, and for the four bundled files it is the same list.
     var activeRulesForInstall: [AgentRules] {
         rules.values.sorted { $0.id < $1.id }
     }

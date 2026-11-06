@@ -226,7 +226,7 @@ final class AgentRulesTests: XCTestCase {
 
     // MARK: The bundled files
 
-    /// **All three bundled rule files load**, and everything their installers name is mapped.
+    /// **All four bundled rule files load**, and everything their installers name is mapped.
     /// A rule file that is not in the Xcode project is not in the bundle at all, which this is
     /// also the guard against.
     func testBundledRuleFilesLoad() throws {
@@ -260,7 +260,7 @@ final class AgentRulesTests: XCTestCase {
         let result = AgentRulesLoader.load(userDirectory: nil)
         let kiro = try XCTUnwrap(result.rules.first { $0.id == "kiro-cli" }, "\(result.failures)")
         XCTAssertEqual(kiro.name, "Kiro CLI")
-        XCTAssertEqual(kiro.process, ["kiro-cli-chat"])
+        XCTAssertEqual(kiro.process, ["kiro-cli"])
         XCTAssertEqual(kiro.processPath, ["/Library/Application Support/kiro-cli/"])
         XCTAssertEqual(kiro.fields.session, [AgentFieldPath(head: "session_id", sub: nil)])
         XCTAssertEqual(kiro.fields.tool, [AgentFieldPath(head: "tool_name", sub: nil)])

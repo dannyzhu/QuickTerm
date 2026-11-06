@@ -1,10 +1,12 @@
 # QuickTerm agent rules — Kiro CLI (kiro-cli, V3 engine).
 id = "kiro-cli"
 name = "Kiro CLI"
-# The chat runs as `kiro-cli-chat`; the V3 engine also runs a Node process (process.title `kiro`)
-# from under ~/Library/Application Support/kiro-cli/, which only the path fragment can name.
-# Both still need confirming in a live session.
-process = ["kiro-cli-chat"]
+# kiro-cli 3.0 is one plain binary, ~/.local/bin/kiro-cli. A running chat is the process tree
+# kiro-cli -> ~/Library/Application Support/kiro-cli/bun -> .../kiro-cli/node; the two children are
+# named `bun` and `node`, so only the path fragment can attribute them to kiro.
+# `kiro-cli` is also the non-chat CLI (login, settings, ...), so a scan hit is presence evidence
+# only: the state stays `unknown` and never contradicts what a hook reported.
+process = ["kiro-cli"]
 process-path = ["/Library/Application Support/kiro-cli/"]
 
 # kiro sends session_id, hook_event_name and cwd on every event, plus tool_name / tool_input on the
