@@ -152,6 +152,8 @@ final class RestoreExporterTests: XCTestCase {
                                  restoreDirectory: dir)
         defer {
             session.controlServer.stop()
+            // The export arms the quit-time save for the whole process; a test host must disarm it.
+            AgentResume.quitSaveStarted = false
             // The session pointed the process-wide event bus at its own registry; hand it back.
             if let app = NSApp.delegate as? AppDelegate { ControlEventBus.shared.attach(screens: app.screens) }
         }

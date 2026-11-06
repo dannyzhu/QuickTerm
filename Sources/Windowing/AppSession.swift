@@ -244,6 +244,8 @@ final class AppSession {
                             statuses: AgentRegistry.shared.allStatuses) {
             AppDelegate.isRunningTests ? nil : ProcessScanner.shared.scanSynchronously()
         }
+        // The callers' next step is the final `saveNow()`: from here on a save writes the records.
+        AgentResume.quitSaveStarted = true
         RestoreExporter.export(panes: panes, settings: settings, store: restoreStore) { pane, lines in
             pane.exportVT(maxLines: lines)
         }

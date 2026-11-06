@@ -372,6 +372,12 @@ struct AgentRules: Equatable {
                 throw AgentRulesError.invalid(key: "[resume] \(key)",
                                               reason: "a command is a non-empty array of non-empty arguments")
             }
+            // The line is typed into an interactive shell, where a control character is an
+            // editing key (^C, ^U, ESC) or submits early (newline), whatever the quoting.
+            guard !argv.contains(where: { $0.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F } }) else {
+                throw AgentRulesError.invalid(key: "[resume] \(key)",
+                                              reason: "an argument may not contain a control character")
+            }
             return argv
         }
         let session = try command("session")

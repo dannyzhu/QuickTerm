@@ -207,6 +207,17 @@ final class AgentRulesTests: XCTestCase {
         reject(#"latest = []"#, "an empty command")
         reject(#"latest = "demo --continue""#, "a string would be one word: the form is an array")
         reject(#"resume = ["demo"]"#, "an unknown key inside [resume]")
+        // The scanner turns `\n` into a newline; the [resume] check is what rejects it.
+        XCTAssertThrowsError(try AgentRules.parse(
+            Self.sample + "\n[resume]\nsession = [\"claude\", \"--resume\\n\", \"{session}\"]"),
+                             "a newline would submit the typed line early") { error in
+            guard case .invalid(let key, _) = error as? AgentRulesError else {
+                return XCTFail("expected the [resume] check to reject it, got \(error)")
+            }
+            XCTAssertEqual(key, "[resume] session")
+        }
+        reject("latest = [\"demo\", \"--a\u{1B}\"]", "ESC is an editing key in a shell")
+        reject("latest = [\"demo\", \"x\u{7F}\"]", "DEL too")
         XCTAssertThrowsError(try AgentRules.parse(Self.sample + "\n[resume.extra]\nk = \"v\""),
                              "[resume] has no sub-tables")
     }

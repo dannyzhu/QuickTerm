@@ -52,10 +52,14 @@ extension Ghostty {
         /// that lands before the shell has reported OSC 7.
         var archivedWorkingDirectory: String? { deniedWorkingDirectory ?? pwd ?? initialWorkingDirectory }
 
-        /// QuickTerm: the agent this pane offers to resume after a relaunch. Set at quit by
-        /// `AgentResume.capture`, written to the archive as the optional `agentResume` key, and
-        /// read back from it on restore.
+        /// QuickTerm: the agent this pane offers to resume after the next launch. Set at quit by
+        /// `AgentResume.capture`, and written to the archive as the optional `agentResume` key only
+        /// by a save made after that capture (`AgentResume.quitSaveStarted`).
         var agentResumeRecord: AgentResumeRecord?
+        /// QuickTerm: the record this pane was decoded with, i.e. what the previous quit captured.
+        /// Read by the resume offer; **never encoded**, so a save during this run cannot carry the
+        /// previous launch's record into an archive that a crash then leaves behind.
+        var restoredAgentResume: AgentResumeRecord?
 
         /// The environment variables actually handed to the engine at spawn time, the control-plane
         /// ones included. Read-only, kept for tests and for debugging: "did the restored pane
@@ -2020,7 +2024,7 @@ extension Ghostty {
             let agentResume = try? container.decodeIfPresent(AgentResumeRecord.self, forKey: .agentResume)
 
             self.init(app, baseConfig: config, uuid: uuid)
-            self.agentResumeRecord = agentResume
+            self.restoredAgentResume = agentResume
 
             // Restore the saved title after initialization
             if let title = savedTitle {
@@ -2043,7 +2047,10 @@ extension Ghostty {
             try container.encode(id.uuidString, forKey: .uuid)
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)
-            try container.encodeIfPresent(agentResumeRecord, forKey: .agentResume)
+            // Only a quit-time save writes a record: one written mid-run would outlive a crash.
+            if AgentResume.quitSaveStarted {
+                try container.encodeIfPresent(agentResumeRecord, forKey: .agentResume)
+            }
         }
     }
 }
