@@ -341,7 +341,12 @@ extension Ghostty {
         // We need to support being a first responder so that we can get input events
         override var acceptsFirstResponder: Bool { return true }
 
-        init(_ app: ghostty_app_t, baseConfig: SurfaceConfiguration? = nil, uuid: UUID? = nil) {
+        /// `restoredOutput` is set only for a pane decoded from the session archive: what
+        /// `RestoreImporter.restoredOutput` took from the restore store (already deleted on disk).
+        /// `feeder` hands it to the engine; injectable so tests can watch the moment it is fed.
+        init(_ app: ghostty_app_t, baseConfig: SurfaceConfiguration? = nil, uuid: UUID? = nil,
+             restoredOutput: Data? = nil,
+             feeder: (Data, ghostty_surface_t) -> Void = RestoreImporter.feed) {
             self.markedText = NSMutableAttributedString()
             self.initialWorkingDirectory = baseConfig?.workingDirectory
             // Will the gate refuse it? The result is memoized per root directory, so this does not
@@ -500,6 +505,14 @@ extension Ghostty {
                 return
             }
             self.surfaceModel = Ghostty.Surface(cSurface: surface)
+
+            // QuickTerm (session restore): the previous output and its marker go in now, on the
+            // main thread, synchronously after ghostty_surface_new returns. The engine has already
+            // started the shell on its IO thread inside ghostty_surface_new, so "before the shell
+            // writes anything" cannot be guaranteed from here; in practice this feed wins, because
+            // a shell's first output takes tens of milliseconds. If the shell ever did win, its
+            // first bytes would land above the old content, nothing worse.
+            if let restoredOutput { feeder(restoredOutput, surface) }
 
             // QuickTerm: libghostty creates a surface with focus defaulting to true, while this
             // view's `focused` starts out false (driven only by become/resignFirstResponder). A
@@ -2008,22 +2021,24 @@ extension Ghostty {
 
             let container = try decoder.container(keyedBy: CodingKeys.self)
             let uuid = UUID(uuidString: try container.decode(String.self, forKey: .uuid))
-            var config = Ghostty.SurfaceConfiguration()
-            config.workingDirectory = try container.decode(String?.self, forKey: .pwd)
-            // QuickTerm: a restored pane needs the control-plane environment variables too, or
-            // after a restart an agent running inside the pane has no QUICKTERM_PANE / SOCKET to
-            // use. We do not know yet which workspace on which screen it will land in (the archive
-            // is applied later), so only inject the ones that travel with the pane itself.
-            if let uuid {
-                config.environmentVariables = ControlEnvironment.inject(
-                    into: config.environmentVariables, paneID: uuid, screen: nil, workspace: nil)
-            }
+            let pwd = try container.decode(String?.self, forKey: .pwd)
+            let config = Self.archiveConfiguration(pwd: pwd, uuid: uuid)
             let savedTitle = try container.decodeIfPresent(String.self, forKey: .title)
             let isUserSetTitle = try container.decodeIfPresent(Bool.self, forKey: .isUserSetTitle) ?? false
             // A record that does not decode is dropped rather than losing the pane with it.
             let agentResume = try? container.decodeIfPresent(AgentResumeRecord.self, forKey: .agentResume)
 
-            self.init(app, baseConfig: config, uuid: uuid)
+            // Session restore: take this pane's saved screen (the store deletes the file first)
+            // and let the designated init feed it right after the surface exists. Only a pane
+            // decoded from the archive ever gets here; a new pane never takes content.
+            var restoredOutput: Data?
+            if let uuid, let session = appDel.session, let store = session.restoreStore {
+                restoredOutput = RestoreImporter.restoredOutput(
+                    pane: uuid, store: store, contentEnabled: session.settings.restoreContent,
+                    directoryGone: RestoreImporter.directoryGone(saved: pwd, hasAgentRecord: agentResume != nil))
+            }
+
+            self.init(app, baseConfig: config, uuid: uuid, restoredOutput: restoredOutput)
             self.restoredAgentResume = agentResume
 
             // Restore the saved title after initialization
@@ -2034,6 +2049,23 @@ extension Ghostty {
                     self.titleFromTerminal = title
                 }
             }
+        }
+
+        /// The configuration a pane decoded from the archive is created with: its directory and the
+        /// control-plane variables, and **no command or input** (spec decision 5), so the engine
+        /// starts the login shell itself and still applies its automatic shell integration.
+        static func archiveConfiguration(pwd: String?, uuid: UUID?) -> SurfaceConfiguration {
+            var config = Ghostty.SurfaceConfiguration()
+            config.workingDirectory = pwd
+            // QuickTerm: a restored pane needs the control-plane environment variables too, or
+            // after a restart an agent running inside the pane has no QUICKTERM_PANE / SOCKET to
+            // use. We do not know yet which workspace on which screen it will land in (the archive
+            // is applied later), so only inject the ones that travel with the pane itself.
+            if let uuid {
+                config.environmentVariables = ControlEnvironment.inject(
+                    into: config.environmentVariables, paneID: uuid, screen: nil, workspace: nil)
+            }
+            return config
         }
 
         func encode(to encoder: Encoder) throws {

@@ -1,0 +1,27 @@
+/* QuickTerm — English (base) UI strings for session restore.
+ *
+ * Same rules as every other table; they are spelled out in the header of en.lproj/Terminal.strings
+ * and enforced by scripts/check-localization.py and Tests/LocalizationTests.swift.
+ */
+
+/* MARK: - restored pane content (Sources/Restore/RestoreImporter.swift) */
+
+/* The dim line under a pane's previous output after a relaunch. %1$@ is the restore time
+ * (month, day, hours, minutes, in the user's locale). */
+"restore.marker" = "─── Restored %1$@ ───";
+
+/* Shown under the marker when the pane's agent conversation was offered for resume but its
+ * directory no longer exists. */
+"restore.directory-gone" = "The original directory is gone; the conversation cannot be resumed here.";
+
+/* MARK: - agent resume button in the pane's agent band */
+
+/* %1$@ is the agent's name (Claude Code, Codex, kiro-cli). */
+"restore.resume.button" = "%1$@ · Resume last session";
+
+/* No session id is known: the agent resumes its most recent session in this directory.
+ * %1$@ is the agent's name. */
+"restore.resume.latest" = "%1$@ · Resume the latest session here";
+
+/* Tooltip of the resume button. */
+"restore.resume.help" = "Runs the agent's resume command in this pane. Launch flags such as --mcp-config are not restored.";
