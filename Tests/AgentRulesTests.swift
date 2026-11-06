@@ -164,6 +164,53 @@ final class AgentRulesTests: XCTestCase {
         XCTAssertThrowsError(try AgentRules.parse(noEvent))
     }
 
+    // MARK: [resume]
+
+    /// The optional `[resume]` table: two argument arrays, one with the `{session}` slot.
+    private static let resumeTable = """
+
+    [resume]
+    session = ["demo", "--resume", "{session}"]
+    latest  = ["demo", "--continue"]
+    """
+
+    func testRuleFileResumeTableParses() throws {
+        let rules = try self.rules(Self.sample + Self.resumeTable)
+        XCTAssertEqual(rules.resume?.session, ["demo", "--resume", "{session}"])
+        XCTAssertEqual(rules.resume?.latest, ["demo", "--continue"])
+        XCTAssertNil(try self.rules().resume, "a file without [resume] offers no resume")
+        let latestOnly = try self.rules(Self.sample + "\n[resume]\nlatest = [\"demo\", \"--continue\"]")
+        XCTAssertNil(latestOnly.resume?.session)
+        XCTAssertEqual(latestOnly.resume?.latest, ["demo", "--continue"])
+
+        // The bundled files carry spec decision 14's arrays; Gemini has none.
+        let byID = Dictionary(uniqueKeysWithValues: AgentRulesLoader.load(userDirectory: nil).rules.map { ($0.id, $0) })
+        XCTAssertEqual(byID["claude-code"]?.resume?.session, ["claude", "--resume", "{session}"])
+        XCTAssertEqual(byID["claude-code"]?.resume?.latest, ["claude", "--continue"])
+        XCTAssertEqual(byID["codex"]?.resume?.session, ["codex", "resume", "{session}"])
+        XCTAssertEqual(byID["codex"]?.resume?.latest, ["codex", "resume", "--last"])
+        XCTAssertNotNil(byID["gemini"])
+        XCTAssertNil(byID["gemini"]?.resume)
+    }
+
+    /// Every way a `[resume]` table can be wrong is a rejection of the whole file.
+    func testResumeSessionFormNeedsThePlaceholder() {
+        func reject(_ table: String, _ why: String, file: StaticString = #filePath, line: UInt = #line) {
+            XCTAssertThrowsError(try AgentRules.parse(Self.sample + "\n[resume]\n" + table), why,
+                                 file: file, line: line)
+        }
+        reject(#"session = ["demo", "--resume"]"#, "the session form without its slot")
+        reject(#"session = ["demo", "{session}", "{session}"]"#, "the slot twice")
+        reject(#"session = ["demo", "--id={session}"]"#, "the slot is a whole argument, never part of one")
+        reject(#"session = ["{session}"]"#, "the session id is never the command")
+        reject(#"latest = ["demo", "{session}"]"#, "latest has no session to put anywhere")
+        reject(#"latest = []"#, "an empty command")
+        reject(#"latest = "demo --continue""#, "a string would be one word: the form is an array")
+        reject(#"resume = ["demo"]"#, "an unknown key inside [resume]")
+        XCTAssertThrowsError(try AgentRules.parse(Self.sample + "\n[resume.extra]\nk = \"v\""),
+                             "[resume] has no sub-tables")
+    }
+
     // MARK: The bundled files
 
     /// **All three bundled rule files load**, and everything their installers name is mapped.

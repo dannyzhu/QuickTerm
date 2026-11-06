@@ -27,3 +27,9 @@ shape     = "codex"
 config    = "~/.codex/hooks.json"
 lifecycle = ["SessionStart", "SessionEnd", "UserPromptSubmit", "PermissionRequest", "Stop", "Interrupt"]
 tools     = ["PreToolUse", "PostToolUse"]
+
+# Session restore: how to start this agent again in a pane after a relaunch. Argument arrays, each
+# element one word; {session} is the hook-reported session id, checked before it is used.
+[resume]
+session = ["codex", "resume", "{session}"]
+latest  = ["codex", "resume", "--last"]

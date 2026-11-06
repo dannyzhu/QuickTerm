@@ -47,6 +47,16 @@ extension Ghostty {
         /// the real location as usual.
         private var deniedFallbackPwd: String?
 
+        /// QuickTerm: the directory the archive saves for this pane. `deniedWorkingDirectory` wins
+        /// over `pwd` (see `noteWorkingDirectoryReport`), and the start directory covers a save
+        /// that lands before the shell has reported OSC 7.
+        var archivedWorkingDirectory: String? { deniedWorkingDirectory ?? pwd ?? initialWorkingDirectory }
+
+        /// QuickTerm: the agent this pane offers to resume after a relaunch. Set at quit by
+        /// `AgentResume.capture`, written to the archive as the optional `agentResume` key, and
+        /// read back from it on restore.
+        var agentResumeRecord: AgentResumeRecord?
+
         /// The environment variables actually handed to the engine at spawn time, the control-plane
         /// ones included. Read-only, kept for tests and for debugging: "did the restored pane
         /// actually get QUICKTERM_SOCKET" is not a question you can answer from inside the child
@@ -1979,6 +1989,9 @@ extension Ghostty {
             case uuid
             case title
             case isUserSetTitle
+            /// Optional and absent when there is no record, so the archive stays readable by a
+            /// build that predates agent resume (no version bump).
+            case agentResume
         }
 
         required convenience init(from decoder: Decoder) throws {
@@ -2003,8 +2016,11 @@ extension Ghostty {
             }
             let savedTitle = try container.decodeIfPresent(String.self, forKey: .title)
             let isUserSetTitle = try container.decodeIfPresent(Bool.self, forKey: .isUserSetTitle) ?? false
+            // A record that does not decode is dropped rather than losing the pane with it.
+            let agentResume = try? container.decodeIfPresent(AgentResumeRecord.self, forKey: .agentResume)
 
             self.init(app, baseConfig: config, uuid: uuid)
+            self.agentResumeRecord = agentResume
 
             // Restore the saved title after initialization
             if let title = savedTitle {
@@ -2023,10 +2039,11 @@ extension Ghostty {
             // `deniedWorkingDirectory` wins over `pwd`: on the run where TCC refused, `pwd` is the
             // engine's fallback directory (the home directory), and saving that erases the directory
             // the user had. See `noteWorkingDirectoryReport`.
-            try container.encode(deniedWorkingDirectory ?? pwd ?? initialWorkingDirectory, forKey: .pwd)
+            try container.encode(archivedWorkingDirectory, forKey: .pwd)
             try container.encode(id.uuidString, forKey: .uuid)
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)
+            try container.encodeIfPresent(agentResumeRecord, forKey: .agentResume)
         }
     }
 }

@@ -231,13 +231,20 @@ final class AppSession {
     /// too; a second run would find no panes and prune every file the first one wrote.
     private(set) var restoreExported = false
 
-    /// Write every terminal pane's screen to the restore store, at most once per process. Both
-    /// quit paths call it before their final `sessionStore.saveNow()`.
+    /// Write every terminal pane's screen to the restore store, and record which agent each pane
+    /// offers to resume, at most once per process. Both quit paths call it before their final
+    /// `sessionStore.saveNow()`, which writes the records into the archive.
     func exportRestoreContentOnce() {
         guard !restoreExported, let restoreStore else { return }
         restoreExported = true
-        RestoreExporter.export(panes: RestoreExporter.terminalPanes(of: screens.controllers),
-                               settings: settings, store: restoreStore) { pane, lines in
+        let panes = RestoreExporter.terminalPanes(of: screens.controllers)
+        // Spec decision 13: one synchronous scan, so only an agent still running now is offered.
+        // A test host never walks the real process table.
+        AgentResume.capture(into: panes, enabled: settings.restoreAgentResume,
+                            statuses: AgentRegistry.shared.allStatuses) {
+            AppDelegate.isRunningTests ? nil : ProcessScanner.shared.scanSynchronously()
+        }
+        RestoreExporter.export(panes: panes, settings: settings, store: restoreStore) { pane, lines in
             pane.exportVT(maxLines: lines)
         }
     }

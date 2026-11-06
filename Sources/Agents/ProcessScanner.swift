@@ -372,6 +372,14 @@ final class ProcessScanner {
         }
     }
 
+    /// One pass on the calling thread, answered to the caller and **not** delivered to the
+    /// registry. For the quit-time agent resume capture (`AppSession.exportRestoreContentOnce`),
+    /// which needs this moment's answer before the archive is written. nil when there is nothing
+    /// to look for. A test host never calls it with the real readings.
+    func scanSynchronously() -> ProcessScan.Result? {
+        makeScan()?.run()
+    }
+
     /// nil when there is nothing to look for — detection switched off, or no enabled rule names a
     /// process. Both are answered **before** the walk, so "off" means the process table is not
     /// touched at all rather than walked and discarded.

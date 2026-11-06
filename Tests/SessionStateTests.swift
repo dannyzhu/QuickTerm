@@ -395,6 +395,45 @@ final class SessionStateTests: XCTestCase {
         XCTAssertEqual(decoded.workingDirectory, seed, "the restored terminal comes back in the same directory")
     }
 
+    // MARK: Agent resume records
+
+    /// An archive written before agent resume existed has no `agentResume` key: it still decodes,
+    /// with no record, and the version does not move (an older build must keep reading ours).
+    func testArchiveV5DecodesWithoutRecords() throws {
+        let c = try XCTUnwrap(try app.controller)
+        let pane = c.newSurface(workingDirectory: nil)
+        pane.pwd = "/usr/local/quickterm-resume-none"
+        let window = WindowState(layouts: [.scrolling(ScrollingStrip(pane: pane, widthFactor: 0.5))],
+                                 floatings: [[]], activeIndex: 0)
+        let data = try JSONEncoder().encode(PersistedState(windows: [window]))
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertFalse(json.contains("agentResume"), "no record, no key")
+        XCTAssertTrue(json.contains(#""version":5"#), "the archive stays v5")
+        let restored = try XCTUnwrap(SessionStore.decode(data))
+        let decoded = try XCTUnwrap(restored.windows[0].layouts[0].paneList.first as? Ghostty.SurfaceView)
+        XCTAssertNil(decoded.agentResumeRecord)
+    }
+
+    func testArchiveRoundTripsRecords() throws {
+        let c = try XCTUnwrap(try app.controller)
+        let withSession = c.newSurface(workingDirectory: nil)
+        withSession.agentResumeRecord = AgentResumeRecord(agent: "claude-code", session: "a1b2c3d4")
+        let latest = c.newSurface(workingDirectory: nil)
+        latest.agentResumeRecord = AgentResumeRecord(agent: "codex", session: nil)
+        let window = WindowState(
+            layouts: [.scrolling(ScrollingStrip(pane: withSession, widthFactor: 0.5))],
+            floatings: [[FloatingPane(pane: latest, rect: CGRect(x: 0.1, y: 0.1, width: 0.5, height: 0.5))]],
+            activeIndex: 0)
+        let data = try JSONEncoder().encode(PersistedState(windows: [window]))
+        let state = try XCTUnwrap(SessionStore.decode(data))
+        XCTAssertEqual(state.version, 5, "records ride on an optional key: the version does not move")
+        let restored = state.windows[0]
+        let a = try XCTUnwrap(restored.layouts[0].paneList.first as? Ghostty.SurfaceView)
+        let b = try XCTUnwrap(restored.floatings?[0].first?.pane as? Ghostty.SurfaceView)
+        XCTAssertEqual(a.agentResumeRecord, AgentResumeRecord(agent: "claude-code", session: "a1b2c3d4"))
+        XCTAssertEqual(b.agentResumeRecord, AgentResumeRecord(agent: "codex", session: nil))
+    }
+
     /// A `cd` (OSC 7) has to schedule a save of its own, or a long session whose layout never changes comes
     /// back in the old directory after a crash.
     func testTerminalCwdChangeSchedulesSave() throws {
