@@ -83,13 +83,21 @@ struct PaneAgentStrip: View {
             - CGFloat(panePadding))
     }
 
-    /// Whether the band paints anything: only when it is reserved *and* there is a status or a set
-    /// title to show. An empty band is left blank (the reserved height stays either way), spelled
-    /// once so the view and the tests cannot disagree.
+    /// Whether the band paints anything: only when it is reserved *and* there is a status, a set
+    /// title or a resume button to show. An empty band is left blank (the reserved height stays
+    /// either way), spelled once so the view and the tests cannot disagree.
     static func draws(status: AgentStatus?, title: String?, infoStrip: Bool,
-                      stripHeight: Int, isTerminal: Bool) -> Bool {
+                      stripHeight: Int, isTerminal: Bool, resume: Bool = false) -> Bool {
         band(infoStrip: infoStrip, stripHeight: stripHeight, isTerminal: isTerminal) > 0
-            && (status != nil || (title?.contains { !$0.isWhitespace } ?? false))
+            && (status != nil || resume || (title?.contains { !$0.isWhitespace } ?? false))
+    }
+
+    /// The resume button's text, or nil when the band shows none (session restore, spec decision
+    /// 19): only a terminal pane with an offer, and only while no agent status is live there — a
+    /// live agent owns the band, and its arrival takes the offer away anyway.
+    static func resumeLabel(offer: String?, status: AgentStatus?, isTerminal: Bool) -> String? {
+        guard isTerminal, status == nil else { return nil }
+        return offer
     }
 
     /// The bar's own rectangle inside the pane, in the pane's coordinate space. **This is also
@@ -121,14 +129,24 @@ struct PaneAgentStrip: View {
     /// flipped switch takes hold on this pane's next redraw.
     private var settings: AgentSettings { AgentRegistry.shared.settings }
 
+    /// The restored pane's resume offer, when the band shows its button.
+    private var resumeOffer: ResumeOffer? {
+        guard let offer = (surfaceView as? Ghostty.SurfaceView)?.resumeOffer,
+              Self.resumeLabel(offer: offer.label, status: surfaceView.agentStatus,
+                               isTerminal: surfaceView.kind == .terminal) != nil else { return nil }
+        return offer
+    }
+
     var body: some View {
         GeometryReader { geo in
             let stripHeight = settings.stripHeight
             let title = displayTitle
+            let resume = resumeOffer
             if Self.draws(status: surfaceView.agentStatus, title: title, infoStrip: settings.infoStrip,
-                          stripHeight: stripHeight, isTerminal: surfaceView.kind == .terminal) {
+                          stripHeight: stripHeight, isTerminal: surfaceView.kind == .terminal,
+                          resume: resume != nil) {
                 let rect = Self.rect(in: geo.size, stripHeight: stripHeight)
-                content(title: title, rect: rect)
+                content(title: title, resume: resume, rect: rect)
                     // The background already fills the rectangle, but a `Model` with no glyphs at
                     // all would not: give the bar an explicit shape so the click never falls
                     // through to the terminal underneath.
@@ -146,7 +164,7 @@ struct PaneAgentStrip: View {
     /// An agent status drives a `TimelineView` (the spinner turns and the clock ticks). A named
     /// but agent-less pane is a static title — no clock, so no timeline, so no per-second redraw.
     @ViewBuilder
-    private func content(title: String?, rect: CGRect) -> some View {
+    private func content(title: String?, resume: ResumeOffer?, rect: CGRect) -> some View {
         if let status = surfaceView.agentStatus {
             // One schedule drives both the spinner and the elapsed time, and it only exists while
             // the bar is on screen: an idle agent ticks once a second, a working one four times.
@@ -155,14 +173,24 @@ struct PaneAgentStrip: View {
                                                                 : Metrics.tickPeriod)) { context in
                 bar(Model.make(status: status, now: context.date, title: title), rect: rect)
             }
+        } else if let resume {
+            // A restored pane with no agent yet: its name (if any) and the resume button. Static,
+            // like a title-only band: no clock, no timeline.
+            bar(Model.resumeOnly(title: title, resume: resume.label), rect: rect,
+                resumeHelp: resume.help) {
+                (surfaceView.controller as? MainWindowController)?.requestFocus(to: surfaceView)
+                (surfaceView as? Ghostty.SurfaceView)?.acceptResumeOffer()
+            }
         } else if let title {
             bar(Model.titleOnly(title: title), rect: rect)
         }
     }
 
-    private func bar(_ model: Model, rect: CGRect) -> Bar {
+    private func bar(_ model: Model, rect: CGRect, resumeHelp: String = "",
+                     onResume: (() -> Void)? = nil) -> Bar {
         Bar(model: model, size: rect.size, fontSize: CGFloat(settings.stripFontSize),
-            background: background(model.tone), text: textColor)
+            background: background(model.tone), text: textColor,
+            resumeHelp: resumeHelp, onResume: onResume)
     }
 
     /// The bar's background for a state. `[agents] strip-background` for the four quiet states,
@@ -237,6 +265,9 @@ extension PaneAgentStrip {
         var fontSize: CGFloat = Metrics.fontSize
         let background: Color
         let text: Color
+        /// The resume button's tooltip and action, used only when `model.resume` is set.
+        var resumeHelp: String = ""
+        var onResume: (() -> Void)?
 
         private var font: Font { .system(size: fontSize, weight: .semibold) }
 
@@ -248,10 +279,27 @@ extension PaneAgentStrip {
                     Text(model.glyph)
                         .font(font)
                 }
-                Text(model.text)
-                    .font(font)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                // A band holding only the resume button has no text of its own.
+                if !model.text.isEmpty || model.resume == nil {
+                    Text(model.text)
+                        .font(font)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                if let resume = model.resume {
+                    // Text in the band's own font and colour, underlined as the one clickable
+                    // word on the bar. A button of its own, so its click is not the band's
+                    // "focus the pane" tap.
+                    Button { onResume?() } label: {
+                        Text(resume)
+                            .font(font)
+                            .underline()
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .buttonStyle(.plain)
+                    .help(resumeHelp)
+                }
                 Spacer(minLength: 4)
                 Text(model.elapsed)
                     .font(font)
@@ -280,6 +328,8 @@ extension PaneAgentStrip {
         var elapsed: String
         var state: AgentState
         var tone: Tone
+        /// The resume button's text (session restore), drawn after `text`; nil for no button.
+        var resume: String? = nil
 
         /// Which **background** the bar wears, as a decision rather than as a `Color` — the view
         /// owns the config and the theme, this owns which of the three roles applies. (Before the
@@ -339,6 +389,13 @@ extension PaneAgentStrip.Model {
     static func titleOnly(title: String) -> Self {
         Self(glyph: "", text: TitleRules.fromTypedInput(title), elapsed: "",
              state: .idle, tone: .neutral)
+    }
+
+    /// A restored pane with an agent to resume and none running: its title, if it has one, and
+    /// the button. No glyph, no clock, the neutral background.
+    static func resumeOnly(title: String?, resume: String) -> Self {
+        Self(glyph: "", text: TitleRules.fromTypedInput(title ?? ""), elapsed: "",
+             state: .idle, tone: .neutral, resume: TitleRules.fromTypedInput(resume))
     }
 
     private static func glyph(for status: AgentStatus, elapsed: TimeInterval) -> String {

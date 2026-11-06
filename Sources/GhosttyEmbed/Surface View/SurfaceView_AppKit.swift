@@ -61,6 +61,23 @@ extension Ghostty {
         /// previous launch's record into an archive that a crash then leaves behind.
         var restoredAgentResume: AgentResumeRecord?
 
+        /// QuickTerm: the resume button this pane shows in its agent band, built at decode time
+        /// from `restoredAgentResume` (`ResumeOffer.forRestoredPane`). Cleared on the click, on
+        /// the first keystroke and when an agent status appears in the pane.
+        var resumeOffer: ResumeOffer? {
+            willSet { objectWillChange.send() }
+        }
+        /// QuickTerm: the offer that was clicked and may still be waiting for the shell. Kept so a
+        /// keystroke or a new agent before the send can still call it off.
+        private var acceptedResumeOffer: ResumeOffer?
+
+        /// A new agent status in the pane dismisses the resume offer (spec decision 19): the agent
+        /// is already running again, by the button or by hand.
+        override func setAgentStatus(_ status: AgentStatus?) {
+            super.setAgentStatus(status)
+            if status != nil { dismissResumeOffer() }
+        }
+
         /// The environment variables actually handed to the engine at spawn time, the control-plane
         /// ones included. Read-only, kept for tests and for debugging: "did the restored pane
         /// actually get QUICKTERM_SOCKET" is not a question you can answer from inside the child
@@ -1322,6 +1339,10 @@ extension Ghostty {
         }
 
         override func keyDown(with event: NSEvent) {
+            // Session restore: the user typing into the pane answers the resume offer (spec
+            // decision 19). Before anything else, so even a key the engine swallows counts.
+            dismissResumeOffer()
+
             guard let surface = self.surface else {
                 self.interpretKeyEvents([event])
                 return
@@ -2031,15 +2052,25 @@ extension Ghostty {
             // Session restore: take this pane's saved screen (the store deletes the file first)
             // and let the designated init feed it right after the surface exists. Only a pane
             // decoded from the archive ever gets here; a new pane never takes content.
+            let directoryGone = RestoreImporter.directoryGone(saved: pwd, hasAgentRecord: agentResume != nil)
             var restoredOutput: Data?
             if let uuid, let session = appDel.session, let store = session.restoreStore {
                 restoredOutput = RestoreImporter.restoredOutput(
                     pane: uuid, store: store, contentEnabled: session.settings.restoreContent,
-                    directoryGone: RestoreImporter.directoryGone(saved: pwd, hasAgentRecord: agentResume != nil))
+                    directoryGone: directoryGone)
             }
 
             self.init(app, baseConfig: config, uuid: uuid, restoredOutput: restoredOutput)
             self.restoredAgentResume = agentResume
+            // After the init, so the offer's baseline viewport already holds the restored content
+            // and the shell's first prompt reads as a change.
+            if let settings = appDel.session?.settings {
+                resumeOffer = ResumeOffer.forRestoredPane(
+                    record: agentResume, settings: settings, directoryGone: directoryGone,
+                    rules: AgentRegistry.shared.rules,
+                    snapshot: { [weak self] in self?.viewportSnapshot() ?? "" },
+                    send: { [weak self] in self?.typeResumeLine($0) })
+            }
 
             // Restore the saved title after initialization
             if let title = savedTitle {
@@ -2650,5 +2681,47 @@ class CachedValue<T> {
         }
 
         return result
+    }
+}
+
+// MARK: - Session restore: the resume offer
+
+extension Ghostty.SurfaceView {
+    /// The band's button was clicked: the button goes away now, the line follows once the shell is
+    /// ready (`ResumeOffer.accept`).
+    func acceptResumeOffer() {
+        guard let offer = resumeOffer else { return }
+        resumeOffer = nil
+        restoredAgentResume = nil
+        acceptedResumeOffer = offer
+        offer.accept()
+    }
+
+    /// Take the offer away, and call off a clicked one that has not sent yet.
+    func dismissResumeOffer() {
+        guard resumeOffer != nil || acceptedResumeOffer != nil else { return }
+        resumeOffer?.dismiss()
+        acceptedResumeOffer?.dismiss()
+        // Only a visible button needs the band redrawn.
+        if resumeOffer != nil { resumeOffer = nil }
+        acceptedResumeOffer = nil
+        restoredAgentResume = nil
+    }
+
+    /// The viewport text the offer watches for the shell's first prompt.
+    func viewportSnapshot() -> String {
+        controlReadText(tag: GHOSTTY_POINT_VIEWPORT) ?? ""
+    }
+
+    /// Type the resume line into the shell. The text goes in like a paste (`sendText`); a trailing
+    /// Return is written to the pty on its own, because a shell with bracketed paste on keeps a
+    /// CR that arrives inside the paste as text and never runs the line.
+    func typeResumeLine(_ line: String) {
+        guard let model = surfaceModel else { return }
+        let runs = line.hasSuffix("\r")
+        let text = runs ? String(line.dropLast()) : line
+        if !text.isEmpty { model.sendText(text) }
+        // The `text:` binding action writes its (Zig-literal) bytes straight to the pty.
+        if runs { _ = model.perform(action: "text:\\r") }
     }
 }
