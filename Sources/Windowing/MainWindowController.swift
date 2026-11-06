@@ -981,6 +981,8 @@ final class MainWindowController: BaseTerminalController {
         for pane in model.allPanes {
             forgetFileManagerSession(pane)
             (pane as? BrowserPaneView)?.paneWillClose()
+            // A clicked resume offer still waiting for the shell must never type into a closed pane.
+            (pane as? Ghostty.SurfaceView)?.dismissResumeOffer()
         }
         // Tear the view hierarchy down explicitly: the panes are held strongly by SwiftUI's view
         // tree, so AppKit keeping the window object around a little longer keeps every shell on
@@ -2146,6 +2148,8 @@ final class MainWindowController: BaseTerminalController {
     /// when the animation elapses does finishClose really remove it and release the surface.
     /// With the window invisible, or the animation disabled, it is removed immediately.
     private func beginClose(_ view: PaneView, animated: Bool, successor explicit: PaneView? = nil) {
+        // Closing: a clicked resume offer that is still waiting must not type into this pane.
+        (view as? Ghostty.SurfaceView)?.dismissResumeOffer()
         guard animated, closeAnimationEnabled, window?.isVisible == true else {
             removePane(view, successor: explicit)
             return
@@ -2247,6 +2251,7 @@ final class MainWindowController: BaseTerminalController {
         ControlUndo.invalidate()
         forgetFileManagerSession(view)
         (view as? BrowserPaneView)?.paneWillClose()
+        (view as? Ghostty.SurfaceView)?.dismissResumeOffer()
         for i in model.layouts.indices {
             if let idx = model.floatings[i].firstIndex(where: { $0.pane === view }) {
                 model.floatings[i].remove(at: idx)

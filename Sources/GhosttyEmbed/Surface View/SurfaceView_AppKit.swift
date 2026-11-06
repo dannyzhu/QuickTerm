@@ -1340,8 +1340,9 @@ extension Ghostty {
 
         override func keyDown(with event: NSEvent) {
             // Session restore: the user typing into the pane answers the resume offer (spec
-            // decision 19). Before anything else, so even a key the engine swallows counts.
-            dismissResumeOffer()
+            // decision 19). Before anything else, so even a key the engine swallows counts. A
+            // Command shortcut (Cmd+C on the restored screen) is not typing, unless it pastes.
+            if keyAnswersResumeOffer(event) { dismissResumeOffer() }
 
             guard let surface = self.surface else {
                 self.interpretKeyEvents([event])
@@ -1855,6 +1856,7 @@ extension Ghostty {
         }
 
         @IBAction func paste(_ sender: Any?) {
+            noteResumeOfferPaste()
             guard let surface = self.surface else { return }
             let action = "paste_from_clipboard"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
@@ -1863,6 +1865,7 @@ extension Ghostty {
         }
 
         @IBAction func pasteAsPlainText(_ sender: Any?) {
+            noteResumeOfferPaste()
             guard let surface = self.surface else { return }
             let action = "paste_from_clipboard"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
@@ -1871,6 +1874,7 @@ extension Ghostty {
         }
 
         @IBAction func pasteSelection(_ sender: Any?) {
+            noteResumeOfferPaste()
             guard let surface = self.surface else { return }
             let action = "paste_from_selection"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
@@ -2525,6 +2529,8 @@ extension Ghostty.SurfaceView {
         }
 
         if let content {
+            // A drop types into the shell like a paste.
+            noteResumeOfferPaste()
             DispatchQueue.main.async {
                 self.insertText(
                     content,
@@ -2707,6 +2713,36 @@ extension Ghostty.SurfaceView {
         acceptedResumeOffer = nil
         restoredAgentResume = nil
     }
+
+    /// Whether a key event delivered to this pane answers the resume offer. Every key without
+    /// Command does: it reaches the shell. A Command shortcut does not (copy, font size, a Ghostty
+    /// binding), except one that pastes, since a later click would append the resume line to
+    /// the pasted text.
+    func keyAnswersResumeOffer(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.contains(.command) else { return true }
+        return Self.isPasteKey(event)
+    }
+
+    /// A paste: the key the Ghostty config binds to `paste_from_clipboard` or
+    /// `paste_from_selection`, or Cmd+V. The engine reports whether an event is a binding but not
+    /// which action, so the configured trigger of each paste action (the one the menu shows) is
+    /// compared; Cmd+V always counts in case the config binds paste elsewhere as well.
+    static func isPasteKey(_ event: NSEvent) -> Bool {
+        let relevant: NSEvent.ModifierFlags = [.shift, .control, .option, .command]
+        let flags = event.modifierFlags.intersection(relevant)
+        let key = (event.charactersIgnoringModifiers ?? "").lowercased()
+        if flags == .command, key == "v" { return true }
+        guard let config = (NSApp.delegate as? AppDelegate)?.ghostty.config else { return false }
+        for action in ["paste_from_clipboard", "paste_from_selection"] {
+            guard let shortcut = config.keyboardShortcut(for: action) else { continue }
+            let mods = NSEvent.ModifierFlags(swiftUIFlags: shortcut.modifiers).intersection(relevant)
+            if mods == flags, String(shortcut.key.character).lowercased() == key { return true }
+        }
+        return false
+    }
+
+    /// Text is about to be pasted or dropped into the shell: the offer goes away.
+    func noteResumeOfferPaste() { dismissResumeOffer() }
 
     /// The viewport text the offer watches for the shell's first prompt.
     func viewportSnapshot() -> String {

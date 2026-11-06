@@ -177,6 +177,59 @@ final class ResumeOfferTests: XCTestCase {
         XCTAssertTrue(sent.isEmpty, "\(sent)")
     }
 
+    /// A Command shortcut is not typing into the pane (copying from the restored screen is a likely
+    /// first action), except a paste, which puts text on the command line the line would join.
+    func testCommandShortcutsKeepTheOfferButPasteDismissesIt() throws {
+        let fake = FakeScheduler()
+        let pane = try terminal()
+        pane.restoredAgentResume = withSession
+        pane.resumeOffer = try offer(fake, screen: { _ in "restored" }, sent: { _ in })
+        let copy = try key("c", keyCode: 8, flags: .command)
+        pane.keyDown(with: copy)
+        XCTAssertNotNil(pane.resumeOffer, "Cmd+C copies; it types nothing into the shell")
+        XCTAssertNotNil(pane.restoredAgentResume)
+
+        // Paste is decided before the event reaches the engine; the decision is tested on its own
+        // so the test never pastes the developer's real clipboard into a shell.
+        let paste = try key("v", keyCode: 9, flags: .command)
+        XCTAssertTrue(pane.keyAnswersResumeOffer(paste), "Cmd+V pastes into the shell")
+        XCTAssertFalse(pane.keyAnswersResumeOffer(copy))
+        XCTAssertTrue(pane.keyAnswersResumeOffer(try key("c", keyCode: 8, flags: .control)),
+                      "Ctrl+C goes to the shell")
+        XCTAssertTrue(pane.keyAnswersResumeOffer(try escape()))
+
+        // The menu's Paste (and any other path that pastes) dismisses too.
+        pane.noteResumeOfferPaste()
+        XCTAssertNil(pane.resumeOffer)
+        XCTAssertNil(pane.restoredAgentResume)
+    }
+
+    /// Ruling: closing the pane calls off a clicked offer that is still waiting for the shell, so
+    /// the pending wait never depends on the weak reference alone.
+    func testClosingThePaneCallsOffAWaitingOffer() throws {
+        let fake = FakeScheduler()
+        var sent: [String] = []
+        let controller = try XCTUnwrap(try XCTUnwrap(NSApp.delegate as? AppDelegate).controller)
+        let pane = controller.newSurface(workingDirectory: NSTemporaryDirectory())
+        XCTAssertTrue(controller.insertNewPane(pane))
+        pane.resumeOffer = try offer(fake, screen: { _ in "restored" }, sent: { sent.append($0) })
+        pane.acceptResumeOffer()
+        controller.removeFromAnyWorkspace(pane)
+        fake.advance(to: 20)
+        XCTAssertTrue(sent.isEmpty, "a closed pane is never typed into: \(sent)")
+
+        // The ordinary close (Cmd+W, the shell exiting) goes through closePane.
+        let other = controller.newSurface(workingDirectory: NSTemporaryDirectory())
+        XCTAssertTrue(controller.insertNewPane(other))
+        other.resumeOffer = try offer(fake, screen: { _ in "restored" }, sent: { sent.append($0) })
+        other.acceptResumeOffer()
+        controller.closePane(other, confirmIfNeeded: false, animated: false)
+        controller.flushPendingCloses()
+        fake.advance(to: 40)
+        XCTAssertTrue(sent.isEmpty, "\(sent)")
+        controller.removeFromAnyWorkspace(other)
+    }
+
     func testANewAgentDismissesTheOffer() throws {
         let fake = FakeScheduler()
         var sent: [String] = []
@@ -346,6 +399,13 @@ final class ResumeOfferTests: XCTestCase {
         var config = Ghostty.SurfaceConfiguration()
         config.workingDirectory = NSTemporaryDirectory()
         return Ghostty.SurfaceView(try XCTUnwrap(appDelegate.ghostty.app), baseConfig: config)
+    }
+
+    private func key(_ characters: String, keyCode: UInt16, flags: NSEvent.ModifierFlags) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0,
+            context: nil, characters: characters, charactersIgnoringModifiers: characters.lowercased(),
+            isARepeat: false, keyCode: keyCode))
     }
 
     private func escape() throws -> NSEvent {
