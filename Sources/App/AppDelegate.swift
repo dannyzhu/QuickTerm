@@ -332,6 +332,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Unbind the socket on the way out; the next launch then has no stale leftover to clear.
         session?.controlServer.stop()
+        // Session restore: export every terminal pane's screen before the archive is written. A
+        // test host never exports (it must not touch the user's restore directory).
+        if !Self.isRunningTests { session?.exportRestoreContentOnce() }
         // spec §4.8 / v9 §3.4: write once synchronously on quit, since the debounced save may not
         // have fired yet - the layout, each terminal pane's directory, each browser pane's tabs,
         // and the display and frame of every window.

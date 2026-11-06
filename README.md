@@ -187,6 +187,7 @@ Keys you set in `config.toml` — the first four rows are the transparency knobs
 | `browser-tab-min-width` | 80 | Minimum tab width in pt (40–600); once every tab is at the minimum the strip scrolls sideways (mouse wheel; the active tab is always scrolled into view) |
 | `browser-extensions` | true | Load WebExtensions in browser panes (see [Browser extensions](#browser-extensions)). `false` unloads them all and stops attaching the extension controller to new tabs |
 | `browser-download-dir` | ~/Downloads | Where browser panes save downloads (`~` is expanded; falls back to `~/Downloads` when the path is not an existing directory). Progress shows right of the address bar — click the ring for the list (cancel, reveal in Finder, clear finished) |
+| `[restore] content` | true | Save each terminal pane's output (colours and styles included) at quit and show it again after a relaunch. Up to `[restore] lines` lines (default 5000, 100–50000) and 4 MiB per pane; a pane running a full-screen program (vim, Claude Code) saves nothing. Content sits in `~/Library/Application Support/QuickTerm/restore/`, encrypted by default (`encrypt`, key in the login keychain), and is deleted as soon as the next launch reads it. `false` deletes it at once |
 
 Downloads land in `browser-download-dir` (`~/Downloads` by default): a progress ring appears right of the address bar while anything is downloading, and clicking it opens the list — cancel, reveal in Finder, remove a row, or clear the finished ones.
 The list belongs to the pane: closing the pane cancels whatever is still downloading in it.
@@ -487,6 +488,12 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 [updates]                   # auto-update from GitHub Releases; with check only, an icon in the status bar says a release is out
 # check = true               # at launch and about once a day, ask GitHub Releases whether a newer QuickTerm exists; install = true checks even when this is off
 # install = false            # download a found update in the background and install it when QuickTerm quits (implies check); the status bar icon then says to quit or restart to finish
+
+[restore]                   # bring back each terminal pane's output after a relaunch; read once, then deleted
+# content = true             # save each terminal pane's output (with colours) at quit; full-screen programs save nothing; false deletes saved content at once
+# lines = 5000               # scrollback lines kept per pane (100–50000), plus the screen; each pane is capped at 4 MiB
+# encrypt = true             # encrypt saved content with AES-GCM, the key in the login keychain
+# agent-resume = true        # offer to resume an AI agent that was still running in a pane at quit
 
 [keybinds]                  # action = "modifiers+key"; "none" unbinds. Action ids: Cmd+K
 # new-terminal = "cmd+return"

@@ -2376,6 +2376,22 @@ extension Ghostty.SurfaceView: NSMenuItemValidation {
     }
 }
 
+// MARK: Session restore (QuickTerm)
+
+extension Ghostty.SurfaceView {
+    /// QuickTerm: the primary screen as VT text (colours and styles kept), the last `maxLines`
+    /// rows of scrollback plus the screen, through engine patch 0003. nil when the alternate
+    /// screen is active (a full-screen program owns the pane) or the engine has nothing to give.
+    func exportVT(maxLines: Int) -> Data? {
+        guard let surface else { return nil }
+        var text = ghostty_text_s()
+        guard ghostty_surface_export_vt(surface, UInt32(clamping: max(0, maxLines)), &text) else { return nil }
+        defer { ghostty_surface_free_text(surface, &text) }
+        guard let pointer = text.text, text.text_len > 0 else { return nil }
+        return Data(bytes: pointer, count: Int(text.text_len))
+    }
+}
+
 // MARK: NSDraggingDestination
 
 extension Ghostty.SurfaceView {

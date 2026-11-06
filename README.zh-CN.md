@@ -184,6 +184,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `browser-tab-min-width` | 80 | 标签最小宽度 pt（40–600）；全部到最小仍放不下时标签条横向滚动（滚轮；当前标签自动滚入视野） |
 | `browser-extensions` | true | 浏览器 pane 加载 WebExtensions（见 [浏览器扩展](#浏览器扩展)）。`false` = 全部卸载，新标签也不再挂扩展 controller |
 | `browser-download-dir` | ~/Downloads | 浏览器 pane 的下载落盘目录（支持 `~`；不是个已存在的目录时回退 `~/Downloads`）。下载进度显示在地址栏右侧，点开可取消 / 在 Finder 中显示 / 清除已完成 |
+| `[restore] content` | true | 退出时保存每个终端 pane 的输出（含颜色与样式），重启后放回去。每个 pane 最多 `[restore] lines` 行（默认 5000，100–50000）、4 MiB；跑着全屏程序（vim、Claude Code）的 pane 不保存。内容放在 `~/Library/Application Support/QuickTerm/restore/`，默认加密（`encrypt`，密钥在登录钥匙串），下次启动读完即删。`false` = 立刻删除 |
 
 下载落在 `browser-download-dir`（默认 `~/Downloads`）：下载期间地址栏右侧出现进度环，点开是下载列表——取消、在 Finder 中显示、移除单行、清除已完成。
 列表属于 pane：关掉这个 pane 会取消它里面还没下完的下载。
@@ -475,6 +476,12 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 [updates]                   # 自动更新：从 GitHub Releases 取；只检查时状态栏右侧会亮一个图标
 # check = true               # 启动时以及之后约每天一次，到 GitHub Releases 查是否有新版本；install = true 时即使关掉这一项也会检查
 # install = false            # 发现新版本后在后台下载，退出 QuickTerm 时自动安装（隐含 check）；状态栏图标会提示「退出或重启以完成更新」
+
+[restore]                   # 重启后恢复每个终端 pane 的输出；读一次就删
+# content = true             # 退出时保存每个终端 pane 的输出（含颜色）；全屏程序不保存；false = 立刻删除已保存的内容
+# lines = 5000               # 每个 pane 保存的回滚行数（100–50000），另加屏幕本身；每个 pane 上限 4 MiB
+# encrypt = true             # 用 AES-GCM 加密保存的内容，密钥存在登录钥匙串
+# agent-resume = true        # 退出时还在运行的 AI agent，重启后在那个 pane 里提供恢复
 
 [keybinds]                  # 动作 = "修饰键+键"；"none" 解绑。动作 id 见 Cmd+K
 # new-terminal = "cmd+return"

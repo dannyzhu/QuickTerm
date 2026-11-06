@@ -330,6 +330,12 @@ enum ConfigStore {
         /// `AppSession.applyGlobalConfig`.
         var updatesCheck: Bool = true
         var updatesInstall: Bool = false
+        /// `[restore]` — session restore. `restoreContent` / `restoreLines` / `restoreEncrypt`
+        /// are read by `RestoreExporter` at quit; `restoreAgentResume` by the agent resume offer.
+        var restoreContent: Bool = true
+        var restoreLines: Int = 5000
+        var restoreEncrypt: Bool = true
+        var restoreAgentResume: Bool = true
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
         var ghosttyPassthrough: String = ""
@@ -436,6 +442,10 @@ enum ConfigBindings {
         "agents.strip-text": { v, s in v.stringValue.map { s.agentsStripText = $0 } },
         "updates.check": { v, s in v.boolValue.map { s.updatesCheck = $0 } },
         "updates.install": { v, s in v.boolValue.map { s.updatesInstall = $0 } },
+        "restore.content": { v, s in v.boolValue.map { s.restoreContent = $0 } },
+        "restore.lines": { v, s in v.intValue.map { s.restoreLines = $0 } },
+        "restore.encrypt": { v, s in v.boolValue.map { s.restoreEncrypt = $0 } },
+        "restore.agent-resume": { v, s in v.boolValue.map { s.restoreAgentResume = $0 } },
     ]
 }
 

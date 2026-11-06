@@ -26,6 +26,7 @@ enum ConfigSection: String, CaseIterable, Codable {
     case agents
     case notifications
     case updates
+    case restore
     case keybinds
     case ghostty
 
@@ -40,6 +41,7 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .agents: "Agent"
         case .notifications: "通知"
         case .updates: "更新"
+        case .restore: "恢复"
         case .keybinds: "快捷键"
         case .ghostty: "引擎透传"
         }
@@ -56,6 +58,7 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .agents: "Agents"
         case .notifications: "Notifications"
         case .updates: "Updates"
+        case .restore: "Restore"
         case .keybinds: "Keybinds"
         case .ghostty: "Ghostty passthrough"
         }
@@ -85,6 +88,10 @@ enum ConfigSection: String, CaseIterable, Codable {
         case .updates:
             """
             自动更新：从 GitHub Releases 取。只检查时，状态栏右侧簇会亮一个图标，点开看说明再决定装不装。
+            """
+        case .restore:
+            """
+            重启后恢复每个终端 pane 的输出。内容存在 ~/Library/Application Support/QuickTerm/restore/，下次启动读一次就删。
             """
         case .keybinds:
             """
@@ -120,6 +127,11 @@ enum ConfigSection: String, CaseIterable, Codable {
             """
             Auto-update from GitHub Releases. With check only, an icon in the status bar's right
             cluster says a release is out; click it for the notes and the install button.
+            """
+        case .restore:
+            """
+            Bring back each terminal pane's output after a relaunch. Content is kept in
+            ~/Library/Application Support/QuickTerm/restore/ and deleted when the next launch reads it.
             """
         case .keybinds:
             """
@@ -896,6 +908,26 @@ enum ConfigSchema {
                       labelZH: "自动下载安装", labelEN: "Install automatically",
                       helpZH: "发现新版本后在后台下载，退出 QuickTerm 时自动安装（隐含 check）；状态栏图标会提示「退出或重启以完成更新」",
                       helpEN: "download a found update in the background and install it when QuickTerm quits (implies check); the status bar icon then says to quit or restart to finish"),
+
+        // MARK: [restore]
+        // Read by `RestoreExporter` at quit (and, for `content = false`, by
+        // `AppSession.applyGlobalConfig`, which deletes the stored content at once).
+        ConfigKeySpec(.restore, "content", .bool, default: .bool(true),
+                      labelZH: "恢复终端内容", labelEN: "Restore terminal content",
+                      helpZH: "退出时保存每个终端 pane 的输出（含颜色），重启后放回去；全屏程序（vim、Claude Code 等）的 pane 不保存。关掉会立刻删除已保存的内容",
+                      helpEN: "save each terminal pane's output (with colours) at quit and put it back after a relaunch; a pane running a full-screen program (vim, Claude Code) saves nothing. Turning it off deletes saved content at once"),
+        ConfigKeySpec(.restore, "lines", .int(min: 100, max: 50000), default: .int(5000),
+                      labelZH: "保存的行数", labelEN: "Lines kept",
+                      helpZH: "每个 pane 最多保存多少行回滚（加上屏幕本身）；每个 pane 的内容另有 4 MiB 上限，超出时丢掉最早的部分",
+                      helpEN: "scrollback lines kept per pane, plus the screen itself; each pane is also capped at 4 MiB, dropping the oldest part"),
+        ConfigKeySpec(.restore, "encrypt", .bool, default: .bool(true),
+                      labelZH: "加密保存的内容", labelEN: "Encrypt saved content",
+                      helpZH: "用 AES-GCM 加密保存的内容，密钥存在登录钥匙串里；钥匙串里的密钥丢了，内容就作废",
+                      helpEN: "encrypt saved content with AES-GCM, the key in the login keychain; content whose key is gone is dropped"),
+        ConfigKeySpec(.restore, "agent-resume", .bool, default: .bool(true),
+                      labelZH: "提供恢复 agent", labelEN: "Offer agent resume",
+                      helpZH: "退出时还在运行的 AI agent（Claude Code、Codex、kiro-cli），重启后在那个 pane 里提供一键恢复上次会话；与 content 互不影响",
+                      helpEN: "offer to resume an AI agent (Claude Code, Codex, kiro-cli) that was still running in a pane at quit; independent of content"),
     ]
 
     /// `id` -> the setting.

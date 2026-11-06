@@ -39,6 +39,11 @@ final class AppSession {
     /// migration, and debounced writes
     let sessionStore: SessionStore
 
+    /// Per-pane screen content kept between launches (session restore). nil on a test host that
+    /// injected no directory: the tests must never export into, or delete, the user's real
+    /// `restore/` directory (the same policy as `SessionStore.writesAllowed`).
+    let restoreStore: RestoreStore?
+
     /// The consent gate and the server for the control plane (the CLI and AI agents). On by
     /// default, in ask mode; `applyGlobalConfig` starts and stops it when `[control]` changes, so
     /// editing the config and saving takes effect immediately with no restart.
@@ -87,12 +92,17 @@ final class AppSession {
     private var pendingScreenReflow: DispatchWorkItem?
 
     init(screens: ScreenRegistry, themeManager: ThemeManager, stateURL: URL? = nil,
-         controlSocketPath: String? = nil, updates: UpdateController = UpdateController(enabled: false)) {
+         controlSocketPath: String? = nil, updates: UpdateController = UpdateController(enabled: false),
+         restoreDirectory: URL? = nil) {
         self.screens = screens
         self.themeManager = themeManager
         self.updates = updates
         self.updateSheet = UpdateSheet(controller: updates)
         self.sessionStore = SessionStore(screens: screens, url: stateURL)
+        self.restoreStore = restoreDirectory != nil || !AppDelegate.isRunningTests
+            ? RestoreStore(directory: restoreDirectory ?? RestoreStore.defaultDirectory,
+                           keyStore: KeychainRestoreKeyStore())
+            : nil
         let consent = ControlConsent(screens: screens)
         self.controlConsent = consent
         self.controlServer = ControlServer(screens: screens, consent: consent,
@@ -216,6 +226,22 @@ final class AppSession {
         for controller in screens.controllers { controller.applyWindowConfig(settings) }
     }
 
+    /// Set by the first quit-time export. Quitting by closing the last screen exports there
+    /// (before `windowWillClose` empties the model) and then reaches `applicationWillTerminate`
+    /// too; a second run would find no panes and prune every file the first one wrote.
+    private(set) var restoreExported = false
+
+    /// Write every terminal pane's screen to the restore store, at most once per process. Both
+    /// quit paths call it before their final `sessionStore.saveNow()`.
+    func exportRestoreContentOnce() {
+        guard !restoreExported, let restoreStore else { return }
+        restoreExported = true
+        RestoreExporter.export(panes: RestoreExporter.terminalPanes(of: screens.controllers),
+                               settings: settings, store: restoreStore) { pane, lines in
+            pane.exportVT(maxLines: lines)
+        }
+    }
+
     /// The process-level half: the keybinding table, the global browser pane settings, the
     /// extension switch, the theme and the engine overlay.
     /// It runs exactly once per reload - writing the engine overlay to disk triggers a hot reload
@@ -249,6 +275,9 @@ final class AppSession {
         // and writes a launch marker, turning it off closes it. Pushed here for the same reason as
         // the centre's switches — one reload, one place.
         DiagnosticLog.shared.isEnabled = settings.notificationsDiagnosticLog
+        // Spec decision 11: `[restore] content = false` deletes the stored content now, not at the
+        // next quit. After the diagnostic log, so a failure to delete can be logged.
+        if let restoreStore { RestoreExporter.applyContentSetting(settings, store: restoreStore) }
         // The agent registry reads its switches from here too, and never from the config file.
         var agents = AgentSettings(settings)
         // A test host must not edit anybody's ~/.claude/settings.json, so the one setting that
