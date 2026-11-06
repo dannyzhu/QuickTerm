@@ -130,4 +130,71 @@ final class RestoreStoreTests: XCTestCase {
         store.removeAll()
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path))
     }
+
+    func testSymlinkedDirectoryIsReplacedAndNeverWrittenThrough() throws {
+        let elsewhere = FileManager.default.temporaryDirectory
+            .appendingPathComponent("restore-elsewhere-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: elsewhere) }
+        try FileManager.default.createSymbolicLink(at: dir, withDestinationURL: elsewhere)
+
+        try store.write(text, pane: UUID(), encrypt: false)
+        let leaked = try FileManager.default.contentsOfDirectory(atPath: elsewhere.path)
+        XCTAssertTrue(leaked.isEmpty)
+        var info = stat()
+        XCTAssertEqual(lstat(dir.path, &info), 0)
+        XCTAssertEqual(info.st_mode & S_IFMT, S_IFDIR)
+
+        // removeAll on a link removes the link and leaves the target alone.
+        try Data("keep".utf8).write(to: elsewhere.appendingPathComponent("\(UUID().uuidString).vt"))
+        try FileManager.default.removeItem(at: dir)
+        try FileManager.default.createSymbolicLink(at: dir, withDestinationURL: elsewhere)
+        store.removeAll()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: elsewhere.path).count, 1)
+    }
+
+    func testPruneRemovesStaleTempFiles() throws {
+        try store.write(text, pane: UUID(), encrypt: false)
+        let stale = dir.appendingPathComponent(".x.tmp")
+        try Data("plain".utf8).write(to: stale)
+        store.prune(keeping: [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+    }
+
+    func testWriteRemovesStaleTempFiles() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let stale = dir.appendingPathComponent(".y.tmp")
+        try Data("plain".utf8).write(to: stale)
+        try store.write(text, pane: UUID(), encrypt: false)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+    }
+
+    func testFifoIsDroppedWithoutBlocking() throws {
+        let pane = UUID()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let fifo = dir.appendingPathComponent("\(pane.uuidString).vt")
+        XCTAssertEqual(mkfifo(fifo.path, 0o600), 0)
+        XCTAssertNil(store.take(pane: pane))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fifo.path))
+    }
+
+    func testOversizedFileIsDroppedAndDeleted() throws {
+        let pane = UUID()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let big = dir.appendingPathComponent("\(pane.uuidString).vt")
+        try Data(count: RestoreStore.maxFileBytes + 1).write(to: big)
+        XCTAssertNil(store.take(pane: pane))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: big.path))
+    }
+
+    func testUnreadableFileIsDeleted() throws {
+        let pane = UUID()
+        try store.write(text, pane: pane, encrypt: false)
+        let file = store.files()[0]
+        XCTAssertEqual(chmod(file.path, 0), 0)
+        // Owner can still unlink; if open fails with EACCES the file must go anyway.
+        XCTAssertNil(store.take(pane: pane))
+        XCTAssertTrue(store.files().isEmpty)
+    }
 }

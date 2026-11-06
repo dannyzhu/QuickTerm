@@ -19,6 +19,11 @@ final class RestoreStore {
 
     static let magic = Data("QTR1".utf8)
 
+    /// The largest file `take` will read: the 4 MiB content cap plus room for the magic and the
+    /// AES-GCM nonce and tag (32 bytes). Anything bigger is not ours and is dropped unread, so a
+    /// huge file cannot stall the main thread at launch.
+    static let maxFileBytes = 4 * 1024 * 1024 + 64
+
     static let defaultDirectory: URL = FileManager.default
         .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("QuickTerm/restore", isDirectory: true)
@@ -59,7 +64,7 @@ final class RestoreStore {
         // A temp file made with O_EXCL|O_NOFOLLOW, then rename(2): rename replaces a symlink at
         // the target rather than following it, and nobody ever sees a half-written file.
         let temp = directory.appendingPathComponent(".\(UUID().uuidString).tmp")
-        let fd = open(temp.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        let fd = open(temp.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw StoreError(description: "open failed (errno \(errno))") }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         do {
@@ -77,11 +82,44 @@ final class RestoreStore {
         unlink(other.path)
     }
 
+    /// Is `directory` itself a symlink? `O_NOFOLLOW` only guards the last path component of a file,
+    /// so a linked restore directory would redirect every write, read and delete into its target.
+    private var directoryIsLink: Bool {
+        var info = stat()
+        return lstat(directory.path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFLNK
+    }
+
+    /// Remove a symlinked restore directory (the link only, never its target). True when it was one.
+    @discardableResult
+    private func removeDirectoryLink() -> Bool {
+        guard directoryIsLink else { return false }
+        if unlink(directory.path) != 0 {
+            Self.log("restore directory is a symlink and could not be removed (errno \(errno))")
+        } else {
+            Self.log("restore directory was a symlink; removed the link, not its target")
+        }
+        return true
+    }
+
+    /// Unlink leftover `.<uuid>.tmp` files from a write that a crash interrupted. They can hold
+    /// plaintext and are invisible to `files()`.
+    private func removeStaleTemps() {
+        let all = (try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil)) ?? []
+        for file in all where file.lastPathComponent.hasPrefix(".") && file.pathExtension == "tmp" {
+            unlink(file.path)
+        }
+    }
+
     private func prepareDirectory() throws {
+        removeDirectoryLink()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         // An existing directory keeps its old mode through createDirectory; force it.
-        chmod(directory.path, 0o700)
+        if chmod(directory.path, 0o700) != 0 {
+            Self.log("could not set the restore directory to 0700 (errno \(errno))")
+        }
+        removeStaleTemps()
         var dir = directory
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
@@ -104,11 +142,13 @@ final class RestoreStore {
 
     /// Open without following links, read, then delete. nil when absent or unreadable.
     private func readAndDelete(_ file: URL, pane: UUID) -> Data? {
-        let fd = open(file.path, O_RDONLY | O_NOFOLLOW)
+        // O_NONBLOCK: opening a FIFO for reading would otherwise block the main thread at launch.
+        // The fstat below rejects anything that is not a regular file.
+        let fd = open(file.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else {
             let code = errno
             if code == ENOENT { return nil }
-            if code == ELOOP { unlink(file.path) }
+            unlink(file.path)
             Self.drop(pane, "not readable (errno \(code))")
             return nil
         }
@@ -117,6 +157,12 @@ final class RestoreStore {
             close(fd)
             unlink(file.path)
             Self.drop(pane, "not a regular file")
+            return nil
+        }
+        guard info.st_size <= Self.maxFileBytes else {
+            close(fd)
+            unlink(file.path)
+            Self.drop(pane, "file too large (\(info.st_size) bytes)")
             return nil
         }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
@@ -151,7 +197,11 @@ final class RestoreStore {
     }
 
     private static func drop(_ pane: UUID, _ reason: String) {
-        DiagnosticLog.shared.note("restore", "dropped \(pane.uuidString.prefix(8)): \(reason)")
+        log("dropped \(pane.uuidString.prefix(8)): \(reason)")
+    }
+
+    private static func log(_ message: String) {
+        DiagnosticLog.shared.note("restore", message)
     }
 
     // MARK: Housekeeping
@@ -161,11 +211,22 @@ final class RestoreStore {
     }
 
     func removeAll() {
-        try? FileManager.default.removeItem(at: directory)
+        // Never follow a linked directory: removeItem would delete only the link and leave the
+        // content in its target.
+        if removeDirectoryLink() { return }
+        do {
+            try FileManager.default.removeItem(at: directory)
+        } catch let error as NSError where error.code == NSFileNoSuchFileError {
+            // Nothing stored.
+        } catch {
+            Self.log("could not remove the restore directory: \(error)")
+        }
     }
 
     /// Delete every file whose pane is not in `keeping`.
     func prune(keeping: Set<UUID>) {
+        if removeDirectoryLink() { return }
+        removeStaleTemps()
         for file in files() {
             let id = UUID(uuidString: file.deletingPathExtension().lastPathComponent)
             if id == nil || !keeping.contains(id!) { unlink(file.path) }
