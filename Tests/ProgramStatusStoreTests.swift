@@ -185,6 +185,23 @@ final class ProgramStatusStoreTests: XCTestCase {
         XCTAssertEqual(changes()[pane], 1)
     }
 
+    func testChildExitDropsWorkingBlockedIdle() {
+        let store = makeStore()
+        let pane = UUID()
+        for state: ProgramStatusReport.State in [.working, .blocked, .idle, .done, .error] {
+            store.receive(report(state, state.rawValue), pane: pane, foregroundGroup: 100)
+        }
+        let changes = countChanges(store)
+        store.childExited(pane: pane)
+        XCTAssertEqual(ids(store, pane), ["done", "error"])
+        XCTAssertEqual(changes()[pane], 1)
+
+        // The notification and the heartbeat backstop can both report the same exit.
+        store.childExited(pane: pane)
+        XCTAssertEqual(ids(store, pane), ["done", "error"])
+        XCTAssertEqual(changes()[pane], 1)
+    }
+
     // MARK: Pane life cycle
 
     func testResetClearsAll() {

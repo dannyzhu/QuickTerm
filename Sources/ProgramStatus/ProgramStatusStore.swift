@@ -86,10 +86,13 @@ final class ProgramStatusStore {
     /// second finds nothing left to drop and changes nothing.
     func promptStarted(pane: UUID) {
         recordForTesting?("promptStarted \(pane.uuidString)")
-        guard var records = byPane[pane] else { return }
-        let count = records.count
-        records.removeAll { Self.dropsOnExit($0.report.state) }
-        store(records, pane: pane, changed: records.count != count)
+        dropLiveRecords(pane: pane)
+    }
+
+    /// The pane's own process exited while the pane stays open (wait-after-command): the program
+    /// that reported is gone, so its live records are too (decision 5). Idempotent.
+    func childExited(pane: UUID) {
+        dropLiveRecords(pane: pane)
     }
 
     /// The terminal in `pane` was fully reset, by the program (RIS) or by the user (Reset).
@@ -124,6 +127,14 @@ final class ProgramStatusStore {
     }
 
     // MARK: Private
+
+    /// Drop `working`, `blocked` and `idle`; keep `done` and `error`. One change at most.
+    private func dropLiveRecords(pane: UUID) {
+        guard var records = byPane[pane] else { return }
+        let count = records.count
+        records.removeAll { Self.dropsOnExit($0.report.state) }
+        store(records, pane: pane, changed: records.count != count)
+    }
 
     private func remove(pane: UUID) {
         guard byPane.removeValue(forKey: pane) != nil else { return }

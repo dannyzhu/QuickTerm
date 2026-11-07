@@ -719,4 +719,70 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertEqual(registry.status(pane: pane.id)?.state, .done,
                        "without the tombstone the hook is an ordinary hook again")
     }
+
+    // MARK: The program-status heartbeat (spec decision 5)
+
+    /// `checkProgramStatus` works on the shared store; these cases use fresh pane ids and forget
+    /// them on teardown, so nothing they leave can reach another case.
+    private func programRecord(_ state: ProgramStatusReport.State, _ id: String, pane: UUID,
+                               group: Int32 = 100) {
+        let store = ProgramStatusStore.shared
+        addTeardownBlock { @MainActor in store.paneClosed(pane) }
+        store.receive(ProgramStatusReport(state: state, kind: nil, progress: nil, id: [id],
+                                          app: nil, title: nil, message: nil),
+                      pane: pane, foregroundGroup: group)
+    }
+
+    private func programIDs(_ pane: UUID) -> [String] {
+        ProgramStatusStore.shared.records(pane: pane).map { $0.report.id.joined(separator: "/") }
+    }
+
+    func testProgramStatusHeartbeatForgetsAPaneThatIsGone() throws {
+        let kept = try addPane()
+        let gone = UUID()
+        programRecord(.done, "a", pane: kept.id)
+        programRecord(.done, "a", pane: gone)
+        registry.terminalProbe = { _ in (100, false) }
+
+        registry.checkProgramStatus()
+        XCTAssertEqual(programIDs(kept.id), ["a"])
+        XCTAssertFalse(ProgramStatusStore.shared.panes.contains(gone),
+                       "a pane the locator cannot find has no records left")
+    }
+
+    func testProgramStatusHeartbeatDropsLiveRecordsOfAnExitedProcess() throws {
+        let exited = try addPane()
+        let running = try addPane()
+        for pane in [exited.id, running.id] {
+            programRecord(.working, "w", pane: pane)
+            programRecord(.blocked, "b", pane: pane)
+            programRecord(.done, "d", pane: pane)
+        }
+        // The exited pane's pty is gone, so its group reads nil and the foreground check alone
+        // would keep everything; the exit backstop is what drops it.
+        registry.terminalProbe = { pane in
+            pane === exited.view ? (nil, true) : (100, false)
+        }
+
+        registry.checkProgramStatus()
+        XCTAssertEqual(programIDs(exited.id), ["d"])
+        XCTAssertEqual(programIDs(running.id), ["w", "b", "d"])
+    }
+
+    func testProgramStatusHeartbeatChecksTheForegroundGroup() throws {
+        let pane = try addPane()
+        programRecord(.working, "w", pane: pane.id)
+        programRecord(.error, "e", pane: pane.id)
+        registry.terminalProbe = { _ in (200, false) }
+
+        registry.checkProgramStatus()
+        XCTAssertEqual(programIDs(pane.id), ["e"])
+    }
+
+    func testTheDefaultTerminalProbeIsNotFooledByAMissingSurface() {
+        // A pane that is not a terminal: no group, and not an exit.
+        let probe = registry.terminalProbe(PaneView(frame: .zero))
+        XCTAssertNil(probe.foregroundGroup)
+        XCTAssertFalse(probe.exited)
+    }
 }

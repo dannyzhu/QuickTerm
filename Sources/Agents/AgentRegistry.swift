@@ -153,6 +153,7 @@ final class AgentRegistry: NoticeSink {
             MainActor.assumeIsolated {
                 guard let pane = (note.object as? PaneView)?.id else { return }
                 AgentRegistry.shared.apply(.childExited, pane: pane)
+                ProgramStatusStore.shared.childExited(pane: pane)
             }
         }
     }
@@ -581,15 +582,33 @@ final class AgentRegistry: NoticeSink {
         ProgramStatusStore.shared.paneClosed(pane)
     }
 
+    /// What the program-status heartbeat reads from a pane's terminal: its pty foreground process
+    /// group, and whether its process has exited. A pane that is not a terminal answers
+    /// (nil, false). Tests replace it, because a real exited process is not something a case
+    /// should have to spawn and wait for.
+    var terminalProbe: @MainActor (PaneView) -> (foregroundGroup: Int32?, exited: Bool) = { pane in
+        guard let surface = pane as? Ghostty.SurfaceView else { return (nil, false) }
+        // `processExited` is true when there is no surface at all, which is not an exit.
+        return (surface.foregroundProcessGroup, surface.surface != nil && surface.processExited)
+    }
+
     /// The program-status half of the heartbeat (spec decision 5). A pane holding only program
     /// records has no status or notice here, so `paneClosed` never runs for it: the store's own
-    /// panes the locator can no longer find are forgotten first. Then every remaining record is
-    /// checked against its pane's live pty foreground process group.
+    /// panes the locator can no longer find are forgotten first. A pane held open after its
+    /// process exited (wait-after-command) drops its live records; the engine's child-exit
+    /// notification covers only some panes, so this is the backstop. Then every remaining record
+    /// is checked against its pane's live pty foreground process group.
     func checkProgramStatus() {
         let store = ProgramStatusStore.shared
-        for pane in store.panes where locator.locate(pane) == nil { store.paneClosed(pane) }
-        store.checkForeground { [locator] pane in
-            (locator.locate(pane)?.pane as? Ghostty.SurfaceView)?.foregroundProcessGroup
+        for pane in store.panes {
+            guard let found = locator.locate(pane) else {
+                store.paneClosed(pane)
+                continue
+            }
+            if terminalProbe(found.pane).exited { store.childExited(pane: pane) }
+        }
+        store.checkForeground { [locator, terminalProbe] pane in
+            locator.locate(pane).flatMap { terminalProbe($0.pane).foregroundGroup }
         }
     }
 
