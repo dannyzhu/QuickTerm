@@ -111,7 +111,11 @@ extension AgentStatus {
     /// settings or palette surface is the second), and because a key declared in the catalog with
     /// no call site fails `scripts/check-localization.py`: one owner for the nine keys, and the
     /// view asks for it.
-    var localizedStateText: String {
+    var localizedStateText: String { Self.localizedStateText(state: state, detail: detail) }
+
+    /// The same words for a bare (state, detail), for a band line that has no `AgentStatus`
+    /// behind it (a generic program's OSC 7501 record).
+    static func localizedStateText(state: AgentState, detail: AgentDetail?) -> String {
         if let detail {
             switch detail {
             case .thinking: return L("agents.strip.thinking")

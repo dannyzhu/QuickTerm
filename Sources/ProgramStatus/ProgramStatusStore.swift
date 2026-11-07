@@ -22,6 +22,16 @@ final class ProgramStatusStore {
         /// The pty's foreground process group when the report arrived; nil when unknown.
         var foregroundGroup: Int32?
         var updatedAt: Date
+        /// When the record's (state, kind) last changed: what the band's clock and spinner count
+        /// from, so a progress step does not reset them. `updatedAt` moves on every report.
+        var since: Date
+
+        init(report: ProgramStatusReport, foregroundGroup: Int32?, updatedAt: Date, since: Date? = nil) {
+            self.report = report
+            self.foregroundGroup = foregroundGroup
+            self.updatedAt = updatedAt
+            self.since = since ?? updatedAt
+        }
     }
 
     var onChange: ((UUID) -> Void)?
@@ -68,8 +78,12 @@ final class ProgramStatusStore {
             // (`a` takes `a/b` but not `ab`); no id clears the pane. Never a record itself.
             records.removeAll { $0.report.id.starts(with: report.id) }
         } else {
-            let record = Record(report: report, foregroundGroup: foregroundGroup, updatedAt: clock())
+            var record = Record(report: report, foregroundGroup: foregroundGroup, updatedAt: clock())
             if let index = records.firstIndex(where: { $0.report.id == report.id }) {
+                let previous = records[index].report
+                if previous.state == report.state, previous.kind == report.kind {
+                    record.since = records[index].since
+                }
                 records[index] = record
             } else {
                 if records.count >= Self.cap,

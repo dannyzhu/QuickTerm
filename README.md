@@ -364,6 +364,14 @@ release. Only a whitelist of fields ever crosses from a hook into QuickTerm (the
 tool name, an error type, a message, and string-valued entries of `tool_input`), each clamped to 200
 characters — never a transcript path, a working directory or a file's contents.
 
+**Program status (OSC 7501).** Any program can report its own status by printing an OSC 7501 sequence
+(`printf '\e]7501;state=working:app=cargo:progress=40\e\\'`), and QuickTerm shows it in the pane's band
+(`cargo · Running · 40%`) the way it shows an agent: `blocked` raises the same alarm as an approval, `done`
+and `error` post an ordinary notification. A report naming an agent (`app=codex`) feeds that agent's status,
+but **hooks still win**: once a hook has been heard, a report can add a progress and a message and never
+change the state, and it can never take down an alarm a hook raised. The records are in `quickterm state` as
+`programs`. `[agents] program-status = false` turns it off and every report is ignored.
+
 ### Security posture
 
 - Reads are silent — but **browser pane URLs and titles are redacted** for callers that did not inherit `QUICKTERM_TOKEN`. Browser panes hold logged-in sessions, so `quickterm state` is itself a disclosure surface.

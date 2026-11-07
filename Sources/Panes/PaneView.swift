@@ -151,6 +151,20 @@ class PaneView: NSView, ObservableObject, Identifiable, PaneCodable {
         agentStatus = status
     }
 
+    /// The pane's OSC 7501 program-status records, as the band last drew them (spec decision 14).
+    ///
+    /// **Written only by `AgentRegistry`**, through `BandRedrawThrottle`: the store changes on
+    /// every progress step a program prints, and the band redraws at most four times a second
+    /// (spec decision 18). Same hand-sent `objectWillChange` as `agentStatus`, so only this pane's
+    /// band redraws.
+    private(set) var programRecords: [ProgramStatusStore.Record] = []
+
+    func setProgramRecords(_ records: [ProgramStatusStore.Record]) {
+        guard programRecords != records else { return }
+        objectWillChange.send()
+        programRecords = records
+    }
+
     /// The window's first responder is this pane or one of its descendants.
     func holdsFirstResponder(of window: NSWindow) -> Bool {
         guard let fr = window.firstResponder else { return false }

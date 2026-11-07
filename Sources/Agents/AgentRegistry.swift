@@ -87,6 +87,9 @@ final class AgentRegistry: NoticeSink {
     }
 
     var settings = AgentSettings()
+    /// Paces the band's program-status redraws (spec decision 18). Tests swap in one with a hand
+    /// driven clock and scheduler.
+    var bandThrottle = BandRedrawThrottle()
     /// Q1's answer, read here as well as in the centre: the centre decides what a keystroke does
     /// to a notice, the registry decides whether to re-arm afterwards.
     var policy: AgentPolicy.UserActed = AgentPolicy.userActed
@@ -454,7 +457,9 @@ final class AgentRegistry: NoticeSink {
         return nil
     }
 
-    private func writeStatus(_ status: AgentStatus?, pane: UUID) {
+    /// `publish: false` leaves the pane's own copy to the band throttle (program status, spec
+    /// decision 18); everything else publishes at once.
+    private func writeStatus(_ status: AgentStatus?, pane: UUID, publish: Bool = true) {
         statuses[pane] = status
         if status == nil {
             noticeIDs[pane] = nil
@@ -462,7 +467,7 @@ final class AgentRegistry: NoticeSink {
         }
         // The pane publishes to its own observers and to nobody else's: the info strip watches
         // its pane, so one pane's agent churning redraws one frame (plan §1.5).
-        locator.locate(pane)?.pane.setAgentStatus(status)
+        if publish { locator.locate(pane)?.pane.setAgentStatus(status) }
     }
 
     // MARK: Notices
@@ -699,6 +704,57 @@ final class AgentRegistry: NoticeSink {
                 label = rules.name
             }
             raiseProgramAlarms(source: source, label: label, old: old, new: new, pane: pane)
+            if case .program = source { emitProgramChanges(old: old, new: new, pane: pane) }
+        }
+        // The band redraws at most four times a second (spec decision 18): the pane's records
+        // and any status a report moved are published through the throttle. The draw reads the
+        // current values when it runs, so the last change of a burst is the one drawn.
+        bandThrottle.request(pane) { [weak self] in
+            guard let self, let view = self.locator.locate(pane)?.pane else { return }
+            view.setProgramRecords(self.programStatus.records(pane: pane))
+            view.setAgentStatus(self.statuses[pane])
+        }
+    }
+
+    /// `program.status.changed` for a generic program's records (spec decision 19): one event
+    /// per record whose (state, kind) moved, appeared or went away (`cleared`). A progress step
+    /// or a new message is not a transition. An agent's own records speak through its
+    /// `agent.state.changed` instead.
+    private func emitProgramChanges(old: [ProgramStatusStore.Record], new: [ProgramStatusStore.Record],
+                                    pane: UUID) {
+        var oldByID: [[String]: ProgramStatusReport] = [:]
+        for record in old { oldByID[record.report.id] = record.report }
+        let newIDs = Set(new.map(\.report.id))
+        var changed: [(report: ProgramStatusReport, cleared: Bool)] = []
+        for record in new {
+            let previous = oldByID[record.report.id]
+            if let previous, previous.state == record.report.state, previous.kind == record.report.kind {
+                continue
+            }
+            changed.append((record.report, false))
+        }
+        for record in old where !newIDs.contains(record.report.id) {
+            changed.append((record.report, true))
+        }
+        guard !changed.isEmpty else { return }
+        let located = locator.locate(pane)
+        for (report, cleared) in changed {
+            let message = cleared ? nil
+                : report.message.map(ProgramStatusReport.displayText).flatMap { $0.isEmpty ? nil : $0 }
+            let event = ControlEvent(
+                type: .programStatusChanged,
+                screen: located.map { $0.controller.screenIndex + 1 },
+                screenID: located?.controller.windowID.uuidString,
+                workspace: located.map { $0.workspace + 1 },
+                pane: locator.handle(pane),
+                paneID: pane.uuidString,
+                kind: cleared ? nil : report.kind?.rawValue,
+                state: cleared ? "cleared" : report.state.rawValue,
+                message: message,
+                app: report.app,
+                id: report.id.joined(separator: "/"),
+                progress: cleared ? nil : report.progress)
+            bus.emit(event, redactable: message != nil, producer: .agentRegistry)
         }
     }
 
@@ -746,14 +802,14 @@ final class AgentRegistry: NoticeSink {
             if let status = reduction.status { statuses[pane] = status }
         case .annotated, .evidenceUpgrade:
             // A progress step, a new message, or the same state from a better source: the strip
-            // redraws, nobody else hears about it.
-            writeStatus(reduction.status, pane: pane)
+            // redraws (through the band throttle), nobody else hears about it.
+            writeStatus(reduction.status, pane: pane, publish: false)
         case .changed, .released:
             remember(reduction.released, pane: pane, now: now)
             if reduction.kind == .changed, let status = reduction.status {
                 tombstones[pane]?[status.agent] = nil
             }
-            writeStatus(reduction.status, pane: pane)
+            writeStatus(reduction.status, pane: pane, publish: false)
             emit(reduction.status, pane: pane, released: reduction.kind == .released, before: current)
             rearmTimers.removeValue(forKey: pane)?.cancel()
             DiagnosticLog.shared.note(

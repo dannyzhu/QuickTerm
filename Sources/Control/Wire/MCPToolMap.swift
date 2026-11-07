@@ -571,7 +571,10 @@ enum MCPSamples {
             index: 1, id: "8A1F-…", active: true, title: "QuickTerm",
             url: "http://localhost:3000", loading: false)],
         focused: false, busy: true, float: false, zoom: false, redacted: false,
-        notices: [noticeRecord], urgency: "needs-user", needsUser: true)
+        notices: [noticeRecord], urgency: "needs-user", needsUser: true,
+        programs: [ControlProgramRecord(id: "build/test", app: "cargo", state: "blocked",
+                                        kind: "question", progress: 40, title: "<redacted>",
+                                        message: "<redacted>", redacted: true)])
 
     static let workspaceInfo = ControlStatePayload.WorkspaceInfo(
         index: 2, title: "dev", layout: "scrolling", empty: false, active: true,

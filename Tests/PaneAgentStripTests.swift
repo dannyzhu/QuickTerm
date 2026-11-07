@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import XCTest
 @testable import QuickTerm
@@ -335,5 +336,197 @@ final class PaneAgentStripTests: XCTestCase {
         XCTAssertEqual(model(live, after: 30), model(live, after: 30))
         XCTAssertNotEqual(model(live, after: 30), model(live, after: 90),
                           "only the elapsed time moves, but it does move")
+    }
+
+    // MARK: Program status (OSC 7501, spec decisions 14, 15 and 18)
+
+    private func record(_ state: ProgramStatusReport.State, kind: ProgramStatusReport.Kind? = nil,
+                        progress: Int? = nil, app: String? = nil, title: String? = nil,
+                        message: String? = nil, id: String = "",
+                        at offset: TimeInterval = 0) -> ProgramStatusStore.Record {
+        ProgramStatusStore.Record(
+            report: ProgramStatusReport(state: state, kind: kind, progress: progress,
+                                        id: id.split(separator: "/").map(String.init),
+                                        app: app, title: title, message: message),
+            foregroundGroup: 100, updatedAt: since.addingTimeInterval(offset))
+    }
+
+    private func programModel(_ record: ProgramStatusStore.Record, after seconds: TimeInterval = 0,
+                              title: String? = nil) -> PaneAgentStrip.Model {
+        .program(record: record, now: record.updatedAt.addingTimeInterval(seconds), title: title,
+                 language: .en)
+    }
+
+    /// Spec 15: `<pane title> · <label> · <state>[ · NN%]`, with the agents' own state words and
+    /// the colour and glyph an agent in that state wears.
+    func testBandShowsGenericProgram() {
+        let cargo = programModel(record(.working, progress: 40, app: "cargo"))
+        XCTAssertEqual(cargo.text, "cargo · Running · 40%")
+        XCTAssertEqual(cargo.tone, .neutral)
+        XCTAssertEqual(cargo.glyph, PaneAgentStrip.Model.spinner[0], "working spins")
+        XCTAssertEqual(programModel(record(.working, progress: 40, app: "cargo"), title: "build").text,
+                       "build · cargo · Running · 40%", "the pane title leads, as for an agent")
+        XCTAssertEqual(programModel(record(.working)).text, "Program · Running",
+                       "no title and no app: the generic label")
+
+        let auth = programModel(record(.blocked, kind: .auth, app: "gh"))
+        XCTAssertEqual(auth.text, "gh · Waiting for you to sign in")
+        XCTAssertEqual(auth.tone, .alert)
+        XCTAssertEqual(auth.glyph, "●")
+        XCTAssertEqual(programModel(record(.blocked, app: "cargo")).text, "cargo · Waiting for input")
+        XCTAssertEqual(programModel(record(.blocked, kind: .permission, app: "cargo")).text,
+                       "cargo · Awaiting approval")
+        XCTAssertEqual(programModel(record(.error, app: "cargo")).tone, .alert)
+        XCTAssertEqual(programModel(record(.done, app: "cargo")).text, "cargo · Finished")
+        XCTAssertEqual(programModel(record(.done, app: "cargo")).tone, .finished(fade: 0))
+        XCTAssertEqual(programModel(record(.idle, app: "cargo")).text, "cargo · Idle")
+        XCTAssertEqual(programModel(record(.working, app: "cargo"), after: 65).elapsed, "1m 5s")
+    }
+
+    /// Spec 11: the label is the record's `title`, else its `app`, else "Program". A title that
+    /// sanitises to nothing is no title.
+    func testBandPrefersTitleOverApp() {
+        XCTAssertEqual(programModel(record(.working, app: "cargo", title: "Build crate")).text,
+                       "Build crate · Running")
+        XCTAssertEqual(programModel(record(.working, app: "cargo", title: "\u{200B}\u{202E}")).text,
+                       "cargo · Running", "an invisible title falls back to the app")
+        XCTAssertEqual(programModel(record(.working, title: "Build crate")).text, "Build crate · Running")
+    }
+
+    /// The program's own words follow a colon, after the progress.
+    func testBandShowsMessageAfterColon() {
+        XCTAssertEqual(programModel(record(.working, progress: 40, app: "cargo",
+                                           message: "compiling serde")).text,
+                       "cargo · Running · 40%: compiling serde")
+        XCTAssertEqual(programModel(record(.blocked, kind: .question, app: "cargo",
+                                           message: "overwrite?")).text,
+                       "cargo · Waiting for input: overwrite?")
+    }
+
+    /// Spec 15: no bidirectional override or zero-width character from a program reaches the
+    /// band, in its title or its message; control characters never arrive (the engine refuses
+    /// them) and would be stripped anyway.
+    func testTitleIsSanitisedForDisplay() {
+        let model = programModel(record(.working, app: "cargo", title: "\u{202E}gnp.exe\u{202C}",
+                                        message: "a\u{200B}b\u{2066}c"))
+        XCTAssertEqual(model.text, "gnp.exe · Running: abc")
+        for scalar in model.text.unicodeScalars {
+            XCTAssertNotEqual(scalar.properties.generalCategory, .format, "U+\(String(scalar.value, radix: 16))")
+        }
+        let long = programModel(record(.working, app: "cargo", message: String(repeating: "x", count: 500)))
+        XCTAssertLessThanOrEqual(long.text.count, TitleRules.maxLength)
+    }
+
+    /// An agent status that carries a progress from its own reports shows it after the tool.
+    func testTheAgentBandShowsProgress() {
+        var live = status(.working, detail: .tool, tool: "Bash", message: "npm test")
+        live.progress = 40
+        XCTAssertEqual(model(live).text, "Claude Code · Running · Bash · 40%: npm test")
+    }
+
+    /// Spec 14: the band draws the winner of the pane's agent status and its records. The records
+    /// of the agent that holds the status are already folded into it (spec 12: hook first), so
+    /// they are not a second candidate; the resume button and a title-only band only show when
+    /// nothing wins.
+    func testTheBandDrawsTheWinner() throws {
+        let rules = ["claude-code": try AgentRules.parse("""
+        id = "claude-code"
+        name = "Claude Code"
+        process = ["claude"]
+        """)]
+        let working = status(.working, detail: .tool, tool: "Bash")
+        let cargo = record(.blocked, app: "cargo", at: 1)
+        guard case .program(let won)? = ProgramStatusMapper.winner(agent: working, records: [cargo])
+        else { return XCTFail("a blocked cargo outranks a working agent") }
+        XCTAssertEqual(won, cargo)
+
+        let own = record(.blocked, app: "claude", id: "x", at: 1)
+        let byID = record(.working, app: "claude-code", id: "y", at: 1)
+        XCTAssertEqual(ProgramStatusMapper.bandRecords(agent: working, records: [own, cargo, byID],
+                                                       rules: rules), [cargo],
+                       "the agent's own records are part of its status, not a rival on the band")
+        XCTAssertEqual(ProgramStatusMapper.bandRecords(agent: nil, records: [own, cargo], rules: rules),
+                       [own, cargo], "with no status to fold them into, they are drawn as they are")
+        XCTAssertEqual(ProgramStatusMapper.bandRecords(agent: working, records: [own, cargo], rules: [:]),
+                       [own, cargo], "with the rule off, they are generic programs")
+
+        XCTAssertTrue(PaneAgentStrip.draws(status: nil, title: nil, infoStrip: true, stripHeight: 16,
+                                           isTerminal: true, program: true),
+                      "a program alone paints the band")
+        XCTAssertFalse(PaneAgentStrip.draws(status: nil, title: nil, infoStrip: false, stripHeight: 16,
+                                            isTerminal: true, program: true))
+        XCTAssertNil(PaneAgentStrip.resumeLabel(offer: "Resume", status: nil, isTerminal: true,
+                                                program: true),
+                     "a program in the pane owns the band; no resume button")
+        XCTAssertEqual(PaneAgentStrip.resumeLabel(offer: "Resume", status: nil, isTerminal: true), "Resume")
+    }
+
+    /// Spec 18: at most 4 band redraws a second per pane. A 1→100 progress burst in 100 ms draws
+    /// the first value at once and the last one 250 ms later, nothing in between, and no timer
+    /// is left behind once it is drawn.
+    func testBandRedrawsAreCoalesced() throws {
+        var clock = since
+        var scheduled: [(at: Date, run: @MainActor () -> Void)] = []
+        let throttle = BandRedrawThrottle(clock: { clock }, schedule: { delay, run in
+            scheduled.append((clock.addingTimeInterval(delay), run))
+        })
+        func advance(to time: Date) {
+            clock = time
+            let due = scheduled.filter { $0.at <= time }
+            scheduled.removeAll { $0.at <= time }
+            for item in due { item.run() }
+        }
+
+        // The throttle on its own.
+        let pane = UUID()
+        var value = 0
+        var drawn: [(at: Date, value: Int)] = []
+        for step in 1...100 {
+            advance(to: since.addingTimeInterval(Double(step - 1) * 0.001))
+            value = step
+            throttle.request(pane) { drawn.append((clock, value)) }
+        }
+        XCTAssertEqual(drawn.map(\.value), [1], "the first change draws at once")
+        XCTAssertEqual(scheduled.count, 1, "one pending redraw, however many changes")
+        advance(to: since.addingTimeInterval(0.26))
+        XCTAssertEqual(drawn.map(\.value), [1, 100], "the last value is always drawn")
+        XCTAssertTrue(scheduled.isEmpty, "nothing runs while the pane is idle")
+        for (a, b) in zip(drawn, drawn.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(b.at.timeIntervalSince(a.at), 0.25 - 1e-6)
+        }
+        // A change after a quiet spell draws at once again.
+        advance(to: since.addingTimeInterval(2))
+        throttle.request(pane) { drawn.append((clock, 101)) }
+        XCTAssertEqual(drawn.last?.value, 101)
+
+        // Wired through the registry: a burst of reports reaches the pane's records at most once
+        // per 250 ms, and the band ends on the final record.
+        let host = try XCTUnwrap((NSApp.delegate as? AppDelegate)?.screens.primary)
+        let locator = NoticeLocatorStub()
+        let view = PaneView(frame: .zero)
+        locator.entries[view.id] = .init(pane: view, controller: host, workspace: 0,
+                                         activity: PaneActivity(appActive: false, screenKey: false,
+                                                                workspaceVisible: false, focused: false))
+        let store = ProgramStatusStore(clock: { clock })
+        let registry = AgentRegistry(center: NoticeCenter(locator: locator, clock: { clock }),
+                                     locator: locator, programStatus: store, clock: { clock })
+        registry.listenToProgramStatus()
+        registry.bandThrottle = throttle
+        let start = clock.addingTimeInterval(10)
+        var redraws = 0
+        let watch = view.objectWillChange.sink { redraws += 1 }
+        defer { watch.cancel() }
+        for step in 1...100 {
+            advance(to: start.addingTimeInterval(Double(step - 1) * 0.001))
+            store.receive(ProgramStatusReport(state: .working, kind: nil, progress: step, id: [],
+                                              app: "cargo", title: nil, message: nil),
+                          pane: view.id, foregroundGroup: 100)
+        }
+        XCTAssertEqual(redraws, 1)
+        XCTAssertEqual(view.programRecords.first?.report.progress, 1)
+        advance(to: start.addingTimeInterval(0.26))
+        XCTAssertEqual(redraws, 2)
+        XCTAssertEqual(view.programRecords.first?.report.progress, 100)
+        XCTAssertTrue(scheduled.isEmpty)
     }
 }

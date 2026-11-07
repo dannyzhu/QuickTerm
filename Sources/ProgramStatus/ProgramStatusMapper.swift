@@ -58,6 +58,18 @@ enum ProgramStatusMapper {
         }?.winner
     }
 
+    /// The records that compete with `agent` for the band. The records of the agent holding the
+    /// pane's status are already folded into that status (decision 12: while a hook speaks, they
+    /// only add a progress and a message; without one, they are the status), so they are not a
+    /// second candidate: a hook-tracked agent's own `blocked` report must not turn the band to
+    /// "waiting". Every other record competes. `rules` is the set of loaded and enabled rules,
+    /// the same set the registry decides ownership with.
+    static func bandRecords(agent: AgentStatus?, records: [ProgramStatusStore.Record],
+                            rules: [String: AgentRules]) -> [ProgramStatusStore.Record] {
+        guard let agent else { return records }
+        return records.filter { owner(of: $0.report, rules: rules) != agent.agent }
+    }
+
     private static func rank(_ state: AgentState) -> Int {
         switch state {
         case .blocked: 4

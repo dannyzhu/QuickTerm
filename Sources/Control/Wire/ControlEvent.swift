@@ -26,6 +26,7 @@ enum ControlEventType: String, Codable, CaseIterable {
     case noticePosted = "notice.posted"
     case noticeResolved = "notice.resolved"
     case agentStateChanged = "agent.state.changed"
+    case programStatusChanged = "program.status.changed"
 
     /// The two types produced by the notification centre rather than by the snapshot diff.
     /// They are the one exception to two rules and both exceptions live here, spelled once:
@@ -48,7 +49,8 @@ enum ControlEventType: String, Codable, CaseIterable {
         case .paneCwdChanged: "the working directory of a terminal pane changed (OSC 7)"
         case .noticePosted: "a notice was posted on a pane (urgency=needs-user means a human has to go and act there; info is information)"
         case .noticeResolved: "a notice stopped being live (resolution says why: the user typed in that pane, acknowledged it, the state changed, it was superseded, the pane was focused, the pane closed, or the agent process went away)"
-        case .agentStateChanged: "an agent's state in a terminal pane changed (agent, state, detail, tool; message is the agent's own words and reads <redacted> without the token)"
+        case .agentStateChanged: "an agent's state in a terminal pane changed (agent, state, detail, tool, evidence; message is the agent's own words and reads <redacted> without the token)"
+        case .programStatusChanged: "a generic program's OSC 7501 status record in a terminal pane changed state (app, id, state, kind, progress; state cleared = the record is gone; message is the program's own words and reads <redacted> without the token)"
         }
     }
 }
@@ -69,6 +71,8 @@ struct ControlEvent: Codable, Equatable {
     var workspace: Int?
     var pane: String?
     var paneID: String?
+    /// pane.opened / pane.closed: the pane kind (`terminal` | `browser` | …).
+    /// program.status.changed: the blocked kind (`permission` | `question` | `auth`).
     var kind: String?
     var layout: String?
     /// The title for pane.title.changed / pane.opened; for a browser pane it is `<redacted>` to any
@@ -105,17 +109,27 @@ struct ControlEvent: Codable, Equatable {
     var resolution: String?
     /// agent.state.changed: the rule id of the agent (`claude-code`).
     var agent: String?
-    /// agent.state.changed: `idle` | `working` | `blocked` | `done` | `error` | `unknown`.
+    /// agent.state.changed: `idle` | `working` | `blocked` | `done` | `error` | `unknown` |
+    /// `released`. program.status.changed: `idle` | `working` | `blocked` | `done` | `error` |
+    /// `cleared` (the record is gone).
     var state: String?
-    /// agent.state.changed: `thinking` | `tool` | `approval` | `input` | `choice`.
+    /// agent.state.changed: `thinking` | `tool` | `approval` | `input` | `choice` | `auth`.
     var detail: String?
     /// agent.state.changed: a tool **name** (`Bash`) — payload-free, never a command line.
     var tool: String?
-    /// agent.state.changed: `hook` | `report` | `notification` | `process`.
+    /// agent.state.changed: `hook` | `report` | `program-status` | `notification` | `process`.
     var evidence: String?
-    /// agent.state.changed: the agent's own words. **Redacted for a caller without the token**,
-    /// exactly like a notice body — which is what it becomes when the state needs the user.
+    /// agent.state.changed: the agent's own words. program.status.changed: the program's `msg`.
+    /// **Redacted for a caller without the token**, exactly like a notice body — which is what
+    /// it becomes when the state needs the user.
     var message: String?
+    /// program.status.changed: the program's `app` name (`cargo`), absent when it gave none.
+    var app: String?
+    /// program.status.changed: the record's id path (`build/test`), `""` for the pane's root
+    /// record.
+    var id: String?
+    /// program.status.changed: 0–100, when the program reported one.
+    var progress: Int?
 
     static let redactedPlaceholder = "<redacted>"
 
@@ -127,7 +141,8 @@ struct ControlEvent: Codable, Equatable {
          noticeID: String? = nil, urgency: String? = nil, source: String? = nil,
          body: String? = nil, resolution: String? = nil,
          agent: String? = nil, state: String? = nil, detail: String? = nil,
-         tool: String? = nil, evidence: String? = nil, message: String? = nil) {
+         tool: String? = nil, evidence: String? = nil, message: String? = nil,
+         app: String? = nil, id: String? = nil, progress: Int? = nil) {
         self.seq = seq
         self.ts = ts
         self.type = type.rawValue
@@ -153,6 +168,9 @@ struct ControlEvent: Codable, Equatable {
         self.tool = tool
         self.evidence = evidence
         self.message = message
+        self.app = app
+        self.id = id
+        self.progress = progress
     }
 
     /// Timestamp: ISO8601 plus milliseconds (one per event; the formatter itself is static).

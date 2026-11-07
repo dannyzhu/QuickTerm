@@ -186,6 +186,10 @@ struct ControlStatePayload: Codable, Equatable {
         /// (Phase 2). Encoded only when there is a status, so a session with no agents in it
         /// returns exactly the bytes it always did.
         var agent: ControlAgentRecord? = nil
+        /// The pane's OSC 7501 program-status records (spec decision 19), in arrival order.
+        /// Encoded only when the pane holds at least one, so a session with none returns exactly
+        /// the bytes it always did. `agents list` does not carry them.
+        var programs: [ControlProgramRecord]? = nil
 
         struct Position: Codable, Equatable {
             var column: Int?
@@ -298,12 +302,13 @@ struct ControlNoticeRecord: Codable, Equatable {
     /// One-based, **as it was when the notice was posted** (a pane moved while an approval is
     /// pending keeps the count where the alarm was raised; see `NoticeCenter.recomputeCounts`).
     var workspace: Int
-    /// `NoticeSource.id`: `agent:<id>` | `terminal` | `command` | `bell` | `download` | `control` |
-    /// `custom:<name>`. Stable — branch on it.
+    /// `NoticeSource.id`: `agent:<id>` | `program:<app>` | `program` | `terminal` | `command` |
+    /// `bell` | `download` | `control` | `custom:<name>`. Stable — branch on it.
     var source: String
     /// `info` | `needs-user`.
     var urgency: String
-    /// `hook` | `report` | `notification` | `process` | `composed` — where the text came from.
+    /// `hook` | `report` | `program-status` | `notification` | `process` | `composed` — where the
+    /// text came from.
     /// `composed` is the only one that means QuickTerm wrote the sentence itself.
     var evidence: String
     var title: String
@@ -419,7 +424,8 @@ struct ControlAgentRecord: Codable, Equatable {
     var name: String
     /// `idle` | `working` | `blocked` | `done` | `error` | `unknown`. Stable — branch on it.
     var state: String
-    /// What kind of working / blocked: `thinking` | `tool` | `approval` | `input` | `choice`.
+    /// What kind of working / blocked: `thinking` | `tool` | `approval` | `input` | `choice` |
+    /// `auth`.
     var detail: String?
     /// A tool **name** (`Bash`), never a command line.
     var tool: String?
@@ -427,14 +433,40 @@ struct ControlAgentRecord: Codable, Equatable {
     var message: String?
     /// A message exists and was withheld.
     var redacted: Bool?
-    /// `hook` | `report` | `notification` | `process` — how sure we are. A hook is the agent
-    /// telling us; `process` means only that a process with that name is running in the pane.
+    /// `hook` | `report` | `program-status` | `notification` | `process` — how sure we are. A hook
+    /// is the agent telling us; `program-status` is the agent's own OSC 7501 report; `process`
+    /// means only that a process with that name is running in the pane.
     var evidence: String
     var sessionID: String?
     /// When the state last changed. ISO8601 with milliseconds, the same stamp events use.
     var since: String
     /// The pane is waiting for a human (`blocked` or `error`). Encoded only when true.
     var needsUser: Bool?
+}
+
+/// **One OSC 7501 program-status record of a pane** (spec decision 19), as `state` and `get`
+/// carry it in a pane's `programs`.
+///
+/// `title` and `message` are the program's own words and follow `ControlAgentRecord.message`'s
+/// rule exactly (a caller with no `QUICKTERM_TOKEN` reads `<redacted>`); `app`, `id`, `state`,
+/// `kind` and `progress` are validated tokens and a number and always readable.
+struct ControlProgramRecord: Codable, Equatable {
+    /// The record's id path (`build/test`), `""` for the pane's root record.
+    var id: String
+    /// The program's `app` name (`cargo`), absent when it gave none.
+    var app: String?
+    /// `idle` | `working` | `blocked` | `done` | `error`. Stable — branch on it.
+    var state: String
+    /// With `blocked`: `permission` | `question` | `auth`.
+    var kind: String?
+    /// 0–100.
+    var progress: Int?
+    /// The program's own title, made safe for display; `<redacted>` for a caller with no token.
+    var title: String?
+    /// The program's own message, made safe for display; `<redacted>` for a caller with no token.
+    var message: String?
+    /// A title or a message exists and was withheld.
+    var redacted: Bool?
 }
 
 /// One row of `agents list`: the pane, where it is, and its agent.

@@ -313,7 +313,8 @@ final class ControlEventTests: XCTestCase {
             noticeID: "N", urgency: "needs-user", source: "agent:claude-code",
             body: "body", resolution: "state-changed",
             agent: "claude-code", state: "blocked", detail: "approval", tool: "Bash",
-            evidence: "hook", message: "the agent's own words")
+            evidence: "hook", message: "the agent's own words",
+            app: "cargo", id: "build/test", progress: 40)
         let data = try ControlJSON.encoder.encode(populated)
         let object = try XCTUnwrap(
             try ControlJSON.decoder.decode(JSONValue.self, from: data).objectValue)
@@ -324,7 +325,10 @@ final class ControlEventTests: XCTestCase {
                         // Phase 2 appends six: an agent id, its state, the detail, a tool NAME,
                         // how we know, and the agent's own short message. Not one of them can
                         // carry pane output — nothing reads the screen to build any of them.
-                        "agent", "state", "detail", "tool", "evidence", "message"],
+                        "agent", "state", "detail", "tool", "evidence", "message",
+                        // Program status adds three: the program's `app` name, its record id and
+                        // a percentage. All three are short validated tokens or a number.
+                        "app", "id", "progress"],
                        "the event field list is closed: no field carrying pane output may appear")
 
         // The type list is closed as well: no output / scrollback / bell kinds.
@@ -337,7 +341,9 @@ final class ControlEventTests: XCTestCase {
                         "pane.title.changed", "pane.cwd.changed",
                         "notice.posted", "notice.resolved",
                         // Phase 2's one new type: a state, never a stream of output.
-                        "agent.state.changed"])
+                        "agent.state.changed",
+                        // Program status: a generic program's record changed state.
+                        "program.status.changed"])
 
         // Now for real: create a pane, change the layout, switch workspaces — not one event may
         // contain a large blob of text
@@ -491,5 +497,112 @@ final class ControlEventTests: XCTestCase {
         let data = try XCTUnwrap(reply.data)
         let encoded = try ControlJSON.encoder.encode(data)
         return try ControlJSON.decoder.decode(ControlEventsPayload.self, from: encoded)
+    }
+
+    // MARK: Program status (spec decision 19)
+
+    private static let demoRule = """
+    id = "demo"
+    name = "Demo Agent"
+    process = ["demo"]
+
+    [hooks]
+    SessionStart = "idle"
+    SessionEnd   = "released"
+    """
+
+    private func programReport(_ state: ProgramStatusReport.State, id: String = "",
+                               kind: ProgramStatusReport.Kind? = nil, progress: Int? = nil,
+                               app: String?, message: String? = nil) -> ProgramStatusReport {
+        ProgramStatusReport(state: state, kind: kind, progress: progress,
+                            id: id.split(separator: "/").map(String.init),
+                            app: app, title: nil, message: message)
+    }
+
+    /// An agent's own report moves its state with `evidence: "program-status"`; a generic
+    /// program's record has an event of its own, `program.status.changed`, on transitions only,
+    /// with its message redacted like an agent's.
+    func testStateChangedEventEvidence() throws {
+        let registry = AgentRegistry.shared
+        let center = NoticeCenter.shared
+        let store = ProgramStatusStore.shared
+        let savedRules = Array(registry.rules.values)
+        let savedSettings = registry.settings
+        let locator = NoticeLocator(screens: harness.app.screens)
+        center.attach(locator: locator)
+        registry.attach(locator: locator, userRuleDirectory: nil)
+        registry.reloadRulesForTesting([try AgentRules.parse(Self.demoRule)])
+        registry.settings = AgentSettings()
+        registry.settings.enabled = ["demo"]
+        registry.settings.autoInstallHooks = "never"
+        registry.resetForTesting()
+        let pane = try harness.newTerminal()
+        defer {
+            store.paneClosed(pane.id)
+            registry.resetForTesting()
+            registry.reloadRulesForTesting(savedRules)
+            registry.settings = savedSettings
+            center.resetForTesting()
+        }
+        let handle = ControlHandleRegistry.shared.handle(for: pane)
+        func events(since mark: Int, exposed: Bool = true) -> [ControlEvent] {
+            ControlEventBus.shared.flush()
+            return ControlEventBus.shared.batch(since: mark, limit: ControlEventLimits.maxBatch,
+                                                types: nil, exposesBrowser: exposed).events
+        }
+
+        // The agent's own report.
+        var mark = harness.seq
+        store.receive(programReport(.working, app: "demo"), pane: pane.id, foregroundGroup: nil)
+        let agent = try XCTUnwrap(events(since: mark).last { $0.type == ControlEventType.agentStateChanged.rawValue })
+        XCTAssertEqual(agent.agent, "demo")
+        XCTAssertEqual(agent.state, "working")
+        XCTAssertEqual(agent.evidence, "program-status")
+        XCTAssertEqual(agent.pane, handle)
+        XCTAssertFalse(events(since: mark).contains { $0.type == ControlEventType.programStatusChanged.rawValue },
+                       "an agent's record speaks through agent.state.changed only")
+
+        // A generic program.
+        mark = harness.seq
+        store.receive(programReport(.blocked, id: "build/test", kind: .question, progress: 40,
+                                    app: "cargo", message: "overwrite?"),
+                      pane: pane.id, foregroundGroup: nil)
+        let program = events(since: mark).filter { $0.type == ControlEventType.programStatusChanged.rawValue }
+        XCTAssertEqual(program.count, 1)
+        let event = try XCTUnwrap(program.first)
+        XCTAssertEqual(event.pane, handle)
+        XCTAssertEqual(event.paneID, pane.id.uuidString)
+        XCTAssertEqual(event.screen, try harness.controller.screenIndex + 1)
+        XCTAssertNotNil(event.workspace)
+        XCTAssertEqual(event.app, "cargo")
+        XCTAssertEqual(event.id, "build/test")
+        XCTAssertEqual(event.state, "blocked")
+        XCTAssertEqual(event.kind, "question")
+        XCTAssertEqual(event.progress, 40)
+        XCTAssertEqual(event.message, "overwrite?")
+        XCTAssertNil(event.agent)
+        let hidden = try XCTUnwrap(events(since: mark, exposed: false)
+            .first { $0.type == ControlEventType.programStatusChanged.rawValue })
+        XCTAssertEqual(hidden.message, ControlEvent.redactedPlaceholder)
+        XCTAssertEqual(hidden.redacted, true)
+        XCTAssertEqual(hidden.state, "blocked", "redaction covers the message and nothing else")
+        XCTAssertEqual(hidden.app, "cargo")
+
+        // A progress step or a new message is not a transition.
+        mark = harness.seq
+        store.receive(programReport(.blocked, id: "build/test", kind: .question, progress: 41,
+                                    app: "cargo", message: "still?"),
+                      pane: pane.id, foregroundGroup: nil)
+        XCTAssertFalse(events(since: mark).contains { $0.type == ControlEventType.programStatusChanged.rawValue })
+
+        // A record going away is reported as `cleared`.
+        mark = harness.seq
+        store.receive(programReport(.clear, id: "build", app: "cargo"), pane: pane.id, foregroundGroup: nil)
+        let cleared = try XCTUnwrap(events(since: mark)
+            .first { $0.type == ControlEventType.programStatusChanged.rawValue })
+        XCTAssertEqual(cleared.state, "cleared")
+        XCTAssertEqual(cleared.id, "build/test")
+        XCTAssertNil(cleared.kind)
+        XCTAssertNil(cleared.message)
     }
 }

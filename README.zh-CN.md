@@ -352,6 +352,14 @@ quickterm agents list                  # 每个 pane 的 agent 在干什么
 是加一个文件，不是发一个版本。从钩子进到 QuickTerm 的字段只有一张白名单（事件名、session id、工具名、错误类型、消息，
 以及 `tool_input` 里取值为字符串的条目），每个都截到 200 字符——绝不包括 transcript 路径、工作目录或文件内容。
 
+**程序状态（OSC 7501）。** 任何程序都可以打印一条 OSC 7501 序列报告自己的状态
+（`printf '\e]7501;state=working:app=cargo:progress=40\e\\'`），QuickTerm 把它显示在 pane 的状态带上
+（`cargo · 运行中 · 40%`），和显示 agent 一样：`blocked` 发出和等批准一样的提醒，`done`
+和 `error` 发一条普通通知。报告里写的是某个 agent（`app=codex`）时，它会喂给那个 agent 的状态，
+但**钩子优先**：一旦听到过钩子，报告只能补充进度和消息，不能改状态，
+也永远撤不掉钩子发出的提醒。这些记录在 `quickterm state`
+里叫 `programs`。`[agents] program-status = false` 关掉它，所有报告都会被忽略。
+
 ### 安全姿态
 
 - 读是静默的——但**没有继承 `QUICKTERM_TOKEN` 的调用方读不到浏览器 pane 的网址与标题**（`<redacted>`）。浏览器 pane 里装着用户已登录的会话，`quickterm state` 本身就是一个外泄面。
