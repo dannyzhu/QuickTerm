@@ -1,0 +1,1685 @@
+diff --git a/include/ghostty.h b/include/ghostty.h
+index 073dba5b6..ee681bb24 100644
+--- a/include/ghostty.h
++++ b/include/ghostty.h
+@@ -636,6 +636,17 @@ typedef struct {
+   const char* body;
+ } ghostty_action_desktop_notification_s;
+ 
++// apprt.action.ProgramStatus.C
++typedef struct {
++  const char* state;
++  const char* kind;
++  int32_t progress;
++  const char* id;
++  const char* app;
++  const char* title;
++  const char* msg;
++} ghostty_action_program_status_s;
++
+ // apprt.action.SetTitle.C
+ typedef struct {
+   const char* title;
+@@ -921,6 +932,9 @@ typedef enum {
+   GHOSTTY_ACTION_SEARCH_SELECTED,
+   GHOSTTY_ACTION_READONLY,
+   GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD,
++  GHOSTTY_ACTION_PROGRAM_STATUS,
++  GHOSTTY_ACTION_PROMPT_START,
++  GHOSTTY_ACTION_PROGRAM_STATUS_RESET,
+ } ghostty_action_tag_e;
+ 
+ typedef union {
+@@ -962,6 +976,7 @@ typedef union {
+   ghostty_action_search_total_s search_total;
+   ghostty_action_search_selected_s search_selected;
+   ghostty_action_readonly_e readonly;
++  ghostty_action_program_status_s program_status;
+ } ghostty_action_u;
+ 
+ typedef struct {
+@@ -1080,6 +1095,7 @@ ghostty_surface_config_s ghostty_surface_inherited_config(ghostty_surface_t, gho
+ void ghostty_surface_update_config(ghostty_surface_t, ghostty_config_t);
+ bool ghostty_surface_needs_confirm_quit(ghostty_surface_t);
+ bool ghostty_surface_process_exited(ghostty_surface_t);
++int32_t ghostty_surface_foreground_pgid(ghostty_surface_t);
+ void ghostty_surface_refresh(ghostty_surface_t);
+ void ghostty_surface_draw(ghostty_surface_t);
+ void ghostty_surface_set_content_scale(ghostty_surface_t, double, double);
+diff --git a/src/Surface.zig b/src/Surface.zig
+index 73882ab74..40df5f0fb 100644
+--- a/src/Surface.zig
++++ b/src/Surface.zig
+@@ -1149,9 +1149,93 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
+                 .{ .selected = v },
+             );
+         },
++
++        .program_status => |w| {
++            defer w.deinit();
++            self.programStatus(w.slice());
++        },
++
++        .prompt_start => {
++            _ = self.rt_app.performAction(
++                .{ .surface = self },
++                .prompt_start,
++                {},
++            ) catch |err| {
++                log.warn("apprt failed to handle prompt start err={}", .{err});
++            };
++        },
++
++        .program_status_reset => {
++            _ = self.rt_app.performAction(
++                .{ .surface = self },
++                .program_status_reset,
++                {},
++            ) catch |err| {
++                log.warn("apprt failed to handle program status reset err={}", .{err});
++            };
++        },
+     }
+ }
+ 
++/// Hand an OSC 7501 report to the apprt. `body` is the report body the
++/// stream handler copied out of the parser; it was validated there and is
++/// validated again here, so a report that breaks a limit never reaches
++/// the apprt. Every string is copied into a NUL-terminated buffer on the
++/// stack, so the action's strings are valid only during the callback.
++fn programStatus(self: *Surface, body: []const u8) void {
++    const ps = terminal.osc.program_status;
++    const report = ps.reportFromBody(body) orelse {
++        log.warn("dropping invalid OSC 7501 report len={d}", .{body.len});
++        return;
++    };
++
++    var id_buf: [ps.max_id_bytes + 1]u8 = undefined;
++    var app_buf: [ps.max_app_bytes + 1]u8 = undefined;
++    var title_buf: [ps.max_title_bytes + 1]u8 = undefined;
++    var msg_buf: [ps.max_msg_bytes + 1]u8 = undefined;
++
++    const value: apprt.action.ProgramStatus = .{
++        .state = @tagName(report.state),
++        .kind = if (report.readOption(.kind)) |k| @tagName(k) else "",
++        .progress = if (report.readOption(.progress)) |v| v else -1,
++        .id = copyZ(&id_buf, report.readOption(.id) orelse ""),
++        .app = copyZ(&app_buf, report.readOption(.app) orelse ""),
++        .title = textZ(report, .title, &title_buf),
++        .msg = textZ(report, .msg, &msg_buf),
++    };
++
++    _ = self.rt_app.performAction(
++        .{ .surface = self },
++        .program_status,
++        value,
++    ) catch |err| {
++        log.warn("apprt failed to handle program status err={}", .{err});
++    };
++}
++
++/// Copy `s` into `buf` with a NUL after it. The caller sizes `buf` from
++/// the parser's limit, which `s` already passed.
++fn copyZ(buf: []u8, s: []const u8) [:0]const u8 {
++    assert(s.len < buf.len);
++    @memcpy(buf[0..s.len], s);
++    buf[s.len] = 0;
++    return buf[0..s.len :0];
++}
++
++/// Decode a report's `title` or `msg` into `buf` with a NUL after it, or
++/// the empty string when the report has none.
++fn textZ(
++    report: terminal.osc.program_status.Report,
++    comptime option: terminal.osc.program_status.Option,
++    buf: []u8,
++) [:0]const u8 {
++    var writer: std.Io.Writer = .fixed(buf[0 .. buf.len - 1]);
++    report.writeText(option, &writer) catch return "";
++    const len = writer.buffered().len;
++    buf[len] = 0;
++    return buf[0..len :0];
++}
++
+ fn selectionScrollTick(self: *Surface) !void {
+     // If we're no longer active then we don't do anything.
+     if (!self.selection_scroll_active) return;
+diff --git a/src/apprt/action.zig b/src/apprt/action.zig
+index f6865af83..e2a7f172a 100644
+--- a/src/apprt/action.zig
++++ b/src/apprt/action.zig
+@@ -343,6 +343,17 @@ pub const Action = union(Key) {
+     /// otherwise the terminal-set title.
+     copy_title_to_clipboard,
+ 
++    /// A program reported its status with OSC 7501. The report passed
++    /// every limit of the protocol. Keeping records is up to the apprt.
++    program_status: ProgramStatus,
++
++    /// The shell drew a new primary prompt (OSC 133 A).
++    prompt_start,
++
++    /// The terminal was fully reset (RIS). Every program-status record
++    /// of the target surface should be dropped.
++    program_status_reset,
++
+     /// Sync with: ghostty_action_tag_e
+     pub const Key = enum(c_int) {
+         quit,
+@@ -410,6 +421,9 @@ pub const Action = union(Key) {
+         search_selected,
+         readonly,
+         copy_title_to_clipboard,
++        program_status,
++        prompt_start,
++        program_status_reset,
+ 
+         test "ghostty.h Action.Key" {
+             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
+@@ -455,8 +469,9 @@ pub const Action = union(Key) {
+         // At the time of writing, we don't promise ABI compatibility
+         // so we can change this but I want to be aware of it.
+         assert(@sizeOf(CValue) == switch (@sizeOf(usize)) {
+-            4 => 16,
+-            8 => 24,
++            // ProgramStatus.C is the largest member: six pointers and an i32.
++            4 => 28,
++            8 => 56,
+             else => unreachable,
+         });
+     }
+@@ -740,6 +755,44 @@ pub const Pwd = struct {
+ };
+ 
+ /// The desktop notification to show.
++/// An OSC 7501 program-status report. Strings are NUL-terminated and valid
++/// only for the duration of the action; an absent key is the empty string.
++/// `title` and `msg` are already base64-decoded UTF-8 with no control
++/// characters. `kind` is set only for `blocked`, `progress` is -1 when
++/// absent.
++pub const ProgramStatus = struct {
++    state: [:0]const u8,
++    kind: [:0]const u8,
++    progress: i32,
++    id: [:0]const u8,
++    app: [:0]const u8,
++    title: [:0]const u8,
++    msg: [:0]const u8,
++
++    // Sync with: ghostty_action_program_status_s
++    pub const C = extern struct {
++        state: [*:0]const u8,
++        kind: [*:0]const u8,
++        progress: i32,
++        id: [*:0]const u8,
++        app: [*:0]const u8,
++        title: [*:0]const u8,
++        msg: [*:0]const u8,
++    };
++
++    pub fn cval(self: ProgramStatus) C {
++        return .{
++            .state = self.state.ptr,
++            .kind = self.kind.ptr,
++            .progress = self.progress,
++            .id = self.id.ptr,
++            .app = self.app.ptr,
++            .title = self.title.ptr,
++            .msg = self.msg.ptr,
++        };
++    }
++};
++
+ pub const DesktopNotification = struct {
+     title: [:0]const u8,
+     body: [:0]const u8,
+diff --git a/src/apprt/embedded.zig b/src/apprt/embedded.zig
+index 409779f0d..93467dafc 100644
+--- a/src/apprt/embedded.zig
++++ b/src/apprt/embedded.zig
+@@ -1598,6 +1598,15 @@ pub const CAPI = struct {
+         return surface.core_surface.child_exited;
+     }
+ 
++    /// Returns the foreground process group of the surface's pty
++    /// (`tcgetpgrp` on the pty master), or -1 when it is unavailable.
++    /// Read-only and lock-free; safe to call from the main thread.
++    export fn ghostty_surface_foreground_pgid(surface: *Surface) i32 {
++        return switch (surface.core_surface.io.backend) {
++            .exec => |*exec| exec.foregroundPgid() orelse -1,
++        };
++    }
++
+     /// Returns true if the surface has a selection.
+     export fn ghostty_surface_has_selection(surface: *Surface) bool {
+         return surface.core_surface.hasSelection();
+diff --git a/src/apprt/gtk/class/application.zig b/src/apprt/gtk/class/application.zig
+index 039e853aa..8c6fba3e4 100644
+--- a/src/apprt/gtk/class/application.zig
++++ b/src/apprt/gtk/class/application.zig
+@@ -778,6 +778,9 @@ pub const Application = extern struct {
+             .check_for_updates,
+             .undo,
+             .redo,
++            .program_status,
++            .prompt_start,
++            .program_status_reset,
+             => {
+                 log.warn("unimplemented action={}", .{action});
+                 return false;
+diff --git a/src/apprt/surface.zig b/src/apprt/surface.zig
+index 3cb0016fa..350244da7 100644
+--- a/src/apprt/surface.zig
++++ b/src/apprt/surface.zig
+@@ -108,6 +108,18 @@ pub const Message = union(enum) {
+     /// Selected search index change
+     search_selected: ?usize,
+ 
++    /// An OSC 7501 program-status report. This is the report's body
++    /// (everything after `7501;`), already validated by the parser; the
++    /// surface parses it again to build the apprt action.
++    program_status: WriteReq,
++
++    /// OSC 133 A: the shell drew a new primary prompt.
++    prompt_start,
++
++    /// The terminal was fully reset (RIS); every program-status record
++    /// of the surface is gone.
++    program_status_reset,
++
+     pub const ReportTitleStyle = enum {
+         csi_21_t,
+ 
+diff --git a/src/terminal/osc.zig b/src/terminal/osc.zig
+index 0086e48bc..bb3ab21cf 100644
+--- a/src/terminal/osc.zig
++++ b/src/terminal/osc.zig
+@@ -19,6 +19,7 @@ const lib = @import("../lib/main.zig");
+ 
+ pub const color = parsers.color;
+ pub const semantic_prompt = parsers.semantic_prompt;
++pub const program_status = parsers.program_status;
+ 
+ const log = std.log.scoped(.osc);
+ 
+@@ -160,10 +161,18 @@ pub const Command = union(Key) {
+     /// https://uapi-group.org/specifications/specs/osc_context/
+     context_signal: parsers.context_signal.Command,
+ 
++    /// OSC 7501. Program status protocol: a program reports what it is
++    /// doing (idle, working, done, blocked, error), or asks whether the
++    /// terminal supports the protocol.
++    /// https://www.superlogical.com/rex/docs/build/program-status
++    program_status: ProgramStatus,
++
+     pub const SemanticPrompt = parsers.semantic_prompt.Command;
+ 
+     pub const KittyClipboardProtocol = parsers.kitty_clipboard_protocol.OSC;
+ 
++    pub const ProgramStatus = parsers.program_status.Command;
++
+     pub const Key = LibEnum(
+         if (build_options.c_abi) .c else .zig,
+         // NOTE: Order matters, see LibEnum documentation.
+@@ -193,6 +202,7 @@ pub const Command = union(Key) {
+             "kitty_text_sizing",
+             "kitty_clipboard_protocol",
+             "context_signal",
++            "program_status",
+         },
+     );
+ 
+@@ -304,6 +314,9 @@ pub const Parser = struct {
+     fixed: ?std.Io.Writer,
+     /// Allocating writer for accumulating OSC data
+     allocating: ?std.Io.Writer.Allocating,
++    /// Heap buffer of a fixed size for OSCs that accept more than MAX_BUF
++    /// but must never grow past their own limit (OSC 7501). Freed on reset.
++    bounded: ?[]u8,
+     /// Pointer to the active writer for accumulating OSC data
+     writer: ?*std.Io.Writer,
+ 
+@@ -330,6 +343,9 @@ pub const Parser = struct {
+         @"30",
+         @"300",
+         @"3008",
++        @"75",
++        @"750",
++        @"7501",
+         @"10",
+         @"11",
+         @"12",
+@@ -370,6 +386,7 @@ pub const Parser = struct {
+             .state = .start,
+             .fixed = null,
+             .allocating = null,
++            .bounded = null,
+             .writer = null,
+             .command = .invalid,
+ 
+@@ -395,6 +412,7 @@ pub const Parser = struct {
+     pub fn reset(self: *Parser) void {
+         // If we set up an allocating writer, free up that memory.
+         if (self.allocating) |*allocating| allocating.deinit();
++        if (self.bounded) |buf| if (self.alloc) |alloc| alloc.free(buf);
+ 
+         // Handle any cleanup that individual OSCs require.
+         switch (self.command) {
+@@ -425,12 +443,14 @@ pub const Parser = struct {
+             .kitty_text_sizing,
+             .kitty_clipboard_protocol,
+             .context_signal,
++            .program_status,
+             => {},
+         }
+ 
+         self.state = .start;
+         self.fixed = null;
+         self.allocating = null;
++        self.bounded = null;
+         self.writer = null;
+         self.command = .invalid;
+ 
+@@ -477,6 +497,28 @@ pub const Parser = struct {
+         self.writer = &self.allocating.?.writer;
+     }
+ 
++    /// Set up a fixed Writer over a heap buffer of exactly `len` bytes to
++    /// collect the rest of the OSC data. Unlike `writeToAllocating`, the
++    /// buffer never grows: a byte past `len` fails the write and the
++    /// sequence becomes invalid, so input never allocates more than `len`.
++    /// Without an allocator, or if allocation fails, fall back to the fixed
++    /// buffer (shorter limit).
++    inline fn writeToBounded(self: *Parser, comptime len: usize) void {
++        const alloc = self.alloc orelse {
++            self.writeToFixed();
++            return;
++        };
++
++        const buf = alloc.alloc(u8, len) catch {
++            self.writeToFixed();
++            return;
++        };
++
++        self.bounded = buf;
++        self.fixed = .fixed(buf);
++        self.writer = &self.fixed.?;
++    }
++
+     /// Consume the next character c and advance the parser state.
+     pub fn next(self: *Parser, c: u8) void {
+         // If the state becomes invalid for any reason, just discard
+@@ -636,10 +678,26 @@ pub const Parser = struct {
+ 
+             .@"7" => switch (c) {
+                 ';' => self.writeToFixed(),
++                '5' => self.state = .@"75",
+                 '7' => self.state = .@"77",
+                 else => self.state = .invalid,
+             },
+ 
++            .@"75" => switch (c) {
++                '0' => self.state = .@"750",
++                else => self.state = .invalid,
++            },
++
++            .@"750" => switch (c) {
++                '1' => self.state = .@"7501",
++                else => self.state = .invalid,
++            },
++
++            .@"7501" => switch (c) {
++                ';' => self.writeToBounded(parsers.program_status.max_body_bytes),
++                else => self.state = .invalid,
++            },
++
+             .@"77" => switch (c) {
+                 '7' => self.state = .@"777",
+                 else => self.state = .invalid,
+@@ -752,6 +810,12 @@ pub const Parser = struct {
+ 
+             .@"77" => null,
+ 
++            .@"75",
++            .@"750",
++            => null,
++
++            .@"7501" => parsers.program_status.parse(self, terminator_ch),
++
+             .@"133" => parsers.semantic_prompt.parse(self, terminator_ch),
+ 
+             .@"552" => null,
+diff --git a/src/terminal/osc/parsers.zig b/src/terminal/osc/parsers.zig
+index a56b38e88..9657b607c 100644
+--- a/src/terminal/osc/parsers.zig
++++ b/src/terminal/osc/parsers.zig
+@@ -12,6 +12,7 @@ pub const kitty_color = @import("parsers/kitty_color.zig");
+ pub const kitty_text_sizing = @import("parsers/kitty_text_sizing.zig");
+ pub const mouse_shape = @import("parsers/mouse_shape.zig");
+ pub const osc9 = @import("parsers/osc9.zig");
++pub const program_status = @import("parsers/program_status.zig");
+ pub const report_pwd = @import("parsers/report_pwd.zig");
+ pub const rxvt_extension = @import("parsers/rxvt_extension.zig");
+ pub const semantic_prompt = @import("parsers/semantic_prompt.zig");
+diff --git a/src/terminal/osc/parsers/program_status.zig b/src/terminal/osc/parsers/program_status.zig
+new file mode 100644
+index 000000000..1ea8f747c
+--- /dev/null
++++ b/src/terminal/osc/parsers/program_status.zig
+@@ -0,0 +1,1057 @@
++//! OSC 7501: Program Status Protocol
++//!
++//! Specification: https://www.superlogical.com/rex/docs/build/program-status
++//!
++//! A program uses this protocol to tell the terminal what it is doing:
++//! idle, working, done, waiting on the user, or failed. Each report is a
++//! list of `key=value` pairs separated by colons:
++//!
++//! ```
++//! ESC ] 7501 ; state=working:app=cargo:progress=40 ESC \
++//! ```
++//!
++//! A terminal keeps one record per id, and each report replaces its
++//! record completely. This parser only reads and validates one report at
++//! a time. Keeping records is up to the code that handles the command.
++//!
++//! A program can check whether the terminal supports the protocol by
++//! sending `?` as the body. A terminal that supports it replies with `?`.
++//! See `Command.query` and `query_reply`.
++//!
++//! Ported from Ghostty 1.4.0's parser of the same name to the 1.3.1 OSC
++//! parser (QuickTerm engine patch 0005). Differences from 1.4.0: the body
++//! is read from `Parser.writer` (1.3.1 has no `Capture`), the key/value
++//! iterator is local (1.3.1 has no `kitty_metadata.zig`), and the query
++//! reply is the bare `?` with no state or kind lists.
++
++const program_status = @This();
++
++const std = @import("std");
++const osc = @import("../../osc.zig");
++const encoding = @import("../encoding.zig");
++
++const assert = @import("../../../quirks.zig").inlineAssert;
++const Parser = osc.Parser;
++const OSCCommand = osc.Command;
++const Terminator = osc.Terminator;
++
++const log = std.log.scoped(.osc_program_status);
++
++// Size limits from the specification. Every limit counts bytes, not
++// characters. A report that breaks any limit is discarded as a whole.
++
++/// The longest whole sequence, from `ESC ]` through the terminator.
++pub const max_sequence_bytes = 4096;
++
++/// The longest body, everything after `7501;`. This assumes the
++/// longer terminator (`ESC \`), so a sequence ended with BEL is limited
++/// to one byte less than the specification allows. The specification
++/// lets terminals choose lower limits.
++///
++/// The OSC parser collects the body into a buffer of exactly this size,
++/// so a longer body never allocates more than this.
++pub const max_body_bytes = max_sequence_bytes - "\x1b]7501;".len - "\x1b\\".len;
++
++/// The longest key, including keys this parser doesn't know.
++pub const max_key_bytes = 16;
++
++/// The longest `msg` value before and after base64 decoding.
++pub const max_msg_encoded_bytes = 2732;
++pub const max_msg_bytes = 2048;
++
++/// The longest `title` value before and after base64 decoding.
++pub const max_title_encoded_bytes = 256;
++pub const max_title_bytes = 192;
++
++/// The longest `app` value.
++pub const max_app_bytes = 32;
++
++/// The longest `id` value, the longest part between two slashes, and the
++/// most parts an id can have.
++pub const max_id_bytes = 128;
++pub const max_id_segment_bytes = 32;
++pub const max_id_depth = 8;
++
++/// The body of the reply to a support query.
++///
++/// A program asks whether the terminal supports the protocol by sending
++/// `?` as the body. A terminal that does answers with another OSC 7501
++/// whose body is this value, ended with the same terminator the query
++/// used:
++///
++/// ```
++/// program:  ESC ] 7501 ; ? ESC \
++/// terminal: ESC ] 7501 ; ? ESC \
++/// ```
++///
++/// No state or kind lists follow, which means the default states and
++/// kinds of the specification. The reply never contains anything from a
++/// report.
++pub const query_reply = "?";
++
++/// The whole reply to a support query, `ESC ] 7501 ; ? ` followed by the
++/// terminator the query used. Static memory.
++pub fn querySequence(terminator: Terminator) []const u8 {
++    return switch (terminator) {
++        .st => "\x1b]7501;" ++ query_reply ++ "\x1b\\",
++        .bel => "\x1b]7501;" ++ query_reply ++ "\x07",
++    };
++}
++
++/// A parsed OSC 7501 sequence: either a support query or a report.
++pub const Command = union(enum) {
++    pub const C = void;
++    pub const Report = program_status.Report;
++    pub const State = program_status.State;
++    pub const Kind = program_status.Kind;
++    pub const Option = program_status.Option;
++
++    /// The program asked whether the terminal supports the protocol by
++    /// sending `OSC 7501 ; ? ST`. A terminal that supports it answers
++    /// with `query_reply`, ended with this terminator so the program
++    /// recognizes it.
++    query: Terminator,
++
++    /// A valid status report for one record.
++    report: program_status.Report,
++
++    pub fn cval(_: Command) C {
++        return {};
++    }
++};
++
++/// The value of the required `state` key.
++///
++/// - `idle`: at rest, waiting for the user's next instruction.
++/// - `working`: running. May carry a progress percentage.
++/// - `done`: finished a piece of work the user hasn't looked at yet.
++/// - `blocked`: can't continue until the user does something. The
++///   report's `kind` says what. May carry a progress percentage.
++/// - `error`: failed and stopped.
++/// - `clear`: not a real state. Removes the addressed record and every
++///   record beneath it. Without an id, it removes every record.
++pub const State = enum {
++    idle,
++    working,
++    done,
++    blocked,
++    @"error",
++    clear,
++};
++
++/// The value of the `kind` key, which says what a blocked program needs
++/// from the user.
++///
++/// - `permission`: approval to do something.
++/// - `question`: an answer the user has to type.
++/// - `auth`: a login, token, or other credential.
++pub const Kind = enum {
++    permission,
++    question,
++    auth,
++};
++
++/// A status report that passed every check in the specification.
++///
++/// `state` is always present. Read everything else with `readOption`,
++/// and the text values with `writeText`.
++///
++/// The values point into the parser's buffer, so they are only valid
++/// until the next call to the parser. Copy anything you want to keep.
++///
++/// A key the program didn't send reads as null. A report replaces its
++/// record completely, so a null value means the record no longer has
++/// that value, not that the old value should be kept.
++pub const Report = struct {
++    /// What the program is doing.
++    state: State,
++
++    /// Everything after `7501;`, already validated by the parser. Read
++    /// it with `readOption` and `writeText`.
++    data: []const u8 = "",
++
++    /// Read the value of a key, or null if the program didn't send it.
++    /// If the program sent a key more than once, the last value wins.
++    pub fn readOption(
++        self: Report,
++        comptime option: Option,
++    ) ?option.Type() {
++        const v = lastValue(@tagName(option), self.data) orelse return null;
++
++        return switch (option) {
++            // The parser already discarded reports with an invalid id.
++            .id => v,
++            .app => if (isName(v)) v else null,
++            .kind => if (self.state == .blocked) std.meta.stringToEnum(Kind, v) else null,
++            .progress => switch (self.state) {
++                .working, .blocked => parseProgress(v),
++                else => null,
++            },
++            .title, .msg => if (v.len > 0) v else null,
++        };
++    }
++
++    /// Write the decoded text of `title` or `msg` to `writer`. Writes
++    /// nothing if the program didn't send it.
++    ///
++    /// The text is valid UTF-8 with no control characters, but it is
++    /// still untrusted text from the program. It is at most
++    /// `max_title_bytes` or `max_msg_bytes` long.
++    pub fn writeText(
++        self: Report,
++        comptime option: Option,
++        writer: *std.Io.Writer,
++    ) std.Io.Writer.Error!void {
++        comptime assert(option == .title or option == .msg);
++        const encoded = self.readOption(option) orelse return;
++
++        // The parser already checked that this decodes, so it can't fail.
++        var buf: [max_msg_bytes]u8 = undefined;
++        try writer.writeAll(decodeText(encoded, &buf) catch unreachable);
++    }
++};
++
++/// The keys of a report, other than `state`.
++///
++/// - `id`: the record this report is about. Without it, the report is
++///   about the root record, the program itself. A `/` makes one record
++///   the child of another, so `deploy/us-east` is a child of `deploy`.
++/// - `kind`: what a blocked program needs from the user. Only read when
++///   the state is `blocked`. An unknown kind reads as null.
++/// - `progress`: how far along the work is, from 0 to 100. Only read when
++///   the state is `working` or `blocked`. A value outside that range
++///   reads as null.
++/// - `app`: a stable name for the program that a machine can match on,
++///   such as `cargo` or `claude-code`.
++/// - `title`: a short label for the record, meant for people.
++/// - `msg`: one line of text for people.
++///
++/// `readOption` returns `title` and `msg` still encoded as base64. Use
++/// `writeText` to read their text.
++pub const Option = enum {
++    id,
++    kind,
++    progress,
++    app,
++    title,
++    msg,
++
++    pub fn Type(comptime self: Option) type {
++        return switch (self) {
++            .kind => Kind,
++            .progress => u8,
++            .id, .app, .title, .msg => []const u8,
++        };
++    }
++};
++
++/// Parse OSC 7501. The body is everything after `7501;`.
++///
++/// The parser is forgiving about single pairs and strict about the
++/// report as a whole, as the specification requires. It skips a pair
++/// that is malformed or has a key it doesn't know, and keeps going.
++///
++/// It returns null, so nothing from the report is applied, when:
++///
++/// - `state` is missing or isn't a state this parser knows.
++/// - Any key or value is longer than its limit, even one that a later
++///   pair with the same key replaces.
++/// - The id isn't made of valid names joined by single slashes. This
++///   throws out the report instead of skipping the pair, so a report
++///   meant for one record never falls back to the root record.
++/// - `title` or `msg` isn't valid base64, or decodes to text that isn't
++///   UTF-8 or contains a control character.
++pub fn parse(parser: *Parser, terminator_ch: ?u8) ?*OSCCommand {
++    assert(parser.state == .@"7501");
++
++    const writer = parser.writer orelse {
++        parser.state = .invalid;
++        return null;
++    };
++
++    const data = writer.buffered();
++    if (data.len > max_body_bytes) {
++        log.warn("OSC 7501 sequence too long len={d}", .{data.len});
++        parser.state = .invalid;
++        return null;
++    }
++
++    if (std.mem.eql(u8, data, "?")) {
++        parser.command = .{ .program_status = .{ .query = .init(terminator_ch) } };
++        return &parser.command;
++    }
++
++    const state = validate(data) catch |err| {
++        log.warn("invalid OSC 7501 report err={}", .{err});
++        parser.state = .invalid;
++        return null;
++    };
++
++    parser.command = .{ .program_status = .{ .report = .{
++        .state = state,
++        .data = data,
++    } } };
++    return &parser.command;
++}
++
++/// Validate a report body (everything after `7501;`) and return the
++/// report, or null if the specification says to discard it. `parse` does
++/// the same for a sequence in the OSC parser; this is for code that
++/// carries a body it got from `Report.data` across threads and needs the
++/// report back. The report points into `data`.
++pub fn reportFromBody(data: []const u8) ?Report {
++    if (data.len > max_body_bytes) return null;
++    const state = validate(data) catch return null;
++    return .{ .state = state, .data = data };
++}
++
++/// Check a report body against the specification and return its state.
++fn validate(data: []const u8) error{
++    InvalidState,
++    InvalidId,
++    InvalidText,
++    TooLong,
++}!State {
++    // A key that is too long breaks a limit, even a key we don't know.
++    var pairs = std.mem.splitScalar(u8, data, ':');
++    while (pairs.next()) |pair| {
++        const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
++        const key = std.mem.trim(u8, pair[0..eq], &std.ascii.whitespace);
++        if (key.len > max_key_bytes) return error.TooLong;
++    }
++
++    // Every value is checked against its limit, even one a later pair
++    // replaces, because any limit violation discards the whole report.
++    // These iterate the raw values without filtering by the value
++    // alphabet. Filtering would skip an id with a disallowed byte, so the
++    // report would look like it had no id and fall back to the root record.
++    var ids: ValueIterator("id", null) = .init(data);
++    while (ids.next()) |v| try validateId(v);
++    inline for (.{
++        .{ "app", max_app_bytes },
++        .{ "title", max_title_encoded_bytes },
++        .{ "msg", max_msg_encoded_bytes },
++    }) |limit| {
++        var it: ValueIterator(limit[0], null) = .init(data);
++        while (it.next()) |v| if (v.len > limit[1]) return error.TooLong;
++    }
++
++    var buf: [max_msg_bytes]u8 = undefined;
++    if (lastValue("title", data)) |v| {
++        if ((try decodeText(v, &buf)).len > max_title_bytes) return error.TooLong;
++    }
++    if (lastValue("msg", data)) |v| _ = try decodeText(v, &buf);
++
++    // An unknown state discards the report rather than guessing, so a
++    // state added in a later revision never turns into something else.
++    return std.meta.stringToEnum(
++        State,
++        lastValue("state", data) orelse return error.InvalidState,
++    ) orelse error.InvalidState;
++}
++
++/// An iterator over the values of `key` in a colon-separated list of
++/// `key=value` pairs, in order. Whitespace around keys and values is
++/// trimmed. Pairs without an `=` and pairs with another key are skipped.
++/// If `valid_value_bytes` is set, values with any other byte are skipped
++/// too. Returned values are slices of the input. (1.4.0 keeps this in
++/// `osc/kitty_metadata.zig`, which 1.3.1 does not have.)
++fn ValueIterator(
++    comptime key: []const u8,
++    comptime valid_value_bytes: ?[]const u8,
++) type {
++    return struct {
++        const Self = @This();
++
++        data: []const u8,
++        pos: usize,
++
++        pub fn init(data: []const u8) Self {
++            return .{ .data = data, .pos = 0 };
++        }
++
++        pub fn next(self: *Self) ?[]const u8 {
++            while (self.pos < self.data.len) {
++                const end = std.mem.indexOfScalarPos(
++                    u8,
++                    self.data,
++                    self.pos,
++                    ':',
++                ) orelse self.data.len;
++                const field = self.data[self.pos..end];
++                self.pos = if (end < self.data.len) end + 1 else end;
++
++                const eq = std.mem.indexOfScalar(u8, field, '=') orelse continue;
++                const field_key = std.mem.trim(u8, field[0..eq], &std.ascii.whitespace);
++                if (!std.mem.eql(u8, field_key, key)) continue;
++
++                const value = std.mem.trim(u8, field[eq + 1 ..], &std.ascii.whitespace);
++                if (valid_value_bytes) |valid| {
++                    if (std.mem.indexOfNone(u8, value, valid) != null) continue;
++                }
++
++                return value;
++            }
++
++            return null;
++        }
++    };
++}
++
++/// The last value of `key` in a report body. Pairs without an `=` and
++/// values with bytes outside the value alphabet are skipped.
++fn lastValue(comptime key: []const u8, data: []const u8) ?[]const u8 {
++    var it: ValueIterator(key, value_bytes) = .init(data);
++    var last: ?[]const u8 = null;
++    while (it.next()) |v| last = v;
++    return last;
++}
++
++/// The bytes allowed in a name and a value. A name is the form of an
++/// `app` value and of each part of an `id`.
++const name_bytes = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.+-";
++const value_bytes = name_bytes ++ ",/=";
++
++fn isName(s: []const u8) bool {
++    return s.len > 0 and std.mem.indexOfNone(u8, s, name_bytes) == null;
++}
++
++/// Validate an id: names joined by single slashes, within the limits.
++fn validateId(value: []const u8) error{ InvalidId, TooLong }!void {
++    if (value.len > max_id_bytes) return error.TooLong;
++    var depth: usize = 0;
++    var it = std.mem.splitScalar(u8, value, '/');
++    while (it.next()) |segment| {
++        depth += 1;
++        if (depth > max_id_depth) return error.TooLong;
++        if (segment.len > max_id_segment_bytes) return error.TooLong;
++        if (!isName(segment)) return error.InvalidId;
++    }
++}
++
++/// Parse a whole number from 0 to 100. Anything else is treated as
++/// absent. This doesn't use std.fmt because it accepts underscores.
++fn parseProgress(value: []const u8) ?u8 {
++    if (value.len == 0) return null;
++    var n: u16 = 0;
++    for (value) |c| {
++        const digit = std.fmt.charToDigit(c, 10) catch return null;
++        n = n * 10 + digit;
++        if (n > 100) return null;
++    }
++    return @intCast(n);
++}
++
++/// Decode a base64 title or msg into `buf` and check that the text is
++/// safe to show. Padding is optional. The caller must have checked the
++/// encoded length against `max_msg_encoded_bytes`.
++fn decodeText(
++    encoded: []const u8,
++    buf: *[max_msg_bytes]u8,
++) error{ InvalidText, TooLong }![]const u8 {
++    const decoder = if (std.mem.endsWith(u8, encoded, "="))
++        std.base64.standard.Decoder
++    else
++        std.base64.standard_no_pad.Decoder;
++
++    const len = decoder.calcSizeForSlice(encoded) catch
++        return error.InvalidText;
++    if (len > buf.len) return error.TooLong;
++
++    const decoded = buf[0..len];
++    decoder.decode(decoded, encoded) catch return error.InvalidText;
++    if (!encoding.isSafeUtf8(decoded)) return error.InvalidText;
++    return decoded;
++}
++
++/// Feed `input` to a fresh parser and end it with `terminator`. Returns
++/// whether a command came out.
++fn testAccepts(p: *Parser, input: []const u8, terminator: u8) bool {
++    p.reset();
++    for (input) |c| p.next(c);
++    return p.end(terminator) != null;
++}
++
++test "OSC 7501: query" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    for ("7501;?") |c| p.next(c);
++    try testing.expectEqual(Terminator.st, p.end('\x1b').?.program_status.query);
++
++    p.reset();
++    for ("7501;?") |c| p.next(c);
++    try testing.expectEqual(Terminator.bel, p.end(0x07).?.program_status.query);
++}
++
++test "OSC 7501: query reply is the bare question mark" {
++    try std.testing.expectEqualStrings("?", query_reply);
++}
++
++test "OSC 7501: query reply sequence matches the query's terminator" {
++    const testing = std.testing;
++    try testing.expectEqualStrings("\x1b]7501;?\x1b\\", querySequence(.st));
++    try testing.expectEqualStrings("\x1b]7501;?\x07", querySequence(.bel));
++}
++
++test "OSC 7501: the stream dispatches queries and valid reports only" {
++    // The stream's C value union cannot be built for the C ABI (it holds
++    // the semantic prompt command), so this runs in the Zig build only.
++    if (comptime @import("terminal_options").c_abi) return error.SkipZigTest;
++
++    const testing = std.testing;
++    const stream = @import("../../stream.zig");
++
++    const H = struct {
++        queries: std.ArrayListUnmanaged(Terminator) = .empty,
++        states: std.ArrayListUnmanaged(State) = .empty,
++
++        pub fn vt(
++            self: *@This(),
++            comptime action: stream.Action.Tag,
++            value: stream.Action.Value(action),
++        ) !void {
++            switch (action) {
++                .program_status => switch (value) {
++                    .query => |t| try self.queries.append(testing.allocator, t),
++                    .report => |r| try self.states.append(testing.allocator, r.state),
++                },
++                else => {},
++            }
++        }
++
++        pub fn deinit(self: *@This()) void {
++            self.queries.deinit(testing.allocator);
++            self.states.deinit(testing.allocator);
++        }
++    };
++
++    var s: stream.Stream(H) = .initAlloc(testing.allocator, .{});
++    defer s.deinit();
++
++    try s.nextSlice("\x1b]7501;?\x1b\\");
++    try s.nextSlice("\x1b]7501;?\x07");
++    try s.nextSlice("\x1b]7501;state=working:app=cargo\x07");
++    try s.nextSlice("\x1b]7501;state=sleeping\x07");
++    try s.nextSlice("\x1b]7501;state=done:msg=Gw==\x1b\\");
++    try s.nextSlice("\x1b]7501;state=blocked:kind=question\x1b\\");
++
++    try testing.expectEqualSlices(Terminator, &.{ .st, .bel }, s.handler.queries.items);
++    try testing.expectEqualSlices(State, &.{ .working, .blocked }, s.handler.states.items);
++}
++
++test "OSC 7501: minimal report" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    for ("7501;state=idle") |c| p.next(c);
++    const report = p.end('\x1b').?.program_status.report;
++    try testing.expectEqual(State.idle, report.state);
++    try testing.expect(report.readOption(.kind) == null);
++    try testing.expect(report.readOption(.progress) == null);
++    try testing.expect(report.readOption(.id) == null);
++    try testing.expect(report.readOption(.app) == null);
++    try testing.expect(report.readOption(.title) == null);
++    try testing.expect(report.readOption(.msg) == null);
++}
++
++test "OSC 7501: all keys" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    // "Plan" and "Apply 3 to add, 1 to change, 0 to destroy?"
++    for ("7501;state=blocked:kind=permission:progress=42:id=tf/plan:app=terraform" ++
++        ":title=UGxhbg==:msg=QXBwbHkgMyB0byBhZGQsIDEgdG8gY2hhbmdlLCAwIHRvIGRlc3Ryb3k/") |c| p.next(c);
++    const report = p.end('\x1b').?.program_status.report;
++    try testing.expectEqual(State.blocked, report.state);
++    try testing.expectEqual(Kind.permission, report.readOption(.kind).?);
++    try testing.expectEqual(@as(u8, 42), report.readOption(.progress).?);
++    try testing.expectEqualStrings("tf/plan", report.readOption(.id).?);
++    try testing.expectEqualStrings("terraform", report.readOption(.app).?);
++
++    var buf: [max_msg_bytes]u8 = undefined;
++    var title: std.Io.Writer = .fixed(&buf);
++    try report.writeText(.title, &title);
++    try testing.expectEqualStrings("Plan", title.buffered());
++
++    var msg: std.Io.Writer = .fixed(&buf);
++    try report.writeText(.msg, &msg);
++    try testing.expectEqualStrings(
++        "Apply 3 to add, 1 to change, 0 to destroy?",
++        msg.buffered(),
++    );
++}
++
++test "OSC 7501: every state" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    inline for (.{ "idle", "working", "done", "blocked", "error", "clear" }) |name| {
++        p.reset();
++        for ("7501;state=" ++ name) |c| p.next(c);
++        const report = p.end('\x1b').?.program_status.report;
++        try testing.expectEqualStrings(name, @tagName(report.state));
++    }
++}
++
++test "OSC 7501: state=clear with and without id" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    for ("7501;state=clear") |c| p.next(c);
++    var report = p.end('\x1b').?.program_status.report;
++    try testing.expectEqual(State.clear, report.state);
++    try testing.expect(report.readOption(.id) == null);
++
++    p.reset();
++    for ("7501;state=clear:id=deploy/us-east") |c| p.next(c);
++    report = p.end('\x1b').?.program_status.report;
++    try testing.expectEqual(State.clear, report.state);
++    try testing.expectEqualStrings("deploy/us-east", report.readOption(.id).?);
++}
++
++test "OSC 7501: ST and BEL terminators both end a report" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    for ([_]u8{ '\x1b', 0x07 }) |terminator| {
++        p.reset();
++        for ("7501;state=working:app=cargo") |c| p.next(c);
++        const report = p.end(terminator).?.program_status.report;
++        try testing.expectEqual(State.working, report.state);
++        try testing.expectEqualStrings("cargo", report.readOption(.app).?);
++    }
++}
++
++test "OSC 7501: base64 padding is optional" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    for ("7501;state=done:msg=UGxhbg") |c| p.next(c);
++    const report = p.end('\x1b').?.program_status.report;
++
++    var buf: [max_msg_bytes]u8 = undefined;
++    var msg: std.Io.Writer = .fixed(&buf);
++    try report.writeText(.msg, &msg);
++    try testing.expectEqualStrings("Plan", msg.buffered());
++}
++
++test "OSC 7501: whitespace around keys and values" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    for ("7501; state = working :\tapp=cargo\t") |c| p.next(c);
++    const report = p.end('\x1b').?.program_status.report;
++    try testing.expectEqual(State.working, report.state);
++    try testing.expectEqualStrings("cargo", report.readOption(.app).?);
++}
++
++test "OSC 7501: last value wins" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    for ("7501;state=idle:app=a:state=done:app=b") |c| p.next(c);
++    const report = p.end('\x1b').?.program_status.report;
++    try testing.expectEqual(State.done, report.state);
++    try testing.expectEqualStrings("b", report.readOption(.app).?);
++}
++
++test "OSC 7501: malformed pairs and unknown keys are skipped" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    for ("7501;garbage:=x:Bad=1:app=b@d:future=yes:state=working:app=ok:::") |c| p.next(c);
++    const report = p.end('\x1b').?.program_status.report;
++    try testing.expectEqual(State.working, report.state);
++    try testing.expectEqualStrings("ok", report.readOption(.app).?);
++}
++
++test "OSC 7501: unknown state discards the report" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    try testing.expect(!testAccepts(&p, "7501;state=sleeping:app=cargo", '\x1b'));
++    // A known state followed by an unknown one: the last value wins, and
++    // it is unknown, so the whole report goes.
++    try testing.expect(!testAccepts(&p, "7501;state=idle:state=paused", '\x1b'));
++}
++
++test "OSC 7501: kind and progress only apply to some states" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    for ("7501;state=working:kind=auth:progress=10") |c| p.next(c);
++    var report = p.end('\x1b').?.program_status.report;
++    try testing.expect(report.readOption(.kind) == null);
++    try testing.expectEqual(@as(u8, 10), report.readOption(.progress).?);
++
++    p.reset();
++    for ("7501;state=done:kind=auth:progress=10") |c| p.next(c);
++    report = p.end('\x1b').?.program_status.report;
++    try testing.expect(report.readOption(.kind) == null);
++    try testing.expect(report.readOption(.progress) == null);
++
++    inline for (.{ "permission", "question", "auth" }) |kind| {
++        p.reset();
++        for ("7501;state=blocked:kind=" ++ kind) |c| p.next(c);
++        report = p.end('\x1b').?.program_status.report;
++        try testing.expectEqualStrings(kind, @tagName(report.readOption(.kind).?));
++    }
++
++    // A kind outside the set reads as absent; the report stays.
++    p.reset();
++    for ("7501;state=blocked:kind=dance") |c| p.next(c);
++    report = p.end('\x1b').?.program_status.report;
++    try testing.expectEqual(State.blocked, report.state);
++    try testing.expect(report.readOption(.kind) == null);
++}
++
++test "OSC 7501: out of range progress is absent" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    const cases = [_]struct { []const u8, ?u8 }{
++        .{ "0", 0 },
++        .{ "100", 100 },
++        .{ "101", null },
++        .{ "256", null },
++        .{ "99999999999999999999", null },
++        .{ "-1", null },
++        .{ "+1", null },
++        .{ "4.5", null },
++        .{ "1_0", null },
++        .{ "007", 7 },
++        .{ "", null },
++    };
++
++    for (cases) |case| {
++        p.reset();
++        for ("7501;state=working:progress=") |c| p.next(c);
++        for (case[0]) |c| p.next(c);
++        const report = p.end('\x1b').?.program_status.report;
++        try testing.expectEqual(case[1], report.readOption(.progress));
++    }
++}
++
++test "OSC 7501: app with bad characters is ignored" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    for ([_][]const u8{ "a/b", "a,b", "a=b", "a@b", "" }) |app| {
++        p.reset();
++        for ("7501;state=idle:app=") |c| p.next(c);
++        for (app) |c| p.next(c);
++        const report = p.end('\x1b').?.program_status.report;
++        try testing.expect(report.readOption(.app) == null);
++    }
++}
++
++test "OSC 7501: ids" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    const max_segment: [max_id_segment_bytes]u8 = @splat('a');
++    const valid = [_][]const u8{
++        "a",
++        "build/test",
++        "A-Z_0.9+",
++        &max_segment,
++        "a/b/c/d/e/f/g/h",
++    };
++    for (valid) |id| {
++        p.reset();
++        for ("7501;state=clear:id=") |c| p.next(c);
++        for (id) |c| p.next(c);
++        const report = p.end('\x1b').?.program_status.report;
++        try testing.expectEqualStrings(id, report.readOption(.id).?);
++    }
++
++    const long: [31]u8 = @splat('a');
++    const longs: [128]u8 = std.simd.repeat(128, long ++ "/".*);
++
++    // An invalid id discards the report so that it can never fall back
++    // to the root record.
++    const invalid = [_][]const u8{
++        "",
++        "/",
++        "a/",
++        "/a",
++        "a//b",
++        "a,b",
++        "a=b",
++        "a@b",
++        "a b",
++        "a%20b",
++        max_segment ++ "a",
++        "a/b/c/d/e/f/g/h/i",
++        longs ++ "a",
++    };
++    for (invalid) |id| {
++        for ([_]u8{ '\x1b', 0x07 }) |terminator| {
++            p.reset();
++            for ("7501;state=clear:id=") |c| p.next(c);
++            for (id) |c| p.next(c);
++            try testing.expect(p.end(terminator) == null);
++        }
++
++        // An invalid id is never replaced by a later valid one.
++        p.reset();
++        for ("7501;state=clear:id=") |c| p.next(c);
++        for (id) |c| p.next(c);
++        for (":id=a") |c| p.next(c);
++        try testing.expect(p.end('\x1b') == null);
++    }
++}
++
++test "OSC 7501: limits apply to values with disallowed bytes" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    const long_app: [max_app_bytes]u8 = @splat('a');
++    for ("7501;state=idle:app=@") |c| p.next(c);
++    for (&long_app) |c| p.next(c);
++    try testing.expect(p.end('\x1b') == null);
++}
++
++test "OSC 7501: text must decode to safe UTF-8" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    const invalid = [_][]const u8{
++        // Not base64.
++        "7501;state=done:msg=a",
++        "7501;state=done:msg=QQ=",
++        "7501;state=done:title=a",
++        // Bytes of the value alphabet that base64 does not use.
++        "7501;state=done:msg=a.b,",
++        // "a\nb", a control character.
++        "7501;state=done:msg=YQpi",
++        // "\x9b", a C1 control character as UTF-8.
++        "7501;state=done:msg=wps=",
++        // Invalid UTF-8.
++        "7501;state=done:msg=/w==",
++        // "\x1b", ESC, in msg and in title.
++        "7501;state=done:msg=Gw==",
++        "7501;state=done:title=Gw==",
++        // "a\x1b[31mb", an SGR sequence hidden in text.
++        "7501;state=done:msg=YRtbMzFtYg==",
++        // U+0085 (NEL), a C1 control, as UTF-8 C2 85, in msg and title.
++        "7501;state=done:msg=woU=",
++        "7501;state=done:title=woU=",
++        // U+007F, DEL.
++        "7501;state=done:title=fw==",
++        // U+0000, NUL.
++        "7501;state=done:msg=AA==",
++    };
++    for (invalid) |input| {
++        try testing.expect(!testAccepts(&p, input, '\x1b'));
++    }
++
++    // A value with bytes outside the value alphabet is a malformed pair:
++    // it is skipped, not decoded, and the report stays.
++    p.reset();
++    for ("7501;state=done:msg=!!!!") |c| p.next(c);
++    try testing.expect(p.end('\x1b').?.program_status.report.readOption(.msg) == null);
++
++    // Unicode is fine. "安全"
++    p.reset();
++    for ("7501;state=done:msg=5a6J5YWo") |c| p.next(c);
++    const report = p.end('\x1b').?.program_status.report;
++    var buf: [max_msg_bytes]u8 = undefined;
++    var msg: std.Io.Writer = .fixed(&buf);
++    try report.writeText(.msg, &msg);
++    try testing.expectEqualStrings("安全", msg.buffered());
++}
++
++test "OSC 7501: empty text is absent" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    for ("7501;state=done:msg=:title=") |c| p.next(c);
++    const report = p.end('\x1b').?.program_status.report;
++    try testing.expect(report.readOption(.msg) == null);
++    try testing.expect(report.readOption(.title) == null);
++}
++
++test "OSC 7501: discarded reports" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    // 192 bytes of title and 2048 bytes of message are the most allowed.
++    // "QUFB" decodes to "AAA" and "QUE" to "AA".
++    @setEvalBranchQuota(4096);
++    const title: [max_title_encoded_bytes]u8 = std.simd.repeat(max_title_encoded_bytes, "QUFB".*);
++    const main: [max_msg_bytes / 3 * 4]u8 = std.simd.repeat(max_msg_bytes / 3 * 4, "QUFB".*);
++    const msg = main ++ "QUE";
++    const fill = max_sequence_bytes - "\x1b]7501;state=idle:".len - "\x1b\\".len;
++
++    const cases = [_]struct { []const u8, bool }{
++        // A missing or unknown state.
++        .{ "7501;", false },
++        .{ "7501;app=cargo", false },
++        .{ "7501;state=sleeping", false },
++        .{ "7501;state=", false },
++        .{ "7501;state=IDLE", false },
++
++        // A key of 16 bytes is fine, 17 is too long, even one we don't know.
++        .{ "7501;state=idle:" ++ @as([max_key_bytes]u8, @splat('a')) ++ "=1", true },
++        .{ "7501;state=idle:" ++ @as([max_key_bytes + 1]u8, @splat('a')) ++ "=1", false },
++
++        // An app of 32 bytes is fine, 33 is too long, even if a later
++        // pair replaces it.
++        .{ "7501;state=idle:app=" ++ @as([max_app_bytes]u8, @splat('a')), true },
++        .{ "7501;state=idle:app=" ++ @as([max_app_bytes + 1]u8, @splat('a')), false },
++        .{ "7501;state=idle:app=" ++ @as([max_app_bytes + 1]u8, @splat('a')) ++ ":app=ok", false },
++
++        // Title: 256 encoded / 192 decoded is the most. 257 encoded is
++        // too long. A title decoding to 193 or more bytes needs at least
++        // 258 encoded bytes, so it always breaks the encoded limit too
++        // (260 / 195 here).
++        .{ "7501;state=idle:title=" ++ title, true },
++        .{ "7501;state=idle:title=" ++ title ++ "Q", false },
++        .{ "7501;state=idle:title=" ++ title ++ "QUFB", false },
++
++        // Msg: 2731 encoded / 2048 decoded is accepted. 2732 encoded is
++        // within the encoded limit but decodes to 2049 bytes. 2733
++        // encoded is over the encoded limit.
++        .{ "7501;state=idle:msg=" ++ msg, true },
++        .{ "7501;state=idle:msg=" ++ main ++ "QUFB", false },
++        .{ "7501;state=idle:msg=" ++ main ++ "QUFBQ", false },
++
++        // The whole sequence, including `ESC ]` and the `ESC \`
++        // terminator: 4096 bytes is fine, 4097 is too long.
++        .{ "7501;state=idle:" ++ @as([fill]u8, @splat('x')), true },
++        .{ "7501;state=idle:" ++ @as([fill + 1]u8, @splat('x')), false },
++
++        // Numbers that only start like 7501.
++        .{ "75;state=idle", false },
++        .{ "750;state=idle", false },
++        .{ "75010;state=idle", false },
++        .{ "7501", false },
++        .{ "7502;state=idle", false },
++    };
++    for (cases) |case| {
++        try testing.expectEqual(case[1], testAccepts(&p, case[0], '\x1b'));
++    }
++
++    // The lengths the comments above claim.
++    try testing.expectEqual(@as(usize, 2731), msg.len);
++    try testing.expectEqual(@as(usize, 2732), (main ++ "QUFB").len);
++}
++
++test "OSC 7501: id limits" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    // 8 parts deep is fine, 9 is too deep.
++    try testing.expect(testAccepts(&p, "7501;state=idle:id=a/b/c/d/e/f/g/h", '\x1b'));
++    try testing.expect(!testAccepts(&p, "7501;state=idle:id=a/b/c/d/e/f/g/h/i", '\x1b'));
++
++    // A part of 32 bytes is fine, 33 is too long.
++    const seg32: [32]u8 = @splat('s');
++    try testing.expect(testAccepts(&p, "7501;state=idle:id=" ++ seg32, '\x1b'));
++    try testing.expect(!testAccepts(&p, "7501;state=idle:id=" ++ seg32 ++ "s", '\x1b'));
++
++    // 128 bytes in all is fine, 129 is too long. Four 31-byte parts and
++    // slashes make 127 bytes; one more byte on the last part makes 128.
++    const seg31: [31]u8 = @splat('i');
++    const id127 = seg31 ++ "/" ++ seg31 ++ "/" ++ seg31 ++ "/" ++ seg31;
++    try testing.expectEqual(@as(usize, 127), id127.len);
++    try testing.expect(testAccepts(&p, "7501;state=idle:id=" ++ id127 ++ "i", '\x1b'));
++    try testing.expect(!testAccepts(&p, "7501;state=idle:id=" ++ id127 ++ "/ii", '\x1b'));
++    try testing.expectEqual(@as(usize, 130), (id127 ++ "/ii").len);
++    // Exactly 129 bytes: five parts.
++    const id129 = id127 ++ "/i";
++    try testing.expectEqual(@as(usize, 129), id129.len);
++    try testing.expect(!testAccepts(&p, "7501;state=idle:id=" ++ id129, '\x1b'));
++}
++
++test "OSC 7501: a long body never allocates past the limit" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    for ("7501;state=idle:") |c| p.next(c);
++    for (0..max_body_bytes * 4) |_| p.next('x');
++
++    // The capture buffer is exactly the body limit and did not grow.
++    try testing.expectEqual(@as(usize, max_body_bytes), p.writer.?.buffer.len);
++    try testing.expect(p.end('\x1b') == null);
++}
++
++test "OSC 7501: reportFromBody round-trips a parsed report" {
++    const testing = std.testing;
++
++    var p: Parser = .init(testing.allocator);
++    defer p.deinit();
++
++    for ("7501;state=working:app=cargo:progress=40:msg=UGxhbg") |c| p.next(c);
++    const parsed = p.end('\x1b').?.program_status.report;
++
++    // A copy of the body, as the stream handler hands it to the surface.
++    var copy: [64]u8 = undefined;
++    @memcpy(copy[0..parsed.data.len], parsed.data);
++    const report = reportFromBody(copy[0..parsed.data.len]).?;
++    try testing.expectEqual(State.working, report.state);
++    try testing.expectEqualStrings("cargo", report.readOption(.app).?);
++    try testing.expectEqual(@as(u8, 40), report.readOption(.progress).?);
++
++    try testing.expect(reportFromBody("state=sleeping") == null);
++    try testing.expect(reportFromBody("state=idle:msg=Gw==") == null);
++    try testing.expect(reportFromBody("?") == null);
++    const too_long: [max_body_bytes + 1]u8 = @splat('x');
++    try testing.expect(reportFromBody(&too_long) == null);
++}
++
++test "OSC 7501: no allocator" {
++    const testing = std.testing;
++
++    var p: Parser = .init(null);
++    defer p.deinit();
++
++    for ("7501;state=working:app=cargo") |c| p.next(c);
++    const report = p.end('\x1b').?.program_status.report;
++    try testing.expectEqual(State.working, report.state);
++    try testing.expectEqualStrings("cargo", report.readOption(.app).?);
++}
+diff --git a/src/terminal/stream.zig b/src/terminal/stream.zig
+index e89c73e66..fa3b56ccd 100644
+--- a/src/terminal/stream.zig
++++ b/src/terminal/stream.zig
+@@ -126,6 +126,7 @@ pub const Action = union(Key) {
+     kitty_color_report: kitty.color.OSC,
+     color_operation: ColorOperation,
+     semantic_prompt: SemanticPrompt,
++    program_status: ProgramStatus,
+ 
+     pub const Key = lib.Enum(
+         lib_target,
+@@ -223,6 +224,7 @@ pub const Action = union(Key) {
+             "kitty_color_report",
+             "color_operation",
+             "semantic_prompt",
++            "program_status",
+         },
+     );
+ 
+@@ -401,6 +403,8 @@ pub const Action = union(Key) {
+     };
+ 
+     pub const SemanticPrompt = osc.Command.SemanticPrompt;
++
++    pub const ProgramStatus = osc.Command.ProgramStatus;
+ };
+ 
+ /// Returns a type that can process a stream of tty control characters.
+@@ -2043,6 +2047,10 @@ pub fn Stream(comptime Handler: type) type {
+                     try self.handler.vt(.progress_report, v);
+                 },
+ 
++                .program_status => |v| {
++                    try self.handler.vt(.program_status, v);
++                },
++
+                 .conemu_sleep,
+                 .conemu_show_message_box,
+                 .conemu_change_tab_title,
+diff --git a/src/terminal/stream_readonly.zig b/src/terminal/stream_readonly.zig
+index 5b97bebfa..83d6fd54e 100644
+--- a/src/terminal/stream_readonly.zig
++++ b/src/terminal/stream_readonly.zig
+@@ -186,6 +186,7 @@ pub const Handler = struct {
+             .report_pwd,
+             .show_desktop_notification,
+             .progress_report,
++            .program_status,
+             .clipboard_contents,
+             .title_push,
+             .title_pop,
+diff --git a/src/termio/Exec.zig b/src/termio/Exec.zig
+index af4df3fef..9805fd3c4 100644
+--- a/src/termio/Exec.zig
++++ b/src/termio/Exec.zig
+@@ -58,6 +58,18 @@ pub fn deinit(self: *Exec) void {
+     self.subprocess.deinit();
+ }
+ 
++/// The foreground process group of the pty (`tcgetpgrp` on the master),
++/// or null before the pty exists, after an error, or on a platform
++/// without one. Read-only: it reads the master fd number, set once when
++/// the subprocess starts, and takes no lock, so any thread may call it.
++pub fn foregroundPgid(self: *const Exec) ?i32 {
++    if (comptime builtin.os.tag == .windows or builtin.os.tag == .ios) return null;
++    const pty = self.subprocess.pty orelse return null;
++    const pgid = Subprocess.c.tcgetpgrp(pty.master);
++    if (pgid <= 0) return null;
++    return @intCast(pgid);
++}
++
+ /// Call to initialize the terminal state as necessary for this backend.
+ /// This is called before any termio begins. This should not be called
+ /// after termio begins because it may put the internal terminal state
+diff --git a/src/termio/stream_handler.zig b/src/termio/stream_handler.zig
+index 8c1b5b8ab..c1d34b52e 100644
+--- a/src/termio/stream_handler.zig
++++ b/src/termio/stream_handler.zig
+@@ -318,6 +318,7 @@ pub const StreamHandler = struct {
+             .report_pwd => try self.reportPwd(value.url),
+             .show_desktop_notification => try self.showDesktopNotification(value.title, value.body),
+             .progress_report => self.progressReport(value),
++            .program_status => try self.programStatus(value),
+             .start_hyperlink => try self.startHyperlink(value.uri, value.id),
+             .clipboard_contents => try self.clipboardContents(value.kind, value.data),
+             .semantic_prompt => try self.semanticPrompt(value),
+@@ -956,6 +957,10 @@ pub const StreamHandler = struct {
+ 
+         // Clear the progress bar
+         self.progressReport(.{ .state = .remove });
++
++        // A full reset drops every OSC 7501 program-status record the
++        // app keeps for this surface.
++        self.surfaceMessageWriter(.program_status_reset);
+     }
+ 
+     pub fn queryKittyKeyboard(self: *StreamHandler) !void {
+@@ -1087,13 +1092,27 @@ pub const StreamHandler = struct {
+                 self.surfaceMessageWriter(.{ .stop_command = code });
+             },
+ 
++            // OSC 133 A (and N, which is A after ending a command): a new
++            // primary prompt. Tell the app so it can drop program-status
++            // records that end at the next prompt. OSC 133 P with a
++            // primary kind counts too: zsh sends only `P;k=i` when a
++            // plugin rebuilt PS1 without its A mark, and bash sends it
++            // after its A (a second prompt_start is harmless). A
++            // continuation, secondary or right prompt line (k=c, k=s,
++            // k=r; zsh marks continuation lines with A too) is not a new
++            // prompt.
++            .fresh_line_new_prompt,
++            .new_command,
++            .prompt_start,
++            => switch (cmd.readOption(.prompt_kind) orelse .initial) {
++                .initial => self.surfaceMessageWriter(.prompt_start),
++                .right, .continuation, .secondary => {},
++            },
++
+             // Handled by Terminal, no special handling by us
+             .end_prompt_start_input,
+             .end_prompt_start_input_terminate_eol,
+             .fresh_line,
+-            .fresh_line_new_prompt,
+-            .new_command,
+-            .prompt_start,
+             => {},
+         }
+ 
+@@ -1544,6 +1563,29 @@ pub const StreamHandler = struct {
+         // the read() syscall.
+     }
+ 
++    /// OSC 7501 program status. A query is answered on the pty with the
++    /// bare `?` (default states and kinds), ended with the terminator the
++    /// query used; the reply never contains anything from a report. A
++    /// report, already validated by the parser, goes to the surface as
++    /// its raw body; the surface decodes it on the app thread.
++    fn programStatus(
++        self: *StreamHandler,
++        cmd: terminal.osc.Command.ProgramStatus,
++    ) !void {
++        switch (cmd) {
++            .query => |terminator| self.messageWriter(.{
++                .write_stable = terminal.osc.program_status.querySequence(terminator),
++            }),
++
++            .report => |report| self.surfaceMessageWriter(.{
++                .program_status = try apprt.surface.Message.WriteReq.init(
++                    self.alloc,
++                    report.data,
++                ),
++            }),
++        }
++    }
++
+     /// Display a GUI progress report.
+     fn progressReport(self: *StreamHandler, report: terminal.osc.Command.ProgressReport) void {
+         self.surfaceMessageWriter(.{ .progress_report = report });
