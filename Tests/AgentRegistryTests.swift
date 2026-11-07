@@ -59,6 +59,9 @@ final class AgentRegistryTests: XCTestCase {
     [hooks]
     SessionStart = "idle"
     SessionEnd   = "released"
+
+    [notifications]
+    "Other needs your permission" = "blocked:approval"
     """
 
     override func setUp() async throws {
@@ -1065,4 +1068,106 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertEqual(registry.status(pane: pane.id)?.state, .working)
         XCTAssertTrue(live(pane.id, source: "agent:demo").isEmpty)
     }
+
+    // MARK: Program status fix round 1
+
+    /// Critical 1: the pane's status belongs to another agent while demo's hook alarm is still
+    /// live. A printed report under demo's name may neither supersede that alarm nor resolve it.
+    func testAReportCannotTakeAHookAlarmOnceAnotherAgentHoldsThePane() throws {
+        useProgramStore()
+        try loadTwoRules()
+        let pane = try addPane()
+        let origin = NoticeOrigin(lineageRoot: 4242, sessionID: "s1")
+        let posted = try XCTUnwrap(registry.apply(hook("PermissionRequest", tool: "Bash", session: "s1"),
+                                                  pane: pane.id, origin: origin).noticePosted)
+
+        // (1) A printed OSC 9 text hands the pane's status to the other agent.
+        registry.observeEngine(pane: pane.id,
+                               .notification(title: "Other needs your permission", body: ""))
+        XCTAssertEqual(registry.status(pane: pane.id)?.agent, "other")
+        // (2) A printed report in demo's name asks a question...
+        send(report(.blocked, kind: .question), pane.id)
+        // (3) ...and then says it is working again.
+        send(report(.working), pane.id)
+
+        let alarm = try XCTUnwrap(center.notice(id: posted))
+        XCTAssertTrue(alarm.isLive, "the hook's alarm is still live")
+        XCTAssertEqual(live(pane.id, source: "agent:demo").map(\.id), [posted], "under its own id")
+        XCTAssertEqual(alarm.origin, origin)
+        XCTAssertEqual(alarm.evidence, .hook)
+    }
+
+    /// Important 1: a hook answering its own approval resolves its own alarm, not cargo's, which
+    /// is still blocked; the forecast does not count cargo's either, and neither does the agent
+    /// going away.
+    func testAHookAnsweringItsApprovalLeavesCargosAlarm() throws {
+        useProgramStore()
+        let pane = try addPane()
+        send(report(.blocked, kind: .question, id: "build", app: "cargo"), pane.id)
+        XCTAssertEqual(center.stateChangeForecast(pane: pane.id, origin: nil).resolved, 0,
+                       "a program's alarm is not an agent's to resolve")
+
+        let origin = NoticeOrigin(lineageRoot: 4242, sessionID: "s1")
+        registry.apply(hook("PermissionRequest", tool: "Bash", session: "s1"), pane: pane.id,
+                       origin: origin)
+        let answered = registry.apply(hook("PostToolUse", session: "s1"), pane: pane.id, origin: origin)
+        XCTAssertEqual(answered.resolved, 1)
+        XCTAssertTrue(live(pane.id, source: "agent:demo").isEmpty)
+        XCTAssertEqual(live(pane.id, source: "program:cargo").count, 1)
+
+        // The agent's process going away is not cargo's either.
+        registry.apply(hook("PermissionRequest", tool: "Bash", session: "s1"), pane: pane.id,
+                       origin: origin)
+        registry.apply(.childExited, pane: pane.id)
+        XCTAssertTrue(live(pane.id, source: "agent:demo").isEmpty)
+        XCTAssertEqual(live(pane.id, source: "program:cargo").count, 1)
+
+        // And a notification-evidenced release leaves it as well.
+        registry.apply(.notification(title: "Demo needs your permission", body: ""), pane: pane.id)
+        now += AgentStateReducer.hookRecency + 1
+        registry.apply(.notification(title: "Demo finished", body: ""), pane: pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .done)
+        XCTAssertEqual(live(pane.id, source: "program:cargo").count, 1)
+    }
+
+    /// Important 2: a hook approval whose title and body match the report's alarm still takes it
+    /// over. A same-key post with another origin or evidence supersedes; it is not a duplicate.
+    func testAHookApprovalTakesOverAnIdenticalReportAlarm() throws {
+        useProgramStore()
+        let pane = try addPane()
+        let words = "Demo needs your permission to use Bash"
+        send(report(.blocked, kind: .permission, message: words), pane.id)
+        let first = try XCTUnwrap(live(pane.id, source: "agent:demo").first)
+        XCTAssertNil(first.origin)
+
+        let origin = NoticeOrigin(lineageRoot: 4242, sessionID: "s1")
+        registry.apply(.hook(agent: "demo", payload: AgentEventPayload(
+            hookEventName: "PermissionRequest", sessionID: "s1", message: words)),
+                       pane: pane.id, origin: origin)
+
+        let alarm = try XCTUnwrap(live(pane.id, source: "agent:demo").first)
+        XCTAssertEqual(live(pane.id, source: "agent:demo").count, 1)
+        XCTAssertEqual(alarm.title, first.title, "the same sentence")
+        XCTAssertEqual(alarm.origin, origin)
+        XCTAssertEqual(alarm.evidence, .hook)
+    }
+
+    /// Minor: a hook-tracked agent waiting to sign in is titled as such.
+    func testAnAuthAlarmIsTitledAsSignIn() throws {
+        let auth = """
+        id = "auth"
+        name = "Auth"
+        process = ["auth"]
+
+        [hooks]
+        Login = "blocked:auth"
+        """
+        registry.reloadRulesForTesting([try AgentRules.parse(auth)])
+        registry.settings.enabled = ["auth"]
+        let pane = try addPane()
+        let id = try XCTUnwrap(registry.apply(.hook(agent: "auth", payload: AgentEventPayload(
+            hookEventName: "Login")), pane: pane.id).noticePosted)
+        XCTAssertEqual(center.notice(id: id)?.title, L("program-status.notice.auth", "Auth"))
+    }
 }
+

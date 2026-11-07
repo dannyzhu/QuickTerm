@@ -139,7 +139,11 @@ final class NoticeCenter: ObservableObject {
         // 3. Identical content under the same key: a duplicate. Nothing changes — not `postedAt`,
         //    not one sink call. This is what stops `PermissionRequest` and the OSC notification
         //    that describes the *same* prompt from re-presenting the banner with sound twice.
-        if let index = existingIndex, live[index].title == title, live[index].body == body {
+        // The same words from another origin or another kind of evidence are not a duplicate:
+        // a hook taking over an alarm a program-status report raised has to replace the report's
+        // nil origin with its own, or a later origin-less signal could resolve the hook's prompt.
+        if let index = existingIndex, live[index].title == title, live[index].body == body,
+           live[index].origin == request.origin, live[index].evidence == request.evidence {
             return .duplicate(live[index].id)
         }
 
@@ -249,10 +253,12 @@ final class NoticeCenter: ObservableObject {
     /// `source` exists for program status (OSC 7501): a report leaving `blocked` carries no
     /// origin, so without it the report would also take down an OSC 9 alarm or another program's
     /// alarm in the same pane. nil = every source, which is what every other caller wants.
+    /// `includePrograms: false` leaves every `program:` notice alone: an agent's state change or
+    /// exit says nothing about another program in the pane.
     @discardableResult
     func resolveAll(pane: UUID, _ how: NoticeResolution,
                     urgency: NoticeUrgency? = nil, origin: NoticeOrigin? = nil,
-                    source: NoticeSource? = nil) -> Int {
+                    source: NoticeSource? = nil, includePrograms: Bool = true) -> Int {
         var resolved = 0
         // Walk by identity rather than by index: `resolveAtIndex` mutates `live`, and each
         // resolution dispatches into sinks that may read (never write) the centre.
@@ -260,6 +266,7 @@ final class NoticeCenter: ObservableObject {
             guard notice.pane == pane else { return false }
             guard urgency == nil || notice.urgency == urgency else { return false }
             guard source == nil || notice.source == source else { return false }
+            guard includePrograms || !Self.isProgram(notice.source) else { return false }
             if how == .stateChanged, let stored = notice.origin, !stored.permits(origin) {
                 return false
             }
@@ -319,7 +326,11 @@ final class NoticeCenter: ObservableObject {
     /// two the real thing uses, so the forecast cannot drift from it.
     func stateChangeForecast(pane: UUID, origin: NoticeOrigin?) -> StateChangeOutcome {
         var out = StateChangeOutcome()
-        for notice in live where notice.pane == pane && notice.urgency == .needsUser {
+        // A program's alarm is its own record's to resolve, never an agent's: not counted as
+        // resolvable (a refused forged hook must not pass the origin gate on cargo's account), and
+        // not as refused either.
+        for notice in live where notice.pane == pane && notice.urgency == .needsUser
+            && !Self.isProgram(notice.source) {
             if let stored = notice.origin, !stored.permits(origin) {
                 out.refused.append(notice.id)
             } else {
@@ -334,8 +345,15 @@ final class NoticeCenter: ObservableObject {
     @discardableResult
     func agentStateLeftNeedsUser(pane: UUID, origin: NoticeOrigin?) -> StateChangeOutcome {
         let refused = stateChangeForecast(pane: pane, origin: origin).refused
-        let resolved = resolveAll(pane: pane, .stateChanged, urgency: .needsUser, origin: origin)
+        let resolved = resolveAll(pane: pane, .stateChanged, urgency: .needsUser, origin: origin,
+                                  includePrograms: false)
         return StateChangeOutcome(resolved: resolved, refused: refused)
+    }
+
+    /// A generic program's notice (OSC 7501, `program:<app>` / `program`).
+    private static func isProgram(_ source: NoticeSource) -> Bool {
+        if case .program = source { return true }
+        return false
     }
 
     /// Rule 2 — the user focused the pane and typed into it.

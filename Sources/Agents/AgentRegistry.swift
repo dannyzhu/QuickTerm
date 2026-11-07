@@ -520,7 +520,10 @@ final class AgentRegistry: NoticeSink {
             case .processes, .childExited:
                 // The program is gone. Not origin-gated: this is in-process knowledge, and
                 // `agent-gone` says on the wire why the prompt went away.
-                outcome.resolved = center.resolveAll(pane: pane, .agentGone, urgency: .needsUser)
+                // Not a program-status alarm: that program is not the agent, and its own record
+                // (or its own exit) takes the alarm down.
+                outcome.resolved = center.resolveAll(pane: pane, .agentGone, urgency: .needsUser,
+                                                     includePrograms: false)
             }
             if outcome.resolved > 0 {
                 noticeIDs[pane] = nil
@@ -559,6 +562,8 @@ final class AgentRegistry: NoticeSink {
             return L("notice.agent.input", status.name)
         case .choice:
             return L("notice.agent.choice", status.name)
+        case .auth:
+            return L("program-status.notice.auth", status.name)
         default:
             break
         }
@@ -773,6 +778,17 @@ final class AgentRegistry: NoticeSink {
                                     pane: UUID) {
         if case .agent(let id) = source, let status = statuses[pane], status.agent == id,
            status.lastHookAt != nil {
+            return
+        }
+        // Decided on the live notice, not on the status: the pane's status can belong to another
+        // agent (a printed OSC 9 text hands it over) while this agent's hook alarm is still up.
+        // A report posting under the same key would supersede that alarm with an origin-less one,
+        // and its next report could then resolve it.
+        if case .agent = source,
+           center.live(pane: pane).contains(where: {
+               $0.source == source && $0.urgency == .needsUser
+                   && ($0.origin != nil || $0.evidence != .programStatus)
+           }) {
             return
         }
         var oldByID: [[String]: ProgramStatusReport] = [:]
