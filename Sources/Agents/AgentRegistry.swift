@@ -578,6 +578,19 @@ final class AgentRegistry: NoticeSink {
         tombstones[pane] = nil
         lastAlarm[pane] = nil
         rearmTimers.removeValue(forKey: pane)?.cancel()
+        ProgramStatusStore.shared.paneClosed(pane)
+    }
+
+    /// The program-status half of the heartbeat (spec decision 5). A pane holding only program
+    /// records has no status or notice here, so `paneClosed` never runs for it: the store's own
+    /// panes the locator can no longer find are forgotten first. Then every remaining record is
+    /// checked against its pane's live pty foreground process group.
+    func checkProgramStatus() {
+        let store = ProgramStatusStore.shared
+        for pane in store.panes where locator.locate(pane) == nil { store.paneClosed(pane) }
+        store.checkForeground { [locator] pane in
+            (locator.locate(pane)?.pane as? Ghostty.SurfaceView)?.foregroundProcessGroup
+        }
     }
 
     /// Called by the scan with the panes it can still see: anything we hold that the locator no

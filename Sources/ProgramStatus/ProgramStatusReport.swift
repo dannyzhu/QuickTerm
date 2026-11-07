@@ -115,10 +115,15 @@ struct ProgramStatusReport: Equatable {
 /// The one gate is `[agents] program-status`: with it off, no report, prompt start or reset
 /// reaches the store, so nothing is kept and nothing is shown (the engine still answers the
 /// feature query on its own). `AppSession.applyGlobalConfig` pushes the switch here on every
-/// config load, the same way the notice centre and the agent registry get theirs.
+/// config load, the same way the notice centre and the agent registry get theirs. Switching it
+/// off also drops every record already kept: off means nothing is shown (decision 20).
 @MainActor
 enum ProgramStatusRouter {
-    static var isEnabled = true
+    static var isEnabled = true {
+        didSet {
+            if oldValue && !isEnabled { ProgramStatusStore.shared.removeAll() }
+        }
+    }
 
     static func report(_ report: ProgramStatusReport, pane: UUID, foregroundGroup: Int32?) {
         guard isEnabled else { return }

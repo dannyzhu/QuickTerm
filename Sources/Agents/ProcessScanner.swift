@@ -313,6 +313,9 @@ final class ProcessScanner {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.requestScan()
+                // Program status rides the same beat (spec decision 5), whether or not agent
+                // detection is on: a record whose job left the foreground drops.
+                self.registry.checkProgramStatus()
             }
         }
         // "Always on" (owner's Q7) has to include the minutes a consent sheet sits in runModal:
