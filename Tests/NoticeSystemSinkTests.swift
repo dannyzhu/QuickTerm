@@ -344,6 +344,51 @@ final class NoticeSystemSinkTests: XCTestCase {
         XCTAssertNil(center.urgency(pane: pane))
     }
 
+    // MARK: The program-status rate limit (spec decision 18)
+
+    /// At most one program-status `info` banner per pane per 10 s. The notice is still posted; a
+    /// `needsUser` banner, another pane and another evidence are never limited.
+    func testInfoBannerRateLimitPerPane() throws {
+        var clock = Date(timeIntervalSince1970: 1_700_000_000)
+        sink = SystemNotificationSink(center: recorder, locator: locator,
+                                      route: { [self] in routed.append($0) },
+                                      settings: { [self] in settings }, clock: { clock })
+        center.removeSink(id: NoticeSinkID.system)
+        center.addSink(sink)
+        let pane = try addPane(active: false)
+        let other = try addPane(active: false)
+        func done(_ pane: UUID, _ title: String, source: NoticeSource = .program("cargo"),
+                  evidence: NoticeEvidence = .programStatus) {
+            center.post(request(pane, urgency: .info, source: source, title: title, evidence: evidence))
+        }
+
+        done(pane, "cargo · Finished")
+        XCTAssertEqual(recorder.added.count, 1)
+
+        center.resolveAll(pane: pane, .paneFocused)
+        clock += 3
+        done(pane, "cargo · Failed")
+        XCTAssertEqual(recorder.added.count, 1, "a second info banner within 10 s is dropped")
+        XCTAssertEqual(center.live(pane: pane).count, 1, "but the notice is posted")
+
+        done(other, "cargo · Finished")
+        XCTAssertEqual(recorder.added.count, 2, "per pane")
+
+        center.resolveAll(pane: pane, .paneFocused)
+        done(pane, "Command finished", source: .command, evidence: .composed)
+        XCTAssertEqual(recorder.added.count, 3, "only program-status info banners are limited")
+
+        clock += 1
+        center.post(request(pane, urgency: .needsUser, source: .program("cargo"), title: "cargo · Waiting",
+                            evidence: .programStatus))
+        XCTAssertEqual(recorder.added.count, 4, "a blocked banner is never limited")
+
+        center.resolveAll(pane: pane, .acknowledged)
+        clock += 7
+        done(pane, "cargo · Finished again")
+        XCTAssertEqual(recorder.added.count, 5, "10 s later the next one shows")
+    }
+
     // MARK: The body rule
 
     /// `system-body` x `bodySensitive`, all six answers. The default is `composed`: only text

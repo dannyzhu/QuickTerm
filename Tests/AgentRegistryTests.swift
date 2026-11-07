@@ -785,4 +785,284 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertNil(probe.foregroundGroup)
         XCTAssertFalse(probe.exited)
     }
+
+    // MARK: Program status: mapping, precedence and alarms (spec decisions 8–18)
+
+    /// A registry of its own on a store of its own: nothing here reaches the shared store, the
+    /// shared registry or the shared centre.
+    private var programs: ProgramStatusStore!
+
+    private func useProgramStore() {
+        programs = ProgramStatusStore(clock: { [unowned self] in now })
+        registry = AgentRegistry(rules: [try! AgentRules.parse(Self.text)], center: center,
+                                 locator: locator, programStatus: programs,
+                                 clock: { [unowned self] in now })
+        registry.settings.enabled = ["demo"]
+        registry.listenToProgramStatus()
+    }
+
+    private func report(_ state: ProgramStatusReport.State, kind: ProgramStatusReport.Kind? = nil,
+                        id: String = "", app: String? = "demo", progress: Int? = nil,
+                        message: String? = nil) -> ProgramStatusReport {
+        ProgramStatusReport(state: state, kind: kind, progress: progress,
+                            id: id.split(separator: "/").map(String.init),
+                            app: app, title: nil, message: message)
+    }
+
+    private func send(_ report: ProgramStatusReport, _ pane: UUID, group: Int32 = 100) {
+        now += 1
+        programs.receive(report, pane: pane, foregroundGroup: group)
+    }
+
+    private func live(_ pane: UUID, source: String) -> [Notice] {
+        center.live(pane: pane).filter { $0.source.id == source }
+    }
+
+    /// Spec 12: while the hook speaks for the agent, its own reports never change the state; they
+    /// may only add a progress and a message.
+    func testHookFirstKeepsTheHookState() throws {
+        useProgramStore()
+        let pane = try addPane()
+        registry.apply(hook("PreToolUse", tool: "Bash"), pane: pane.id)
+        sink.reset()
+
+        send(report(.done, progress: 40, message: "halfway"), pane.id)
+
+        let status = try XCTUnwrap(registry.status(pane: pane.id))
+        XCTAssertEqual(status.state, .working)
+        XCTAssertEqual(status.detail, .tool)
+        XCTAssertEqual(status.evidence, .hook)
+        XCTAssertEqual(status.progress, 40)
+        XCTAssertEqual(status.message, "halfway")
+        XCTAssertTrue(sink.posted.isEmpty, "a report about a hook-tracked agent raises nothing")
+    }
+
+    /// Spec 13 and ruling 2: a report can neither resolve a hook's alarm nor take its key. The
+    /// approval stays live, under its own id and with its own origin, whatever the agent prints.
+    func testReportNeverResolvesAHookAlarm() throws {
+        useProgramStore()
+        let pane = try addPane()
+        let origin = NoticeOrigin(lineageRoot: 4242, sessionID: "s1")
+        let posted = try XCTUnwrap(registry.apply(hook("PermissionRequest", tool: "Bash", session: "s1"),
+                                                  pane: pane.id, origin: origin).noticePosted)
+
+        for state in [ProgramStatusReport.State.blocked, .done, .error, .idle, .working] {
+            send(report(state, kind: state == .blocked ? .question : nil), pane.id)
+            let alarm = try XCTUnwrap(center.notice(id: posted), "\(state)")
+            XCTAssertTrue(alarm.isLive, "\(state) must not resolve the hook's alarm")
+            XCTAssertEqual(alarm.origin, origin, "\(state)")
+            XCTAssertEqual(alarm.evidence, .hook, "\(state)")
+            XCTAssertEqual(center.live(pane: pane.id).map(\.id), [posted], "\(state) posted nothing")
+            XCTAssertEqual(registry.status(pane: pane.id)?.state, .blocked)
+        }
+        // A generic program clearing in the same pane does not reach it either.
+        send(report(.blocked, app: "cargo"), pane.id)
+        send(report(.working, app: "cargo"), pane.id)
+        XCTAssertEqual(center.notice(id: posted)?.isLive, true)
+    }
+
+    /// A report takes down the alarm a report raised — and only that one (ruling 1): an OSC 9
+    /// alarm and another program's alarm in the same pane stay live.
+    func testReportResolvesItsOwnAlarm() throws {
+        useProgramStore()
+        let pane = try addPane()
+        center.post(NoticeRequest(source: .terminal, pane: pane.id, urgency: .needsUser,
+                                  evidence: .notification, title: "OSC 9 says hi"))
+
+        send(report(.blocked, kind: .permission, message: "may I?"), pane.id)
+        send(report(.blocked, id: "build", app: "cargo"), pane.id)
+        let mine = try XCTUnwrap(live(pane.id, source: "agent:demo").first)
+        XCTAssertEqual(mine.urgency, .needsUser)
+        XCTAssertEqual(mine.evidence, .programStatus)
+        XCTAssertNil(mine.origin)
+        XCTAssertEqual(mine.body, "may I?")
+        XCTAssertTrue(mine.bodySensitive)
+        XCTAssertEqual(mine.title, L("notice.agent.approval.no-tool", "Demo"))
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .blocked)
+        XCTAssertEqual(registry.status(pane: pane.id)?.detail, .approval)
+        XCTAssertEqual(registry.status(pane: pane.id)?.evidence, .programStatus)
+        XCTAssertEqual(live(pane.id, source: "program:cargo").count, 1)
+        XCTAssertEqual(center.counts.total, 1, "one pane")
+
+        send(report(.working), pane.id)
+        XCTAssertTrue(live(pane.id, source: "agent:demo").isEmpty)
+        XCTAssertEqual(center.history.last?.resolution, .stateChanged)
+        XCTAssertEqual(live(pane.id, source: "terminal").count, 1, "the OSC 9 alarm is not the report's")
+        XCTAssertEqual(live(pane.id, source: "program:cargo").count, 1, "nor is cargo's")
+
+        send(report(.working, id: "build", app: "cargo"), pane.id)
+        XCTAssertTrue(live(pane.id, source: "program:cargo").isEmpty)
+        XCTAssertEqual(live(pane.id, source: "terminal").count, 1)
+    }
+
+    /// Two records of one program share its alarm: one leaving `blocked` hands the alarm to the
+    /// other instead of taking it down.
+    func testAnotherBlockedRecordOfTheSameProgramKeepsTheAlarm() throws {
+        useProgramStore()
+        let pane = try addPane()
+        send(report(.blocked, kind: .question, id: "a", app: "cargo"), pane.id)
+        send(report(.blocked, kind: .permission, id: "b", app: "cargo"), pane.id)
+        send(report(.working, id: "b", app: "cargo"), pane.id)
+        let alarm = try XCTUnwrap(live(pane.id, source: "program:cargo").first)
+        XCTAssertEqual(alarm.title, L("notice.agent.input", "cargo"), "the remaining record speaks")
+
+        programs.childExited(pane: pane.id)
+        XCTAssertTrue(live(pane.id, source: "program:cargo").isEmpty, "a dropped record resolves")
+    }
+
+    /// Spec 16 / ruling 6: done and error are information, even for an agent's own record.
+    func testDoneAndErrorAreInfo() throws {
+        useProgramStore()
+        let pane = try addPane()
+        send(report(.working), pane.id)
+        send(report(.done), pane.id)
+        let done = try XCTUnwrap(live(pane.id, source: "agent:demo").first)
+        XCTAssertEqual(done.urgency, .info)
+        XCTAssertEqual(done.evidence, .programStatus)
+        XCTAssertEqual(done.title, L("notice.agent.done", "Demo"))
+        XCTAssertEqual(center.counts.total, 0, "no Dock badge")
+
+        send(report(.error), pane.id)
+        let failed = try XCTUnwrap(live(pane.id, source: "agent:demo").first)
+        XCTAssertEqual(failed.urgency, .info)
+        XCTAssertEqual(failed.title, L("notice.agent.error.no-type", "Demo"))
+        XCTAssertEqual(center.counts.total, 0)
+        let status = try XCTUnwrap(registry.status(pane: pane.id))
+        XCTAssertEqual(status.state, .error)
+        XCTAssertFalse(status.needsUser, "a reported error never needs the user")
+
+        send(report(.error, id: "x", app: "cargo"), pane.id)
+        XCTAssertEqual(live(pane.id, source: "program:cargo").first?.urgency, .info)
+        XCTAssertEqual(center.counts.total, 0)
+
+        // Looking at the pane is enough.
+        locator.entries[pane.id]?.activity = PaneActivity(appActive: true, screenKey: true,
+                                                          workspaceVisible: true, focused: true)
+        center.flushActivityPass()
+        XCTAssertTrue(center.live(pane: pane.id).isEmpty)
+    }
+
+    /// Spec 17: the same state, kind and id raise nothing again — not even when the foreground
+    /// group or the message moved (the store reports both as changes).
+    func testRepeatDoesNotReRaise() throws {
+        useProgramStore()
+        let pane = try addPane()
+        send(report(.blocked, kind: .question, app: "cargo", message: "one"), pane.id)
+        XCTAssertEqual(sink.posted.count, 1)
+        sink.reset()
+
+        send(report(.blocked, kind: .question, app: "cargo", message: "two"), pane.id)
+        send(report(.blocked, kind: .question, app: "cargo", message: "two"), pane.id, group: 200)
+        XCTAssertTrue(sink.changes.isEmpty, "a repeat posts and resolves nothing")
+        XCTAssertEqual(live(pane.id, source: "program:cargo").first?.body, "one")
+
+        send(report(.done, app: "cargo"), pane.id)
+        sink.reset()
+        send(report(.done, app: "cargo"), pane.id, group: 300)
+        XCTAssertTrue(sink.changes.isEmpty, "a repeated done is not a second banner")
+    }
+
+    /// Spec 17: a different `blocked` kind supersedes the alarm, as a second hook approval does.
+    func testDifferentKindSupersedes() throws {
+        useProgramStore()
+        let pane = try addPane()
+        send(report(.blocked, kind: .question, app: "cargo"), pane.id)
+        send(report(.blocked, kind: .auth, app: "cargo"), pane.id)
+        XCTAssertEqual(sink.supersededOld.count, 1)
+        let alarm = try XCTUnwrap(live(pane.id, source: "program:cargo").first)
+        XCTAssertEqual(alarm.title, L("program-status.notice.auth", "cargo"))
+        XCTAssertEqual(center.live(pane: pane.id).count, 1)
+    }
+
+    /// A progress step is not news: it moves the agent's progress and posts nothing.
+    func testProgressStepsPostNoNotice() throws {
+        useProgramStore()
+        let pane = try addPane()
+        send(report(.working, progress: 10), pane.id)
+        let mark = ControlEventBus.shared.seq
+        for step in [20, 30, 40] {
+            send(report(.working, progress: step), pane.id)
+            send(report(.working, id: "build", app: "cargo", progress: step), pane.id)
+        }
+        XCTAssertTrue(sink.changes.isEmpty)
+        XCTAssertEqual(registry.status(pane: pane.id)?.progress, 40)
+        XCTAssertTrue(agentEvents(since: mark).isEmpty, "a progress step is not a state change")
+    }
+
+    /// Spec 10: a generic program speaks as `program:<app>`, or `program` with no app, and its
+    /// titles use the app name or "Program".
+    func testGenericSourceSpelling() throws {
+        XCTAssertEqual(NoticeSource.program("cargo").id, "program:cargo")
+        XCTAssertEqual(NoticeSource.program(nil).id, "program")
+        useProgramStore()
+        let pane = try addPane()
+        send(report(.blocked, app: nil), pane.id)
+        let alarm = try XCTUnwrap(live(pane.id, source: "program").first)
+        XCTAssertEqual(alarm.title, L("notice.agent.input", L("program-status.generic")))
+        XCTAssertNil(registry.status(pane: pane.id), "a generic program is not an agent")
+    }
+
+    /// An agent's record never takes a pane another agent's status holds: it stays a separate
+    /// status, and its alarm has its own key.
+    func testARecordDoesNotTakeAnotherAgentsPane() throws {
+        useProgramStore()
+        try loadTwoRules()
+        let pane = try addPane()
+        registry.apply(.hook(agent: "other", payload: AgentEventPayload(hookEventName: "SessionStart")),
+                       pane: pane.id)
+
+        send(report(.blocked, kind: .permission), pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.agent, "other")
+        XCTAssertEqual(live(pane.id, source: "agent:demo").first?.evidence, .programStatus,
+                       "demo has no hook here, so its report raises its own alarm")
+    }
+
+    /// An agent tracked by reports alone goes when its last record does.
+    func testAnAgentTrackedByReportsAloneIsReleasedWithItsRecords() throws {
+        useProgramStore()
+        let pane = try addPane()
+        send(report(.blocked, kind: .question), pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.evidence, .programStatus)
+        let mark = ControlEventBus.shared.seq
+
+        programs.childExited(pane: pane.id)
+        XCTAssertNil(registry.status(pane: pane.id))
+        XCTAssertTrue(live(pane.id, source: "agent:demo").isEmpty)
+        XCTAssertEqual(agentEvents(since: mark).last?.state, "released")
+    }
+
+    /// A hook asking for approval while a report already had the agent blocked takes the alarm
+    /// over: same key, the hook's evidence and origin.
+    func testAHookApprovalTakesTheReportsAlarmOver() throws {
+        useProgramStore()
+        let pane = try addPane()
+        send(report(.blocked, kind: .permission), pane.id)
+        let origin = NoticeOrigin(lineageRoot: 4242, sessionID: "s1")
+        registry.apply(hook("PermissionRequest", tool: "Bash", session: "s1"), pane: pane.id,
+                       origin: origin)
+
+        let alarm = try XCTUnwrap(live(pane.id, source: "agent:demo").first)
+        XCTAssertEqual(live(pane.id, source: "agent:demo").count, 1)
+        XCTAssertEqual(alarm.evidence, .hook)
+        XCTAssertEqual(alarm.origin, origin)
+        send(report(.working), pane.id)
+        XCTAssertEqual(center.notice(id: alarm.id)?.isLive, true, "and a report cannot take it down")
+    }
+
+    /// A hook arriving for an agent tracked by reports takes over and may resolve the report's
+    /// alarm (it stored no origin); from then on reports only add progress and message.
+    func testAHookTakesOverFromReports() throws {
+        useProgramStore()
+        let pane = try addPane()
+        send(report(.blocked, kind: .permission), pane.id)
+        XCTAssertEqual(live(pane.id, source: "agent:demo").count, 1)
+
+        registry.apply(hook("PostToolUse"), pane: pane.id, origin: NoticeOrigin(lineageRoot: 9))
+        XCTAssertEqual(registry.status(pane: pane.id)?.evidence, .hook)
+        XCTAssertTrue(live(pane.id, source: "agent:demo").isEmpty)
+
+        send(report(.blocked, kind: .question), pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .working)
+        XCTAssertTrue(live(pane.id, source: "agent:demo").isEmpty)
+    }
 }

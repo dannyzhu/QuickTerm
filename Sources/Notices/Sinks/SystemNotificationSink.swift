@@ -127,11 +127,23 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
     /// happen without an activity log or a shared centre.
     private let announceDenied: () -> Void
 
+    /// Spec decision 18: per pane, at most one `info` banner from program status (a `done` or
+    /// `error` report) in this many seconds. A suppressed banner is simply not shown; the notice
+    /// is posted all the same, and `needsUser` banners, the pane mark and the Dock badge are never
+    /// limited.
+    static let programInfoInterval: TimeInterval = 10
+    /// When each pane last showed a program-status `info` banner. Entries older than the
+    /// interval are pruned whenever a new one is written, so it holds only recent panes.
+    private var lastProgramInfo: [UUID: Date] = [:]
+    private let clock: () -> Date
+
     init(center: UserNotificationCentering,
          locator: NoticeLocating,
          route: @escaping (UUID) -> Void,
          settings: (() -> NoticeSettings)? = nil,
-         announceDenied: (() -> Void)? = nil) {
+         announceDenied: (() -> Void)? = nil,
+         clock: @escaping () -> Date = Date.init) {
+        self.clock = clock
         self.center = center
         self.locator = locator
         self.route = route
@@ -290,6 +302,21 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
         for pane in presented { withdraw(pane: pane) }
         presented.removeAll()
         pingedPanes.removeAll()
+        lastProgramInfo.removeAll()
+    }
+
+    /// Decision 18's limit, asked at the moment a banner would be shown. Records the banner it
+    /// lets through.
+    private func programInfoAllowed(_ notice: Notice) -> Bool {
+        guard notice.urgency == .info, notice.evidence == .programStatus else { return true }
+        let now = clock()
+        if let last = lastProgramInfo[notice.pane],
+           now.timeIntervalSince(last) < Self.programInfoInterval {
+            return false
+        }
+        lastProgramInfo = lastProgramInfo.filter { now.timeIntervalSince($0.value) < Self.programInfoInterval }
+        lastProgramInfo[notice.pane] = now
+        return true
     }
 
     // MARK: Presenting
@@ -308,6 +335,10 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
             DiagnosticLog.shared.note(
                 "banner",
                 "skip pane=\(who) reason=\(activity == nil ? "pane-gone" : "pane-active") auth=\(authorizationStatus.rawValue)")
+            return
+        }
+        guard programInfoAllowed(notice) else {
+            DiagnosticLog.shared.note("banner", "skip pane=\(who) reason=program-info-rate-limit")
             return
         }
         DiagnosticLog.shared.note(

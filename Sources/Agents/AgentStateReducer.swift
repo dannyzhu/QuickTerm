@@ -25,6 +25,9 @@ struct AgentReduction: Equatable {
         /// with the OSC text that described the same prompt. The strip is updated; **no notice is
         /// reposted**, because the alarm already on screen is about this very prompt.
         case evidenceUpgrade
+        /// An OSC 7501 report added a progress or a message to a status without moving its state
+        /// (spec decision 12): the strip redraws, no event goes out and no notice is touched.
+        case annotated
         case changed
         case released
     }
@@ -85,6 +88,12 @@ enum AgentStateReducer {
         case .notification(let title, let body):
             guard case .state(let state, _)? = rules.tag(title: title, body: body) else { return false }
             return state != .blocked
+        case .programStatus(let record):
+            // The same reading as a text: a report printed on the way out (`done`) races the
+            // exit, an agent asking for the user is alive, and "its records are gone" is the
+            // present, never a straggler.
+            guard record.report.state != .clear else { return false }
+            return ProgramStatusMapper.state(of: record.report).0 != .blocked
         case .report, .processes, .childExited:
             return false
         }
@@ -111,6 +120,8 @@ enum AgentStateReducer {
             // dangerous for a scan, and a direct caller must not be able to get it wrong.
             if mine == nil, current != nil { return AgentReduction(status: current, kind: .none) }
             return reducePresence(presence.pids(for: rules.id), rules: rules, current: mine, now: now)
+        case .programStatus(let record):
+            return reduceProgramStatus(record, rules: rules, current: current, mine: mine, now: now)
         case .childExited:
             return mine == nil ? AgentReduction(status: nil, kind: .none)
                                : AgentReduction(status: nil, kind: .released,
@@ -153,7 +164,8 @@ enum AgentStateReducer {
                 ?? rules.fields.first(rules.fields.message, in: payload),
             since: now, evidence: .hook,
             sessionID: rules.fields.first(rules.fields.session, in: payload) ?? current?.sessionID,
-            lastHookAt: now, seenByScan: current?.seenByScan ?? false)
+            lastHookAt: now, seenByScan: current?.seenByScan ?? false,
+            progress: current?.progress)
         return settle(&status, current: current, now: now)
     }
 
@@ -167,7 +179,7 @@ enum AgentStateReducer {
             },
             tool: nil, message: message, since: now, evidence: .report,
             sessionID: current?.sessionID, lastHookAt: now,
-            seenByScan: current?.seenByScan ?? false)
+            seenByScan: current?.seenByScan ?? false, progress: current?.progress)
         return settle(&status, current: current, now: now)
     }
 
@@ -176,6 +188,11 @@ enum AgentStateReducer {
     private static func reduceNotification(title: String, body: String, rules: AgentRules,
                                            current: AgentStatus?, now: Date) -> AgentReduction {
         if let heard = current?.lastHookAt, now.timeIntervalSince(heard) <= hookRecency {
+            return AgentReduction(status: current, kind: .none)
+        }
+        // Program status ranks above notification text (spec decision 8): while the agent's own
+        // OSC 7501 report speaks for it, a guessed state from a text does not overwrite it.
+        if current?.evidence == .programStatus {
             return AgentReduction(status: current, kind: .none)
         }
         guard let tag = rules.tag(title: title, body: body) else {
@@ -191,6 +208,57 @@ enum AgentStateReducer {
             sessionID: current?.sessionID, lastHookAt: current?.lastHookAt,
             seenByScan: current?.seenByScan ?? false)
         return settle(&status, current: current, now: now)
+    }
+
+    // MARK: 2b. Program status (OSC 7501) ranks below a hook, above a text
+
+    /// A program-status record for this rule's agent (spec decisions 9 and 12).
+    ///
+    /// The registry hands in the most urgent of the agent's records, or a record whose state is
+    /// `clear` when the agent has none left: the store never keeps a `clear` record, so that
+    /// spelling cannot be mistaken for a real one.
+    ///
+    /// - **Hook first.** From the agent's first hook (or report) until it is released —
+    ///   `lastHookAt != nil`, which a text reduction carries along and nothing here sets — a record
+    ///   never changes the state. It only adds its progress and message (`.annotated`).
+    /// - **Another agent's pane** is not this record's to take: the registry keeps one agent status
+    ///   per pane, and the record stays in the store, raising its own alarms.
+    /// - Otherwise the record **is** the agent's status, with `.programStatus` evidence; when the
+    ///   last record goes, a status that rested on records alone is released.
+    private static func reduceProgramStatus(_ record: ProgramStatusStore.Record, rules: AgentRules,
+                                            current: AgentStatus?, mine: AgentStatus?,
+                                            now: Date) -> AgentReduction {
+        let report = record.report
+        let gone = report.state == .clear
+        let message = report.message.map(ProgramStatusReport.displayText).flatMap { $0.isEmpty ? nil : $0 }
+        if var status = mine, status.lastHookAt != nil {
+            status.progress = gone ? nil : report.progress
+            if !gone, let message { status.message = message }
+            return AgentReduction(status: status, kind: status == mine ? .none : .annotated)
+        }
+        if mine == nil, current != nil { return AgentReduction(status: current, kind: .none) }
+        if gone {
+            guard let mine else { return AgentReduction(status: nil, kind: .none) }
+            guard mine.evidence == .programStatus else {
+                // A scan- or text-evidenced status outlives the records that described it.
+                return AgentReduction(status: mine, kind: .none)
+            }
+            return AgentReduction(status: nil, kind: .released,
+                                  released: ReleasedSession(agent: rules.id, session: mine.sessionID, at: now))
+        }
+        let (state, detail) = ProgramStatusMapper.state(of: report)
+        var status = AgentStatus(
+            agent: rules.id, name: rules.name, state: state, detail: detail,
+            tool: nil, message: message, since: now, evidence: .programStatus,
+            sessionID: mine?.sessionID, lastHookAt: nil,
+            seenByScan: mine?.seenByScan ?? false, progress: report.progress)
+        let settled = settle(&status, current: mine, now: now)
+        // A progress step or a new message is worth a redraw, never a notice.
+        if settled.kind == .none, let mine,
+           mine.progress != status.progress || mine.message != status.message {
+            return AgentReduction(status: settled.status, kind: .annotated)
+        }
+        return settled
     }
 
     // MARK: 3. The scan is presence, never a state
@@ -234,6 +302,12 @@ enum AgentStateReducer {
         let sameState = current.state == status.state && current.detail == status.detail
         if sameState { status.since = current.since }
         if !sameState || current.tool != status.tool {
+            return AgentReduction(status: status, kind: .changed)
+        }
+        // A hook (or report) taking over from an OSC 7501 report is a change, not a quiet
+        // upgrade: the registry has to re-post the alarm under the hook's origin, or a report-raised
+        // alarm with no origin would be all that guards the hook's prompt.
+        if current.evidence == .programStatus, status.evidence == .hook || status.evidence == .report {
             return AgentReduction(status: status, kind: .changed)
         }
         if current.evidence != status.evidence,

@@ -1,0 +1,18 @@
+/* QuickTerm — Simplified Chinese UI strings for program status (OSC 7501).
+ *
+ * Same key set as en.lproj/ProgramStatus.strings (Tests/LocalizationTests.swift pins that).
+ * The positional arguments (%1$@ …) may be reordered to fit Chinese word order; the SET of
+ * indices used must match the English value.
+ */
+
+/* MARK: - state labels (Sources/Agents/AgentStatus.swift) */
+
+"program-status.state.auth" = "等你登录";
+
+/* MARK: - names (Sources/Agents/AgentRegistry.swift) */
+
+"program-status.generic" = "程序";
+
+/* MARK: - notice titles (Sources/Agents/AgentRegistry.swift) */
+
+"program-status.notice.auth" = "%1$@ · 等你登录";

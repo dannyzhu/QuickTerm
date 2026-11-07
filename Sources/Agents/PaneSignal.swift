@@ -67,6 +67,9 @@ enum PaneSignal: Equatable {
     case processes(AgentPresence)
     /// The pane's child process exited.
     case childExited
+    /// The OSC 7501 record that now speaks for an agent in this pane (spec decisions 8–12): the
+    /// most urgent of that agent's records. Below a hook, above an OSC text.
+    case programStatus(ProgramStatusStore.Record)
 
     /// A short, payload-free tag for the diagnostic log.
     var label: String {
@@ -76,6 +79,7 @@ enum PaneSignal: Equatable {
         case .notification: "notification"
         case .processes: "processes"
         case .childExited: "child-exited"
+        case .programStatus: "program-status"
         }
     }
 }

@@ -242,18 +242,24 @@ final class NoticeCenter: ObservableObject {
         return .resolved
     }
 
-    /// Every live notice of the pane, optionally only one urgency. Returns how many really
-    /// resolved — the number `notices ack` reports as its change, and what tells rule 1 whether
-    /// it silenced anything.
+    /// Every live notice of the pane, optionally only one urgency and only one source. Returns
+    /// how many really resolved — the number `notices ack` reports as its change, and what tells
+    /// rule 1 whether it silenced anything.
+    ///
+    /// `source` exists for program status (OSC 7501): a report leaving `blocked` carries no
+    /// origin, so without it the report would also take down an OSC 9 alarm or another program's
+    /// alarm in the same pane. nil = every source, which is what every other caller wants.
     @discardableResult
     func resolveAll(pane: UUID, _ how: NoticeResolution,
-                    urgency: NoticeUrgency? = nil, origin: NoticeOrigin? = nil) -> Int {
+                    urgency: NoticeUrgency? = nil, origin: NoticeOrigin? = nil,
+                    source: NoticeSource? = nil) -> Int {
         var resolved = 0
         // Walk by identity rather than by index: `resolveAtIndex` mutates `live`, and each
         // resolution dispatches into sinks that may read (never write) the centre.
         let targets = live.filter { notice in
             guard notice.pane == pane else { return false }
             guard urgency == nil || notice.urgency == urgency else { return false }
+            guard source == nil || notice.source == source else { return false }
             if how == .stateChanged, let stored = notice.origin, !stored.permits(origin) {
                 return false
             }
@@ -336,8 +342,8 @@ final class NoticeCenter: ObservableObject {
     ///
     /// What that means is the owner's Q1 answer, held in `userActedPolicy` (plan §2.8):
     /// - `.resolveFully` (Phase 1's behaviour): every urgency of that pane resolves;
-    /// - `.clearInterruptingSinks` (**the default**): an alarm with *hook or report* evidence is
-    ///   **quieted** — banner and Dock badge let go, the pane mark, the pill count and the strip
+    /// - `.clearInterruptingSinks` (**the default**): an alarm with *hook, report or program-status*
+    ///   evidence is **quieted** — banner and Dock badge let go, the pane mark, the pill count and the strip
     ///   stay until the agent or its process confirms. Everything else resolves, because no later
     ///   signal will ever come for it: a notification-evidenced alarm has no hook behind it.
     /// - `.resolveFullyAndRearm`: as `.resolveFully` here; the registry arms the re-arm timer.
@@ -357,8 +363,11 @@ final class NoticeCenter: ObservableObject {
         for id in live(pane: pane).map(\.id) {
             guard let index = live.firstIndex(where: { $0.id == id }) else { continue }
             let notice = live[index]
+            // Program status as well (spec decision 17): an OSC 7501 program sends later reports,
+            // and one of those is what takes its alarm down.
             guard notice.urgency == .needsUser,
-                  notice.evidence == .hook || notice.evidence == .report else {
+                  notice.evidence == .hook || notice.evidence == .report
+                    || notice.evidence == .programStatus else {
                 resolveAtIndex(index, .userActed)
                 continue
             }
