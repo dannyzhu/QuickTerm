@@ -509,9 +509,10 @@ quickterm agents list -t 1:2                             # only this workspace
 quickterm agents list --json | jq -r '.data.agents[] | select(.agent.needsUser) | .pane'
 ```
 
-QuickTerm recognises an agent three ways, and the record says which one it is using (`evidence`):
+QuickTerm recognises an agent four ways, and the record says which one it is using (`evidence`):
 
-- **`hook`** — the agent itself reported a lifecycle event through the hook QuickTerm installs. Exact.
+- **`hook`** — the agent itself reported a lifecycle event through the hook QuickTerm installs (or a
+  supervisor reported for it, `report`, with the same authority). Exact.
 - **`program-status`** — the agent printed an OSC 7501 program-status report naming itself (`app=codex`).
   Used only while no hook is speaking for that agent; once a hook is heard, a report can add a progress and
   a message but never change the state.
@@ -533,7 +534,7 @@ row, never a row full of nulls. Each row carries the pane, where it is, and:
 | `message` | the agent's own words — the one redacted field (see below) |
 | `evidence` | `hook` \| `report` \| `program-status` \| `notification` \| `process` — how sure this is |
 | `since` | when the state last changed (ISO8601, the stamp events use) |
-| `needsUser` | present and `true` when the pane is waiting for a human (`blocked` or `error`) |
+| `needsUser` | present and `true` when the pane is waiting for a human (`blocked`, or `error` reported by a hook or the agent's text; an `error` from program status is information and does not set it) |
 
 **`needsUser` is the field to read before you interrupt.** `blocked` means a human is being waited for;
 `error` means the turn stopped and somebody has to look. Both mean the same thing to you: that pane already
@@ -559,7 +560,8 @@ Any program can tell QuickTerm what it is doing by printing an OSC 7501 report
 (`printf '\e]7501;state=working:app=cargo:progress=40\e\\'`). QuickTerm keeps up to 64 records per pane and
 shows the most urgent one in the pane's band. A report whose `app` names an agent rule (`codex`, or one of
 the rule's process names) feeds that agent's status above (`evidence: "program-status"`). Every other report
-is a **generic program**, and `state` lists those records per pane as `programs`:
+is a **generic program**. `state` lists every record of the pane, the agents' and the generic programs', as
+`programs`:
 
 ```sh
 quickterm state --json | jq '.data.panes[] | select(.programs) | {pane: .handle, programs}'
@@ -582,9 +584,20 @@ quickterm state --json | jq '.data.panes[] | select(.programs) | {pane: .handle,
 - Watch it: `quickterm events poll --types program.status.changed --timeout 30s`. The event carries `pane`,
   `paneID`, `screen`, `workspace`, `app`, `id`, `state`, `kind`, `progress` and `message` (redacted by the
   same rule). It fires when a record appears, when its `state` or `kind` changes, and when it goes away
-  (`state: "cleared"`). A progress step or a new message alone does not fire it.
-- A `blocked` record raises a `needs-user` notice with source `program:<app>` (or `program`) and evidence
-  `program-status`; `done` and `error` post an `info` notice. A report never resolves an alarm a hook raised.
+  (`state: "cleared"`). A progress step or a new message alone does not fire it. It fires for every record
+  except those of the agent that holds the pane's status, which speaks through `agent.state.changed`
+  instead (an agent's record in a pane another agent holds does get `program.status.changed`).
+- A `blocked` record raises a `needs-user` notice with source `program:<app>` (or `program`; an agent's
+  record uses the agent's source) and evidence `program-status`; `done` and `error` post an `info` notice.
+  A report never resolves an alarm a hook raised.
+- A program that flips between `blocked` and another state rings the Mac at most once a second: a
+  program-status `needs-user` notice posted within 1 s of the same source's previous one in that pane, or of
+  its last resolve, is posted silently (no banner, no sound; the pane mark and the Dock badge still count it,
+  and `notices list` lists it), and its `notice.posted` / `notice.resolved` events are coalesced to one pair
+  per second.
+- A report printed in the last instant before its program exits may be recorded with the shell's foreground
+  process group (QuickTerm reads the group on the main thread, after the report arrives), so it can survive
+  until the next command instead of dropping at exit.
 - `[agents] program-status = false` turns the whole thing off: every report is ignored and nothing is shown.
 
 ### Hooks: `quickterm hooks`
