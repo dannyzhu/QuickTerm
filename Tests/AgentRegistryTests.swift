@@ -1188,7 +1188,8 @@ final class AgentRegistryTests: XCTestCase {
         scheduled = []
         center.addSink(SystemNotificationSink(center: recorder, locator: locator, route: { _ in },
                                               settings: { NoticeSettings() },
-                                              clock: { [unowned self] in now }))
+                                              clock: { [unowned self] in now },
+                                              schedule: { [unowned self] _, run in scheduled.append(run) }))
         center.addSink(ControlPlaneSink(clock: { [unowned self] in now },
                                         schedule: { [unowned self] _, run in scheduled.append(run) }))
     }
@@ -1243,6 +1244,37 @@ final class AgentRegistryTests: XCTestCase {
         send(report(.working, app: "cargo"), pane.id, after: 0.02)
         XCTAssertEqual(noticeEvents(pane.id, since: mark).last?.type, "notice.resolved")
         XCTAssertEqual(noticeEvents(pane.id, since: mark).count, 4)
+    }
+
+    /// A burst that ends `blocked` loses its one audible banner to the first resolve. When the
+    /// window ends, the alarm still live goes back on screen, without a sound; a burst that ends
+    /// `working` puts nothing up.
+    func testABurstEndingBlockedIsOnScreenWhenTheWindowEnds() throws {
+        useProgramStore()
+        installFloodSinks()
+        let pane = try addPane()
+        let id = SystemNotificationSink.identifier(pane: pane.id)
+        send(report(.blocked, kind: .question, app: "cargo"), pane.id, after: 0.02)
+        send(report(.working, app: "cargo"), pane.id, after: 0.02)
+        XCTAssertTrue(recorder.removedDelivered.contains(id), "the first banner came down")
+        send(report(.blocked, kind: .question, app: "cargo"), pane.id, after: 0.02)
+        XCTAssertEqual(recorder.added.count, 1)
+
+        now += 1
+        scheduled.forEach { $0() }
+        XCTAssertEqual(recorder.added.count, 2, "the live alarm is on screen again")
+        XCTAssertEqual(recorder.added.last?.identifier, id)
+        XCTAssertNil(recorder.added.last?.content.sound, "the burst already made its one sound")
+
+        // A burst that ends working leaves nothing to show.
+        scheduled = []
+        send(report(.working, app: "cargo"), pane.id, after: 0.02)
+        send(report(.blocked, kind: .question, app: "cargo"), pane.id, after: 0.02)
+        send(report(.working, app: "cargo"), pane.id, after: 0.02)
+        let shown = recorder.added.count
+        now += 1
+        scheduled.forEach { $0() }
+        XCTAssertEqual(recorder.added.count, shown)
     }
 
     /// After 1.1 s of quiet a new blocked is a fresh alarm again: banner and sound.

@@ -107,6 +107,16 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
     /// until the pane stops needing the user. Only these let another alarm posted on top of a
     /// live one banner (see `unannounced`).
     private var silencedPanes: Set<UUID> = []
+    /// The newest silent alarm per pane that no banner describes yet, and the panes with a
+    /// window-end callback pending. A burst that ends `blocked` has had its one audible banner
+    /// withdrawn by the first resolve; when the flood window ends, the alarm still live is put on
+    /// screen without a sound (the burst already made its one sound), so a pane that is waiting
+    /// for the user never waits behind an empty lock screen. Bounded by the live-needsUser panes.
+    private var heldSilent: [UUID: Notice] = [:]
+    private var armedPanes: Set<UUID> = []
+
+    typealias Schedule = (_ delay: TimeInterval, _ run: @escaping @MainActor () -> Void) -> Void
+    private let schedule: Schedule
 
     /// Authorization is asked for once, lazily, at the first banner - exactly as the engine did.
     /// Not at launch: an app that asks the moment it starts gets denied by people who have no idea
@@ -147,8 +157,12 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
          route: @escaping (UUID) -> Void,
          settings: (() -> NoticeSettings)? = nil,
          announceDenied: (() -> Void)? = nil,
-         clock: @escaping () -> Date = Date.init) {
+         clock: @escaping () -> Date = Date.init,
+         schedule: Schedule? = nil) {
         self.clock = clock
+        self.schedule = schedule ?? { delay, run in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated(run) }
+        }
         self.center = center
         self.locator = locator
         self.route = route
@@ -251,19 +265,32 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
             // A program-status alarm re-raised inside the flood window shows nothing (decision
             // 18). A pane holding only such an alarm was never announced, so another source's
             // alarm posted on top of it still gets its banner and sound.
-            if notice.silent { silencedPanes.insert(notice.pane) }
-            guard !notice.silent, transition.raised || unannounced(notice) else { return }
+            if notice.silent {
+                silencedPanes.insert(notice.pane)
+                hold(notice)
+                return
+            }
+            guard transition.raised || unannounced(notice) else { return }
+            heldSilent[notice.pane] = nil
             present(notice, activity: activity, sound: true)
 
         case .superseded(_, let new, let transition, let activity):
             // A different tool is asking now. The banner is replaced either way; it only gets a
             // sound when the pane's urgency actually went up, so an `info` quietly overwriting an
             // `info` does not ping twice for one program's chatter.
-            if new.silent { silencedPanes.insert(new.pane) }
-            guard !new.silent, transition.raised || new.urgency == .needsUser else { return }
+            // A silent supersession (a different `blocked` kind inside the flood window) is held
+            // like a silent post, so the stale banner is replaced when the window ends.
+            if new.silent {
+                silencedPanes.insert(new.pane)
+                hold(new)
+                return
+            }
+            guard transition.raised || new.urgency == .needsUser else { return }
+            heldSilent[new.pane] = nil
             present(new, activity: activity, sound: transition.raised || unannounced(new))
 
         case .resolved(let notice, let transition, _):
+            if heldSilent[notice.pane]?.id == notice.id { heldSilent[notice.pane] = nil }
             // The pane no longer needs the user (resolved to nothing, or downgraded to `info`): the
             // next `needsUser` alarm on it is a fresh one and may ping again, so drop the "already
             // announced" mark. Kept only while the pane genuinely still holds a live approval.
@@ -280,7 +307,10 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
             // The user is looking at the pane now: whatever is on the lock screen about it is
             // stale. (The notice itself stays live unless it was an `info`, which the centre
             // resolves in the same pass.)
-            if activity.isActive { withdraw(pane: pane) }
+            if activity.isActive {
+                heldSilent[pane] = nil
+                withdraw(pane: pane)
+            }
 
         case .quieted(let notice, _):
             // The banner half of the Q1(b) policy (plan §2.8). The user focused the pane and
@@ -291,6 +321,7 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
             // Nothing is posted again from here. The alarm comes back on screen only when the
             // agent supersedes it with a *different* `needsUser` (a second tool asking), which
             // arrives as `.superseded` above and presents silently — the pane was already loud.
+            heldSilent[notice.pane] = nil
             withdraw(pane: notice.pane)
 
         case .rearmed(let notice, let activity):
@@ -303,6 +334,7 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
             // rule 5). So the alarm raised while the pane was watched pings on first delivery, while
             // one you were already alerted about — by this or any source — returns silently.
             guard let activity else { return }
+            heldSilent[notice.pane] = nil
             present(notice, activity: activity, sound: !pingedPanes.contains(notice.pane))
 
         case .countsChanged:
@@ -316,7 +348,25 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
         presented.removeAll()
         pingedPanes.removeAll()
         silencedPanes.removeAll()
+        heldSilent.removeAll()
         lastProgramInfo.removeAll()
+    }
+
+    /// Keeps `notice` as the pane's newest unannounced silent alarm and arms one window-end
+    /// callback for the pane (however many re-raises the window holds).
+    private func hold(_ notice: Notice) {
+        heldSilent[notice.pane] = notice
+        guard armedPanes.insert(notice.pane).inserted else { return }
+        let pane = notice.pane
+        schedule(NoticeCenter.programAlarmFloodWindow) { [weak self] in self?.releaseHeld(pane: pane) }
+    }
+
+    /// The flood window is over: the alarm still live goes on screen, silently. `present` keeps
+    /// its own rules (setting, pane being watched, pane gone).
+    private func releaseHeld(pane: UUID) {
+        armedPanes.remove(pane)
+        guard let notice = heldSilent.removeValue(forKey: pane) else { return }
+        present(notice, activity: locator.activity(pane), sound: false)
     }
 
     /// A `needsUser` alarm landing on a pane whose live alarm was posted silent and which has not
