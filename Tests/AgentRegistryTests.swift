@@ -1152,6 +1152,140 @@ final class AgentRegistryTests: XCTestCase {
         XCTAssertEqual(alarm.evidence, .hook)
     }
 
+    // MARK: Program status: final review
+
+    /// Minor 1: another program's report in the pane does not re-reduce an agent's unchanged
+    /// records. The agent (Codex in the review's case) reported `done`, the scan then saw it go;
+    /// a `cargo` report afterwards must not build the released status back.
+    func testAnotherProgramsReportDoesNotRebuildAReleasedAgent() throws {
+        useProgramStore()
+        let pane = try addPane()
+        registry.apply(.processes(["demo": [42]]), pane: pane.id)
+        send(report(.done), pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .done)
+        XCTAssertEqual(registry.status(pane: pane.id)?.evidence, .programStatus)
+
+        registry.apply(.processes([]), pane: pane.id)
+        XCTAssertNil(registry.status(pane: pane.id), "the scan released the agent")
+        XCTAssertEqual(programs.records(pane: pane.id).count, 1, "its done record stays")
+
+        // Past the straggler grace, so only the fix keeps the record from speaking again.
+        now += AgentStateReducer.releasedSessionGrace + 1
+        send(report(.working, id: "build", app: "cargo"), pane.id)
+        XCTAssertNil(registry.status(pane: pane.id), "the agent status stays released")
+        XCTAssertFalse(registry.mutesEngineNotices(pane: pane.id), "and OSC 9 is not muted")
+    }
+
+    // MARK: Program status: the blocked-banner flood (spec decision 18, final review)
+
+    private var recorder: RecordingNotificationCenter!
+    /// The control-plane sink's window-end callbacks, run by hand.
+    private var scheduled: [@MainActor () -> Void] = []
+
+    /// The real banner and control-plane sinks on this case's centre, both on its clock.
+    private func installFloodSinks() {
+        recorder = RecordingNotificationCenter()
+        scheduled = []
+        center.addSink(SystemNotificationSink(center: recorder, locator: locator, route: { _ in },
+                                              settings: { NoticeSettings() },
+                                              clock: { [unowned self] in now }))
+        center.addSink(ControlPlaneSink(clock: { [unowned self] in now },
+                                        schedule: { [unowned self] _, run in scheduled.append(run) }))
+    }
+
+    /// One report, `step` seconds after the previous one.
+    private func send(_ report: ProgramStatusReport, _ pane: UUID, after step: TimeInterval) {
+        now += step
+        programs.receive(report, pane: pane, foregroundGroup: 100)
+    }
+
+    /// `notice.posted` / `notice.resolved` for `pane` since `mark`.
+    private func noticeEvents(_ pane: UUID, since mark: Int) -> [ControlEvent] {
+        ControlEventBus.shared.flush()
+        return ControlEventBus.shared
+            .batch(since: mark, limit: ControlEventLimits.maxBatch, types: nil, exposesBrowser: true)
+            .events.filter { ControlEventType.isNotice($0.type) && $0.paneID == pane.uuidString }
+    }
+
+    /// A program toggling blocked/working twenty times in one second rings the Mac once. The
+    /// re-raises are still posted (marked, counted, listed), silently; the event stream carries
+    /// one post/resolve pair for the burst plus the alarm still live when the window ends.
+    func testABlockedFloodBannersOnce() throws {
+        useProgramStore()
+        installFloodSinks()
+        let pane = try addPane()
+        let mark = ControlEventBus.shared.seq
+
+        for _ in 0..<20 {
+            send(report(.blocked, kind: .question, app: "cargo"), pane.id, after: 0.02)
+            send(report(.working, app: "cargo"), pane.id, after: 0.02)
+        }
+        send(report(.blocked, kind: .question, app: "cargo"), pane.id, after: 0.02)
+
+        XCTAssertEqual(recorder.added.count, 1, "one banner for the whole burst")
+        XCTAssertNotNil(recorder.added.first?.content.sound)
+        let alarm = try XCTUnwrap(live(pane.id, source: "program:cargo").first)
+        XCTAssertTrue(alarm.silent)
+        XCTAssertEqual(center.urgency(pane: pane.id), .needsUser, "the pane is marked")
+        XCTAssertEqual(center.counts.total, 1, "the Dock badge counts it")
+        XCTAssertEqual(center.history.filter { $0.pane == pane.id }.count, 20,
+                       "every re-raise was posted (and resolved by the working that followed it)")
+
+        XCTAssertEqual(noticeEvents(pane.id, since: mark).map(\.type),
+                       ["notice.posted", "notice.resolved"], "the burst is coalesced")
+        scheduled.forEach { $0() }
+        let events = noticeEvents(pane.id, since: mark)
+        XCTAssertEqual(events.map(\.type), ["notice.posted", "notice.resolved", "notice.posted"],
+                       "the alarm live at the end of the window is announced on the stream")
+        XCTAssertEqual(events.last?.noticeID, alarm.id.uuidString)
+
+        // Its resolution follows like any other's.
+        send(report(.working, app: "cargo"), pane.id, after: 0.02)
+        XCTAssertEqual(noticeEvents(pane.id, since: mark).last?.type, "notice.resolved")
+        XCTAssertEqual(noticeEvents(pane.id, since: mark).count, 4)
+    }
+
+    /// After 1.1 s of quiet a new blocked is a fresh alarm again: banner and sound.
+    func testABlockedAfterQuietBannersAgain() throws {
+        useProgramStore()
+        installFloodSinks()
+        let pane = try addPane()
+        for _ in 0..<5 {
+            send(report(.blocked, kind: .question, app: "cargo"), pane.id, after: 0.02)
+            send(report(.working, app: "cargo"), pane.id, after: 0.02)
+        }
+        XCTAssertEqual(recorder.added.count, 1)
+        let mark = ControlEventBus.shared.seq
+
+        send(report(.blocked, kind: .question, app: "cargo"), pane.id, after: 1.1)
+        XCTAssertEqual(recorder.added.count, 2)
+        XCTAssertNotNil(recorder.added.last?.content.sound)
+        XCTAssertEqual(live(pane.id, source: "program:cargo").first?.silent, false)
+        XCTAssertEqual(noticeEvents(pane.id, since: mark).map(\.type), ["notice.posted"])
+    }
+
+    /// A hook's approval in the middle of a program's flood is never silenced: it banners with a
+    /// sound, even on top of the program's live silent alarm.
+    func testAHookApprovalDuringAFloodStillBanners() throws {
+        useProgramStore()
+        installFloodSinks()
+        let pane = try addPane()
+        send(report(.blocked, kind: .question, app: "cargo"), pane.id, after: 0.02)
+        send(report(.working, app: "cargo"), pane.id, after: 0.02)
+        send(report(.blocked, kind: .question, app: "cargo"), pane.id, after: 0.02)
+        XCTAssertEqual(live(pane.id, source: "program:cargo").first?.silent, true)
+        XCTAssertEqual(recorder.added.count, 1)
+        let mark = ControlEventBus.shared.seq
+
+        now += 0.02
+        let posted = try XCTUnwrap(registry.apply(hook("PermissionRequest", tool: "Bash"),
+                                                  pane: pane.id).noticePosted)
+        XCTAssertEqual(center.notice(id: posted)?.silent, false)
+        XCTAssertEqual(recorder.added.count, 2, "the hook's approval banners")
+        XCTAssertNotNil(recorder.added.last?.content.sound)
+        XCTAssertEqual(noticeEvents(pane.id, since: mark).map(\.noticeID), [posted.uuidString])
+    }
+
     /// Minor: a hook-tracked agent waiting to sign in is titled as such.
     func testAnAuthAlarmIsTitledAsSignIn() throws {
         let auth = """

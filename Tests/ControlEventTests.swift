@@ -605,4 +605,67 @@ final class ControlEventTests: XCTestCase {
         XCTAssertNil(cleared.kind)
         XCTAssertNil(cleared.message)
     }
+
+    private static let otherRule = """
+    id = "other"
+    name = "Other Agent"
+    process = ["other"]
+
+    [hooks]
+    SessionStart = "idle"
+    SessionEnd   = "released"
+    """
+
+    /// Minor 4 of the final review: an agent's record while another agent holds the pane has no
+    /// `agent.state.changed` of its own, so it gets `program.status.changed`. The holding agent
+    /// keeps speaking through `agent.state.changed` only.
+    func testANonHoldingAgentsRecordEmitsProgramStatusChanged() throws {
+        let registry = AgentRegistry.shared
+        let center = NoticeCenter.shared
+        let store = ProgramStatusStore.shared
+        let savedRules = Array(registry.rules.values)
+        let savedSettings = registry.settings
+        let locator = NoticeLocator(screens: harness.app.screens)
+        center.attach(locator: locator)
+        registry.attach(locator: locator, userRuleDirectory: nil)
+        registry.reloadRulesForTesting([try AgentRules.parse(Self.demoRule),
+                                        try AgentRules.parse(Self.otherRule)])
+        registry.settings = AgentSettings()
+        registry.settings.enabled = ["demo", "other"]
+        registry.settings.autoInstallHooks = "never"
+        registry.resetForTesting()
+        let pane = try harness.newTerminal()
+        defer {
+            store.paneClosed(pane.id)
+            registry.resetForTesting()
+            registry.reloadRulesForTesting(savedRules)
+            registry.settings = savedSettings
+            center.resetForTesting()
+        }
+        func events(since mark: Int) -> [ControlEvent] {
+            ControlEventBus.shared.flush()
+            return ControlEventBus.shared.batch(since: mark, limit: ControlEventLimits.maxBatch,
+                                                types: nil, exposesBrowser: true).events
+        }
+
+        registry.apply(.hook(agent: "other", payload: AgentEventPayload(hookEventName: "SessionStart")),
+                       pane: pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.agent, "other")
+
+        var mark = harness.seq
+        store.receive(programReport(.working, id: "turn", app: "demo"), pane: pane.id, foregroundGroup: nil)
+        let program = events(since: mark).filter { $0.type == ControlEventType.programStatusChanged.rawValue }
+        XCTAssertEqual(program.count, 1)
+        XCTAssertEqual(program.first?.app, "demo")
+        XCTAssertEqual(program.first?.id, "turn")
+        XCTAssertEqual(program.first?.state, "working")
+        XCTAssertFalse(events(since: mark).contains { $0.type == ControlEventType.agentStateChanged.rawValue },
+                       "the pane's status is still other's")
+
+        // The holding agent's own record gets no program event (here it only annotates the hook state).
+        mark = harness.seq
+        store.receive(programReport(.working, app: "other"), pane: pane.id, foregroundGroup: nil)
+        XCTAssertFalse(events(since: mark).contains { $0.type == ControlEventType.programStatusChanged.rawValue },
+                       "the holding agent speaks through agent.state.changed")
+    }
 }

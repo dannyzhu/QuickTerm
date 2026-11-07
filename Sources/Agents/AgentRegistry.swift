@@ -697,14 +697,26 @@ final class AgentRegistry: NoticeSink {
             let old = before.filter { $0.source == source }.map(\.record)
             let new = after.filter { $0.source == source }.map(\.record)
             var label = programLabel(source)
+            // Whether this source is the agent holding the pane's status, before or after this
+            // change: that agent speaks through `agent.state.changed`.
+            var holds = false
             if case .agent(let id) = source, let rules = active[id] {
+                holds = statuses[pane]?.agent == id
+                // Only a source whose own records moved is reduced again. Another program's report
+                // in the same pane is not news about this agent: re-reducing its unchanged records
+                // would build back a status the scan has since released (a Codex `done` that then
+                // mutes OSC 9) or put a stale `msg` over a newer hook message.
+                guard old.map(\.report) != new.map(\.report) else { continue }
                 // A straggler of a session that just ended is the agent's and is consumed: it
                 // neither builds the status back nor posts a second "finished".
                 guard applyProgramStatus(new, rules: rules, pane: pane) else { continue }
+                holds = holds || statuses[pane]?.agent == id
                 label = rules.name
             }
             raiseProgramAlarms(source: source, label: label, old: old, new: new, pane: pane)
-            if case .program = source { emitProgramChanges(old: old, new: new, pane: pane) }
+            // Every other record has `program.status.changed`: a generic program's, and that of
+            // an agent another agent's status holds the pane against (it has no state event).
+            if !holds { emitProgramChanges(old: old, new: new, pane: pane) }
         }
         // The band redraws at most four times a second (spec decision 18): the pane's records
         // and any status a report moved are published through the throttle. The draw reads the
@@ -716,9 +728,10 @@ final class AgentRegistry: NoticeSink {
         }
     }
 
-    /// `program.status.changed` for a generic program's records (spec decision 19): one event
-    /// per record whose (state, kind) moved, appeared or went away (`cleared`). A progress step
-    /// or a new message is not a transition. An agent's own records speak through its
+    /// `program.status.changed` for a record no agent status speaks for (spec decision 19): a
+    /// generic program's, or an agent's while another agent holds the pane. One event per record
+    /// whose (state, kind) moved, appeared or went away (`cleared`). A progress step or a new
+    /// message is not a transition. The holding agent's records speak through its
     /// `agent.state.changed` instead.
     private func emitProgramChanges(old: [ProgramStatusStore.Record], new: [ProgramStatusStore.Record],
                                     pane: UUID) {

@@ -208,6 +208,12 @@ struct Notice: Identifiable, Equatable, Codable {
     var quietedAt: Date?
     var resolvedAt: Date?
     var resolution: NoticeResolution?
+    /// Posted inside the program-status flood window (`NoticeCenter.programAlarmFloodWindow`): a
+    /// program-status `needsUser` re-raised within a second of that source's previous one or of
+    /// its last resolve in the same pane. It is live like any other notice (pane mark, Dock
+    /// badge, `notices list`), but the banner sink shows nothing for it and the control-plane
+    /// sink coalesces its events. Set by the centre only.
+    var silent = false
 
     var isLive: Bool { resolvedAt == nil }
     /// Live and not quieted — the state the banner and the badge react to.

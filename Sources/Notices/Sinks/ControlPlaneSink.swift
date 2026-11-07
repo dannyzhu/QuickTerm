@@ -20,30 +20,56 @@ final class ControlPlaneSink: NoticeSink {
 
     private let bus: ControlEventBus
 
+    typealias Schedule = (_ delay: TimeInterval, _ run: @escaping @MainActor () -> Void) -> Void
+
+    private let clock: () -> Date
+    private let schedule: Schedule
+
+    /// **Coalescing silent re-raises** (spec decision 18). A program toggling `blocked` and
+    /// `working` posts and resolves a silent alarm at its report rate, and every pair would push
+    /// two events into a ring of `ControlEventLimits.ringCapacity`. Per notice key, at most one
+    /// silent notice's events go out per `NoticeCenter.programAlarmFloodWindow`:
+    /// - `silentWindow[key]`: when the last program-status alarm under the key was emitted;
+    /// - `held[key]`: the newest silent notice skipped inside that window and still live. When
+    ///   the window ends it is emitted, so a burst that ends blocked still says so on the stream;
+    /// - `skipped`: notices whose `notice.posted` never went out, so their `notice.resolved`
+    ///   does not either (a subscriber is never told an id it has never heard of went away).
+    private var silentWindow: [String: Date] = [:]
+    private var held: [String: Notice] = [:]
+    private var skipped: Set<UUID> = []
+    /// Keys with a window-end callback pending: one per key, however many notices it skips.
+    private var armed: Set<String> = []
+
     /// The bus is injectable so a test can watch one in isolation; the app wires this sink up with
-    /// no arguments at all (contract §10.10, `ControlPlaneSink()`).
+    /// no arguments at all (contract §10.10, `ControlPlaneSink()`). The clock and the scheduler are
+    /// injectable so a test can drive the coalescing window by hand.
     ///
     /// The default is written as `nil` rather than `.shared` on purpose: a default argument
     /// expression is evaluated in a **nonisolated** context however isolated the initialiser is,
     /// and `ControlEventBus.shared` is main-actor isolated. (`NoticeLocator.unattached` carries the
     /// same note for the same reason.)
-    init(bus: ControlEventBus? = nil) {
+    init(bus: ControlEventBus? = nil, clock: @escaping () -> Date = Date.init,
+         schedule: Schedule? = nil) {
         self.bus = bus ?? ControlEventBus.shared
+        self.clock = clock
+        self.schedule = schedule ?? { delay, run in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated(run) }
+        }
     }
 
     func apply(_ change: NoticeChange) {
         switch change {
         case .posted(let notice, _, _):
-            emit(notice, type: .noticePosted)
+            posted(notice)
         case .superseded(let old, let new, _, _):
             // Two events, in this order: the old one really did stop being live, and a subscriber
             // that only heard the new post would keep an id alive for ever. The old one carries
             // `resolution: "superseded"`, which is how an agent tells "a different tool is asking
             // now" from "the user dealt with it".
-            emit(old, type: .noticeResolved)
-            emit(new, type: .noticePosted)
+            resolved(old)
+            posted(new)
         case .resolved(let notice, _, _):
-            emit(notice, type: .noticeResolved)
+            resolved(notice)
         case .quieted, .rearmed, .activityChanged, .countsChanged:
             // None of them is an event: activity is "is the user looking at this pane", which the
             // focus / workspace events already describe, the counts are a function of the posts
@@ -57,6 +83,50 @@ final class ControlPlaneSink: NoticeSink {
     func clearAll() {
         // Nothing to take down: the events already went out, and the ring is the caller's history.
         // (A sink that is switched off gets this once; this one is never switched off.)
+    }
+
+    // MARK: Coalescing (spec decision 18)
+
+    private func posted(_ notice: Notice) {
+        guard NoticeCenter.isProgramAlarm(notice) else {
+            emit(notice, type: .noticePosted)
+            return
+        }
+        let now = clock()
+        let window = NoticeCenter.programAlarmFloodWindow
+        silentWindow = silentWindow.filter { now.timeIntervalSince($0.value) < window }
+        // A banner-worthy alarm always goes out, and opens the window its silent re-raises
+        // are coalesced in.
+        guard notice.silent, let start = silentWindow[notice.key] else {
+            silentWindow[notice.key] = now
+            emit(notice, type: .noticePosted)
+            return
+        }
+        skipped.insert(notice.id)
+        held[notice.key] = notice
+        guard armed.insert(notice.key).inserted else { return }
+        let key = notice.key
+        schedule(max(0, window - now.timeIntervalSince(start))) { [weak self] in
+            self?.releaseHeld(key: key)
+        }
+    }
+
+    private func resolved(_ notice: Notice) {
+        guard skipped.remove(notice.id) == nil else {
+            if held[notice.key]?.id == notice.id { held[notice.key] = nil }
+            return
+        }
+        emit(notice, type: .noticeResolved)
+    }
+
+    /// The window is over: the newest skipped notice, if it is still live, goes out now and
+    /// opens the next window. Its resolution is then emitted like any other.
+    private func releaseHeld(key: String) {
+        armed.remove(key)
+        guard let notice = held.removeValue(forKey: key) else { return }
+        skipped.remove(notice.id)
+        silentWindow[key] = clock()
+        emit(notice, type: .noticePosted)
     }
 
     private func emit(_ notice: Notice, type: ControlEventType) {

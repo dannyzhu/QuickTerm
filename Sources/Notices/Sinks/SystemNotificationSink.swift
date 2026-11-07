@@ -103,6 +103,10 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
     /// pane stops needing the user (`.resolved` to nothing or to `info`), which is when the next
     /// alarm becomes a fresh one that may ping again. Bounded by the live-needsUser panes.
     private var pingedPanes: Set<UUID> = []
+    /// Panes holding a `needsUser` that was posted silent (spec decision 18's flood window), kept
+    /// until the pane stops needing the user. Only these let another alarm posted on top of a
+    /// live one banner (see `unannounced`).
+    private var silencedPanes: Set<UUID> = []
 
     /// Authorization is asked for once, lazily, at the first banner - exactly as the engine did.
     /// Not at launch: an app that asks the moment it starts gets denied by people who have no idea
@@ -129,8 +133,9 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
 
     /// Spec decision 18: per pane, at most one `info` banner from program status (a `done` or
     /// `error` report) in this many seconds. A suppressed banner is simply not shown; the notice
-    /// is posted all the same, and `needsUser` banners, the pane mark and the Dock badge are never
-    /// limited.
+    /// is posted all the same, and the pane mark and the Dock badge are never limited. A
+    /// program-status `needsUser` is limited by the centre's flood window instead
+    /// (`NoticeCenter.programAlarmFloodWindow`, `Notice.silent`).
     static let programInfoInterval: TimeInterval = 10
     /// When each pane last showed a program-status `info` banner. Entries older than the
     /// interval are pruned whenever a new one is written, so it holds only recent panes.
@@ -243,21 +248,29 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
     func apply(_ change: NoticeChange) {
         switch change {
         case .posted(let notice, let transition, let activity):
-            guard transition.raised else { return }
+            // A program-status alarm re-raised inside the flood window shows nothing (decision
+            // 18). A pane holding only such an alarm was never announced, so another source's
+            // alarm posted on top of it still gets its banner and sound.
+            if notice.silent { silencedPanes.insert(notice.pane) }
+            guard !notice.silent, transition.raised || unannounced(notice) else { return }
             present(notice, activity: activity, sound: true)
 
         case .superseded(_, let new, let transition, let activity):
             // A different tool is asking now. The banner is replaced either way; it only gets a
             // sound when the pane's urgency actually went up, so an `info` quietly overwriting an
             // `info` does not ping twice for one program's chatter.
-            guard transition.raised || new.urgency == .needsUser else { return }
-            present(new, activity: activity, sound: transition.raised)
+            if new.silent { silencedPanes.insert(new.pane) }
+            guard !new.silent, transition.raised || new.urgency == .needsUser else { return }
+            present(new, activity: activity, sound: transition.raised || unannounced(new))
 
         case .resolved(let notice, let transition, _):
             // The pane no longer needs the user (resolved to nothing, or downgraded to `info`): the
             // next `needsUser` alarm on it is a fresh one and may ping again, so drop the "already
             // announced" mark. Kept only while the pane genuinely still holds a live approval.
-            if transition.after != .needsUser { pingedPanes.remove(notice.pane) }
+            if transition.after != .needsUser {
+                pingedPanes.remove(notice.pane)
+                silencedPanes.remove(notice.pane)
+            }
             // Only take the banner down when the pane has nothing left to say. With two notices
             // live, resolving one must not take down the banner that describes the other.
             guard transition.after == nil else { return }
@@ -302,7 +315,15 @@ final class SystemNotificationSink: NSObject, NoticeSink, UNUserNotificationCent
         for pane in presented { withdraw(pane: pane) }
         presented.removeAll()
         pingedPanes.removeAll()
+        silencedPanes.removeAll()
         lastProgramInfo.removeAll()
+    }
+
+    /// A `needsUser` alarm landing on a pane whose live alarm was posted silent and which has not
+    /// been audibly announced since: nothing has told the user yet, so this one may.
+    private func unannounced(_ notice: Notice) -> Bool {
+        notice.urgency == .needsUser && silencedPanes.contains(notice.pane)
+            && !pingedPanes.contains(notice.pane)
     }
 
     /// Decision 18's limit, asked at the moment a banner would be shown. Records the banner it

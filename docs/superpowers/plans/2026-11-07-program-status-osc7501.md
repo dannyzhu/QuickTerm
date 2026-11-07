@@ -20,7 +20,7 @@
 - Precedence: hook > programStatus > notification (OSC 9/777) > process. A program-status report may raise an alarm; it never resolves one a hook raised.
 - Hook-first window = from the agent's first hook-evidenced status until it is released (not a recency window).
 - done/error from program status = `info` notices (no Dock badge, resolve on focus); blocked = `needsUser` alarm; typing quiets (not resolves) a program-status alarm; a repeat of the same (state, kind, id) raises nothing.
-- Rate limits: ≤ 1 `info` banner per pane per 10 s from program status (suppressed banner dropped, notice still posted); `needsUser` banners, pane mark and Dock badge never limited; band redraws ≤ 4 per second.
+- Rate limits: ≤ 1 `info` banner per pane per 10 s from program status (suppressed banner dropped, notice still posted); a program-status `needsUser` within 1 s of the same (pane, source)'s previous one or last resolve is posted silently (no banner or sound, still marked and badged, `notice.*` events coalesced to ≤ 1 pair per second), hook alarms never limited; band redraws ≤ 4 per second.
 - Config `[agents] program-status = true` (bool, default on; off = QuickTerm ignores every report; the engine still answers the query). Documented in both READMEs (`testEveryKeyIsDocumented`).
 - Wire: generic notices' source `program:<app>` (`program` when no `app`); `quickterm state` per-pane `programs` array; `agents list` unchanged; `agent.state.changed` with `evidence: "program-status"`. English.
 - Privacy: no command line, environment or path of any non-agent process is read; the foreground process group is a number only.

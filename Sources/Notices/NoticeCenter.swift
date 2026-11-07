@@ -147,12 +147,16 @@ final class NoticeCenter: ObservableObject {
             return .duplicate(live[index].id)
         }
 
-        let notice = Notice(
+        var notice = Notice(
             id: UUID(), key: key, source: request.source, pane: request.pane,
             screen: located.controller.windowID, workspace: located.workspace,
             urgency: request.urgency, evidence: request.evidence, title: title, body: body,
             bodySensitive: request.bodySensitive, origin: request.origin, postedAt: now,
             quietedAt: nil, resolvedAt: nil, resolution: nil)
+        if Self.isProgramAlarm(notice) {
+            notice.silent = programAlarmFlooding(key: key, now: now)
+            noteProgramAlarm(key: key, now: now, in: &lastProgramAlarm)
+        }
 
         // 4./5. Same key, different content: the old one is superseded and the new one takes its
         //       place. Otherwise this is simply a new notice.
@@ -289,6 +293,9 @@ final class NoticeCenter: ObservableObject {
         notice.resolution = how
         live.remove(at: index)
         appendToHistory(notice)
+        if Self.isProgramAlarm(notice), let at = notice.resolvedAt {
+            noteProgramAlarm(key: notice.key, now: at, in: &lastProgramResolve)
+        }
 
         let after = urgency(pane: pane)
         let transition = PaneTransition(pane: pane, before: before, after: after)
@@ -348,6 +355,35 @@ final class NoticeCenter: ObservableObject {
         let resolved = resolveAll(pane: pane, .stateChanged, urgency: .needsUser, origin: origin,
                                   includePrograms: false)
         return StateChangeOutcome(resolved: resolved, refused: refused)
+    }
+
+    // MARK: The program-status flood window (spec decision 18)
+
+    /// A program toggling `blocked` and `working` would otherwise ring the Mac at its report
+    /// rate. A program-status `needsUser` posted within this many seconds of the previous one
+    /// under the same key, or of that key's last resolve, is posted `silent`: live, marked and
+    /// counted, but no banner and no sound, and its control-plane events are coalesced.
+    static let programAlarmFloodWindow: TimeInterval = 1
+
+    /// Per key (source, needsUser, pane): when a program-status alarm was last posted / resolved.
+    /// Pruned to the window on every write, so they hold only keys that are busy right now.
+    private var lastProgramAlarm: [String: Date] = [:]
+    private var lastProgramResolve: [String: Date] = [:]
+
+    /// Only program-status evidence: a hook's alarm is never made silent and never counts.
+    static func isProgramAlarm(_ notice: Notice) -> Bool {
+        notice.urgency == .needsUser && notice.evidence == .programStatus
+    }
+
+    private func programAlarmFlooding(key: String, now: Date) -> Bool {
+        [lastProgramAlarm[key], lastProgramResolve[key]].contains { last in
+            last.map { now.timeIntervalSince($0) < Self.programAlarmFloodWindow } ?? false
+        }
+    }
+
+    private func noteProgramAlarm(key: String, now: Date, in map: inout [String: Date]) {
+        map = map.filter { now.timeIntervalSince($0.value) < Self.programAlarmFloodWindow }
+        map[key] = now
     }
 
     /// A generic program's notice (OSC 7501, `program:<app>` / `program`).
@@ -674,5 +710,7 @@ final class NoticeCenter: ObservableObject {
         counts = NoticeCounts()
         recordedActivity.removeAll()
         activityPassScheduled = false
+        lastProgramAlarm.removeAll()
+        lastProgramResolve.removeAll()
     }
 }
