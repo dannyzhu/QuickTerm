@@ -295,6 +295,9 @@ final class AppSession {
         let previousHookDetail = AgentRegistry.shared.settings.hookDetail
         AgentRegistry.shared.settings = agents
         AgentRegistry.shared.consent = controlConsent
+        // `[agents] program-status`: off, and no OSC 7501 report, prompt start or reset reaches
+        // the program-status store.
+        ProgramStatusRouter.isEnabled = settings.programStatus
         // Owner decision Q4: a changed `[agents] hook-detail` rewrites the entries that are
         // already installed, so editing the key and saving is enough — the alternative is a config
         // key whose help text describes something that only happens at the next launch.

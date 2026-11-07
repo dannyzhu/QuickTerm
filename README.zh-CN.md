@@ -461,6 +461,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # strip-background = "#414868"                   # 状态条底色（#rrggbb）：闲置 / 工作中 / 完成 / 未知都用它
 # strip-attention = "#f7768e"                    # 状态条在「等你动手」和「出错」时的底色（#rrggbb）
 # strip-text = "#c0caf5"                         # 状态条上文字的颜色（#rrggbb）
+# program-status = true                          # 读取 pane 里程序发出的 OSC 7501 状态并显示在状态栏；关掉后忽略所有报告
 
 [notifications]              # 谁在等你；红点 / 角标 / 计数统计的是「需要你动手的 pane」，不是通知条数
 # system = "inactive"         # inactive = 只在你没在看那个 pane 时弹系统通知 | never = 从不弹

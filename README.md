@@ -473,6 +473,7 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 # strip-background = "#414868"                   # the bar's background (#rrggbb) for idle, working, done and unknown
 # strip-attention = "#f7768e"                    # the bar's background (#rrggbb) while the agent needs you, or its turn failed
 # strip-text = "#c0caf5"                         # the colour (#rrggbb) of the text drawn on the bar
+# program-status = true                          # read OSC 7501 program status from panes and show it in the band; off = ignore every report
 
 [notifications]              # who is waiting for you; the marks count PANES that need you, not notices
 # system = "inactive"         # inactive = banner only while you are not looking at that pane | never

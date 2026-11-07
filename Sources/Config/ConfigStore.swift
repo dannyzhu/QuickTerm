@@ -311,6 +311,9 @@ enum ConfigStore {
         var agentsStripBackground: String = AgentSettings.defaultStripBackground
         var agentsStripAttention: String = AgentSettings.defaultStripAttention
         var agentsStripText: String = AgentSettings.defaultStripText
+        /// `[agents] program-status`: read OSC 7501 reports at all. Pushed to
+        /// `ProgramStatusRouter.isEnabled` in `AppSession.applyGlobalConfig`.
+        var programStatus: Bool = true
         /// `[notifications]` — the notification centre (spec §3.5). `NoticeSettings` is built
         /// from these seven in `AppSession.applyGlobalConfig`; the centre never reads the config
         /// itself.
@@ -440,6 +443,7 @@ enum ConfigBindings {
         "agents.strip-background": { v, s in v.stringValue.map { s.agentsStripBackground = $0 } },
         "agents.strip-attention": { v, s in v.stringValue.map { s.agentsStripAttention = $0 } },
         "agents.strip-text": { v, s in v.stringValue.map { s.agentsStripText = $0 } },
+        "agents.program-status": { v, s in v.boolValue.map { s.programStatus = $0 } },
         "updates.check": { v, s in v.boolValue.map { s.updatesCheck = $0 } },
         "updates.install": { v, s in v.boolValue.map { s.updatesInstall = $0 } },
         "restore.content": { v, s in v.boolValue.map { s.restoreContent = $0 } },

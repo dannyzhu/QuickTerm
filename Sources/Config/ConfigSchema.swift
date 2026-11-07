@@ -828,6 +828,11 @@ enum ConfigSchema {
                       labelZH: "状态条文字色", labelEN: "Status bar text",
                       helpZH: "状态条上文字的颜色（#rrggbb）",
                       helpEN: "the colour (#rrggbb) of the text drawn on the bar"),
+        // OSC 7501 (Program Status Protocol): a program in the pane reports its own state.
+        ConfigKeySpec(.agents, "program-status", .bool, default: .bool(true),
+                      labelZH: "程序状态（OSC 7501）", labelEN: "Program status (OSC 7501)",
+                      helpZH: "读取 pane 里程序发出的 OSC 7501 状态并显示在状态栏；关掉后忽略所有报告",
+                      helpEN: "read OSC 7501 program status from panes and show it in the band; off = ignore every report"),
 
         // MARK: [notifications]
         // The notification centre (spec §3.5). `bell` and `command-finished` are read by the

@@ -305,6 +305,14 @@ extension Ghostty {
         var surface: ghostty_surface_t? {
             surfaceModel?.unsafeCValue
         }
+        /// QuickTerm: the pty's foreground process group right now (spec decision 5), nil while
+        /// the pty is not up or the engine cannot tell. Program status uses it to know when the
+        /// program that sent a report has left the foreground.
+        var foregroundProcessGroup: Int32? {
+            guard let surface else { return nil }
+            return ProgramStatusRouter.processGroup(ghostty_surface_foreground_pgid(surface))
+        }
+
         /// Current scrollbar state, cached here for persistence across rebuilds
         /// of the SwiftUI view hierarchy, for example when changing splits
         var scrollbar: Ghostty.Action.Scrollbar?
@@ -1979,7 +1987,11 @@ extension Ghostty {
             let action = "reset"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
                 AppDelegate.logger.warning("action failed action=\(action)")
+                return
             }
+            // QuickTerm: the engine's own Reset sends no OSC 7501 reset (only a program's RIS
+            // does), so a user Reset clears this pane's program-status records here.
+            ProgramStatusRouter.reset(pane: id)
         }
 
         @objc func toggleTerminalInspector(_ sender: Any) {

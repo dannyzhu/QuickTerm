@@ -428,7 +428,15 @@ extension Ghostty {
             let action = "reset"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
                 logger.warning("action failed action=\(action)")
+                return
             }
+            // QuickTerm: the engine's own Reset sends no OSC 7501 reset (only a program's RIS
+            // does), so a user Reset clears the pane's program-status records here.
+            #if os(macOS)
+            guard let view = Self.surfaceView(from: surface) else { return }
+            let pane = view.id
+            ProgramStatusRouter.onMain { ProgramStatusRouter.reset(pane: pane) }
+            #endif
         }
 
         #if os(iOS)
@@ -725,6 +733,19 @@ extension Ghostty {
 
             case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
                 showDesktopNotification(app, target: target, n: action.action.desktop_notification)
+
+            case GHOSTTY_ACTION_PROGRAM_STATUS:
+                programStatus(app, target: target, v: action.action.program_status)
+
+            case GHOSTTY_ACTION_PROMPT_START:
+                programStatusPaneEvent(app, target: target, name: "prompt start") {
+                    ProgramStatusRouter.promptStarted(pane: $0)
+                }
+
+            case GHOSTTY_ACTION_PROGRAM_STATUS_RESET:
+                programStatusPaneEvent(app, target: target, name: "program status reset") {
+                    ProgramStatusRouter.reset(pane: $0)
+                }
 
             case GHOSTTY_ACTION_SET_TITLE:
                 setTitle(app, target: target, v: action.action.set_title)
@@ -1625,6 +1646,57 @@ extension Ghostty {
                 guard let body = String(cString: n.body!, encoding: .utf8) else { return }
                 GhosttyNoticeProducer.desktopNotification(
                     pane: surfaceView.id, title: title, body: body)
+
+            default:
+                assertionFailure()
+            }
+        }
+
+        /// OSC 7501 from whatever runs in the pane (spec decisions 1–3). The engine has already
+        /// validated the report; this copies it out of the C struct (whose strings die with the
+        /// callback), reads the pty's foreground process group at this moment (decision 5: whose
+        /// report it is, for the clearing-on-exit rule) and hands both to the router.
+        private static func programStatus(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            v: ghostty_action_program_status_s) {
+            switch target.tag {
+            case GHOSTTY_TARGET_APP:
+                Ghostty.logger.warning("program status does nothing with an app target")
+                return
+
+            case GHOSTTY_TARGET_SURFACE:
+                guard let surface = target.target.surface else { return }
+                guard let surfaceView = self.surfaceView(from: surface) else { return }
+                guard let report = ProgramStatusReport.from(v) else { return }
+                let group = ProgramStatusRouter.processGroup(ghostty_surface_foreground_pgid(surface))
+                let pane = surfaceView.id
+                ProgramStatusRouter.onMain {
+                    ProgramStatusRouter.report(report, pane: pane, foregroundGroup: group)
+                }
+
+            default:
+                assertionFailure()
+            }
+        }
+
+        /// The two payload-free OSC 7501 companions: a new shell prompt (OSC 133) and a full
+        /// reset from the program (RIS). Both only need the pane.
+        private static func programStatusPaneEvent(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            name: StaticString,
+            _ route: @escaping @MainActor (UUID) -> Void) {
+            switch target.tag {
+            case GHOSTTY_TARGET_APP:
+                Ghostty.logger.warning("\(name) does nothing with an app target")
+                return
+
+            case GHOSTTY_TARGET_SURFACE:
+                guard let surface = target.target.surface else { return }
+                guard let surfaceView = self.surfaceView(from: surface) else { return }
+                let pane = surfaceView.id
+                ProgramStatusRouter.onMain { route(pane) }
 
             default:
                 assertionFailure()
