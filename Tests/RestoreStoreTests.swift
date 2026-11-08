@@ -131,6 +131,24 @@ final class RestoreStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path))
     }
 
+    /// With `--state-file` the directory sits in a folder the user owns: clearing it deletes only
+    /// the store's own files, and the directory only if that left it empty.
+    func testRemoveAllLeavesFilesItDidNotWrite() throws {
+        try store.write(text, pane: UUID(), encrypt: true)
+        try store.write(text, pane: UUID(), encrypt: false)
+        let mine = dir.appendingPathComponent("notes.txt")
+        let lookalike = dir.appendingPathComponent("report.vt")
+        try Data("keep".utf8).write(to: mine)
+        try Data("keep".utf8).write(to: lookalike)
+
+        store.prune(keeping: [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: lookalike.path), "prune keeps a non-pane file")
+        store.removeAll()
+        XCTAssertTrue(store.files().isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mine.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: lookalike.path))
+    }
+
     func testSymlinkedDirectoryIsReplacedAndNeverWrittenThrough() throws {
         let elsewhere = FileManager.default.temporaryDirectory
             .appendingPathComponent("restore-elsewhere-\(UUID().uuidString)")
@@ -156,7 +174,7 @@ final class RestoreStoreTests: XCTestCase {
 
     func testPruneRemovesStaleTempFiles() throws {
         try store.write(text, pane: UUID(), encrypt: false)
-        let stale = dir.appendingPathComponent(".x.tmp")
+        let stale = dir.appendingPathComponent(".\(UUID().uuidString).tmp")
         try Data("plain".utf8).write(to: stale)
         store.prune(keeping: [])
         XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
@@ -164,7 +182,7 @@ final class RestoreStoreTests: XCTestCase {
 
     func testWriteRemovesStaleTempFiles() throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let stale = dir.appendingPathComponent(".y.tmp")
+        let stale = dir.appendingPathComponent(".\(UUID().uuidString).tmp")
         try Data("plain".utf8).write(to: stale)
         try store.write(text, pane: UUID(), encrypt: false)
         XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))

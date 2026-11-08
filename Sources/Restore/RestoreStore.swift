@@ -110,7 +110,9 @@ final class RestoreStore {
     private func removeStaleTemps() {
         let all = (try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: nil)) ?? []
-        for file in all where file.lastPathComponent.hasPrefix(".") && file.pathExtension == "tmp" {
+        for file in all where file.pathExtension == "tmp"
+            && UUID(uuidString: String(file.deletingPathExtension().lastPathComponent.dropFirst())) != nil
+            && file.lastPathComponent.hasPrefix(".") {
             unlink(file.path)
         }
     }
@@ -218,12 +220,13 @@ final class RestoreStore {
         // Never follow a linked directory: removeItem would delete only the link and leave the
         // content in its target.
         if removeDirectoryLink() { return }
-        do {
-            try FileManager.default.removeItem(at: directory)
-        } catch let error as NSError where error.code == NSFileNoSuchFileError {
-            // Nothing stored.
-        } catch {
-            Self.log("could not remove the restore directory: \(error)")
+        // Only the files this store writes are deleted, then the directory if that left it empty.
+        // With `--state-file` the directory is `restore/` next to a file the user chose, in a
+        // folder QuickTerm does not own: a recursive delete there could take the user's own files.
+        removeStaleTemps()
+        for file in files() { unlink(file.path) }
+        if rmdir(directory.path) != 0, errno != ENOENT, errno != ENOTEMPTY {
+            Self.log("could not remove the restore directory (errno \(errno))")
         }
     }
 
@@ -233,15 +236,19 @@ final class RestoreStore {
         removeStaleTemps()
         for file in files() {
             let id = UUID(uuidString: file.deletingPathExtension().lastPathComponent)
-            if id == nil || !keeping.contains(id!) { unlink(file.path) }
+            if let id, !keeping.contains(id) { unlink(file.path) }
         }
     }
 
-    /// The `.qtr` / `.vt` files currently in the directory.
+    /// The `<pane uuid>.qtr` / `<pane uuid>.vt` files currently in the directory: the names this
+    /// store writes, and nothing else it might find there.
     func files() -> [URL] {
         let all = (try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: nil)) ?? []
-        return all.filter { ["qtr", "vt"].contains($0.pathExtension) }
+        return all.filter {
+            ["qtr", "vt"].contains($0.pathExtension)
+                && UUID(uuidString: $0.deletingPathExtension().lastPathComponent) != nil
+        }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 }
