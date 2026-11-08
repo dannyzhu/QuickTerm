@@ -149,7 +149,7 @@ final class RestoreExporterTests: XCTestCase {
         let registry = ScreenRegistry()
         let session = AppSession(screens: registry, themeManager: ThemeManager(),
                                  stateURL: dir.appendingPathComponent("state.json"),
-                                 restoreDirectory: dir)
+                                 restoreDirectory: dir, restoreKeyStore: MemoryRestoreKeyStore())
         defer {
             session.controlServer.stop()
             // The export arms the quit-time save for the whole process; a test host must disarm it.
@@ -166,6 +166,40 @@ final class RestoreExporterTests: XCTestCase {
         try restoreStore.write(Data("first export".utf8), pane: kept, encrypt: false)
         session.exportRestoreContentOnce()
         XCTAssertEqual(restoreStore.files().count, 1, "the second call is a no-op")
+    }
+
+    /// Final review I2: the restore directory follows the session archive, so a second instance
+    /// started with `--state-file` never prunes or deletes the user's real `restore/` directory.
+    func testRestoreDirectoryFollowsTheStateFile() throws {
+        let registry = ScreenRegistry()
+        let session = AppSession(screens: registry, themeManager: ThemeManager(),
+                                 stateURL: dir.appendingPathComponent("state.json"))
+        defer {
+            session.controlServer.stop()
+            if let app = NSApp.delegate as? AppDelegate { ControlEventBus.shared.attach(screens: app.screens) }
+        }
+        let restoreStore = try XCTUnwrap(session.restoreStore, "an overridden state file enables the store")
+        XCTAssertEqual(restoreStore.directory.standardizedFileURL,
+                       dir.appendingPathComponent("restore", isDirectory: true).standardizedFileURL)
+        try restoreStore.write(Data("plain".utf8), pane: UUID(), encrypt: false)
+        XCTAssertEqual(restoreStore.files().map { $0.deletingLastPathComponent().standardizedFileURL },
+                       [dir.appendingPathComponent("restore", isDirectory: true).standardizedFileURL])
+        // No key store was injected: on a test host that is a store with no key, never the keychain.
+        XCTAssertThrowsError(try restoreStore.write(Data("secret".utf8), pane: UUID(), encrypt: true))
+
+        // `content = false` acts on this same store, so it deletes the overridden directory only.
+        var off = ConfigStore.Settings()
+        off.restoreContent = false
+        RestoreExporter.applyContentSetting(off, store: restoreStore)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: restoreStore.directory.path))
+    }
+
+    /// The default archive still maps to the directory every earlier build used.
+    func testDefaultStateFileMapsToTheDefaultRestoreDirectory() {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        XCTAssertEqual(RestoreStore.directory(forState: SessionStore.defaultURL).standardizedFileURL.path,
+                       support.appendingPathComponent("QuickTerm/restore", isDirectory: true)
+                           .standardizedFileURL.path)
     }
 
     func testTheTestHostSessionHasNoStore() throws {

@@ -24,11 +24,15 @@ final class RestoreStore {
     /// huge file cannot stall the main thread at launch.
     static let maxFileBytes = 4 * 1024 * 1024 + 64
 
-    static let defaultDirectory: URL = FileManager.default
-        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("QuickTerm/restore", isDirectory: true)
+    /// The restore directory that belongs to a session archive: `restore/` next to it. The
+    /// default archive gives `~/Library/Application Support/QuickTerm/restore/`; a second
+    /// instance started with `--state-file` gets its own, so its quit never prunes (and its
+    /// `content = false` never deletes) the files the user's QuickTerm wrote.
+    static func directory(forState stateURL: URL) -> URL {
+        stateURL.deletingLastPathComponent().appendingPathComponent("restore", isDirectory: true)
+    }
 
-    private let directory: URL
+    let directory: URL
     private let keyStore: RestoreKeyStore
 
     init(directory: URL, keyStore: RestoreKeyStore) {

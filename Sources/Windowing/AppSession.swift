@@ -39,9 +39,11 @@ final class AppSession {
     /// migration, and debounced writes
     let sessionStore: SessionStore
 
-    /// Per-pane screen content kept between launches (session restore). nil on a test host that
-    /// injected no directory: the tests must never export into, or delete, the user's real
-    /// `restore/` directory (the same policy as `SessionStore.writesAllowed`).
+    /// Per-pane screen content kept between launches (session restore), in the `restore/`
+    /// directory next to the session archive (`RestoreStore.directory(forState:)`), so a
+    /// `--state-file` override moves it too. nil on a test host that injected neither a state URL
+    /// nor a directory: the tests must never export into, or delete, the user's real `restore/`
+    /// directory (the same policy as `SessionStore.writesAllowed`).
     let restoreStore: RestoreStore?
 
     /// The consent gate and the server for the control plane (the CLI and AI agents). On by
@@ -93,15 +95,19 @@ final class AppSession {
 
     init(screens: ScreenRegistry, themeManager: ThemeManager, stateURL: URL? = nil,
          controlSocketPath: String? = nil, updates: UpdateController = UpdateController(enabled: false),
-         restoreDirectory: URL? = nil) {
+         restoreDirectory: URL? = nil, restoreKeyStore: RestoreKeyStore? = nil) {
         self.screens = screens
         self.themeManager = themeManager
         self.updates = updates
         self.updateSheet = UpdateSheet(controller: updates)
-        self.sessionStore = SessionStore(screens: screens, url: stateURL)
-        self.restoreStore = restoreDirectory != nil || !AppDelegate.isRunningTests
-            ? RestoreStore(directory: restoreDirectory ?? RestoreStore.defaultDirectory,
-                           keyStore: KeychainRestoreKeyStore())
+        let sessionStore = SessionStore(screens: screens, url: stateURL)
+        self.sessionStore = sessionStore
+        // The key store goes with the directory: a test host never reaches the real keychain
+        // unless a test hands it a key store of its own.
+        self.restoreStore = stateURL != nil || restoreDirectory != nil || !AppDelegate.isRunningTests
+            ? RestoreStore(directory: restoreDirectory ?? RestoreStore.directory(forState: sessionStore.url),
+                           keyStore: restoreKeyStore
+                               ?? (AppDelegate.isRunningTests ? NoRestoreKeyStore() : KeychainRestoreKeyStore()))
             : nil
         let consent = ControlConsent(screens: screens)
         self.controlConsent = consent

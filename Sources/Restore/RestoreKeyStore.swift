@@ -11,6 +11,13 @@ protocol RestoreKeyStore {
     func key(createIfMissing: Bool) throws -> SymmetricKey?
 }
 
+/// No key, ever: what a test host gets unless a test injects its own key store, so a session built
+/// in a test can never read from, write to, or prompt for the user's login keychain. Encrypted
+/// writes fail and encrypted files are dropped, which is the safe failure for both.
+struct NoRestoreKeyStore: RestoreKeyStore {
+    func key(createIfMissing: Bool) throws -> SymmetricKey? { nil }
+}
+
 /// The key as a generic keychain password: 32 random bytes, created on first encrypted write.
 struct KeychainRestoreKeyStore: RestoreKeyStore {
     static let service = "dev.danny.quickterm.restore"
