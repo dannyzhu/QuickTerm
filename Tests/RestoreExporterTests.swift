@@ -168,6 +168,44 @@ final class RestoreExporterTests: XCTestCase {
         XCTAssertEqual(restoreStore.files().count, 1, "the second call is a no-op")
     }
 
+    /// Closing the last screen exports, but the app can keep running (an About panel or a Web
+    /// Inspector is still open). A screen opened then clears both flags: the real quit exports
+    /// again, and saves made in between write no agent records.
+    func testANewScreenCancelsTheQuitExport() throws {
+        let registry = ScreenRegistry()
+        let session = AppSession(screens: registry, themeManager: ThemeManager(),
+                                 stateURL: dir.appendingPathComponent("state.json"),
+                                 restoreDirectory: dir, restoreKeyStore: MemoryRestoreKeyStore())
+        defer {
+            session.controlServer.stop()
+            AgentResume.quitSaveStarted = false
+            if let app = NSApp.delegate as? AppDelegate { ControlEventBus.shared.attach(screens: app.screens) }
+        }
+        let restoreStore = try XCTUnwrap(session.restoreStore)
+        session.exportRestoreContentOnce()
+        XCTAssertTrue(session.restoreExported)
+        XCTAssertTrue(AgentResume.quitSaveStarted)
+
+        session.cancelQuitExport()
+        XCTAssertFalse(session.restoreExported)
+        XCTAssertFalse(AgentResume.quitSaveStarted, "a mid-run save writes no agentResume key again")
+
+        try restoreStore.write(Data("stale".utf8), pane: UUID(), encrypt: false)
+        session.exportRestoreContentOnce()
+        XCTAssertTrue(restoreStore.files().isEmpty, "the next quit exports (here: prunes) again")
+    }
+
+    /// The new-screen path is where the cancel happens.
+    func testNewScreenCallsTheCancel() throws {
+        let app = try XCTUnwrap(NSApp.delegate as? AppDelegate)
+        let previous = AgentResume.quitSaveStarted
+        defer { AgentResume.quitSaveStarted = previous }
+        AgentResume.quitSaveStarted = true
+        let screen = app.newScreen(on: NSScreen.main)
+        defer { app.closeScreen(screen, confirmed: true) }
+        XCTAssertFalse(AgentResume.quitSaveStarted)
+    }
+
     /// Final review I2: the restore directory follows the session archive, so a second instance
     /// started with `--state-file` never prunes or deletes the user's real `restore/` directory.
     func testRestoreDirectoryFollowsTheStateFile() throws {

@@ -15,6 +15,8 @@ extension AppDelegate {
     func newScreen(on screen: NSScreen? = nil, inheritingFrom pane: PaneView? = nil,
                    restoring: Bool = false, id: UUID = UUID(),
                    restoredFrame: CGRect? = nil) -> MainWindowController {
+        // Closing the last screen exported as if quitting; a new screen means the app kept running.
+        session.cancelQuitExport()
         let index = screens.nextIndex()
         let controller = MainWindowController(
             ghostty: ghostty, session: session,

@@ -234,7 +234,8 @@ final class AppSession {
 
     /// Set by the first quit-time export. Quitting by closing the last screen exports there
     /// (before `windowWillClose` empties the model) and then reaches `applicationWillTerminate`
-    /// too; a second run would find no panes and prune every file the first one wrote.
+    /// too; a second run would find no panes and prune every file the first one wrote. Cleared by
+    /// `cancelQuitExport` when a new screen shows the app did not quit.
     private(set) var restoreExported = false
 
     /// Write every terminal pane's screen to the restore store, and record which agent each pane
@@ -255,6 +256,17 @@ final class AppSession {
         RestoreExporter.export(panes: panes, settings: settings, store: restoreStore) { pane, lines in
             pane.exportVT(maxLines: lines)
         }
+    }
+
+    /// A screen opened after an export: the app did not quit after all. Closing the last screen
+    /// exports before the app is committed to quitting, and the app keeps running when another
+    /// window (the About panel, a Web Inspector) is still open. Clear both once-per-quit flags, so
+    /// the real quit exports the panes that exist then, and saves made meanwhile write no
+    /// `agentResume` records (spec decision 13).
+    func cancelQuitExport() {
+        guard restoreExported || AgentResume.quitSaveStarted else { return }
+        restoreExported = false
+        AgentResume.quitSaveStarted = false
     }
 
     /// The process-level half: the keybinding table, the global browser pane settings, the

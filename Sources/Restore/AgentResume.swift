@@ -16,7 +16,8 @@ struct AgentResumeRecord: Codable, Equatable {
 /// is kept, and the line is built from the rule file's argument array with every word quoted.
 enum AgentResume {
     /// Set by `AppSession.exportRestoreContentOnce` right after the quit-time capture, before both
-    /// quit paths' final `saveNow()`, and never cleared in the app (the process is ending). Until
+    /// quit paths' final `saveNow()`. Cleared only by `AppSession.cancelQuitExport`, when a screen
+    /// is opened after closing the last one did not end the process. Until
     /// it is set, no save writes an `agentResume` key: a debounced save mid-run would otherwise
     /// write a record that a crash or force quit leaves in the archive, offering at the next
     /// launch an agent nobody proved was running at quit (spec decision 13).
