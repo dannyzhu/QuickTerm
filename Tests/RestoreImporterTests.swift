@@ -51,6 +51,27 @@ final class RestoreImporterTests: XCTestCase {
         XCTAssertTrue(marker.contains(RestoreText.time(restoredAt)))
     }
 
+    /// The date follows the UI language, not the system locale (`[general] language` can pin the
+    /// UI to a language the Mac is not set to).
+    func testMarkerDateFollowsTheUILanguage() {
+        let previous = Localization.shared.language
+        defer { Localization.shared.setLanguage(previous) }
+        func expected(_ identifier: String) -> String {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: identifier)
+            formatter.timeZone = .autoupdatingCurrent
+            formatter.setLocalizedDateFormatFromTemplate("MMddHHmm")
+            return formatter.string(from: restoredAt)
+        }
+        Localization.shared.setLanguage(.en)
+        XCTAssertEqual(RestoreText.time(restoredAt), expected("en"))
+        XCTAssertTrue(marker.contains(expected("en")), marker)
+        Localization.shared.setLanguage(.zh)
+        XCTAssertEqual(RestoreText.time(restoredAt), expected("zh-Hans"))
+        XCTAssertTrue(marker.contains(expected("zh-Hans")), marker)
+        XCTAssertNotEqual(expected("en"), expected("zh-Hans"), "the two languages punctuate differently")
+    }
+
     func testNoContentNoLineNoPayload() {
         XCTAssertNil(RestoreImporter.payload(content: nil, restoredAt: restoredAt, directoryGone: false))
         XCTAssertNil(RestoreImporter.payload(content: Data(), restoredAt: restoredAt, directoryGone: false),

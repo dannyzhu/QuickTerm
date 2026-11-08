@@ -68,11 +68,12 @@ enum RestoreImporter {
 /// The session-restore UI strings, read through the catalog (`Restore.strings`).
 @MainActor
 enum RestoreText {
-    /// The restore time as month, day, hours and minutes, ordered and punctuated for the user's
-    /// own locale and time zone.
+    /// The restore time as month, day, hours and minutes in the user's time zone, ordered and
+    /// punctuated for the language the UI is drawn in (`[general] language`), not the system
+    /// locale: the marker's words come from that language's catalog, and the date must match them.
     static func time(_ date: Date) -> String {
         let formatter = DateFormatter()
-        formatter.locale = .autoupdatingCurrent
+        formatter.locale = Locale(identifier: Localization.shared.language.lprojName)
         formatter.timeZone = .autoupdatingCurrent
         formatter.setLocalizedDateFormatFromTemplate("MMddHHmm")
         return formatter.string(from: date)
