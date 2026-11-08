@@ -300,7 +300,7 @@ enum ConfigStore {
         /// `[agents]` — agent awareness (plan §2.10). `AgentSettings` is built from these eight
         /// in `AppSession.applyGlobalConfig`; the registry never reads the config itself.
         var agentsDetect: Bool = true
-        var agentsEnabled: [String] = ["claude-code", "codex", "gemini"]
+        var agentsEnabled: [String] = ["claude-code", "codex", "gemini", "kiro-cli"]
         var agentsHookDetail: String = "lifecycle"
         var agentsAutoInstallHooks: String = "ask"
         var agentsInfoStrip: Bool = true
@@ -311,6 +311,9 @@ enum ConfigStore {
         var agentsStripBackground: String = AgentSettings.defaultStripBackground
         var agentsStripAttention: String = AgentSettings.defaultStripAttention
         var agentsStripText: String = AgentSettings.defaultStripText
+        /// `[agents] program-status`: read OSC 7501 reports at all. Pushed to
+        /// `ProgramStatusRouter.isEnabled` in `AppSession.applyGlobalConfig`.
+        var programStatus: Bool = true
         /// `[notifications]` — the notification centre (spec §3.5). `NoticeSettings` is built
         /// from these seven in `AppSession.applyGlobalConfig`; the centre never reads the config
         /// itself.
@@ -330,6 +333,12 @@ enum ConfigStore {
         /// `AppSession.applyGlobalConfig`.
         var updatesCheck: Bool = true
         var updatesInstall: Bool = false
+        /// `[restore]` — session restore. `restoreContent` / `restoreLines` / `restoreEncrypt`
+        /// are read by `RestoreExporter` at quit; `restoreAgentResume` by the agent resume offer.
+        var restoreContent: Bool = true
+        var restoreLines: Int = 5000
+        var restoreEncrypt: Bool = true
+        var restoreAgentResume: Bool = true
         var overrides: [WMAction: KeyCombo] = [:]
         var unbound: Set<WMAction> = []
         var ghosttyPassthrough: String = ""
@@ -434,8 +443,13 @@ enum ConfigBindings {
         "agents.strip-background": { v, s in v.stringValue.map { s.agentsStripBackground = $0 } },
         "agents.strip-attention": { v, s in v.stringValue.map { s.agentsStripAttention = $0 } },
         "agents.strip-text": { v, s in v.stringValue.map { s.agentsStripText = $0 } },
+        "agents.program-status": { v, s in v.boolValue.map { s.programStatus = $0 } },
         "updates.check": { v, s in v.boolValue.map { s.updatesCheck = $0 } },
         "updates.install": { v, s in v.boolValue.map { s.updatesInstall = $0 } },
+        "restore.content": { v, s in v.boolValue.map { s.restoreContent = $0 } },
+        "restore.lines": { v, s in v.intValue.map { s.restoreLines = $0 } },
+        "restore.encrypt": { v, s in v.boolValue.map { s.restoreEncrypt = $0 } },
+        "restore.agent-resume": { v, s in v.boolValue.map { s.restoreAgentResume = $0 } },
     ]
 }
 

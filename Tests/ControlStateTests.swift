@@ -607,3 +607,96 @@ extension ControlSecurityTests {
         XCTAssertFalse(viaAction.contains(wholePane))
     }
 }
+
+/// Program status in `state` (OSC 7501, spec decisions 10 and 19).
+@MainActor
+extension ControlStateTests {
+    private func programReport(_ state: ProgramStatusReport.State, id: String = "",
+                               kind: ProgramStatusReport.Kind? = nil, progress: Int? = nil,
+                               app: String? = nil, title: String? = nil,
+                               message: String? = nil) -> ProgramStatusReport {
+        ProgramStatusReport(state: state, kind: kind, progress: progress,
+                            id: id.split(separator: "/").map(String.init),
+                            app: app, title: title, message: message)
+    }
+
+    private func pane(_ handle: String, in reply: ControlReply) throws -> [String: JSONValue] {
+        reply.assertOK()
+        let panes = try XCTUnwrap(reply.data?["panes"]?.arrayValue).compactMap(\.objectValue)
+        return try XCTUnwrap(panes.first { $0["handle"]?.stringValue == handle })
+    }
+
+    /// Each pane record carries its program-status records as `programs`, absent when there are
+    /// none. `title` and `message` follow the agent message's redaction rule exactly; the rest is
+    /// payload-free and always readable.
+    func testStateCarriesProgramsPerPane() throws {
+        let harness = try ControlHarness()
+        defer { harness.cleanup() }
+        let store = ProgramStatusStore.shared
+        let terminal = try harness.newTerminal()
+        defer { store.paneClosed(terminal.id) }
+        let handle = ControlHandleRegistry.shared.handle(for: terminal)
+
+        let before = try harness.run("state", token: ControlEnvironment.token)
+        XCTAssertNil(try pane(handle, in: before)["programs"], "no records: no field at all")
+
+        store.receive(programReport(.working, id: "build/test", progress: 40, app: "cargo",
+                                    title: "Build \u{202E}crate", message: "compiling serde"),
+                      pane: terminal.id, foregroundGroup: nil)
+        store.receive(programReport(.idle), pane: terminal.id, foregroundGroup: nil)
+
+        for token in [nil, ControlEnvironment.token] {
+            let trusted = token != nil
+            let programs = try XCTUnwrap(
+                try pane(handle, in: harness.run("state", token: token))["programs"]?.arrayValue)
+                .compactMap(\.objectValue)
+            XCTAssertEqual(programs.count, 2)
+            let cargo = programs[0]
+            XCTAssertEqual(cargo["id"]?.stringValue, "build/test")
+            XCTAssertEqual(cargo["app"]?.stringValue, "cargo")
+            XCTAssertEqual(cargo["state"]?.stringValue, "working")
+            XCTAssertEqual(cargo["progress"]?.intValue, 40)
+            XCTAssertNil(cargo["kind"])
+            XCTAssertEqual(cargo["title"]?.stringValue, trusted ? "Build crate" : ControlStateEncoder.redacted,
+                           "the title is sanitised for display, and redacted like an agent message")
+            XCTAssertEqual(cargo["message"]?.stringValue,
+                           trusted ? "compiling serde" : ControlStateEncoder.redacted)
+            XCTAssertEqual(cargo["redacted"]?.boolValue, trusted ? nil : true)
+
+            let root = programs[1]
+            XCTAssertEqual(root["id"]?.stringValue, "", "the root record's id is the empty path")
+            XCTAssertEqual(root["state"]?.stringValue, "idle")
+            for key in ["app", "kind", "progress", "title", "message", "redacted"] {
+                XCTAssertNil(root[key], "\(key): an absent value is absent, never an empty string")
+            }
+        }
+
+        store.receive(programReport(.blocked, id: "build/test", kind: .auth, app: "cargo"),
+                      pane: terminal.id, foregroundGroup: nil)
+        let blocked = try XCTUnwrap(
+            try pane(handle, in: harness.run("state", token: ControlEnvironment.token))["programs"]?
+                .arrayValue?.first?.objectValue)
+        XCTAssertEqual(blocked["state"]?.stringValue, "blocked")
+        XCTAssertEqual(blocked["kind"]?.stringValue, "auth")
+    }
+
+    /// `agents list` lists agents only (spec decision 10): a pane holding nothing but a generic
+    /// program's record gets no row.
+    func testAgentsListUnchanged() throws {
+        let harness = try ControlHarness()
+        defer { harness.cleanup() }
+        let store = ProgramStatusStore.shared
+        let terminal = try harness.newTerminal()
+        defer { store.paneClosed(terminal.id) }
+        store.receive(programReport(.working, progress: 10, app: "cargo"), pane: terminal.id,
+                      foregroundGroup: nil)
+
+        let reply = try harness.run("agents.list", token: ControlEnvironment.token)
+        reply.assertOK()
+        let rows = try XCTUnwrap(reply.data?["agents"]?.arrayValue).compactMap(\.objectValue)
+        let handle = ControlHandleRegistry.shared.handle(for: terminal)
+        XCTAssertFalse(rows.contains { $0["pane"]?.stringValue == handle })
+        let bytes = String(decoding: try ControlJSON.encoder.encode(XCTUnwrap(reply.data)), as: UTF8.self)
+        XCTAssertFalse(bytes.contains("\"programs\""), "agents list carries no programs field")
+    }
+}

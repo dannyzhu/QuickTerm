@@ -39,6 +39,13 @@ final class AppSession {
     /// migration, and debounced writes
     let sessionStore: SessionStore
 
+    /// Per-pane screen content kept between launches (session restore), in the `restore/`
+    /// directory next to the session archive (`RestoreStore.directory(forState:)`), so a
+    /// `--state-file` override moves it too. nil on a test host that injected neither a state URL
+    /// nor a directory: the tests must never export into, or delete, the user's real `restore/`
+    /// directory (the same policy as `SessionStore.writesAllowed`).
+    let restoreStore: RestoreStore?
+
     /// The consent gate and the server for the control plane (the CLI and AI agents). On by
     /// default, in ask mode; `applyGlobalConfig` starts and stops it when `[control]` changes, so
     /// editing the config and saving takes effect immediately with no restart.
@@ -87,12 +94,21 @@ final class AppSession {
     private var pendingScreenReflow: DispatchWorkItem?
 
     init(screens: ScreenRegistry, themeManager: ThemeManager, stateURL: URL? = nil,
-         controlSocketPath: String? = nil, updates: UpdateController = UpdateController(enabled: false)) {
+         controlSocketPath: String? = nil, updates: UpdateController = UpdateController(enabled: false),
+         restoreDirectory: URL? = nil, restoreKeyStore: RestoreKeyStore? = nil) {
         self.screens = screens
         self.themeManager = themeManager
         self.updates = updates
         self.updateSheet = UpdateSheet(controller: updates)
-        self.sessionStore = SessionStore(screens: screens, url: stateURL)
+        let sessionStore = SessionStore(screens: screens, url: stateURL)
+        self.sessionStore = sessionStore
+        // The key store goes with the directory: a test host never reaches the real keychain
+        // unless a test hands it a key store of its own.
+        self.restoreStore = stateURL != nil || restoreDirectory != nil || !AppDelegate.isRunningTests
+            ? RestoreStore(directory: restoreDirectory ?? RestoreStore.directory(forState: sessionStore.url),
+                           keyStore: restoreKeyStore
+                               ?? (AppDelegate.isRunningTests ? NoRestoreKeyStore() : KeychainRestoreKeyStore()))
+            : nil
         let consent = ControlConsent(screens: screens)
         self.controlConsent = consent
         self.controlServer = ControlServer(screens: screens, consent: consent,
@@ -216,6 +232,43 @@ final class AppSession {
         for controller in screens.controllers { controller.applyWindowConfig(settings) }
     }
 
+    /// Set by the first quit-time export. Quitting by closing the last screen exports there
+    /// (before `windowWillClose` empties the model) and then reaches `applicationWillTerminate`
+    /// too; a second run would find no panes and prune every file the first one wrote. Cleared by
+    /// `cancelQuitExport` when a new screen shows the app did not quit.
+    private(set) var restoreExported = false
+
+    /// Write every terminal pane's screen to the restore store, and record which agent each pane
+    /// offers to resume, at most once per process. Both quit paths call it before their final
+    /// `sessionStore.saveNow()`, which writes the records into the archive.
+    func exportRestoreContentOnce() {
+        guard !restoreExported, let restoreStore else { return }
+        restoreExported = true
+        let panes = RestoreExporter.terminalPanes(of: screens.controllers)
+        // Spec decision 13: one synchronous scan, so only an agent still running now is offered.
+        // A test host never walks the real process table.
+        AgentResume.capture(into: panes, enabled: settings.restoreAgentResume,
+                            statuses: AgentRegistry.shared.allStatuses) {
+            AppDelegate.isRunningTests ? nil : ProcessScanner.shared.scanSynchronously()
+        }
+        // The callers' next step is the final `saveNow()`: from here on a save writes the records.
+        AgentResume.quitSaveStarted = true
+        RestoreExporter.export(panes: panes, settings: settings, store: restoreStore) { pane, lines in
+            pane.exportVT(maxLines: lines)
+        }
+    }
+
+    /// A screen opened after an export: the app did not quit after all. Closing the last screen
+    /// exports before the app is committed to quitting, and the app keeps running when another
+    /// window (the About panel, a Web Inspector) is still open. Clear both once-per-quit flags, so
+    /// the real quit exports the panes that exist then, and saves made meanwhile write no
+    /// `agentResume` records (spec decision 13).
+    func cancelQuitExport() {
+        guard restoreExported || AgentResume.quitSaveStarted else { return }
+        restoreExported = false
+        AgentResume.quitSaveStarted = false
+    }
+
     /// The process-level half: the keybinding table, the global browser pane settings, the
     /// extension switch, the theme and the engine overlay.
     /// It runs exactly once per reload - writing the engine overlay to disk triggers a hot reload
@@ -249,6 +302,9 @@ final class AppSession {
         // and writes a launch marker, turning it off closes it. Pushed here for the same reason as
         // the centre's switches — one reload, one place.
         DiagnosticLog.shared.isEnabled = settings.notificationsDiagnosticLog
+        // Spec decision 11: `[restore] content = false` deletes the stored content now, not at the
+        // next quit. After the diagnostic log, so a failure to delete can be logged.
+        if let restoreStore { RestoreExporter.applyContentSetting(settings, store: restoreStore) }
         // The agent registry reads its switches from here too, and never from the config file.
         var agents = AgentSettings(settings)
         // A test host must not edit anybody's ~/.claude/settings.json, so the one setting that
@@ -257,6 +313,9 @@ final class AppSession {
         let previousHookDetail = AgentRegistry.shared.settings.hookDetail
         AgentRegistry.shared.settings = agents
         AgentRegistry.shared.consent = controlConsent
+        // `[agents] program-status`: off, and no OSC 7501 report, prompt start or reset reaches
+        // the program-status store.
+        ProgramStatusRouter.isEnabled = settings.programStatus
         // Owner decision Q4: a changed `[agents] hook-detail` rewrites the entries that are
         // already installed, so editing the key and saving is enough — the alternative is a config
         // key whose help text describes something that only happens at the next launch.

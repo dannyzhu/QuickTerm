@@ -83,13 +83,33 @@ struct PaneAgentStrip: View {
             - CGFloat(panePadding))
     }
 
-    /// Whether the band paints anything: only when it is reserved *and* there is a status or a set
-    /// title to show. An empty band is left blank (the reserved height stays either way), spelled
-    /// once so the view and the tests cannot disagree.
+    /// Whether the band paints anything: only when it is reserved *and* there is a status, a set
+    /// title or a resume button to show. An empty band is left blank (the reserved height stays
+    /// either way), spelled once so the view and the tests cannot disagree.
     static func draws(status: AgentStatus?, title: String?, infoStrip: Bool,
-                      stripHeight: Int, isTerminal: Bool) -> Bool {
+                      stripHeight: Int, isTerminal: Bool, resume: Bool = false,
+                      program: Bool = false) -> Bool {
         band(infoStrip: infoStrip, stripHeight: stripHeight, isTerminal: isTerminal) > 0
-            && (status != nil || (title?.contains { !$0.isWhitespace } ?? false))
+            && (status != nil || program || resume || (title?.contains { !$0.isWhitespace } ?? false))
+    }
+
+    /// The resume button's text, or nil when the band shows none (session restore, spec decision
+    /// 19): only a terminal pane with an offer, and only while no agent status is live there — a
+    /// live agent owns the band, and its arrival takes the offer away anyway. A program-status
+    /// record (`program`) owns the band the same way while it is there.
+    static func resumeLabel(offer: String?, status: AgentStatus?, isTerminal: Bool,
+                            program: Bool = false) -> String? {
+        guard isTerminal, status == nil, !program else { return nil }
+        return offer
+    }
+
+    /// What the band shows for a pane (program status, spec decision 14): the most urgent of the
+    /// agent status and the records that compete with it, nil when there is neither.
+    static func winner(status: AgentStatus?, records: [ProgramStatusStore.Record],
+                       rules: [String: AgentRules]) -> ProgramStatusMapper.Winner? {
+        ProgramStatusMapper.winner(
+            agent: status,
+            records: ProgramStatusMapper.bandRecords(agent: status, records: records, rules: rules))
     }
 
     /// The bar's own rectangle inside the pane, in the pane's coordinate space. **This is also
@@ -121,14 +141,35 @@ struct PaneAgentStrip: View {
     /// flipped switch takes hold on this pane's next redraw.
     private var settings: AgentSettings { AgentRegistry.shared.settings }
 
+    /// The restored pane's resume offer, when the band shows its button.
+    private func resumeOffer(program: Bool) -> ResumeOffer? {
+        guard let offer = (surfaceView as? Ghostty.SurfaceView)?.resumeOffer,
+              Self.resumeLabel(offer: offer.label, status: surfaceView.agentStatus,
+                               isTerminal: surfaceView.kind == .terminal,
+                               program: program) != nil else { return nil }
+        return offer
+    }
+
+    /// The band's winner for this pane, from what the pane published (its agent status, and its
+    /// program records as the redraw throttle last let through).
+    private var winner: ProgramStatusMapper.Winner? {
+        let rules = Dictionary(AgentRegistry.shared.activeRules.map { ($0.id, $0) },
+                               uniquingKeysWith: { first, _ in first })
+        return Self.winner(status: surfaceView.agentStatus, records: surfaceView.programRecords,
+                           rules: rules)
+    }
+
     var body: some View {
         GeometryReader { geo in
             let stripHeight = settings.stripHeight
             let title = displayTitle
+            let winner = winner
+            let resume = resumeOffer(program: winner != nil)
             if Self.draws(status: surfaceView.agentStatus, title: title, infoStrip: settings.infoStrip,
-                          stripHeight: stripHeight, isTerminal: surfaceView.kind == .terminal) {
+                          stripHeight: stripHeight, isTerminal: surfaceView.kind == .terminal,
+                          resume: resume != nil, program: winner != nil) {
                 let rect = Self.rect(in: geo.size, stripHeight: stripHeight)
-                content(title: title, rect: rect)
+                content(winner: winner, title: title, resume: resume, rect: rect)
                     // The background already fills the rectangle, but a `Model` with no glyphs at
                     // all would not: give the bar an explicit shape so the click never falls
                     // through to the terminal underneath.
@@ -146,8 +187,9 @@ struct PaneAgentStrip: View {
     /// An agent status drives a `TimelineView` (the spinner turns and the clock ticks). A named
     /// but agent-less pane is a static title — no clock, so no timeline, so no per-second redraw.
     @ViewBuilder
-    private func content(title: String?, rect: CGRect) -> some View {
-        if let status = surfaceView.agentStatus {
+    private func content(winner: ProgramStatusMapper.Winner?, title: String?, resume: ResumeOffer?,
+                         rect: CGRect) -> some View {
+        if case .agent(let status)? = winner {
             // One schedule drives both the spinner and the elapsed time, and it only exists while
             // the bar is on screen: an idle agent ticks once a second, a working one four times.
             TimelineView(.periodic(from: status.since,
@@ -155,14 +197,31 @@ struct PaneAgentStrip: View {
                                                                 : Metrics.tickPeriod)) { context in
                 bar(Model.make(status: status, now: context.date, title: title), rect: rect)
             }
+        } else if case .program(let record)? = winner {
+            // A program's record ticks exactly like an agent in the same state.
+            let working = ProgramStatusMapper.state(of: record.report).0 == .working
+            TimelineView(.periodic(from: record.since,
+                                   by: working ? Metrics.spinnerPeriod : Metrics.tickPeriod)) { context in
+                bar(Model.program(record: record, now: context.date, title: title), rect: rect)
+            }
+        } else if let resume {
+            // A restored pane with no agent yet: its name (if any) and the resume button. Static,
+            // like a title-only band: no clock, no timeline.
+            bar(Model.resumeOnly(title: title, resume: resume.label), rect: rect,
+                resumeHelp: resume.help) {
+                (surfaceView.controller as? MainWindowController)?.requestFocus(to: surfaceView)
+                (surfaceView as? Ghostty.SurfaceView)?.acceptResumeOffer()
+            }
         } else if let title {
             bar(Model.titleOnly(title: title), rect: rect)
         }
     }
 
-    private func bar(_ model: Model, rect: CGRect) -> Bar {
+    private func bar(_ model: Model, rect: CGRect, resumeHelp: String = "",
+                     onResume: (() -> Void)? = nil) -> Bar {
         Bar(model: model, size: rect.size, fontSize: CGFloat(settings.stripFontSize),
-            background: background(model.tone), text: textColor)
+            background: background(model.tone), text: textColor,
+            resumeHelp: resumeHelp, onResume: onResume)
     }
 
     /// The bar's background for a state. `[agents] strip-background` for the four quiet states,
@@ -237,6 +296,9 @@ extension PaneAgentStrip {
         var fontSize: CGFloat = Metrics.fontSize
         let background: Color
         let text: Color
+        /// The resume button's tooltip and action, used only when `model.resume` is set.
+        var resumeHelp: String = ""
+        var onResume: (() -> Void)?
 
         private var font: Font { .system(size: fontSize, weight: .semibold) }
 
@@ -248,10 +310,27 @@ extension PaneAgentStrip {
                     Text(model.glyph)
                         .font(font)
                 }
-                Text(model.text)
-                    .font(font)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                // A band holding only the resume button has no text of its own.
+                if !model.text.isEmpty || model.resume == nil {
+                    Text(model.text)
+                        .font(font)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                if let resume = model.resume {
+                    // Text in the band's own font and colour, underlined as the one clickable
+                    // word on the bar. A button of its own, so its click is not the band's
+                    // "focus the pane" tap.
+                    Button { onResume?() } label: {
+                        Text(resume)
+                            .font(font)
+                            .underline()
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .buttonStyle(.plain)
+                    .help(resumeHelp)
+                }
                 Spacer(minLength: 4)
                 Text(model.elapsed)
                     .font(font)
@@ -280,6 +359,8 @@ extension PaneAgentStrip {
         var elapsed: String
         var state: AgentState
         var tone: Tone
+        /// The resume button's text (session restore), drawn after `text`; nil for no button.
+        var resume: String? = nil
 
         /// Which **background** the bar wears, as a decision rather than as a `Color` — the view
         /// owns the config and the theme, this owns which of the three roles applies. (Before the
@@ -322,15 +403,44 @@ extension PaneAgentStrip.Model {
         // The tool **name** may be shown; the agent's own words follow a colon, and are the only
         // part of this line that could carry a command anybody typed.
         if let tool = status.tool, !tool.isEmpty { text += " · \(tool)" }
+        if let progress = status.progress { text += " · \(progress)%" }
         if let message = status.message, !message.isEmpty { text += ": \(message)" }
         return Self(
-            glyph: glyph(for: status, elapsed: elapsed),
+            glyph: glyph(for: status.state, elapsed: elapsed),
             // The one title rulebook, here too: no control characters reach a line drawn over a
             // terminal, and 200 characters is the ceiling everywhere else in the app.
             text: TitleRules.fromTypedInput(text),
             elapsed: elapsedText(elapsed, language: language),
             state: status.state,
-            tone: tone(for: status, elapsed: elapsed))
+            tone: tone(for: status.state, elapsed: elapsed))
+    }
+
+    /// The bar for a program-status record that won the band (spec decisions 11 and 15):
+    /// `<pane title> · <label> · <state>[ · NN%][: <msg>]`. The label is the record's own
+    /// `title`, else its `app`, else "Program"; the state words, glyph and colour are an agent's
+    /// in the same state. `title` and `msg` are the program's words and go through `displayText`
+    /// (no bidirectional overrides, no invisible characters) before anything else sees them; the
+    /// elapsed time counts from when the record's state last changed, not from its last report.
+    static func program(record: ProgramStatusStore.Record, now: Date, title: String? = nil,
+                        language: AppLanguage = Localization.shared.language) -> Self {
+        let report = record.report
+        let elapsed = max(0, now.timeIntervalSince(record.since))
+        let (state, detail) = ProgramStatusMapper.state(of: report)
+        func shown(_ raw: String?) -> String? {
+            raw.map(ProgramStatusReport.displayText).flatMap { $0.isEmpty ? nil : $0 }
+        }
+        let label = shown(report.title) ?? shown(report.app) ?? L("program-status.generic")
+        let clamped = TitleRules.clamp(title ?? "", to: PaneTitleBadge.maxCharacters)
+        let lead = (clamped != nil && clamped != label) ? "\(clamped!) · \(label)" : label
+        var text = "\(lead) · \(AgentStatus.localizedStateText(state: state, detail: detail))"
+        if let progress = report.progress { text += " · \(progress)%" }
+        if let message = shown(report.message) { text += ": \(message)" }
+        return Self(
+            glyph: glyph(for: state, elapsed: elapsed),
+            text: TitleRules.fromTypedInput(text),
+            elapsed: elapsedText(elapsed, language: language),
+            state: state,
+            tone: tone(for: state, elapsed: elapsed))
     }
 
     /// A named pane with no agent in it: the band is just its title — no glyph, no clock, no
@@ -341,8 +451,15 @@ extension PaneAgentStrip.Model {
              state: .idle, tone: .neutral)
     }
 
-    private static func glyph(for status: AgentStatus, elapsed: TimeInterval) -> String {
-        switch status.state {
+    /// A restored pane with an agent to resume and none running: its title, if it has one, and
+    /// the button. No glyph, no clock, the neutral background.
+    static func resumeOnly(title: String?, resume: String) -> Self {
+        Self(glyph: "", text: TitleRules.fromTypedInput(title ?? ""), elapsed: "",
+             state: .idle, tone: .neutral, resume: TitleRules.fromTypedInput(resume))
+    }
+
+    private static func glyph(for state: AgentState, elapsed: TimeInterval) -> String {
+        switch state {
         case .working:
             let frame = Int(elapsed / PaneAgentStrip.Metrics.spinnerPeriod)
             return spinner[((frame % spinner.count) + spinner.count) % spinner.count]
@@ -357,8 +474,8 @@ extension PaneAgentStrip.Model {
         }
     }
 
-    private static func tone(for status: AgentStatus, elapsed: TimeInterval) -> Tone {
-        switch status.state {
+    private static func tone(for state: AgentState, elapsed: TimeInterval) -> Tone {
+        switch state {
         case .blocked, .error: .alert
         case .done: .finished(fade: min(1, elapsed / PaneAgentStrip.Metrics.doneFade))
         case .working, .idle, .unknown: .neutral

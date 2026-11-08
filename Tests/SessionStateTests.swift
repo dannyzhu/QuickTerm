@@ -395,6 +395,118 @@ final class SessionStateTests: XCTestCase {
         XCTAssertEqual(decoded.workingDirectory, seed, "the restored terminal comes back in the same directory")
     }
 
+    // MARK: Agent resume records
+
+    /// Runs `body` with `AgentResume.quitSaveStarted` set to `quitting`, and puts it back after:
+    /// the flag is process-wide, and the app never clears it.
+    private func withQuitSave<T>(_ quitting: Bool, _ body: () throws -> T) rethrows -> T {
+        let previous = AgentResume.quitSaveStarted
+        AgentResume.quitSaveStarted = quitting
+        defer { AgentResume.quitSaveStarted = previous }
+        return try body()
+    }
+
+    private func encode(_ window: WindowState) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        return try encoder.encode(PersistedState(windows: [window]))
+    }
+
+    /// An archive written before agent resume existed has no `agentResume` key: it still decodes,
+    /// with no record, and the version does not move (an older build must keep reading ours).
+    func testArchiveV5DecodesWithoutRecords() throws {
+        let c = try XCTUnwrap(try app.controller)
+        let pane = c.newSurface(workingDirectory: nil)
+        pane.pwd = "/usr/local/quickterm-resume-none"
+        let window = WindowState(layouts: [.scrolling(ScrollingStrip(pane: pane, widthFactor: 0.5))],
+                                 floatings: [[]], activeIndex: 0)
+        let data = try withQuitSave(true) { try encode(window) }
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertFalse(json.contains("agentResume"), "no record, no key")
+        XCTAssertTrue(json.contains(#""version":5"#), "the archive stays v5")
+        let restored = try XCTUnwrap(SessionStore.decode(data))
+        let decoded = try XCTUnwrap(restored.windows[0].layouts[0].paneList.first as? Ghostty.SurfaceView)
+        XCTAssertNil(decoded.restoredAgentResume)
+        XCTAssertNil(decoded.agentResumeRecord)
+    }
+
+    /// A save after the quit-time capture writes each pane's record, tiled and floating, and a
+    /// launch reads it back into `restoredAgentResume`.
+    func testArchiveRoundTripsRecords() throws {
+        let c = try XCTUnwrap(try app.controller)
+        let withSession = c.newSurface(workingDirectory: nil)
+        withSession.agentResumeRecord = AgentResumeRecord(agent: "claude-code", session: "a1b2c3d4")
+        let latest = c.newSurface(workingDirectory: nil)
+        latest.agentResumeRecord = AgentResumeRecord(agent: "codex", session: nil)
+        let window = WindowState(
+            layouts: [.scrolling(ScrollingStrip(pane: withSession, widthFactor: 0.5))],
+            floatings: [[FloatingPane(pane: latest, rect: CGRect(x: 0.1, y: 0.1, width: 0.5, height: 0.5))]],
+            activeIndex: 0)
+        let data = try withQuitSave(true) { try encode(window) }
+        XCTAssertTrue(try XCTUnwrap(String(data: data, encoding: .utf8)).contains("agentResume"),
+                      "a quit-time save writes the key")
+        let state = try XCTUnwrap(SessionStore.decode(data))
+        XCTAssertEqual(state.version, 5, "records ride on an optional key: the version does not move")
+        let restored = state.windows[0]
+        let a = try XCTUnwrap(restored.layouts[0].paneList.first as? Ghostty.SurfaceView)
+        let b = try XCTUnwrap(restored.floatings?[0].first?.pane as? Ghostty.SurfaceView)
+        XCTAssertEqual(a.restoredAgentResume, AgentResumeRecord(agent: "claude-code", session: "a1b2c3d4"))
+        XCTAssertEqual(b.restoredAgentResume, AgentResumeRecord(agent: "codex", session: nil))
+        XCTAssertNil(a.agentResumeRecord, "what was decoded is not what this run's quit will capture")
+    }
+
+    /// The crash case: a record decoded at launch must not be written back by any save made
+    /// during the run, or a crash leaves it in the archive for the launch after.
+    func testMidRunSaveNeverWritesTheDecodedRecord() throws {
+        let c = try XCTUnwrap(try app.controller)
+        let source = c.newSurface(workingDirectory: nil)
+        source.agentResumeRecord = AgentResumeRecord(agent: "claude-code", session: "a1b2c3d4")
+        let window = WindowState(layouts: [.scrolling(ScrollingStrip(pane: source, widthFactor: 0.5))],
+                                 floatings: [[]], activeIndex: 0)
+        let saved = try withQuitSave(true) { try encode(window) }
+        let decoded = try XCTUnwrap(SessionStore.decode(saved)).windows[0]
+        let pane = try XCTUnwrap(decoded.layouts[0].paneList.first as? Ghostty.SurfaceView)
+        XCTAssertEqual(pane.restoredAgentResume, AgentResumeRecord(agent: "claude-code", session: "a1b2c3d4"))
+
+        let midRun = try withQuitSave(false) { try encode(decoded) }
+        XCTAssertFalse(try XCTUnwrap(String(data: midRun, encoding: .utf8)).contains("agentResume"),
+                       "a save during the run writes no record")
+        XCTAssertEqual(pane.restoredAgentResume, AgentResumeRecord(agent: "claude-code", session: "a1b2c3d4"),
+                       "the offer still has what the previous quit captured")
+
+        // Even a capture's record is not written until the quit-time save.
+        pane.agentResumeRecord = AgentResumeRecord(agent: "codex", session: nil)
+        let early = try withQuitSave(false) { try encode(decoded) }
+        XCTAssertFalse(try XCTUnwrap(String(data: early, encoding: .utf8)).contains("agentResume"))
+        let atQuit = try withQuitSave(true) { try encode(decoded) }
+        let reread = try XCTUnwrap(SessionStore.decode(atQuit)).windows[0]
+        XCTAssertEqual((reread.layouts[0].paneList.first as? Ghostty.SurfaceView)?.restoredAgentResume,
+                       AgentResumeRecord(agent: "codex", session: nil))
+    }
+
+    /// A malformed record costs the record, never the pane or the layout around it.
+    func testMalformedRecordKeepsThePane() throws {
+        let c = try XCTUnwrap(try app.controller)
+        let source = c.newSurface(workingDirectory: nil)
+        source.pwd = "/usr/local/quickterm-resume-malformed"
+        source.agentResumeRecord = AgentResumeRecord(agent: "claude-code", session: "a1b2c3d4")
+        let window = WindowState(layouts: [.scrolling(ScrollingStrip(pane: source, widthFactor: 0.5))],
+                                 floatings: [[]], activeIndex: 0)
+        let json = try XCTUnwrap(String(data: try withQuitSave(true) { try encode(window) }, encoding: .utf8))
+        let valid = #""agentResume":{"agent":"claude-code","session":"a1b2c3d4"}"#
+        XCTAssertTrue(json.contains(valid), "the fixture has to contain the record it then breaks")
+        for broken in [#""agentResume":{"agent":5}"#, #""agentResume":"x""#] {
+            let state = try XCTUnwrap(SessionStore.decode(Data(json.replacingOccurrences(of: valid, with: broken).utf8)),
+                                      "\(broken): the archive still decodes")
+            XCTAssertEqual(state.windows.count, 1)
+            XCTAssertEqual(state.windows[0].layouts[0].paneList.count, 1, "\(broken): the pane survives")
+            let pane = try XCTUnwrap(state.windows[0].layouts[0].paneList.first as? Ghostty.SurfaceView)
+            XCTAssertEqual(pane.id, source.id)
+            XCTAssertEqual(pane.workingDirectory, "/usr/local/quickterm-resume-malformed")
+            XCTAssertNil(pane.restoredAgentResume, "\(broken): no record")
+        }
+    }
+
     /// A `cd` (OSC 7) has to schedule a save of its own, or a long session whose layout never changes comes
     /// back in the old directory after a crash.
     func testTerminalCwdChangeSchedulesSave() throws {

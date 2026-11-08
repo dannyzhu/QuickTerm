@@ -1,0 +1,27 @@
+/* QuickTerm — English (base) UI strings for program status (OSC 7501).
+ *
+ * Same rules as every other table; they are spelled out in the header of en.lproj/Terminal.strings
+ * and enforced by scripts/check-localization.py and Tests/LocalizationTests.swift.
+ *
+ * Where a program-status sentence is the same sentence an agent notice already uses (waiting for
+ * approval, waiting for input, finished, failed), the notice.agent.* keys in Notices.strings are
+ * reused rather than repeated here.
+ */
+
+/* MARK: - state labels (Sources/Agents/AgentStatus.swift) */
+
+/* The agent strip's state text for a program waiting for the user to sign in
+ * (OSC 7501 state=blocked, kind=auth). */
+"program-status.state.auth" = "Waiting for you to sign in";
+
+/* MARK: - names (Sources/Agents/AgentRegistry.swift) */
+
+/* The name of a program that reported its status without naming itself (no app=). It stands in
+ * for the program's name in notice titles, e.g. "Program · Waiting for your input". */
+"program-status.generic" = "Program";
+
+/* MARK: - notice titles (Sources/Agents/AgentRegistry.swift) */
+
+/* A program is waiting for the user to sign in. %1$@ is the agent's or program's name
+ * (Codex, cargo, Program). */
+"program-status.notice.auth" = "%1$@ · Waiting for you to sign in";

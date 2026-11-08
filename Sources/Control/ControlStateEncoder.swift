@@ -130,6 +130,29 @@ struct ControlStateEncoder {
             needsUser: status.needsUser ? true : nil)
     }
 
+    /// One OSC 7501 record as the wire sees it (spec decision 19). `title` and `message` are the
+    /// program's own words: they go through `displayText` (no bidirectional overrides, no
+    /// invisible characters) and then `agentRecord`'s redaction rule, to the letter. Everything
+    /// else is a validated token or a number.
+    func programRecord(_ record: ProgramStatusStore.Record) -> ControlProgramRecord {
+        let report = record.report
+        func shown(_ raw: String?) -> String? {
+            raw.map(ProgramStatusReport.displayText).flatMap { $0.isEmpty ? nil : $0 }
+        }
+        let title = shown(report.title)
+        let message = shown(report.message)
+        let hide = (title != nil || message != nil) && !exposesNoticeBody
+        return ControlProgramRecord(
+            id: report.id.joined(separator: "/"),
+            app: report.app,
+            state: report.state.rawValue,
+            kind: report.kind?.rawValue,
+            progress: report.progress,
+            title: hide ? title.map { _ in Self.redacted } : title,
+            message: hide ? message.map { _ in Self.redacted } : message,
+            redacted: hide ? true : nil)
+    }
+
     func payload(scope: MainWindowController? = nil) -> ControlStatePayload {
         let controllers = scope.map { [$0] } ?? screens.controllers
         // **`screens.key` must not be used here**: that is `NSApp.keyWindow`, which is nil
@@ -426,6 +449,7 @@ struct ControlStateEncoder {
         let hide = browser != nil && !exposesBrowser
         let live = NoticeCenter.shared.live(pane: pane.id)
         let urgency = NoticeCenter.shared.urgency(pane: pane.id)
+        let programs = ProgramStatusStore.shared.records(pane: pane.id)
         return .init(
             handle: ControlHandleRegistry.shared.handle(for: pane),
             id: pane.id.uuidString,
@@ -458,6 +482,8 @@ struct ControlStateEncoder {
             needsUser: urgency == .needsUser ? true : nil,
             // Absent unless QuickTerm recognises an agent in this pane, so a session with no
             // agents in it encodes byte for byte what it always did.
-            agent: AgentRegistry.shared.status(pane: pane.id).map { agentRecord($0) })
+            agent: AgentRegistry.shared.status(pane: pane.id).map { agentRecord($0) },
+            // Absent unless the pane holds a program-status record, for the same reason.
+            programs: programs.isEmpty ? nil : programs.map { programRecord($0) })
     }
 }

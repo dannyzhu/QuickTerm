@@ -32,6 +32,20 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(ConfigStore.parse("workspaces = 0").workspaces, 1)
     }
 
+    func testRestoreKeysDefaults() {
+        let defaults = ConfigStore.parse("")
+        XCTAssertTrue(defaults.restoreContent)
+        XCTAssertEqual(defaults.restoreLines, 5000)
+        XCTAssertTrue(defaults.restoreEncrypt)
+        XCTAssertTrue(defaults.restoreAgentResume)
+        XCTAssertEqual(ConfigStore.parse("[restore]\nlines = 10\n").restoreLines, 100, "below the range clamps to 100")
+        XCTAssertEqual(ConfigStore.parse("[restore]\nlines = 90000\n").restoreLines, 50000, "above the range clamps to 50000")
+        let off = ConfigStore.parse("[restore]\ncontent = false\nencrypt = false\nagent-resume = false\n")
+        XCTAssertFalse(off.restoreContent)
+        XCTAssertFalse(off.restoreEncrypt)
+        XCTAssertFalse(off.restoreAgentResume)
+    }
+
     func testKeyComboParse() {
         XCTAssertEqual(KeyCombo.parse("cmd+shift+left"), KeyCombo(key: "left", [.command, .shift]))
         XCTAssertEqual(KeyCombo.parse("super+return"), KeyCombo(key: "return", .command))

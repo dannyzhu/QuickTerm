@@ -42,6 +42,13 @@ struct HookConfigEditor {
                 .badRequest, "\(url.path) is not a JSON object, so QuickTerm will not edit it",
                 hint: "Fix or move the file and run quickterm hooks install again — nothing was written.")
         }
+        // A flat file whose `hooks` is not a list is not the shape we know how to edit, and
+        // replacing it with one would throw the user's hooks away.
+        if shape.layout == .flat, let hooks = object["hooks"], !(hooks is [Any]) {
+            throw ControlErrorBody(
+                .badRequest, "\(url.path) has a hooks value that is not a list, so QuickTerm will not edit it",
+                hint: "Fix or move the file and run quickterm hooks install again — nothing was written.")
+        }
         return object
     }
 
@@ -49,6 +56,12 @@ struct HookConfigEditor {
     /// rule file's own order, so `hooks status` reads the way the rule file reads.
     func ownedEvents(in root: [String: Any]) -> Set<String> {
         var out: Set<String> = []
+        if shape.layout == .flat {
+            for entry in root["hooks"] as? [Any] ?? [] where Self.isOursFlat(entry) {
+                if let trigger = (entry as? [String: Any])?["trigger"] as? String { out.insert(trigger) }
+            }
+            return out
+        }
         for (event, value) in root["hooks"] as? [String: Any] ?? [:] {
             for group in value as? [Any] ?? [] {
                 let entries = (group as? [String: Any])?["hooks"] as? [Any] ?? []
@@ -63,6 +76,13 @@ struct HookConfigEditor {
         return HookScript.isOurs(command: command)
     }
 
+    /// A flat entry carries its command one level down, in `action.command`.
+    private static func isOursFlat(_ entry: Any) -> Bool {
+        guard let action = (entry as? [String: Any])?["action"] as? [String: Any],
+              let command = action["command"] as? String else { return false }
+        return HookScript.isOurs(command: command)
+    }
+
     // MARK: Editing (pure: a document in, a document out)
 
     /// Our entries on exactly `events` and nowhere else.
@@ -72,6 +92,7 @@ struct HookConfigEditor {
     /// second copy. An event of the other tier loses ours, which is what makes
     /// `tools` -> `lifecycle` actually take the tool hooks away.
     func installing(events: [String], into root: [String: Any]) -> [String: Any] {
+        if shape.layout == .flat { return installingFlat(events: events, into: root) }
         var root = root
         var hooks = root["hooks"] as? [String: Any] ?? [:]
         let wanted = Set(events)
@@ -139,8 +160,42 @@ struct HookConfigEditor {
         return out
     }
 
+    /// The flat form of `installing`: the same rules over one list. Our entry for a trigger of the
+    /// tier is replaced where it stands, a second one for the same trigger is dropped, ours for a
+    /// trigger outside the tier is dropped, and a trigger still missing is appended. Everything
+    /// that is not ours keeps its place, and a `version` the file already names is left alone.
+    private func installingFlat(events: [String], into root: [String: Any]) -> [String: Any] {
+        var root = root
+        let wanted = Set(events)
+        var placed: Set<String> = []
+        var out: [Any] = []
+        for entry in root["hooks"] as? [Any] ?? [] {
+            guard Self.isOursFlat(entry) else {
+                out.append(entry)
+                continue
+            }
+            guard let trigger = (entry as? [String: Any])?["trigger"] as? String,
+                  wanted.contains(trigger), !placed.contains(trigger) else { continue }
+            out.append(shape.flatEntry(command: command, trigger: trigger))
+            placed.insert(trigger)
+        }
+        for event in events where !placed.contains(event) {
+            out.append(shape.flatEntry(command: command, trigger: event))
+            placed.insert(event)
+        }
+        root["hooks"] = out
+        if root["version"] == nil, let version = shape.version { root["version"] = version }
+        return root
+    }
+
     /// Ours removed from every event; the user's own entries, groups and events untouched.
     func uninstalling(from root: [String: Any]) -> [String: Any] {
+        if shape.layout == .flat {
+            var root = root
+            guard let hooks = root["hooks"] as? [Any] else { return root }
+            root["hooks"] = hooks.filter { !Self.isOursFlat($0) }
+            return root
+        }
         var root = root
         guard var hooks = root["hooks"] as? [String: Any] else { return root }
         for (event, value) in hooks {
@@ -180,6 +235,32 @@ struct HookConfigEditor {
             // else: the group held only ours — drop it rather than leave `{"hooks": []}` behind.
         }
         return out
+    }
+
+    /// After `uninstalling`, should the file go rather than be written back? Only for the flat
+    /// layout, whose file is a standalone one QuickTerm created (kiro-cli's
+    /// `~/.kiro/hooks/quickterm-agent-state.json`), and only when it holds nothing at all any more:
+    /// no hook entry and no top-level key besides `version`. A file that still holds anything
+    /// that is not ours is written back instead, never deleted.
+    func isLeftEmpty(_ root: [String: Any]) -> Bool {
+        guard shape.layout == .flat else { return false }
+        guard (root["hooks"] as? [Any] ?? []).isEmpty else { return false }
+        return Set(root.keys).isSubset(of: ["version", "hooks"])
+    }
+
+    /// Delete the file. A config path that is a symlink is never removed here: the link (and the
+    /// file it names, which may live in a dotfiles repository) belongs to the user, so the caller
+    /// writes the emptied document through it instead. Returns false when nothing was removed.
+    @discardableResult
+    func remove() throws -> Bool {
+        guard !HookScript.isSymlink(url.path) else { return false }
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            throw ControlErrorBody(.failed, "Could not remove \(url.path) (\(error.localizedDescription))")
+        }
+        return true
     }
 
     // MARK: Writing

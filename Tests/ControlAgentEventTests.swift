@@ -307,6 +307,12 @@ final class ControlAgentEventTests: XCTestCase {
             ("gemini", "AfterTool", "working", .thinking, "run_shell_command", false),
             ("gemini", "Notification", "blocked", .approval, "run_shell_command", true),
             ("gemini", "SessionEnd", "released", nil, nil, false),
+            ("kiro-cli", "SessionStart", "idle", nil, nil, false),
+            ("kiro-cli", "UserPromptSubmit", "working", .thinking, nil, false),
+            ("kiro-cli", "PreToolUse", "working", .tool, "shell", false),
+            ("kiro-cli", "PostToolUse", "working", .thinking, "shell", false),
+            ("kiro-cli", "Stop", "done", nil, nil, false),
+            ("kiro-cli", "SessionEnd", "released", nil, nil, false),
         ]
         for (agent, name, state, detail, tool, needsUser) in table {
             // Each fixture is judged on its own: a state left over from the previous row would

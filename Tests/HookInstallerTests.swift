@@ -48,7 +48,7 @@ final class HookInstallerTests: XCTestCase {
     /// for both tiers. The comparison is against a document built here from the plan's table, so a
     /// change to the entry shape has to be made in two places on purpose.
     func testInstallWritesExactlyTheEventsOfTheTierForEveryShape() throws {
-        for id in ["claude-code", "codex", "gemini"] {
+        for id in ["claude-code", "codex", "gemini", "kiro-cli"] {
             for tier in ["lifecycle", "tools"] {
                 let directory = try scratch("\(id)-\(tier)")
                 AgentRegistry.shared.settings.hookDetail = tier
@@ -196,6 +196,115 @@ final class HookInstallerTests: XCTestCase {
         let change = try HookInstaller.uninstall(id: "codex", configDir: directory)
         XCTAssertFalse(change.changed)
         XCTAssertEqual(change.from, "absent")
+    }
+
+    // MARK: kiro-cli: a standalone hook file with a flat list
+
+    /// kiro-cli's V3 global hooks: `~/.kiro/hooks/*.json`, each file `{"version": "v1", "hooks":
+    /// [...]}` with one flat entry per trigger. One entry per event, five seconds (kiro counts
+    /// seconds), no matcher, and the directory is created when it is not there yet.
+    func testKiroInstallWritesAStandaloneFile() throws {
+        let directory = root.appendingPathComponent("kiro-fresh/hooks").path   // does not exist yet
+        AgentRegistry.shared.settings.hookDetail = "tools"
+        let change = try HookInstaller.install(id: "kiro-cli", configDir: directory)
+        XCTAssertEqual(change.from, "absent")
+        XCTAssertEqual(change.to, "tools")
+
+        let path = configPath("kiro-cli", in: directory)
+        assertUnderRoot(path)
+        XCTAssertEqual((path as NSString).lastPathComponent, "quickterm-agent-state.json")
+        let data = try XCTUnwrap(FileManager.default.contents(atPath: path))
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(Set(object.keys), ["version", "hooks"])
+        XCTAssertEqual(object["version"] as? String, "v1")
+        let entries = try XCTUnwrap(object["hooks"] as? [[String: Any]])
+        let install = try XCTUnwrap(AgentRegistry.shared.rules["kiro-cli"]?.install)
+        XCTAssertEqual(entries.compactMap { $0["trigger"] as? String }, install.events(detail: "tools"),
+                       "one entry per event, in rule-file order")
+        let command = try HookInstaller.commandString(agent: "kiro-cli", configDir: directory)
+        for entry in entries {
+            XCTAssertEqual(Set(entry.keys), ["name", "trigger", "action", "timeout"], "no matcher")
+            XCTAssertEqual(entry["name"] as? String, "quickterm")
+            XCTAssertEqual(entry["timeout"] as? Int, 5)
+            let action = try XCTUnwrap(entry["action"] as? [String: Any])
+            XCTAssertEqual(action["type"] as? String, "command")
+            XCTAssertEqual(action["command"] as? String, command)
+        }
+
+        let status = HookInstaller.status(id: "kiro-cli", configDir: directory)
+        XCTAssertTrue(status.installed)
+        XCTAssertEqual(status.detail, "tools")
+        XCTAssertEqual(status.entries, install.events(detail: "tools"))
+
+        // Install is a statement of the whole state: again changes nothing, a tier change drops
+        // the tool triggers rather than adding a second copy of anything.
+        XCTAssertFalse(try HookInstaller.install(id: "kiro-cli", configDir: directory).changed)
+        AgentRegistry.shared.settings.hookDetail = "lifecycle"
+        XCTAssertEqual(try HookInstaller.plan(id: "kiro-cli", configDir: directory).from, "tools")
+        _ = try HookInstaller.install(id: "kiro-cli", configDir: directory)
+        let after = try XCTUnwrap(try editor(id: "kiro-cli", in: directory).read())
+        XCTAssertEqual((after["hooks"] as? [[String: Any]])?.compactMap { $0["trigger"] as? String },
+                       install.events(detail: "lifecycle"))
+        XCTAssertEqual(HookInstaller.status(id: "kiro-cli", configDir: directory).detail, "lifecycle")
+    }
+
+    /// A user's own entries in the same file are kept through install and uninstall, and the file
+    /// itself is removed only when nothing but ours was ever in it.
+    func testKiroUninstallDeletesOnlyOurFile() throws {
+        let directory = try scratch("kiro-uninstall")
+        // Somebody else's hook file beside ours is never read, written or removed.
+        let theirs = (directory as NSString).appendingPathComponent("my-hooks.json")
+        let theirText = #"{"version":"v1","hooks":[{"name":"lint","trigger":"Stop","action":{"type":"command","command":"make lint"}}]}"#
+        try Data(theirText.utf8).write(to: URL(fileURLWithPath: theirs))
+
+        _ = try HookInstaller.install(id: "kiro-cli", configDir: directory)
+        let path = configPath("kiro-cli", in: directory)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+        let removal = try HookInstaller.uninstall(id: "kiro-cli", configDir: directory)
+        XCTAssertEqual(removal.from, "lifecycle")
+        XCTAssertEqual(removal.to, "absent")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path),
+                       "a file that held only our entries is removed, not left as an empty list")
+        XCTAssertEqual(try String(contentsOfFile: theirs, encoding: .utf8), theirText)
+        XCTAssertFalse(HookInstaller.status(id: "kiro-cli", configDir: directory).installed)
+        XCTAssertFalse(try HookInstaller.uninstall(id: "kiro-cli", configDir: directory).changed,
+                       "uninstalling twice is a no-op, not an error about a missing file")
+
+        // Our file name, but a user's entry inside it (and a key we do not know): our entries go,
+        // everything else stays, and the file is written back rather than deleted.
+        let mixed: [String: Any] = [
+            "version": "v1",
+            "description": "kept",
+            "hooks": [["name": "mine", "trigger": "Stop", "matcher": "*",
+                       "action": ["type": "command", "command": "/usr/local/bin/mine.sh"], "timeout": 9]],
+        ]
+        try JSONSerialization.data(withJSONObject: mixed).write(to: URL(fileURLWithPath: path))
+        _ = try HookInstaller.install(id: "kiro-cli", configDir: directory)
+        var now = try XCTUnwrap(try editor(id: "kiro-cli", in: directory).read())
+        var entries = try XCTUnwrap(now["hooks"] as? [[String: Any]])
+        XCTAssertEqual(entries.first?["name"] as? String, "mine", "the user's entry keeps its place")
+        XCTAssertEqual(entries.first?["matcher"] as? String, "*")
+        XCTAssertEqual(entries.count, 1 + (AgentRegistry.shared.rules["kiro-cli"]?.install?.lifecycle.count ?? 0))
+
+        _ = try HookInstaller.uninstall(id: "kiro-cli", configDir: directory)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path),
+                      "a file still holding something not ours is never deleted")
+        now = try XCTUnwrap(try editor(id: "kiro-cli", in: directory).read())
+        entries = try XCTUnwrap(now["hooks"] as? [[String: Any]])
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual((entries.first?["action"] as? [String: Any])?["command"] as? String, "/usr/local/bin/mine.sh")
+        XCTAssertEqual(now["description"] as? String, "kept")
+        XCTAssertEqual(now["version"] as? String, "v1")
+        // That file now carries no entry of ours at all: uninstall leaves it byte for byte.
+        let untouched = try Data(contentsOf: URL(fileURLWithPath: path))
+        XCTAssertFalse(try HookInstaller.uninstall(id: "kiro-cli", configDir: directory).changed)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), untouched)
+
+        // A file at our path that is not a JSON object is refused, and left exactly as it was.
+        try Data("[1, 2]".utf8).write(to: URL(fileURLWithPath: path))
+        XCTAssertThrowsError(try HookInstaller.uninstall(id: "kiro-cli", configDir: directory))
+        XCTAssertThrowsError(try HookInstaller.install(id: "kiro-cli", configDir: directory))
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), "[1, 2]")
     }
 
     // MARK: Refusals
@@ -536,6 +645,14 @@ final class HookInstallerTests: XCTestCase {
     /// The document the plan's table says each shape writes, built independently of the code that
     /// writes it.
     private func document(events: [String], shape: HookConfigShape, command: String) throws -> Data {
+        if shape.layout == .flat {
+            // kiro-cli's V3 standalone hook file: a version, and one flat list of entries.
+            let entries: [Any] = events.map { event in
+                ["name": "quickterm", "trigger": event, "timeout": 5,
+                 "action": ["type": "command", "command": command]] as [String: Any]
+            }
+            return try HookConfigEditor.serialize(["version": "v1", "hooks": entries])
+        }
         var entry: [String: Any] = ["type": "command", "command": command,
                                     "timeout": shape.timeout]
         if shape.isAsync { entry["async"] = true }

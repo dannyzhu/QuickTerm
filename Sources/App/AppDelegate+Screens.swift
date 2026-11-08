@@ -15,6 +15,8 @@ extension AppDelegate {
     func newScreen(on screen: NSScreen? = nil, inheritingFrom pane: PaneView? = nil,
                    restoring: Bool = false, id: UUID = UUID(),
                    restoredFrame: CGRect? = nil) -> MainWindowController {
+        // Closing the last screen exported as if quitting; a new screen means the app kept running.
+        session.cancelQuitExport()
         let index = screens.nextIndex()
         let controller = MainWindowController(
             ghostty: ghostty, session: session,
@@ -91,7 +93,11 @@ extension AppDelegate {
         // Closing the last screen means quitting: save first, because windowWillClose's teardown
         // empties the model, and by the time applicationWillTerminate runs there is no layout left
         // to save.
-        if screens.controllers.count == 1 { session.sessionStore.saveNow() }
+        // The restore export has to run here for the same reason, before that save.
+        if screens.controllers.count == 1 {
+            if !Self.isRunningTests { session.exportRestoreContentOnce() }
+            session.sessionStore.saveNow()
+        }
         // → windowWillClose: tears down monitors and observers, then drops the registry entry on
         // the next runloop turn.
         window.close()

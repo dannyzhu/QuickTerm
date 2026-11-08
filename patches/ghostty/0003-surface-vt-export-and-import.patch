@@ -1,0 +1,177 @@
+diff --git a/include/ghostty.h b/include/ghostty.h
+index 40ff55c9b..073dba5b6 100644
+--- a/include/ghostty.h
++++ b/include/ghostty.h
+@@ -1131,6 +1131,8 @@ bool ghostty_surface_read_text(ghostty_surface_t,
+                                ghostty_selection_s,
+                                ghostty_text_s*);
+ void ghostty_surface_free_text(ghostty_surface_t, ghostty_text_s*);
++bool ghostty_surface_export_vt(ghostty_surface_t, uint32_t, ghostty_text_s*);
++void ghostty_surface_import_output(ghostty_surface_t, const char*, uintptr_t);
+ 
+ #ifdef __APPLE__
+ void ghostty_surface_set_display_id(ghostty_surface_t, uint32_t);
+diff --git a/src/apprt/embedded.zig b/src/apprt/embedded.zig
+index 0d5a4f8da..b61691918 100644
+--- a/src/apprt/embedded.zig
++++ b/src/apprt/embedded.zig
+@@ -1679,6 +1679,49 @@ pub const CAPI = struct {
+         ptr.deinit();
+     }
+ 
++    /// Export the primary screen as VT (SGR styles, `\r\n` newlines): the
++    /// last `max_lines` rows of scrollback plus the active area. Returns
++    /// false, leaving `result` untouched, when the alternate screen is
++    /// active or on error. Free the result with ghostty_surface_free_text.
++    export fn ghostty_surface_export_vt(
++        surface: *Surface,
++        max_lines: u32,
++        result: *Text,
++    ) bool {
++        const core_surface = &surface.core_surface;
++        core_surface.renderer_state.mutex.lock();
++        defer core_surface.renderer_state.mutex.unlock();
++
++        const vt = terminal.formatter.primaryScreenVtAlloc(
++            global.alloc,
++            &core_surface.io.terminal,
++            max_lines,
++        ) catch |err| {
++            log.warn("error exporting screen as vt err={}", .{err});
++            return false;
++        } orelse return false;
++
++        result.* = .{
++            .tl_px_x = -1,
++            .tl_px_y = -1,
++            .offset_start = 0,
++            .offset_len = 0,
++            .text = vt.ptr,
++            .text_len = vt.len,
++        };
++        return true;
++    }
++
++    /// Feed bytes into the surface's terminal as if the program running in
++    /// it had written them (the pty output path, not input to the pty).
++    export fn ghostty_surface_import_output(
++        surface: *Surface,
++        ptr: [*]const u8,
++        len: usize,
++    ) void {
++        surface.core_surface.io.processOutput(ptr[0..len]);
++    }
++
+     /// Tell the surface that it needs to schedule a render
+     export fn ghostty_surface_refresh(surface: *Surface) void {
+         surface.refresh();
+diff --git a/src/terminal/formatter.zig b/src/terminal/formatter.zig
+index 062e3969a..1ac810f12 100644
+--- a/src/terminal/formatter.zig
++++ b/src/terminal/formatter.zig
+@@ -690,6 +690,42 @@ pub const ScreenFormatter = struct {
+     }
+ };
+ 
++/// Format the primary screen as VT: the last `max_lines` rows of history
++/// followed by the active area, soft-wrapped lines unwrapped. Colors are
++/// emitted as palette indexes (not resolved to RGB) and no default fg/bg
++/// sequences are emitted, so the output takes on the palette of whatever
++/// terminal it is fed into. Returns null if the alternate screen is active.
++/// The caller owns the returned memory.
++pub fn primaryScreenVtAlloc(
++    alloc: Allocator,
++    t: *const Terminal,
++    max_lines: usize,
++) std.Io.Writer.Error!?[:0]u8 {
++    if (t.screens.active_key == .alternate) return null;
++    const screen = t.screens.active;
++    const pages = &screen.pages;
++
++    const active_tl = pages.getTopLeft(.active);
++    const tl = switch (active_tl.upOverflow(max_lines)) {
++        .offset => |pin| pin,
++        .overflow => pages.getTopLeft(.screen),
++    };
++    const br = pages.getBottomRight(.screen).?;
++
++    var builder: std.Io.Writer.Allocating = .init(alloc);
++    defer builder.deinit();
++
++    var formatter: ScreenFormatter = .init(screen, .{
++        .emit = .vt,
++        .unwrap = true,
++        .trim = false,
++    });
++    formatter.content = .{ .selection = Selection.init(tl, br, false) };
++    try formatter.format(&builder.writer);
++
++    return builder.toOwnedSliceSentinel(0) catch return error.WriteFailed;
++}
++
+ /// PageList formatter formats multiple pages as represented by a PageList.
+ pub const PageListFormatter = struct {
+     /// The pagelist to format.
+@@ -6266,3 +6302,62 @@ test "Page HTML hyperlink point map maps closing to previous cell" {
+         try testing.expectEqual(expected_coord, point_map.items[i]);
+     }
+ }
++
++test "export_vt round-trips the last history rows and colours" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++
++    var t = try Terminal.init(alloc, .{ .cols = 20, .rows = 3 });
++    defer t.deinit(alloc);
++    var s = t.vtStream();
++    defer s.deinit();
++
++    // Three rows of history (hist1..hist3) and three rows on screen.
++    try s.nextSlice("hist1\r\nhist2\r\nhist3\r\nscr1\r\nscr2\r\n\x1b[31mERR\x1b[0m");
++
++    const output = (try primaryScreenVtAlloc(alloc, &t, 2)).?;
++    defer alloc.free(output);
++
++    // Feed it into a fresh terminal as program output.
++    var t2 = try Terminal.init(alloc, .{ .cols = 20, .rows = 10 });
++    defer t2.deinit(alloc);
++    var s2 = t2.vtStream();
++    defer s2.deinit();
++    try s2.nextSlice(output);
++
++    const text = try t2.screens.active.dumpStringAlloc(alloc, .{ .screen = .{} });
++    defer alloc.free(text);
++    try testing.expectEqualStrings("hist2\nhist3\nscr1\nscr2\nERR", text);
++
++    const e = t2.screens.active.pages.getCell(.{ .active = .{ .x = 0, .y = 4 } }).?;
++    try testing.expectEqual(@as(u21, 'E'), e.cell.content.codepoint);
++    try testing.expect(e.style().fg_color.eql(.{ .palette = 1 }));
++}
++
++test "export_vt takes all history when it is shorter than the limit" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++
++    var t = try Terminal.init(alloc, .{ .cols = 20, .rows = 2 });
++    defer t.deinit(alloc);
++    var s = t.vtStream();
++    defer s.deinit();
++    try s.nextSlice("hist1\r\nscr1\r\nscr2");
++
++    const output = (try primaryScreenVtAlloc(alloc, &t, 100)).?;
++    defer alloc.free(output);
++    try testing.expectEqualStrings("hist1\r\nscr1\r\nscr2", output);
++}
++
++test "export_vt returns null on the alternate screen" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++
++    var t = try Terminal.init(alloc, .{ .cols = 20, .rows = 3 });
++    defer t.deinit(alloc);
++    var s = t.vtStream();
++    defer s.deinit();
++    try s.nextSlice("shell output\r\n\x1b[?1049hfull-screen app");
++
++    try testing.expect(try primaryScreenVtAlloc(alloc, &t, 100) == null);
++}

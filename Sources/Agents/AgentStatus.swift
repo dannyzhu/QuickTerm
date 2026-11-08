@@ -33,12 +33,14 @@ enum AgentDetail: String, Codable, Equatable, CaseIterable {
     case approval
     case input
     case choice
+    /// Waiting for the user to sign in (OSC 7501 `blocked` + `kind=auth`, spec decision 9).
+    case auth
 
     /// The state this detail is only ever allowed to appear under.
     var coarse: AgentState {
         switch self {
         case .thinking, .tool: .working
-        case .approval, .input, .choice: .blocked
+        case .approval, .input, .choice, .auth: .blocked
         }
     }
 }
@@ -74,10 +76,13 @@ struct AgentStatus: Equatable {
     /// only releases an agent the scan had actually seen — an agent running as an interpreter
     /// (`node …/gemini.js`) is invisible to the scan and is released by its own `SessionEnd`.
     var seenByScan: Bool
+    /// 0–100, from an OSC 7501 report; nil when no report gave one (spec decision 12).
+    var progress: Int?
 
     init(agent: String, name: String, state: AgentState, detail: AgentDetail? = nil,
          tool: String? = nil, message: String? = nil, since: Date, evidence: NoticeEvidence,
-         sessionID: String? = nil, lastHookAt: Date? = nil, seenByScan: Bool = false) {
+         sessionID: String? = nil, lastHookAt: Date? = nil, seenByScan: Bool = false,
+         progress: Int? = nil) {
         self.agent = agent
         self.name = name
         self.state = state
@@ -89,10 +94,14 @@ struct AgentStatus: Equatable {
         self.sessionID = sessionID
         self.lastHookAt = lastHookAt
         self.seenByScan = seenByScan
+        self.progress = progress
     }
 
-    /// This pane is waiting for a human.
-    var needsUser: Bool { state.needsUser }
+    /// This pane is waiting for a human. An error known only from a program-status report is
+    /// information, not an alarm (spec decision 16), unlike an error a hook reported.
+    var needsUser: Bool {
+        state == .error && evidence == .programStatus ? false : state.needsUser
+    }
 }
 
 extension AgentStatus {
@@ -102,7 +111,11 @@ extension AgentStatus {
     /// settings or palette surface is the second), and because a key declared in the catalog with
     /// no call site fails `scripts/check-localization.py`: one owner for the nine keys, and the
     /// view asks for it.
-    var localizedStateText: String {
+    var localizedStateText: String { Self.localizedStateText(state: state, detail: detail) }
+
+    /// The same words for a bare (state, detail), for a band line that has no `AgentStatus`
+    /// behind it (a generic program's OSC 7501 record).
+    static func localizedStateText(state: AgentState, detail: AgentDetail?) -> String {
         if let detail {
             switch detail {
             case .thinking: return L("agents.strip.thinking")
@@ -110,6 +123,7 @@ extension AgentStatus {
             case .approval: return L("agents.strip.approval")
             case .input: return L("agents.strip.input")
             case .choice: return L("agents.strip.choice")
+            case .auth: return L("program-status.state.auth")
             }
         }
         switch state {

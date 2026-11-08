@@ -1,7 +1,7 @@
 import Foundation
 import OSLog
 
-/// **Where rule files come from** (plan §2.3): the three bundled ones, then the user's own.
+/// **Where rule files come from** (plan §2.3): the bundled ones, then the user's own.
 ///
 /// A user file whose `id` matches a bundled one **replaces it whole** rather than merging into
 /// it: a half-overridden rule file would be a file the user reads as the whole truth while the
@@ -13,7 +13,7 @@ enum AgentRulesLoader {
                                category: "AgentRules")
 
     /// The rule files that ship inside the app.
-    static let bundledIDs = ["claude-code", "codex", "gemini"]
+    static let bundledIDs = ["claude-code", "codex", "gemini", "kiro-cli"]
 
     /// `~/.config/quickterm/agents`. **Always passed explicitly by a test**: resolving `~` in a
     /// test host would read the developer's own files.

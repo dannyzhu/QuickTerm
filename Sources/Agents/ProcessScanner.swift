@@ -313,6 +313,9 @@ final class ProcessScanner {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.requestScan()
+                // Program status rides the same beat (spec decision 5), whether or not agent
+                // detection is on: a record whose job left the foreground drops.
+                self.registry.checkProgramStatus()
             }
         }
         // "Always on" (owner's Q7) has to include the minutes a consent sheet sits in runModal:
@@ -370,6 +373,14 @@ final class ProcessScanner {
                 }
             }
         }
+    }
+
+    /// One pass on the calling thread, answered to the caller and **not** delivered to the
+    /// registry. For the quit-time agent resume capture (`AppSession.exportRestoreContentOnce`),
+    /// which needs this moment's answer before the archive is written. nil when there is nothing
+    /// to look for. A test host never calls it with the real readings.
+    func scanSynchronously() -> ProcessScan.Result? {
+        makeScan()?.run()
     }
 
     /// nil when there is nothing to look for — detection switched off, or no enabled rule names a

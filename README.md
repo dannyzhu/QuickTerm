@@ -187,6 +187,7 @@ Keys you set in `config.toml` — the first four rows are the transparency knobs
 | `browser-tab-min-width` | 80 | Minimum tab width in pt (40–600); once every tab is at the minimum the strip scrolls sideways (mouse wheel; the active tab is always scrolled into view) |
 | `browser-extensions` | true | Load WebExtensions in browser panes (see [Browser extensions](#browser-extensions)). `false` unloads them all and stops attaching the extension controller to new tabs |
 | `browser-download-dir` | ~/Downloads | Where browser panes save downloads (`~` is expanded; falls back to `~/Downloads` when the path is not an existing directory). Progress shows right of the address bar — click the ring for the list (cancel, reveal in Finder, clear finished) |
+| `[restore] content` | true | Save each terminal pane's output (colours and styles included) at quit and show it again after a relaunch. Up to `[restore] lines` lines (default 5000, 100–50000) and 4 MiB per pane; a pane running a full-screen program (vim, Claude Code) saves nothing. Content sits in `~/Library/Application Support/QuickTerm/restore/`, encrypted by default (`encrypt`, key in the login keychain), and is deleted as soon as the next launch reads it. `false` deletes it at once |
 
 Downloads land in `browser-download-dir` (`~/Downloads` by default): a progress ring appears right of the address bar while anything is downloading, and clicking it opens the list — cancel, reveal in Finder, remove a row, or clear the finished ones.
 The list belongs to the pane: closing the pane cancels whatever is still downloading in it.
@@ -339,7 +340,7 @@ quickterm agents list                  # what each pane's agent is doing
 
 **What the installer writes.** One small `sh` script at `~/.config/quickterm/hooks/quickterm-agent-state.sh`,
 and one entry per lifecycle event in the agent's *own* config file — `~/.claude/settings.json` for Claude
-Code, `~/.codex/hooks.json` for Codex, `~/.gemini/settings.json` for Gemini. Every entry carries QuickTerm's
+Code, `~/.codex/hooks.json` for Codex, `~/.gemini/settings.json` for Gemini; Kiro CLI gets a file of its own, `~/.kiro/hooks/quickterm-agent-state.json`, which uninstall deletes once it holds nothing else. Every entry carries QuickTerm's
 marker, and `hooks uninstall` removes only the marked ones: your own hooks are never touched. The script's
 path to the `quickterm` binary is **baked in at install time and never read from the environment** — a hook
 runs on every prompt, and a project `.envrc` or a Makefile choosing which binary that is would be a fine way
@@ -357,11 +358,19 @@ pane", which is reported as the state `unknown` — the honest answer. The preci
 the agent itself.
 
 **What a rule file is.** Which events mean which state, and where in the hook payload the tool name and the
-message are, live in TOML rule files — three ship inside the app (`claude-code`, `codex`, `gemini`) and
+message are, live in TOML rule files — four ship inside the app (`claude-code`, `codex`, `gemini`, `kiro-cli`) and
 anything in `~/.config/quickterm/agents/*.toml` is loaded beside them, so a new agent is a file, not a
 release. Only a whitelist of fields ever crosses from a hook into QuickTerm (the event name, a session id, a
 tool name, an error type, a message, and string-valued entries of `tool_input`), each clamped to 200
 characters — never a transcript path, a working directory or a file's contents.
+
+**Program status (OSC 7501).** Any program can report its own status by printing an OSC 7501 sequence
+(`printf '\e]7501;state=working:app=cargo:progress=40\e\\'`), and QuickTerm shows it in the pane's band
+(`cargo · Running · 40%`) the way it shows an agent: `blocked` raises the same alarm as an approval, `done`
+and `error` post an ordinary notification. A report naming an agent (`app=codex`) feeds that agent's status,
+but **hooks still win**: once a hook has been heard, a report can add a progress and a message and never
+change the state, and it can never take down an alarm a hook raised. The records are in `quickterm state` as
+`programs`. `[agents] program-status = false` turns it off and every report is ignored.
 
 ### Security posture
 
@@ -463,7 +472,7 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 
 [agents]                    # recognise the AI agent in each pane; the scan reads only QuickTerm's own descendants
 # detect = true                                  # recognise agents in terminal panes (hooks, OSC fallback, process scan)
-# enabled = ["claude-code", "codex", "gemini"]   # the rule ids to use (three are bundled; ~/.config/quickterm/agents/*.toml overrides or adds)
+# enabled = ["claude-code", "codex", "gemini", "kiro-cli"]   # the rule ids to use (four are bundled; ~/.config/quickterm/agents/*.toml overrides or adds)
 # hook-detail = "lifecycle"                      # tools adds Pre/PostToolUse (one process per tool call) and rewrites installed hooks to match
 # auto-install-hooks = "ask"                     # the first time a pane runs an agent whose hooks are missing: ask once per agent, install silently, or never
 # info-strip = true                              # a dedicated status strip reserved at the top of every terminal pane (drawn only when there is an agent or a set title)
@@ -472,6 +481,7 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 # strip-background = "#414868"                   # the bar's background (#rrggbb) for idle, working, done and unknown
 # strip-attention = "#f7768e"                    # the bar's background (#rrggbb) while the agent needs you, or its turn failed
 # strip-text = "#c0caf5"                         # the colour (#rrggbb) of the text drawn on the bar
+# program-status = true                          # read OSC 7501 program status from panes and show it in the band; off = ignore every report
 
 [notifications]              # who is waiting for you; the marks count PANES that need you, not notices
 # system = "inactive"         # inactive = banner only while you are not looking at that pane | never
@@ -487,6 +497,12 @@ Drop-in agent instructions: copy [`docs/agents/AGENTS.quickterm.md`](docs/agents
 [updates]                   # auto-update from GitHub Releases; with check only, an icon in the status bar says a release is out
 # check = true               # at launch and about once a day, ask GitHub Releases whether a newer QuickTerm exists; install = true checks even when this is off
 # install = false            # download a found update in the background and install it when QuickTerm quits (implies check); the status bar icon then says to quit or restart to finish
+
+[restore]                   # bring back each terminal pane's output after a relaunch; read once, then deleted
+# content = true             # save each terminal pane's output (with colours) at quit; full-screen programs save nothing; false deletes saved content at once
+# lines = 5000               # scrollback lines kept per pane (100–50000), plus the screen; each pane is capped at 4 MiB
+# encrypt = true             # encrypt saved content with AES-GCM, the key in the login keychain
+# agent-resume = true        # offer to resume an AI agent that was still running in a pane at quit
 
 [keybinds]                  # action = "modifiers+key"; "none" unbinds. Action ids: Cmd+K
 # new-terminal = "cmd+return"

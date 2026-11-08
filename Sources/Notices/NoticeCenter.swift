@@ -139,16 +139,24 @@ final class NoticeCenter: ObservableObject {
         // 3. Identical content under the same key: a duplicate. Nothing changes — not `postedAt`,
         //    not one sink call. This is what stops `PermissionRequest` and the OSC notification
         //    that describes the *same* prompt from re-presenting the banner with sound twice.
-        if let index = existingIndex, live[index].title == title, live[index].body == body {
+        // The same words from another origin or another kind of evidence are not a duplicate:
+        // a hook taking over an alarm a program-status report raised has to replace the report's
+        // nil origin with its own, or a later origin-less signal could resolve the hook's prompt.
+        if let index = existingIndex, live[index].title == title, live[index].body == body,
+           live[index].origin == request.origin, live[index].evidence == request.evidence {
             return .duplicate(live[index].id)
         }
 
-        let notice = Notice(
+        var notice = Notice(
             id: UUID(), key: key, source: request.source, pane: request.pane,
             screen: located.controller.windowID, workspace: located.workspace,
             urgency: request.urgency, evidence: request.evidence, title: title, body: body,
             bodySensitive: request.bodySensitive, origin: request.origin, postedAt: now,
             quietedAt: nil, resolvedAt: nil, resolution: nil)
+        if Self.isProgramAlarm(notice) {
+            notice.silent = programAlarmFlooding(key: key, now: now)
+            noteProgramAlarm(key: key, now: now, in: &lastProgramAlarm)
+        }
 
         // 4./5. Same key, different content: the old one is superseded and the new one takes its
         //       place. Otherwise this is simply a new notice.
@@ -242,18 +250,27 @@ final class NoticeCenter: ObservableObject {
         return .resolved
     }
 
-    /// Every live notice of the pane, optionally only one urgency. Returns how many really
-    /// resolved — the number `notices ack` reports as its change, and what tells rule 1 whether
-    /// it silenced anything.
+    /// Every live notice of the pane, optionally only one urgency and only one source. Returns
+    /// how many really resolved — the number `notices ack` reports as its change, and what tells
+    /// rule 1 whether it silenced anything.
+    ///
+    /// `source` exists for program status (OSC 7501): a report leaving `blocked` carries no
+    /// origin, so without it the report would also take down an OSC 9 alarm or another program's
+    /// alarm in the same pane. nil = every source, which is what every other caller wants.
+    /// `includePrograms: false` leaves every `program:` notice alone: an agent's state change or
+    /// exit says nothing about another program in the pane.
     @discardableResult
     func resolveAll(pane: UUID, _ how: NoticeResolution,
-                    urgency: NoticeUrgency? = nil, origin: NoticeOrigin? = nil) -> Int {
+                    urgency: NoticeUrgency? = nil, origin: NoticeOrigin? = nil,
+                    source: NoticeSource? = nil, includePrograms: Bool = true) -> Int {
         var resolved = 0
         // Walk by identity rather than by index: `resolveAtIndex` mutates `live`, and each
         // resolution dispatches into sinks that may read (never write) the centre.
         let targets = live.filter { notice in
             guard notice.pane == pane else { return false }
             guard urgency == nil || notice.urgency == urgency else { return false }
+            guard source == nil || notice.source == source else { return false }
+            guard includePrograms || !Self.isProgram(notice.source) else { return false }
             if how == .stateChanged, let stored = notice.origin, !stored.permits(origin) {
                 return false
             }
@@ -276,6 +293,9 @@ final class NoticeCenter: ObservableObject {
         notice.resolution = how
         live.remove(at: index)
         appendToHistory(notice)
+        if Self.isProgramAlarm(notice), let at = notice.resolvedAt {
+            noteProgramAlarm(key: notice.key, now: at, in: &lastProgramResolve)
+        }
 
         let after = urgency(pane: pane)
         let transition = PaneTransition(pane: pane, before: before, after: after)
@@ -313,7 +333,11 @@ final class NoticeCenter: ObservableObject {
     /// two the real thing uses, so the forecast cannot drift from it.
     func stateChangeForecast(pane: UUID, origin: NoticeOrigin?) -> StateChangeOutcome {
         var out = StateChangeOutcome()
-        for notice in live where notice.pane == pane && notice.urgency == .needsUser {
+        // A program's alarm is its own record's to resolve, never an agent's: not counted as
+        // resolvable (a refused forged hook must not pass the origin gate on cargo's account), and
+        // not as refused either.
+        for notice in live where notice.pane == pane && notice.urgency == .needsUser
+            && !Self.isProgram(notice.source) {
             if let stored = notice.origin, !stored.permits(origin) {
                 out.refused.append(notice.id)
             } else {
@@ -328,16 +352,52 @@ final class NoticeCenter: ObservableObject {
     @discardableResult
     func agentStateLeftNeedsUser(pane: UUID, origin: NoticeOrigin?) -> StateChangeOutcome {
         let refused = stateChangeForecast(pane: pane, origin: origin).refused
-        let resolved = resolveAll(pane: pane, .stateChanged, urgency: .needsUser, origin: origin)
+        let resolved = resolveAll(pane: pane, .stateChanged, urgency: .needsUser, origin: origin,
+                                  includePrograms: false)
         return StateChangeOutcome(resolved: resolved, refused: refused)
+    }
+
+    // MARK: The program-status flood window (spec decision 18)
+
+    /// A program toggling `blocked` and `working` would otherwise ring the Mac at its report
+    /// rate. A program-status `needsUser` posted within this many seconds of the previous one
+    /// under the same key, or of that key's last resolve, is posted `silent`: live, marked and
+    /// counted, but no banner and no sound, and its control-plane events are coalesced.
+    static let programAlarmFloodWindow: TimeInterval = 1
+
+    /// Per key (source, needsUser, pane): when a program-status alarm was last posted / resolved.
+    /// Pruned to the window on every write, so they hold only keys that are busy right now.
+    private var lastProgramAlarm: [String: Date] = [:]
+    private var lastProgramResolve: [String: Date] = [:]
+
+    /// Only program-status evidence: a hook's alarm is never made silent and never counts.
+    static func isProgramAlarm(_ notice: Notice) -> Bool {
+        notice.urgency == .needsUser && notice.evidence == .programStatus
+    }
+
+    private func programAlarmFlooding(key: String, now: Date) -> Bool {
+        [lastProgramAlarm[key], lastProgramResolve[key]].contains { last in
+            last.map { now.timeIntervalSince($0) < Self.programAlarmFloodWindow } ?? false
+        }
+    }
+
+    private func noteProgramAlarm(key: String, now: Date, in map: inout [String: Date]) {
+        map = map.filter { now.timeIntervalSince($0.value) < Self.programAlarmFloodWindow }
+        map[key] = now
+    }
+
+    /// A generic program's notice (OSC 7501, `program:<app>` / `program`).
+    private static func isProgram(_ source: NoticeSource) -> Bool {
+        if case .program = source { return true }
+        return false
     }
 
     /// Rule 2 — the user focused the pane and typed into it.
     ///
     /// What that means is the owner's Q1 answer, held in `userActedPolicy` (plan §2.8):
     /// - `.resolveFully` (Phase 1's behaviour): every urgency of that pane resolves;
-    /// - `.clearInterruptingSinks` (**the default**): an alarm with *hook or report* evidence is
-    ///   **quieted** — banner and Dock badge let go, the pane mark, the pill count and the strip
+    /// - `.clearInterruptingSinks` (**the default**): an alarm with *hook, report or program-status*
+    ///   evidence is **quieted** — banner and Dock badge let go, the pane mark, the pill count and the strip
     ///   stay until the agent or its process confirms. Everything else resolves, because no later
     ///   signal will ever come for it: a notification-evidenced alarm has no hook behind it.
     /// - `.resolveFullyAndRearm`: as `.resolveFully` here; the registry arms the re-arm timer.
@@ -357,8 +417,11 @@ final class NoticeCenter: ObservableObject {
         for id in live(pane: pane).map(\.id) {
             guard let index = live.firstIndex(where: { $0.id == id }) else { continue }
             let notice = live[index]
+            // Program status as well (spec decision 17): an OSC 7501 program sends later reports,
+            // and one of those is what takes its alarm down.
             guard notice.urgency == .needsUser,
-                  notice.evidence == .hook || notice.evidence == .report else {
+                  notice.evidence == .hook || notice.evidence == .report
+                    || notice.evidence == .programStatus else {
                 resolveAtIndex(index, .userActed)
                 continue
             }
@@ -647,5 +710,7 @@ final class NoticeCenter: ObservableObject {
         counts = NoticeCounts()
         recordedActivity.removeAll()
         activityPassScheduled = false
+        lastProgramAlarm.removeAll()
+        lastProgramResolve.removeAll()
     }
 }

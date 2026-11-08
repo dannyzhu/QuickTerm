@@ -10,7 +10,7 @@ import AppKit
 ///
 /// Two things this file does own:
 /// - **validating the agent id**, because the command table is static while rule files are loaded
-///   at runtime: `claude-code | codex | gemini | all` in the help is a description, not a list the
+///   at runtime: `claude-code | codex | gemini | kiro-cli | all` in the help is a description, not a list the
 ///   parser can enforce, so a wrong id is answered here with the ids that actually exist. The
 ///   check is reachable **before** the confirmation gate as well (`validateHooksInstallTarget`,
 ///   called from the runner's pre-consent `pin`): an id that can never install must be a

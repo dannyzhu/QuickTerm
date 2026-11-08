@@ -47,6 +47,37 @@ extension Ghostty {
         /// the real location as usual.
         private var deniedFallbackPwd: String?
 
+        /// QuickTerm: the directory the archive saves for this pane. `deniedWorkingDirectory` wins
+        /// over `pwd` (see `noteWorkingDirectoryReport`), and the start directory covers a save
+        /// that lands before the shell has reported OSC 7.
+        var archivedWorkingDirectory: String? { deniedWorkingDirectory ?? pwd ?? initialWorkingDirectory }
+
+        /// QuickTerm: the agent this pane offers to resume after the next launch. Set at quit by
+        /// `AgentResume.capture`, and written to the archive as the optional `agentResume` key only
+        /// by a save made after that capture (`AgentResume.quitSaveStarted`).
+        var agentResumeRecord: AgentResumeRecord?
+        /// QuickTerm: the record this pane was decoded with, i.e. what the previous quit captured.
+        /// Read by the resume offer; **never encoded**, so a save during this run cannot carry the
+        /// previous launch's record into an archive that a crash then leaves behind.
+        var restoredAgentResume: AgentResumeRecord?
+
+        /// QuickTerm: the resume button this pane shows in its agent band, built at decode time
+        /// from `restoredAgentResume` (`ResumeOffer.forRestoredPane`). Cleared on the click, on
+        /// the first keystroke and when an agent status appears in the pane.
+        var resumeOffer: ResumeOffer? {
+            willSet { objectWillChange.send() }
+        }
+        /// QuickTerm: the offer that was clicked and may still be waiting for the shell. Kept so a
+        /// keystroke or a new agent before the send can still call it off.
+        private var acceptedResumeOffer: ResumeOffer?
+
+        /// A new agent status in the pane dismisses the resume offer (spec decision 19): the agent
+        /// is already running again, by the button or by hand.
+        override func setAgentStatus(_ status: AgentStatus?) {
+            super.setAgentStatus(status)
+            if status != nil { dismissResumeOffer() }
+        }
+
         /// The environment variables actually handed to the engine at spawn time, the control-plane
         /// ones included. Read-only, kept for tests and for debugging: "did the restored pane
         /// actually get QUICKTERM_SOCKET" is not a question you can answer from inside the child
@@ -274,6 +305,14 @@ extension Ghostty {
         var surface: ghostty_surface_t? {
             surfaceModel?.unsafeCValue
         }
+        /// QuickTerm: the pty's foreground process group right now (spec decision 5), nil while
+        /// the pty is not up or the engine cannot tell. Program status uses it to know when the
+        /// program that sent a report has left the foreground.
+        var foregroundProcessGroup: Int32? {
+            guard let surface else { return nil }
+            return ProgramStatusRouter.processGroup(ghostty_surface_foreground_pgid(surface))
+        }
+
         /// Current scrollbar state, cached here for persistence across rebuilds
         /// of the SwiftUI view hierarchy, for example when changing splits
         var scrollbar: Ghostty.Action.Scrollbar?
@@ -327,7 +366,12 @@ extension Ghostty {
         // We need to support being a first responder so that we can get input events
         override var acceptsFirstResponder: Bool { return true }
 
-        init(_ app: ghostty_app_t, baseConfig: SurfaceConfiguration? = nil, uuid: UUID? = nil) {
+        /// `restoredOutput` is set only for a pane decoded from the session archive: what
+        /// `RestoreImporter.restoredOutput` took from the restore store (already deleted on disk).
+        /// `feeder` hands it to the engine; injectable so tests can watch the moment it is fed.
+        init(_ app: ghostty_app_t, baseConfig: SurfaceConfiguration? = nil, uuid: UUID? = nil,
+             restoredOutput: Data? = nil,
+             feeder: (Data, ghostty_surface_t) -> Void = RestoreImporter.feed) {
             self.markedText = NSMutableAttributedString()
             self.initialWorkingDirectory = baseConfig?.workingDirectory
             // Will the gate refuse it? The result is memoized per root directory, so this does not
@@ -486,6 +530,14 @@ extension Ghostty {
                 return
             }
             self.surfaceModel = Ghostty.Surface(cSurface: surface)
+
+            // QuickTerm (session restore): the previous output and its marker go in now, on the
+            // main thread, synchronously after ghostty_surface_new returns. The engine has already
+            // started the shell on its IO thread inside ghostty_surface_new, so "before the shell
+            // writes anything" cannot be guaranteed from here; in practice this feed wins, because
+            // a shell's first output takes tens of milliseconds. If the shell ever did win, its
+            // first bytes would land above the old content, nothing worse.
+            if let restoredOutput { feeder(restoredOutput, surface) }
 
             // QuickTerm: libghostty creates a surface with focus defaulting to true, while this
             // view's `focused` starts out false (driven only by become/resignFirstResponder). A
@@ -1295,6 +1347,11 @@ extension Ghostty {
         }
 
         override func keyDown(with event: NSEvent) {
+            // Session restore: the user typing into the pane answers the resume offer (spec
+            // decision 19). Before anything else, so even a key the engine swallows counts. A
+            // Command shortcut (Cmd+C on the restored screen) is not typing, unless it pastes.
+            if keyAnswersResumeOffer(event) { dismissResumeOffer() }
+
             guard let surface = self.surface else {
                 self.interpretKeyEvents([event])
                 return
@@ -1807,6 +1864,7 @@ extension Ghostty {
         }
 
         @IBAction func paste(_ sender: Any?) {
+            noteResumeOfferPaste()
             guard let surface = self.surface else { return }
             let action = "paste_from_clipboard"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
@@ -1815,6 +1873,7 @@ extension Ghostty {
         }
 
         @IBAction func pasteAsPlainText(_ sender: Any?) {
+            noteResumeOfferPaste()
             guard let surface = self.surface else { return }
             let action = "paste_from_clipboard"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
@@ -1823,6 +1882,7 @@ extension Ghostty {
         }
 
         @IBAction func pasteSelection(_ sender: Any?) {
+            noteResumeOfferPaste()
             guard let surface = self.surface else { return }
             let action = "paste_from_selection"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
@@ -1927,7 +1987,11 @@ extension Ghostty {
             let action = "reset"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
                 AppDelegate.logger.warning("action failed action=\(action)")
+                return
             }
+            // QuickTerm: the engine's own Reset sends no OSC 7501 reset (only a program's RIS
+            // does), so a user Reset clears this pane's program-status records here.
+            ProgramStatusRouter.reset(pane: id)
         }
 
         @objc func toggleTerminalInspector(_ sender: Any) {
@@ -1979,6 +2043,9 @@ extension Ghostty {
             case uuid
             case title
             case isUserSetTitle
+            /// Optional and absent when there is no record, so the archive stays readable by a
+            /// build that predates agent resume (no version bump).
+            case agentResume
         }
 
         required convenience init(from decoder: Decoder) throws {
@@ -1991,20 +2058,35 @@ extension Ghostty {
 
             let container = try decoder.container(keyedBy: CodingKeys.self)
             let uuid = UUID(uuidString: try container.decode(String.self, forKey: .uuid))
-            var config = Ghostty.SurfaceConfiguration()
-            config.workingDirectory = try container.decode(String?.self, forKey: .pwd)
-            // QuickTerm: a restored pane needs the control-plane environment variables too, or
-            // after a restart an agent running inside the pane has no QUICKTERM_PANE / SOCKET to
-            // use. We do not know yet which workspace on which screen it will land in (the archive
-            // is applied later), so only inject the ones that travel with the pane itself.
-            if let uuid {
-                config.environmentVariables = ControlEnvironment.inject(
-                    into: config.environmentVariables, paneID: uuid, screen: nil, workspace: nil)
-            }
+            let pwd = try container.decode(String?.self, forKey: .pwd)
+            let config = Self.archiveConfiguration(pwd: pwd, uuid: uuid)
             let savedTitle = try container.decodeIfPresent(String.self, forKey: .title)
             let isUserSetTitle = try container.decodeIfPresent(Bool.self, forKey: .isUserSetTitle) ?? false
+            // A record that does not decode is dropped rather than losing the pane with it.
+            let agentResume = try? container.decodeIfPresent(AgentResumeRecord.self, forKey: .agentResume)
 
-            self.init(app, baseConfig: config, uuid: uuid)
+            // Session restore: take this pane's saved screen (the store deletes the file first)
+            // and let the designated init feed it right after the surface exists. Only a pane
+            // decoded from the archive ever gets here; a new pane never takes content.
+            let directoryGone = RestoreImporter.directoryGone(saved: pwd, hasAgentRecord: agentResume != nil)
+            var restoredOutput: Data?
+            if let uuid, let session = appDel.session, let store = session.restoreStore {
+                restoredOutput = RestoreImporter.restoredOutput(
+                    pane: uuid, store: store, contentEnabled: session.settings.restoreContent,
+                    directoryGone: directoryGone)
+            }
+
+            self.init(app, baseConfig: config, uuid: uuid, restoredOutput: restoredOutput)
+            self.restoredAgentResume = agentResume
+            // After the init, so the offer's baseline viewport already holds the restored content
+            // and the shell's first prompt reads as a change.
+            if let settings = appDel.session?.settings {
+                resumeOffer = ResumeOffer.forRestoredPane(
+                    record: agentResume, settings: settings, directoryGone: directoryGone,
+                    rules: AgentRegistry.shared.rules,
+                    snapshot: { [weak self] in self?.viewportSnapshot() ?? "" },
+                    send: { [weak self] in self?.typeResumeLine($0) })
+            }
 
             // Restore the saved title after initialization
             if let title = savedTitle {
@@ -2016,6 +2098,23 @@ extension Ghostty {
             }
         }
 
+        /// The configuration a pane decoded from the archive is created with: its directory and the
+        /// control-plane variables, and **no command or input** (spec decision 5), so the engine
+        /// starts the login shell itself and still applies its automatic shell integration.
+        static func archiveConfiguration(pwd: String?, uuid: UUID?) -> SurfaceConfiguration {
+            var config = Ghostty.SurfaceConfiguration()
+            config.workingDirectory = pwd
+            // QuickTerm: a restored pane needs the control-plane environment variables too, or
+            // after a restart an agent running inside the pane has no QUICKTERM_PANE / SOCKET to
+            // use. We do not know yet which workspace on which screen it will land in (the archive
+            // is applied later), so only inject the ones that travel with the pane itself.
+            if let uuid {
+                config.environmentVariables = ControlEnvironment.inject(
+                    into: config.environmentVariables, paneID: uuid, screen: nil, workspace: nil)
+            }
+            return config
+        }
+
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             // QuickTerm: fall back to the configured start directory while the shell has not
@@ -2023,10 +2122,14 @@ extension Ghostty {
             // `deniedWorkingDirectory` wins over `pwd`: on the run where TCC refused, `pwd` is the
             // engine's fallback directory (the home directory), and saving that erases the directory
             // the user had. See `noteWorkingDirectoryReport`.
-            try container.encode(deniedWorkingDirectory ?? pwd ?? initialWorkingDirectory, forKey: .pwd)
+            try container.encode(archivedWorkingDirectory, forKey: .pwd)
             try container.encode(id.uuidString, forKey: .uuid)
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)
+            // Only a quit-time save writes a record: one written mid-run would outlive a crash.
+            if AgentResume.quitSaveStarted {
+                try container.encodeIfPresent(agentResumeRecord, forKey: .agentResume)
+            }
         }
     }
 }
@@ -2376,6 +2479,22 @@ extension Ghostty.SurfaceView: NSMenuItemValidation {
     }
 }
 
+// MARK: Session restore (QuickTerm)
+
+extension Ghostty.SurfaceView {
+    /// QuickTerm: the primary screen as VT text (colours and styles kept), the last `maxLines`
+    /// rows of scrollback plus the screen, through engine patch 0003. nil when the alternate
+    /// screen is active (a full-screen program owns the pane) or the engine has nothing to give.
+    func exportVT(maxLines: Int) -> Data? {
+        guard let surface else { return nil }
+        var text = ghostty_text_s()
+        guard ghostty_surface_export_vt(surface, UInt32(clamping: max(0, maxLines)), &text) else { return nil }
+        defer { ghostty_surface_free_text(surface, &text) }
+        guard let pointer = text.text, text.text_len > 0 else { return nil }
+        return Data(bytes: pointer, count: Int(text.text_len))
+    }
+}
+
 // MARK: NSDraggingDestination
 
 extension Ghostty.SurfaceView {
@@ -2422,6 +2541,8 @@ extension Ghostty.SurfaceView {
         }
 
         if let content {
+            // A drop types into the shell like a paste.
+            noteResumeOfferPaste()
             DispatchQueue.main.async {
                 self.insertText(
                     content,
@@ -2578,5 +2699,77 @@ class CachedValue<T> {
         }
 
         return result
+    }
+}
+
+// MARK: - Session restore: the resume offer
+
+extension Ghostty.SurfaceView {
+    /// The band's button was clicked: the button goes away now, the line follows once the shell is
+    /// ready (`ResumeOffer.accept`).
+    func acceptResumeOffer() {
+        guard let offer = resumeOffer else { return }
+        resumeOffer = nil
+        restoredAgentResume = nil
+        acceptedResumeOffer = offer
+        offer.accept()
+    }
+
+    /// Take the offer away, and call off a clicked one that has not sent yet.
+    func dismissResumeOffer() {
+        guard resumeOffer != nil || acceptedResumeOffer != nil else { return }
+        resumeOffer?.dismiss()
+        acceptedResumeOffer?.dismiss()
+        // Only a visible button needs the band redrawn.
+        if resumeOffer != nil { resumeOffer = nil }
+        acceptedResumeOffer = nil
+        restoredAgentResume = nil
+    }
+
+    /// Whether a key event delivered to this pane answers the resume offer. Every key without
+    /// Command does: it reaches the shell. A Command shortcut does not (copy, font size, a Ghostty
+    /// binding), except one that pastes, since a later click would append the resume line to
+    /// the pasted text.
+    func keyAnswersResumeOffer(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.contains(.command) else { return true }
+        return Self.isPasteKey(event)
+    }
+
+    /// A paste: the key the Ghostty config binds to `paste_from_clipboard` or
+    /// `paste_from_selection`, or Cmd+V. The engine reports whether an event is a binding but not
+    /// which action, so the configured trigger of each paste action (the one the menu shows) is
+    /// compared; Cmd+V always counts in case the config binds paste elsewhere as well.
+    static func isPasteKey(_ event: NSEvent) -> Bool {
+        let relevant: NSEvent.ModifierFlags = [.shift, .control, .option, .command]
+        let flags = event.modifierFlags.intersection(relevant)
+        let key = (event.charactersIgnoringModifiers ?? "").lowercased()
+        if flags == .command, key == "v" { return true }
+        guard let config = (NSApp.delegate as? AppDelegate)?.ghostty.config else { return false }
+        for action in ["paste_from_clipboard", "paste_from_selection"] {
+            guard let shortcut = config.keyboardShortcut(for: action) else { continue }
+            let mods = NSEvent.ModifierFlags(swiftUIFlags: shortcut.modifiers).intersection(relevant)
+            if mods == flags, String(shortcut.key.character).lowercased() == key { return true }
+        }
+        return false
+    }
+
+    /// Text is about to be pasted or dropped into the shell: the offer goes away.
+    func noteResumeOfferPaste() { dismissResumeOffer() }
+
+    /// The viewport text the offer watches for the shell's first prompt.
+    func viewportSnapshot() -> String {
+        controlReadText(tag: GHOSTTY_POINT_VIEWPORT) ?? ""
+    }
+
+    /// Type the resume line into the shell. The text goes in like a paste (`sendText`); a trailing
+    /// Return is written to the pty on its own, because a shell with bracketed paste on keeps a
+    /// CR that arrives inside the paste as text and never runs the line.
+    func typeResumeLine(_ line: String) {
+        guard let model = surfaceModel else { return }
+        let runs = line.hasSuffix("\r")
+        let text = runs ? String(line.dropLast()) : line
+        if !text.isEmpty { model.sendText(text) }
+        // The `text:` binding action writes its (Zig-literal) bytes straight to the pty.
+        if runs { _ = model.perform(action: "text:\\r") }
     }
 }

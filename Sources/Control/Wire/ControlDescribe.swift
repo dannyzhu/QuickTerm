@@ -386,6 +386,13 @@ struct ControlDescribeDocument: Codable, Equatable {
                     + "one call, and the `notice.posted` / `notice.resolved` events are it as a stream. "
                     + "**Before you interrupt the user, ask**: if a pane is already holding a prompt in "
                     + "front of them, one more question is one too many.",
+                "A pane in `state` carries `agent` when QuickTerm recognises an agent in it, and "
+                    + "`programs[]` when a program in it printed OSC 7501 program-status reports: one record "
+                    + "per report id (`id`, `app`, `state`, `kind`, `progress`, `title` / `message`), the "
+                    + "agents' and other programs' alike. Both are absent when there is nothing to report; "
+                    + "`title` / `message` are the program's own words and are redacted like a notice body. "
+                    + "`program.status.changed` streams them, except the records of the agent that holds the pane, "
+                    + "which `agent.state.changed` carries.",
                 "A notice's `title` is composed by QuickTerm out of an agent id, a state and a tool name, "
                     + "so it never carries a payload and is never redacted; its `body` is the program's own "
                     + "words and follows the browser-URL rule — `<redacted>` with `redacted: true` for a "

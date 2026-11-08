@@ -1,0 +1,20 @@
+/* QuickTerm — Simplified Chinese UI strings for session restore.
+ *
+ * Same key set as en.lproj/Restore.strings (Tests/LocalizationTests.swift pins that).
+ * The positional arguments (%1$@ …) may be reordered to fit Chinese word order; the SET of
+ * indices used must match the English value.
+ */
+
+/* MARK: - restored pane content (Sources/Restore/RestoreImporter.swift) */
+
+"restore.marker" = "─── 恢复于 %1$@ ───";
+
+"restore.directory-gone" = "原目录已不存在，无法在这里续接对话。";
+
+/* MARK: - agent resume button in the pane's agent band */
+
+"restore.resume.button" = "%1$@ · 续接上次会话";
+
+"restore.resume.latest" = "%1$@ · 续接这里最近一次的会话";
+
+"restore.resume.help" = "在这个 pane 里执行 agent 的续接命令。--mcp-config 这类启动参数不会恢复。";

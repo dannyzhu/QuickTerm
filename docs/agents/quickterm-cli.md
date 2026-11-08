@@ -438,9 +438,10 @@ quickterm events poll --since "$seq" --timeout 30s     # one call answers "what 
   (`timedOut: true` is not an error).
 - The buffer is a ring: `missed: true` means events were pushed out in between, your snapshot is incomplete, so
   **read `state` again**.
-- Eleven event types: `pane.opened` `pane.closed` `focus.changed` `workspace.changed` `layout.changed`
+- Thirteen event types: `pane.opened` `pane.closed` `focus.changed` `workspace.changed` `layout.changed`
   `screen.opened` `screen.closed` `pane.title.changed` `pane.cwd.changed`
-  `notice.posted` `notice.resolved` (the last two are the notification centre's — see **Notices** below).
+  `notice.posted` `notice.resolved` (the notification centre's — see **Notices** below),
+  `agent.state.changed` and `program.status.changed` (see **Agents** and **Program status** below).
   `workspace.changed` has two causes — a workspace switch, or a workspace being renamed — and the `title`
   field tells the three cases apart:
   **no `title` field at all** = a switch (the name was not touched) · **`title` with a name** = renamed to that
@@ -508,9 +509,13 @@ quickterm agents list -t 1:2                             # only this workspace
 quickterm agents list --json | jq -r '.data.agents[] | select(.agent.needsUser) | .pane'
 ```
 
-QuickTerm recognises an agent three ways, and the record says which one it is using (`evidence`):
+QuickTerm recognises an agent four ways, and the record says which one it is using (`evidence`):
 
-- **`hook`** — the agent itself reported a lifecycle event through the hook QuickTerm installs. Exact.
+- **`hook`** — the agent itself reported a lifecycle event through the hook QuickTerm installs (or a
+  supervisor reported for it, `report`, with the same authority). Exact.
+- **`program-status`** — the agent printed an OSC 7501 program-status report naming itself (`app=codex`).
+  Used only while no hook is speaking for that agent; once a hook is heard, a report can add a progress and
+  a message but never change the state.
 - **`notification`** — an OSC desktop notification whose text a rule file recognises. A guess, and it is
   never allowed to overwrite a hook that was heard in the last five seconds.
 - **`process`** — the process scan found a program a rule file names, running as a descendant of QuickTerm.
@@ -524,12 +529,12 @@ row, never a row full of nulls. Each row carries the pane, where it is, and:
 |---|---|
 | `id` / `name` | the rule id (`claude-code`) and its display name |
 | `state` | `idle` \| `working` \| `blocked` \| `done` \| `error` \| `unknown` — **branch on this** |
-| `detail` | what kind: `thinking` \| `tool` \| `approval` \| `input` \| `choice` |
+| `detail` | what kind: `thinking` \| `tool` \| `approval` \| `input` \| `choice` \| `auth` (waiting for you to sign in) |
 | `tool` | a tool **name** (`Bash`), never a command line |
 | `message` | the agent's own words — the one redacted field (see below) |
-| `evidence` | `hook` \| `report` \| `notification` \| `process` — how sure this is |
+| `evidence` | `hook` \| `report` \| `program-status` \| `notification` \| `process` — how sure this is |
 | `since` | when the state last changed (ISO8601, the stamp events use) |
-| `needsUser` | present and `true` when the pane is waiting for a human (`blocked` or `error`) |
+| `needsUser` | present and `true` when the pane is waiting for a human (`blocked`, or `error` reported by a hook or the agent's text; an `error` from program status is information and does not set it) |
 
 **`needsUser` is the field to read before you interrupt.** `blocked` means a human is being waited for;
 `error` means the turn stopped and somebody has to look. Both mean the same thing to you: that pane already
@@ -549,10 +554,57 @@ has the user's attention pending, so say so and wait rather than asking a second
 - `agents list` scopes with `-t` at the precision you write it, exactly like `notices list`: `-t 1` a screen,
   `-t 1:2` one workspace, `-t t7` one pane, and nothing at all means the whole session.
 
+### Program status (OSC 7501)
+
+Any program can tell QuickTerm what it is doing by printing an OSC 7501 report
+(`printf '\e]7501;state=working:app=cargo:progress=40\e\\'`). QuickTerm keeps up to 64 records per pane and
+shows the most urgent one in the pane's band. A report whose `app` names an agent rule (`codex`, or one of
+the rule's process names) feeds that agent's status above (`evidence: "program-status"`). Every other report
+is a **generic program**. `state` lists every record of the pane, the agents' and the generic programs', as
+`programs`:
+
+```sh
+quickterm state --json | jq '.data.panes[] | select(.programs) | {pane: .handle, programs}'
+```
+
+| field | what it is |
+|---|---|
+| `id` | the record's id path (`build/test`); `""` is the pane's root record |
+| `app` | the program's own name (`cargo`), absent when it gave none |
+| `state` | `idle` \| `working` \| `blocked` \| `done` \| `error` |
+| `kind` | with `blocked`: `permission` \| `question` \| `auth` |
+| `progress` | 0–100, when the program reported one |
+| `title` / `message` | the program's own words, cleaned for display; redacted exactly like an agent's `message` |
+| `redacted` | present and `true` when a title or a message was withheld |
+
+- `programs` is **absent** on a pane with no records, and `agents list` never carries it: a generic program
+  is not an agent.
+- An agent's own records do not appear as a separate status: they are already folded into its `agent` record.
+  The raw records are still listed in `programs`.
+- Watch it: `quickterm events poll --types program.status.changed --timeout 30s`. The event carries `pane`,
+  `paneID`, `screen`, `workspace`, `app`, `id`, `state`, `kind`, `progress` and `message` (redacted by the
+  same rule). It fires when a record appears, when its `state` or `kind` changes, and when it goes away
+  (`state: "cleared"`). A progress step or a new message alone does not fire it. It fires for every record
+  except those of the agent that holds the pane's status, which speaks through `agent.state.changed`
+  instead (an agent's record in a pane another agent holds does get `program.status.changed`).
+- A `blocked` record raises a `needs-user` notice with source `program:<app>` (or `program`; an agent's
+  record uses the agent's source) and evidence `program-status`; `done` and `error` post an `info` notice.
+  A report never resolves an alarm a hook raised.
+- A program that flips between `blocked` and another state rings the Mac at most once a second: a
+  program-status `needs-user` notice posted within 1 s of the same source's previous one in that pane, or of
+  its last resolve, is posted silently (no banner, no sound; the pane mark and the Dock badge still count it,
+  and `notices list` lists it), and its `notice.posted` / `notice.resolved` events are coalesced to one pair
+  per second.
+- A report printed in the last instant before its program exits may be recorded with the shell's foreground
+  process group (QuickTerm reads the group on the main thread, after the report arrives), so it can survive
+  until the next command instead of dropping at exit.
+- `[agents] program-status = false` turns the whole thing off: every report is ignored and nothing is shown.
+
 ### Hooks: `quickterm hooks`
 
 The precise signal comes from a small hook script QuickTerm installs into the agent's **own** config file
-(Claude Code's `settings.json`, Codex's `hooks.json`, Gemini's `settings.json`). The script does nothing at
+(Claude Code's `settings.json`, Codex's `hooks.json`, Gemini's `settings.json`; for Kiro CLI a standalone
+`~/.kiro/hooks/quickterm-agent-state.json`). The script does nothing at
 all when it is not running inside a QuickTerm pane, so the same entry is harmless in Terminal.app, VS Code,
 tmux or CI.
 

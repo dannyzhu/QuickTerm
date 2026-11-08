@@ -184,6 +184,7 @@ xcodebuild -project QuickTerm.xcodeproj -scheme QuickTerm -configuration Debug t
 | `browser-tab-min-width` | 80 | 标签最小宽度 pt（40–600）；全部到最小仍放不下时标签条横向滚动（滚轮；当前标签自动滚入视野） |
 | `browser-extensions` | true | 浏览器 pane 加载 WebExtensions（见 [浏览器扩展](#浏览器扩展)）。`false` = 全部卸载，新标签也不再挂扩展 controller |
 | `browser-download-dir` | ~/Downloads | 浏览器 pane 的下载落盘目录（支持 `~`；不是个已存在的目录时回退 `~/Downloads`）。下载进度显示在地址栏右侧，点开可取消 / 在 Finder 中显示 / 清除已完成 |
+| `[restore] content` | true | 退出时保存每个终端 pane 的输出（含颜色与样式），重启后放回去。每个 pane 最多 `[restore] lines` 行（默认 5000，100–50000）、4 MiB；跑着全屏程序（vim、Claude Code）的 pane 不保存。内容放在 `~/Library/Application Support/QuickTerm/restore/`，默认加密（`encrypt`，密钥在登录钥匙串），下次启动读完即删。`false` = 立刻删除 |
 
 下载落在 `browser-download-dir`（默认 `~/Downloads`）：下载期间地址栏右侧出现进度环，点开是下载列表——取消、在 Finder 中显示、移除单行、清除已完成。
 列表属于 pane：关掉这个 pane 会取消它里面还没下完的下载。
@@ -335,7 +336,7 @@ quickterm agents list                  # 每个 pane 的 agent 在干什么
 
 **安装器会写什么。** 一个小小的 `sh` 脚本放在 `~/.config/quickterm/hooks/quickterm-agent-state.sh`，外加在 agent
 **自己**的配置文件里每个生命周期事件一条条目——Claude Code 是 `~/.claude/settings.json`，Codex 是
-`~/.codex/hooks.json`，Gemini 是 `~/.gemini/settings.json`。每条都带 QuickTerm 的标记，`hooks uninstall` 只删带标记
+`~/.codex/hooks.json`，Gemini 是 `~/.gemini/settings.json`；Kiro CLI 单独一个文件 `~/.kiro/hooks/quickterm-agent-state.json`，卸载后里面没别的东西就整个删掉。每条都带 QuickTerm 的标记，`hooks uninstall` 只删带标记
 的那些：你自己写的钩子一根手指都不碰。脚本里 `quickterm` 二进制的路径是**安装时写死的，绝不从环境变量里读**——钩子每
 次提问都会跑，让项目的 `.envrc` 或者 Makefile 来决定跑的是哪个二进制，等于给任意代码开了一扇门。不在 QuickTerm 里时
 （环境里没有控制 socket），脚本立刻 exit 0 什么也不做，所以同一条配置在 Terminal.app、VS Code、tmux 或 CI 里都无害。
@@ -346,10 +347,18 @@ quickterm agents list                  # 每个 pane 的 agent 在干什么
 调用里把参数缓冲区丢掉。不读命令行，不读环境变量，不看别人的进程，不碰这个 app 进程树以外的任何东西。它至多只能得出
 "这个 pane 里跑着一个叫这个名字的东西"，于是报的状态就是 `unknown`——这是诚实的答案。精确的状态只可能来自 agent 自己。
 
-**规则文件是什么。** 哪个事件对应哪个状态、工具名和消息在钩子载荷的哪个字段，都写在 TOML 规则文件里——app 内置三份
-（`claude-code`、`codex`、`gemini`），`~/.config/quickterm/agents/*.toml` 里的会与它们一起加载，所以支持一个新 agent
+**规则文件是什么。** 哪个事件对应哪个状态、工具名和消息在钩子载荷的哪个字段，都写在 TOML 规则文件里——app 内置四份
+（`claude-code`、`codex`、`gemini`、`kiro-cli`），`~/.config/quickterm/agents/*.toml` 里的会与它们一起加载，所以支持一个新 agent
 是加一个文件，不是发一个版本。从钩子进到 QuickTerm 的字段只有一张白名单（事件名、session id、工具名、错误类型、消息，
 以及 `tool_input` 里取值为字符串的条目），每个都截到 200 字符——绝不包括 transcript 路径、工作目录或文件内容。
+
+**程序状态（OSC 7501）。** 任何程序都可以打印一条 OSC 7501 序列报告自己的状态
+（`printf '\e]7501;state=working:app=cargo:progress=40\e\\'`），QuickTerm 把它显示在 pane 的状态带上
+（`cargo · 运行中 · 40%`），和显示 agent 一样：`blocked` 发出和等批准一样的提醒，`done`
+和 `error` 发一条普通通知。报告里写的是某个 agent（`app=codex`）时，它会喂给那个 agent 的状态，
+但**钩子优先**：一旦听到过钩子，报告只能补充进度和消息，不能改状态，
+也永远撤不掉钩子发出的提醒。这些记录在 `quickterm state`
+里叫 `programs`。`[agents] program-status = false` 关掉它，所有报告都会被忽略。
 
 ### 安全姿态
 
@@ -451,7 +460,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 
 [agents]                    # 识别 pane 里的 AI agent；进程扫描只看 QuickTerm 自己的子进程
 # detect = true                                  # 识别终端 pane 里的 AI agent（钩子、OSC 回退、进程扫描）
-# enabled = ["claude-code", "codex", "gemini"]   # 要用的规则 id 列表（内置三个；~/.config/quickterm/agents/*.toml 可覆盖或新增）
+# enabled = ["claude-code", "codex", "gemini", "kiro-cli"]   # 要用的规则 id 列表（内置四个；~/.config/quickterm/agents/*.toml 可覆盖或新增）
 # hook-detail = "lifecycle"                      # tools 会多装 Pre/PostToolUse（每次工具调用多一个进程），并把已装的钩子改写成同一档
 # auto-install-hooks = "ask"                     # 某个 pane 第一次跑起一个还没装钩子的 agent 时：ask = 每个 agent 问一次 | always = 直接装 | never = 不装
 # info-strip = true                              # 每个终端 pane 顶部常驻一条独立状态带（有 agent 或设过标题时才画内容；与内边距无关）
@@ -460,6 +469,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 # strip-background = "#414868"                   # 状态条底色（#rrggbb）：闲置 / 工作中 / 完成 / 未知都用它
 # strip-attention = "#f7768e"                    # 状态条在「等你动手」和「出错」时的底色（#rrggbb）
 # strip-text = "#c0caf5"                         # 状态条上文字的颜色（#rrggbb）
+# program-status = true                          # 读取 pane 里程序发出的 OSC 7501 状态并显示在状态栏；关掉后忽略所有报告
 
 [notifications]              # 谁在等你；红点 / 角标 / 计数统计的是「需要你动手的 pane」，不是通知条数
 # system = "inactive"         # inactive = 只在你没在看那个 pane 时弹系统通知 | never = 从不弹
@@ -475,6 +485,12 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 [updates]                   # 自动更新：从 GitHub Releases 取；只检查时状态栏右侧会亮一个图标
 # check = true               # 启动时以及之后约每天一次，到 GitHub Releases 查是否有新版本；install = true 时即使关掉这一项也会检查
 # install = false            # 发现新版本后在后台下载，退出 QuickTerm 时自动安装（隐含 check）；状态栏图标会提示「退出或重启以完成更新」
+
+[restore]                   # 重启后恢复每个终端 pane 的输出；读一次就删
+# content = true             # 退出时保存每个终端 pane 的输出（含颜色）；全屏程序不保存；false = 立刻删除已保存的内容
+# lines = 5000               # 每个 pane 保存的回滚行数（100–50000），另加屏幕本身；每个 pane 上限 4 MiB
+# encrypt = true             # 用 AES-GCM 加密保存的内容，密钥存在登录钥匙串
+# agent-resume = true        # 退出时还在运行的 AI agent，重启后在那个 pane 里提供恢复
 
 [keybinds]                  # 动作 = "修饰键+键"；"none" 解绑。动作 id 见 Cmd+K
 # new-terminal = "cmd+return"

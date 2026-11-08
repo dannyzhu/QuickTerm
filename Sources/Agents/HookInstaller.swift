@@ -229,7 +229,15 @@ enum HookInstaller {
         let change = try uninstallPlan(id: id, configDir: configDir)
         let editor = HookConfigEditor(url: url, shape: .of(install.shape), command: "")
         guard let root = try editor.read() else { return change }
-        try editor.write(try HookConfigEditor.serialize(editor.uninstalling(from: root)))
+        let left = editor.uninstalling(from: root)
+        // A standalone hook file (kiro-cli) that held only our entries goes away whole rather
+        // than staying behind as an empty list. Only when something of ours was actually there:
+        // a file we put nothing into is not ours to remove.
+        if !editor.ownedEvents(in: root).isEmpty, editor.isLeftEmpty(left), try editor.remove() {
+            logger.notice("hooks removed for \(rules.id, privacy: .public): \(url.path, privacy: .public) deleted")
+            return change
+        }
+        try editor.write(try HookConfigEditor.serialize(left))
         logger.notice("hooks removed for \(rules.id, privacy: .public)")
         return change
     }
@@ -371,7 +379,7 @@ extension AgentRegistry {
     /// must report the file it can see either way.
     ///
     /// Id order rather than load order because load order is the registry's own private business;
-    /// id order is stable, and for the three bundled files it is the same list.
+    /// id order is stable, and for the four bundled files it is the same list.
     var activeRulesForInstall: [AgentRules] {
         rules.values.sorted { $0.id < $1.id }
     }

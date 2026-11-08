@@ -51,6 +51,9 @@ enum NoticeSource: Hashable, Codable {
     /// Reserved: not wired in Phase 1.
     case control
     case custom(String)
+    /// A program that reported its status over OSC 7501 and is not a loaded agent (spec decision
+    /// 10): `cargo`, a deploy script. The value is the report's `app`, nil when it named none.
+    case program(String?)
 
     /// The wire and coalescing spelling. **Stable**: agents branch on it, and it is half of
     /// every coalescing key, so changing a word here would silently split one pane's alarm into
@@ -64,6 +67,8 @@ enum NoticeSource: Hashable, Codable {
         case .download: "download"
         case .control: "control"
         case .custom(let name): "custom:\(name)"
+        case .program(let app?): "program:\(app)"
+        case .program(nil): "program"
         }
     }
 }
@@ -76,6 +81,10 @@ enum NoticeEvidence: String, Codable {
     case notification
     case process
     case composed
+    /// An OSC 7501 program-status report (spec decision 8). Ranks below a hook and above an OSC
+    /// 9 / 777 text. A report can be printed by anything that writes to the pane, so it is never
+    /// allowed to resolve an alarm a hook raised.
+    case programStatus = "program-status"
 }
 
 /// Why a notice stopped being live. The spelling is on the wire (`notice.resolved` events, the
@@ -199,6 +208,12 @@ struct Notice: Identifiable, Equatable, Codable {
     var quietedAt: Date?
     var resolvedAt: Date?
     var resolution: NoticeResolution?
+    /// Posted inside the program-status flood window (`NoticeCenter.programAlarmFloodWindow`): a
+    /// program-status `needsUser` re-raised within a second of that source's previous one or of
+    /// its last resolve in the same pane. It is live like any other notice (pane mark, Dock
+    /// badge, `notices list`), but the banner sink shows nothing for it and the control-plane
+    /// sink coalesces its events. Set by the centre only.
+    var silent = false
 
     var isLive: Bool { resolvedAt == nil }
     /// Live and not quieted — the state the banner and the badge react to.

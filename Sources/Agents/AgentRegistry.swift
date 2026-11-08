@@ -75,8 +75,21 @@ final class AgentRegistry: NoticeSink {
     private var rearmTimers: [UUID: DispatchWorkItem] = [:]
     /// Agents we have already asked about installing hooks for, this launch.
     private var askedThisLaunch: Set<String> = []
+    /// What each pane's program-status records were at the last `programStatusChanged`, with the
+    /// source each one speaks under. The store's `onChange` also fires for changes that are not
+    /// news (a refreshed foreground group, a new message), so a repeat is found by comparing
+    /// against this, never by trusting the callback (spec decision 17).
+    private var programSeen: [UUID: [SeenRecord]] = [:]
+
+    private struct SeenRecord {
+        var record: ProgramStatusStore.Record
+        var source: NoticeSource
+    }
 
     var settings = AgentSettings()
+    /// Paces the band's program-status redraws (spec decision 18). Tests swap in one with a hand
+    /// driven clock and scheduler.
+    var bandThrottle = BandRedrawThrottle()
     /// Q1's answer, read here as well as in the centre: the centre decides what a keystroke does
     /// to a notice, the registry decides whether to re-arm afterwards.
     var policy: AgentPolicy.UserActed = AgentPolicy.userActed
@@ -91,6 +104,9 @@ final class AgentRegistry: NoticeSink {
 
     private var locator: NoticeLocating
     private let center: NoticeCenter
+    /// The OSC 7501 records this registry reads (spec decision 10). The shared store in the app;
+    /// a store of its own in a test, so a case never sees the test host's live panes.
+    private let programStatus: ProgramStatusStore
     private let bus: ControlEventBus
     private let clock: () -> Date
     private var childExitedObserver: NSObjectProtocol?
@@ -128,8 +144,10 @@ final class AgentRegistry: NoticeSink {
     /// however isolated the initialiser is, and `ControlEventBus.shared` is main-actor isolated.
     init(rules: [AgentRules] = [], center: NoticeCenter? = nil, bus: ControlEventBus? = nil,
          locator: NoticeLocating = NoticeLocator.unattached,
+         programStatus: ProgramStatusStore? = nil,
          clock: @escaping () -> Date = Date.init) {
         self.center = center ?? NoticeCenter.shared
+        self.programStatus = programStatus ?? ProgramStatusStore.shared
         self.bus = bus ?? ControlEventBus.shared
         self.locator = locator
         self.clock = clock
@@ -144,6 +162,7 @@ final class AgentRegistry: NoticeSink {
             install(AgentRulesLoader.load(userDirectory: userRuleDirectory).rules)
         }
         center.addSink(self)
+        listenToProgramStatus()
         guard childExitedObserver == nil else { return }
         // The engine already posts this for every surface whose child exits, so the registry
         // observes it directly rather than making the engine grow a callback for one consumer.
@@ -153,6 +172,7 @@ final class AgentRegistry: NoticeSink {
             MainActor.assumeIsolated {
                 guard let pane = (note.object as? PaneView)?.id else { return }
                 AgentRegistry.shared.apply(.childExited, pane: pane)
+                ProgramStatusStore.shared.childExited(pane: pane)
             }
         }
     }
@@ -165,8 +185,16 @@ final class AgentRegistry: NoticeSink {
     /// Tests: swap the rule set wholesale.
     func reloadRulesForTesting(_ loaded: [AgentRules]) { install(loaded) }
 
+    /// Become the store's one listener: every change of a pane's records comes through
+    /// `programStatusChanged`. `attach` calls it for the app's registry; a test calls it on a
+    /// registry built over a store of its own. Idempotent.
+    func listenToProgramStatus() {
+        programStatus.onChange = { [weak self] pane in self?.programStatusChanged(pane: pane) }
+    }
+
     /// Tests: forget every pane, keep the rules.
     func resetForTesting() {
+        programSeen.removeAll()
         statuses.removeAll()
         noticeIDs.removeAll()
         presence.removeAll()
@@ -195,7 +223,9 @@ final class AgentRegistry: NoticeSink {
     /// second, vaguer notice about the same moment is noise.
     func mutesEngineNotices(pane: UUID) -> Bool {
         guard let evidence = statuses[pane]?.evidence else { return false }
-        return evidence == .hook || evidence == .report
+        // Program status ranks above an OSC text too (spec decision 8): an agent reporting over
+        // OSC 7501 is already telling us what it is doing.
+        return evidence == .hook || evidence == .report || evidence == .programStatus
     }
 
     // MARK: The engine's ear
@@ -255,7 +285,7 @@ final class AgentRegistry: NoticeSink {
             maybeOfferHookInstall(rules, pane: pane, reduction: reduction)
             return (AgentApplyOutcome(status: reduction.status), .none, reduction.straggler)
 
-        case .evidenceUpgrade:
+        case .evidenceUpgrade, .annotated:
             // The hook caught up with the OSC text describing the same prompt. The strip learns
             // the tool name and the better evidence; the alarm already on screen is about this
             // very prompt and is left exactly as it is.
@@ -332,7 +362,7 @@ final class AgentRegistry: NoticeSink {
         switch signal {
         case .hook, .report:
             return center.stateChangeForecast(pane: pane, origin: origin)
-        case .notification:
+        case .notification, .programStatus:
             // The same nil `handleNeedsUser` passes: a notification-evidenced alarm stored no
             // origin and resolves, a hook-evidenced one refuses — an OSC "task complete" may not
             // silence a hook's approval prompt, nor quietly mark its pane done.
@@ -363,6 +393,10 @@ final class AgentRegistry: NoticeSink {
         case .processes(let found):
             // A scan pass is routed, not tried: see below.
             return presenceCandidate(found, current: current, now: now)
+        case .programStatus:
+            // Records have a road of their own (`programStatusChanged`), which owns their alarms
+            // as well: a record must never post through `handleNeedsUser`.
+            return nil
         }
         var fallback: (AgentRules, AgentReduction)?
         var dropped: AgentRules?
@@ -423,7 +457,9 @@ final class AgentRegistry: NoticeSink {
         return nil
     }
 
-    private func writeStatus(_ status: AgentStatus?, pane: UUID) {
+    /// `publish: false` leaves the pane's own copy to the band throttle (program status, spec
+    /// decision 18); everything else publishes at once.
+    private func writeStatus(_ status: AgentStatus?, pane: UUID, publish: Bool = true) {
         statuses[pane] = status
         if status == nil {
             noticeIDs[pane] = nil
@@ -431,7 +467,7 @@ final class AgentRegistry: NoticeSink {
         }
         // The pane publishes to its own observers and to nobody else's: the info strip watches
         // its pane, so one pane's agent churning redraws one frame (plan §1.5).
-        locator.locate(pane)?.pane.setAgentStatus(status)
+        if publish { locator.locate(pane)?.pane.setAgentStatus(status) }
     }
 
     // MARK: Notices
@@ -446,7 +482,11 @@ final class AgentRegistry: NoticeSink {
             "agent",
             "\(rules.id) pane=\(describePane(pane)) signal=\(signal.label) state=\(before?.state.rawValue ?? "none")→\(after?.state.rawValue ?? "none") needsUser=\(wasNeedsUser)→\(isNeedsUser)")
 
-        if isNeedsUser, !wasNeedsUser, let status = after {
+        // The hook took over a prompt a report had raised: post again, so the alarm carries the
+        // hook's evidence and origin (same key, so it supersedes the report's).
+        let takesOverReport = before?.evidence == .programStatus
+            && (after?.evidence == .hook || after?.evidence == .report)
+        if isNeedsUser, !wasNeedsUser || takesOverReport, let status = after {
             let request = NoticeRequest(
                 source: .agent(status.agent), pane: pane, urgency: .needsUser,
                 evidence: status.evidence,
@@ -475,7 +515,7 @@ final class AgentRegistry: NoticeSink {
                 let result = center.agentStateLeftNeedsUser(pane: pane, origin: origin)
                 outcome.resolved = result.resolved
                 outcome.refused = result.refused
-            case .notification:
+            case .notification, .programStatus:
                 // A notification-evidenced alarm stored no origin and resolves; a hook-evidenced
                 // one refuses, which is correct — an OSC "task complete" may not silence a hook's
                 // approval prompt.
@@ -485,7 +525,10 @@ final class AgentRegistry: NoticeSink {
             case .processes, .childExited:
                 // The program is gone. Not origin-gated: this is in-process knowledge, and
                 // `agent-gone` says on the wire why the prompt went away.
-                outcome.resolved = center.resolveAll(pane: pane, .agentGone, urgency: .needsUser)
+                // Not a program-status alarm: that program is not the agent, and its own record
+                // (or its own exit) takes the alarm down.
+                outcome.resolved = center.resolveAll(pane: pane, .agentGone, urgency: .needsUser,
+                                                     includePrograms: false)
             }
             if outcome.resolved > 0 {
                 noticeIDs[pane] = nil
@@ -524,6 +567,8 @@ final class AgentRegistry: NoticeSink {
             return L("notice.agent.input", status.name)
         case .choice:
             return L("notice.agent.choice", status.name)
+        case .auth:
+            return L("program-status.notice.auth", status.name)
         default:
             break
         }
@@ -572,12 +617,44 @@ final class AgentRegistry: NoticeSink {
     /// the centre resolving that pane's notices as `.paneClosed` (this object is an ordinary
     /// sink), and a scan result naming a pane the locator can no longer find.
     func paneClosed(_ pane: UUID) {
+        programSeen[pane] = nil
         statuses[pane] = nil
         noticeIDs[pane] = nil
         presence[pane] = nil
         tombstones[pane] = nil
         lastAlarm[pane] = nil
         rearmTimers.removeValue(forKey: pane)?.cancel()
+        programStatus.paneClosed(pane)
+    }
+
+    /// What the program-status heartbeat reads from a pane's terminal: its pty foreground process
+    /// group, and whether its process has exited. A pane that is not a terminal answers
+    /// (nil, false). Tests replace it, because a real exited process is not something a case
+    /// should have to spawn and wait for.
+    var terminalProbe: @MainActor (PaneView) -> (foregroundGroup: Int32?, exited: Bool) = { pane in
+        guard let surface = pane as? Ghostty.SurfaceView else { return (nil, false) }
+        // `processExited` is true when there is no surface at all, which is not an exit.
+        return (surface.foregroundProcessGroup, surface.surface != nil && surface.processExited)
+    }
+
+    /// The program-status half of the heartbeat (spec decision 5). A pane holding only program
+    /// records has no status or notice here, so `paneClosed` never runs for it: the store's own
+    /// panes the locator can no longer find are forgotten first. A pane held open after its
+    /// process exited (wait-after-command) drops its live records; the engine's child-exit
+    /// notification covers only some panes, so this is the backstop. Then every remaining record
+    /// is checked against its pane's live pty foreground process group.
+    func checkProgramStatus() {
+        let store = programStatus
+        for pane in store.panes {
+            guard let found = locator.locate(pane) else {
+                store.paneClosed(pane)
+                continue
+            }
+            if terminalProbe(found.pane).exited { store.childExited(pane: pane) }
+        }
+        store.checkForeground { [locator, terminalProbe] pane in
+            locator.locate(pane).flatMap { terminalProbe($0.pane).foregroundGroup }
+        }
     }
 
     /// Called by the scan with the panes it can still see: anything we hold that the locator no
@@ -588,6 +665,254 @@ final class AgentRegistry: NoticeSink {
         // last presence for the life of the process.
         let known = Set(statuses.keys).union(tombstones.keys).union(presence.keys)
         for pane in known where locator.locate(pane) == nil { paneClosed(pane) }
+    }
+
+    // MARK: Program status (OSC 7501, spec decisions 8–18)
+
+    /// One pane's records changed. Two things follow, per source the records speak under:
+    /// - **the agent's status** (`applyProgramStatus`), for records an enabled rule owns;
+    /// - **the alarms** (`raiseProgramAlarms`), for every source, driven only by records whose
+    ///   (state, kind, id) actually moved.
+    ///
+    /// A pane the locator cannot find is not acted on: the centre resolves its notices as
+    /// `paneClosed` itself, and this may be running inside that very resolution (a sink must not
+    /// write to the centre from its callback).
+    func programStatusChanged(pane: UUID) {
+        let before = programSeen[pane] ?? []
+        guard locator.locate(pane) != nil else {
+            programSeen[pane] = nil
+            return
+        }
+        let active = Dictionary(activeRules.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let after = programStatus.records(pane: pane).map {
+            SeenRecord(record: $0, source: programSource(of: $0.report, rules: active))
+        }
+        programSeen[pane] = after.isEmpty ? nil : after
+
+        var sources: [NoticeSource] = []
+        for source in (before + after).map(\.source) where !sources.contains(source) {
+            sources.append(source)
+        }
+        for source in sources {
+            let old = before.filter { $0.source == source }.map(\.record)
+            let new = after.filter { $0.source == source }.map(\.record)
+            var label = programLabel(source)
+            // Whether this source is the agent holding the pane's status, before or after this
+            // change: that agent speaks through `agent.state.changed`.
+            var holds = false
+            if case .agent(let id) = source, let rules = active[id] {
+                holds = statuses[pane]?.agent == id
+                // Only a source whose own records moved is reduced again. Another program's report
+                // in the same pane is not news about this agent: re-reducing its unchanged records
+                // would build back a status the scan has since released (a Codex `done` that then
+                // mutes OSC 9) or put a stale `msg` over a newer hook message.
+                guard old.map(\.report) != new.map(\.report) else { continue }
+                // A straggler of a session that just ended is the agent's and is consumed: it
+                // neither builds the status back nor posts a second "finished".
+                guard applyProgramStatus(new, rules: rules, pane: pane) else { continue }
+                holds = holds || statuses[pane]?.agent == id
+                label = rules.name
+            }
+            raiseProgramAlarms(source: source, label: label, old: old, new: new, pane: pane)
+            // Every other record has `program.status.changed`: a generic program's, and that of
+            // an agent another agent's status holds the pane against (it has no state event).
+            if !holds { emitProgramChanges(old: old, new: new, pane: pane) }
+        }
+        // The band redraws at most four times a second (spec decision 18): the pane's records
+        // and any status a report moved are published through the throttle. The draw reads the
+        // current values when it runs, so the last change of a burst is the one drawn.
+        bandThrottle.request(pane) { [weak self] in
+            guard let self, let view = self.locator.locate(pane)?.pane else { return }
+            view.setProgramRecords(self.programStatus.records(pane: pane))
+            view.setAgentStatus(self.statuses[pane])
+        }
+    }
+
+    /// `program.status.changed` for a record no agent status speaks for (spec decision 19): a
+    /// generic program's, or an agent's while another agent holds the pane. One event per record
+    /// whose (state, kind) moved, appeared or went away (`cleared`). A progress step or a new
+    /// message is not a transition. The holding agent's records speak through its
+    /// `agent.state.changed` instead.
+    private func emitProgramChanges(old: [ProgramStatusStore.Record], new: [ProgramStatusStore.Record],
+                                    pane: UUID) {
+        var oldByID: [[String]: ProgramStatusReport] = [:]
+        for record in old { oldByID[record.report.id] = record.report }
+        let newIDs = Set(new.map(\.report.id))
+        var changed: [(report: ProgramStatusReport, cleared: Bool)] = []
+        for record in new {
+            let previous = oldByID[record.report.id]
+            if let previous, previous.state == record.report.state, previous.kind == record.report.kind {
+                continue
+            }
+            changed.append((record.report, false))
+        }
+        for record in old where !newIDs.contains(record.report.id) {
+            changed.append((record.report, true))
+        }
+        guard !changed.isEmpty else { return }
+        let located = locator.locate(pane)
+        for (report, cleared) in changed {
+            let message = cleared ? nil
+                : report.message.map(ProgramStatusReport.displayText).flatMap { $0.isEmpty ? nil : $0 }
+            let event = ControlEvent(
+                type: .programStatusChanged,
+                screen: located.map { $0.controller.screenIndex + 1 },
+                screenID: located?.controller.windowID.uuidString,
+                workspace: located.map { $0.workspace + 1 },
+                pane: locator.handle(pane),
+                paneID: pane.uuidString,
+                kind: cleared ? nil : report.kind?.rawValue,
+                state: cleared ? "cleared" : report.state.rawValue,
+                message: message,
+                app: report.app,
+                id: report.id.joined(separator: "/"),
+                progress: cleared ? nil : report.progress)
+            bus.emit(event, redactable: message != nil, producer: .agentRegistry)
+        }
+    }
+
+    /// Decision 11: an enabled agent's record speaks as that agent; anything else as
+    /// `program:<app>` (or `program`).
+    private func programSource(of report: ProgramStatusReport, rules: [String: AgentRules]) -> NoticeSource {
+        ProgramStatusMapper.owner(of: report, rules: rules).map(NoticeSource.agent) ?? .program(report.app)
+    }
+
+    /// The name a generic program's notice titles use: its `app`, else "Program". Never its
+    /// `title`, which is the program's own text: a notice title is payload-free by construction.
+    private func programLabel(_ source: NoticeSource) -> String {
+        if case .program(let app?) = source { return app }
+        return L("program-status.generic")
+    }
+
+    /// The agent half: the most urgent of the agent's records (or "none left") reduced against
+    /// the pane's status. No notice is posted or resolved here; `raiseProgramAlarms` owns them.
+    /// false = the record was a straggler of a session that ended (nothing changed, and its
+    /// alarms are not raised either).
+    @discardableResult
+    private func applyProgramStatus(_ records: [ProgramStatusStore.Record], rules: AgentRules,
+                                    pane: UUID) -> Bool {
+        let now = clock()
+        sweepTombstones(pane: pane, now: now)
+        let current = statuses[pane]
+        let speaking: ProgramStatusStore.Record
+        if case .program(let record)? = ProgramStatusMapper.winner(agent: nil, records: records) {
+            speaking = record
+        } else {
+            // The reducer's spelling of "this agent has no records left in the pane".
+            speaking = ProgramStatusStore.Record(
+                report: ProgramStatusReport(state: .clear, kind: nil, progress: nil, id: [],
+                                            app: rules.id, title: nil, message: nil),
+                foregroundGroup: nil, updatedAt: now)
+        }
+        let signal = PaneSignal.programStatus(speaking)
+        if AgentStateReducer.isStraggler(signal, rules: rules, released: tombstones[pane]?[rules.id],
+                                         now: now) {
+            return false
+        }
+        let reduction = AgentStateReducer.reduce(signal, rules: rules, current: current, now: now)
+        switch reduction.kind {
+        case .none:
+            if let status = reduction.status { statuses[pane] = status }
+        case .annotated, .evidenceUpgrade:
+            // A progress step, a new message, or the same state from a better source: the strip
+            // redraws (through the band throttle), nobody else hears about it.
+            writeStatus(reduction.status, pane: pane, publish: false)
+        case .changed, .released:
+            remember(reduction.released, pane: pane, now: now)
+            if reduction.kind == .changed, let status = reduction.status {
+                tombstones[pane]?[status.agent] = nil
+            }
+            writeStatus(reduction.status, pane: pane, publish: false)
+            emit(reduction.status, pane: pane, released: reduction.kind == .released, before: current)
+            rearmTimers.removeValue(forKey: pane)?.cancel()
+            DiagnosticLog.shared.note(
+                "agent",
+                "\(rules.id) pane=\(describePane(pane)) signal=program-status state=\(current?.state.rawValue ?? "none")→\(reduction.status?.state.rawValue ?? "none")")
+        }
+        return true
+    }
+
+    /// The alarm half, for one source (spec decisions 13, 16 and 17).
+    ///
+    /// - A record of a hook-tracked agent posts **nothing** under that agent's source: the key
+    ///   (source, urgency, pane) would supersede the hook's alarm and drop its origin, after which
+    ///   a report could resolve it.
+    /// - Only records whose (state, kind, id) moved count; a repeat raises nothing.
+    /// - `blocked` posts a `needsUser` alarm for the most recent blocked record of the source (a
+    ///   new kind supersedes it); when the source has no blocked record left, its alarms resolve —
+    ///   **only its own** (`source:`), and with no origin, so a hook's stays.
+    /// - `done` and `error` post an `info` notice: no Dock badge, resolved on focus.
+    private func raiseProgramAlarms(source: NoticeSource, label: String,
+                                    old: [ProgramStatusStore.Record], new: [ProgramStatusStore.Record],
+                                    pane: UUID) {
+        if case .agent(let id) = source, let status = statuses[pane], status.agent == id,
+           status.lastHookAt != nil {
+            return
+        }
+        // Decided on the live notice, not on the status: the pane's status can belong to another
+        // agent (a printed OSC 9 text hands it over) while this agent's hook alarm is still up.
+        // A report posting under the same key would supersede that alarm with an origin-less one,
+        // and its next report could then resolve it.
+        if case .agent = source,
+           center.live(pane: pane).contains(where: {
+               $0.source == source && $0.urgency == .needsUser
+                   && ($0.origin != nil || $0.evidence != .programStatus)
+           }) {
+            return
+        }
+        var oldByID: [[String]: ProgramStatusReport] = [:]
+        for record in old { oldByID[record.report.id] = record.report }
+        let newIDs = Set(new.map(\.report.id))
+
+        var touchesBlocked = false
+        var finished: [ProgramStatusStore.Record] = []
+        for record in new {
+            let report = record.report
+            let previous = oldByID[report.id]
+            if let previous, previous.state == report.state, previous.kind == report.kind { continue }
+            if previous?.state == .blocked || report.state == .blocked { touchesBlocked = true }
+            if report.state == .done || report.state == .error { finished.append(record) }
+        }
+        for (id, report) in oldByID where !newIDs.contains(id) && report.state == .blocked {
+            touchesBlocked = true
+        }
+
+        if touchesBlocked {
+            if let blocked = new.filter({ $0.report.state == .blocked }).max(by: { $0.updatedAt < $1.updatedAt }) {
+                postProgramNotice(blocked.report, source: source, label: label, urgency: .needsUser,
+                                  pane: pane)
+            } else {
+                center.resolveAll(pane: pane, .stateChanged, urgency: .needsUser, source: source)
+            }
+        }
+        if let latest = finished.max(by: { $0.updatedAt < $1.updatedAt }),
+           latest.report.state == .error || center.settings.done {
+            postProgramNotice(latest.report, source: source, label: label, urgency: .info, pane: pane)
+        }
+    }
+
+    private func postProgramNotice(_ report: ProgramStatusReport, source: NoticeSource, label: String,
+                                   urgency: NoticeUrgency, pane: UUID) {
+        let body = report.message.map(ProgramStatusReport.displayText).flatMap { $0.isEmpty ? nil : $0 }
+        center.post(NoticeRequest(source: source, pane: pane, urgency: urgency,
+                                  evidence: .programStatus,
+                                  title: programTitle(report, label: label), body: body,
+                                  bodySensitive: true, origin: nil))
+        DiagnosticLog.shared.note(
+            "program-status",
+            "post pane=\(describePane(pane)) source=\(source.id) state=\(report.state.rawValue) kind=\(report.kind?.rawValue ?? "none") urgency=\(urgency.rawValue)")
+    }
+
+    /// Payload-free, like `composedTitle`: the agent's or program's name and what it is waiting
+    /// for. The program's words go in the body.
+    private func programTitle(_ report: ProgramStatusReport, label: String) -> String {
+        switch ProgramStatusMapper.state(of: report) {
+        case (_, .approval?): return L("notice.agent.approval.no-tool", label)
+        case (_, .auth?): return L("program-status.notice.auth", label)
+        case (.done, _): return L("notice.agent.done", label)
+        case (.error, _): return L("notice.agent.error.no-type", label)
+        default: return L("notice.agent.input", label)
+        }
     }
 
     // MARK: The re-arm policy (Q1(c), off by default)

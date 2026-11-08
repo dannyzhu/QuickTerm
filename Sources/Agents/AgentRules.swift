@@ -145,11 +145,12 @@ struct AgentRules: Equatable {
         }
     }
 
-    /// Which JSON shape this agent's config file takes (plan §2.6). The three differ in one
-    /// entry key and one timeout unit, which is exactly why this is a value and not three
+    /// Which JSON shape this agent's config file takes (plan §2.6). Claude Code, Codex and Gemini
+    /// differ in one entry key and one timeout unit; kiro-cli keeps a flat list in a standalone
+    /// file. All of it is data in `HookConfigShape`, which is why this is a value and not four
     /// installers.
     enum Shape: String, Equatable {
-        case claude, codex, gemini
+        case claude, codex, gemini, kiro
     }
 
     /// What the installer writes, and where. Absent for a rule file describing an agent with no
@@ -171,6 +172,18 @@ struct AgentRules: Equatable {
         }
     }
 
+    /// How to start this agent again in a pane after a relaunch (session restore, spec decision
+    /// 14). Argument arrays, never a shell string: each element is one word, quoted at use.
+    struct Resume: Equatable {
+        /// The literal argument `session` replaces with a session id.
+        static let placeholder = "{session}"
+
+        /// Resume one session by id; holds `placeholder` exactly once, as a whole argument.
+        var session: [String]?
+        /// Resume "the most recent session in this directory"; no placeholder.
+        var latest: [String]?
+    }
+
     var id: String
     var name: String
     /// Executable basenames the process scan matches (the last component of `proc_pidpath`).
@@ -185,13 +198,16 @@ struct AgentRules: Equatable {
     /// Matched by `hasPrefix`, **in file order**, first match wins.
     var notifications: [NotificationRule]
     var install: Install?
+    /// Absent for an agent that cannot be resumed (Gemini).
+    var resume: Resume?
 
     // MARK: Loading
 
-    private static let tableNames: Set<String> = ["fields", "hooks", "notifications", "install"]
+    private static let tableNames: Set<String> = ["fields", "hooks", "notifications", "install", "resume"]
     private static let rootKeys: Set<String> = ["id", "name", "process", "process-path"]
     private static let fieldKeys: Set<String> = ["session", "message", "tool", "error", "summary"]
     private static let installKeys: Set<String> = ["shape", "config", "lifecycle", "tools"]
+    private static let resumeKeys: Set<String> = ["session", "latest"]
 
     /// Parse and validate one rule file. Throws on the first thing that cannot mean what it says.
     static func parse(_ text: String) throws -> AgentRules {
@@ -250,7 +266,8 @@ struct AgentRules: Equatable {
             }
         }
         return AgentRules(id: id, name: name, process: process, processPath: processPath,
-                          fields: fields, hooks: hooks, notifications: notifications, install: install)
+                          fields: fields, hooks: hooks, notifications: notifications, install: install,
+                          resume: try parseResume(document))
     }
 
     private static func rejectUnknownTables(_ document: AgentRulesTOML.Document) throws {
@@ -327,7 +344,7 @@ struct AgentRules: Equatable {
         }
         guard let shape = Shape(rawValue: rawShape) else {
             throw AgentRulesError.invalid(key: "[install] shape",
-                                          reason: "\(rawShape) is not claude / codex / gemini")
+                                          reason: "\(rawShape) is not claude / codex / gemini / kiro")
         }
         guard let config = table.value("config")?.stringValue, !config.isEmpty else {
             throw AgentRulesError.missing(key: "[install] config")
@@ -336,6 +353,53 @@ struct AgentRules: Equatable {
         let tools = table.value("tools")?.listValue ?? []
         guard !lifecycle.isEmpty else { throw AgentRulesError.missing(key: "[install] lifecycle") }
         return Install(shape: shape, config: config, lifecycle: lifecycle, tools: tools)
+    }
+
+    /// `[resume]`. The session id that fills `{session}` was reported by a program in the pane
+    /// and is later typed into the user's shell, so the slot is a whole argument and appears once:
+    /// a slot glued to a flag (`--id={session}`) or used as the command itself is rejected here.
+    private static func parseResume(_ document: AgentRulesTOML.Document) throws -> Resume? {
+        guard let table = document.table("resume") else { return nil }
+        for entry in table.entries where !resumeKeys.contains(entry.key) {
+            throw AgentRulesError.unknown(key: "[resume] \(entry.key)")
+        }
+        func command(_ key: String) throws -> [String]? {
+            guard let value = table.value(key) else { return nil }
+            guard case .strings(let argv) = value else {
+                throw AgentRulesError.invalid(key: "[resume] \(key)",
+                                              reason: "a command is an array of arguments")
+            }
+            guard !argv.isEmpty, argv.allSatisfy({ !$0.isEmpty }) else {
+                throw AgentRulesError.invalid(key: "[resume] \(key)",
+                                              reason: "a command is a non-empty array of non-empty arguments")
+            }
+            // The line is typed into an interactive shell, where a control character is an
+            // editing key (^C, ^U, ESC) or submits early (newline), whatever the quoting.
+            guard !argv.contains(where: { $0.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F } }) else {
+                throw AgentRulesError.invalid(key: "[resume] \(key)",
+                                              reason: "an argument may not contain a control character")
+            }
+            return argv
+        }
+        let session = try command("session")
+        let latest = try command("latest")
+        if let session {
+            let slots = session.filter { $0 == Resume.placeholder }.count
+            guard slots == 1, session.filter({ $0.contains(Resume.placeholder) }).count == 1,
+                  session[0] != Resume.placeholder else {
+                throw AgentRulesError.invalid(
+                    key: "[resume] session",
+                    reason: "needs \(Resume.placeholder) exactly once, as a whole argument after the command")
+            }
+        }
+        if let latest, latest.contains(where: { $0.contains(Resume.placeholder) }) {
+            throw AgentRulesError.invalid(key: "[resume] latest",
+                                          reason: "has no session id to fill \(Resume.placeholder) with")
+        }
+        guard session != nil || latest != nil else {
+            throw AgentRulesError.missing(key: "[resume] session or latest")
+        }
+        return Resume(session: session, latest: latest)
     }
 
     // MARK: Reading a payload

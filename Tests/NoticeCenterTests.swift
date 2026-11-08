@@ -566,6 +566,8 @@ final class NoticeCenterTests: XCTestCase {
         XCTAssertEqual(NoticeSource.download.id, "download")
         XCTAssertEqual(NoticeSource.control.id, "control")
         XCTAssertEqual(NoticeSource.custom("x").id, "custom:x")
+        XCTAssertEqual(NoticeSource.program("cargo").id, "program:cargo")
+        XCTAssertEqual(NoticeSource.program(nil).id, "program")
         let pane = UUID()
         XCTAssertEqual(Notice.key(source: .terminal, urgency: .needsUser, pane: pane),
                        "terminal|needs-user|\(pane.uuidString)")
@@ -698,6 +700,37 @@ final class NoticeCenterTests: XCTestCase {
         sink.reset()
         center.userDidType(in: pane)
         XCTAssertTrue(sink.changes.isEmpty)
+    }
+
+    /// Spec 17: a program-status alarm is quieted by a keystroke, like a hook's, because the
+    /// program will report again.
+    func testTypingQuietsAProgramStatusAlarm() throws {
+        let pane = try addPane()
+        center.userActedPolicy = .clearInterruptingSinks
+        center.post(NoticeRequest(source: .program("cargo"), pane: pane, urgency: .needsUser,
+                                  evidence: .programStatus, title: "cargo · Waiting for your input"))
+
+        center.userDidType(in: pane)
+
+        let alarm = try XCTUnwrap(center.live(pane: pane).first)
+        XCTAssertNotNil(alarm.quietedAt)
+        XCTAssertEqual(center.counts.interrupting, 0)
+        XCTAssertEqual(center.counts.total, 1)
+        XCTAssertEqual(NoticeEvidence.programStatus.rawValue, "program-status")
+    }
+
+    /// Ruling 1: `resolveAll(source:)` takes down only that source's notices; nil keeps the old
+    /// behaviour.
+    func testResolveAllCanBeScopedToOneSource() throws {
+        let pane = try addPane()
+        center.post(request(pane, source: .terminal))
+        center.post(request(pane, source: .program("cargo")))
+        center.post(request(pane, source: .program(nil)))
+
+        XCTAssertEqual(center.resolveAll(pane: pane, .stateChanged, urgency: .needsUser,
+                                         source: .program("cargo")), 1)
+        XCTAssertEqual(Set(center.live(pane: pane).map(\.source.id)), ["terminal", "program"])
+        XCTAssertEqual(center.resolveAll(pane: pane, .stateChanged), 2)
     }
 
     /// The other two answers, driven through the same switch.
