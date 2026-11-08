@@ -22,16 +22,23 @@ enum AgentResume {
     /// launch an agent nobody proved was running at quit (spec decision 13).
     @MainActor static var quitSaveStarted = false
 
-    /// Spec decision 16: `^[A-Za-z0-9_-]{8,128}$`, ASCII only.
+    /// Spec decision 16: `^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$`, ASCII only. The first character
+    /// is a letter or digit so the id can never be read as an option: shell quoting keeps
+    /// `--dangerously-skip-permissions` one word, but the agent's own parser would still take it
+    /// as a flag. Real ids (Claude Code and Codex UUIDs, kiro's `cli_<uuid>_<8>`) all start with one.
     static func isValidSessionID(_ id: String) -> Bool {
         let bytes = id.utf8
-        guard (8...128).contains(bytes.count) else { return false }
-        return bytes.allSatisfy { byte in
-            switch byte {
-            case UInt8(ascii: "A")...UInt8(ascii: "Z"), UInt8(ascii: "a")...UInt8(ascii: "z"),
-                 UInt8(ascii: "0")...UInt8(ascii: "9"), UInt8(ascii: "_"), UInt8(ascii: "-"): true
-            default: false
-            }
+        guard (8...128).contains(bytes.count), let first = bytes.first, isAlphanumeric(first) else {
+            return false
+        }
+        return bytes.allSatisfy { isAlphanumeric($0) || $0 == UInt8(ascii: "_") || $0 == UInt8(ascii: "-") }
+    }
+
+    private static func isAlphanumeric(_ byte: UInt8) -> Bool {
+        switch byte {
+        case UInt8(ascii: "A")...UInt8(ascii: "Z"), UInt8(ascii: "a")...UInt8(ascii: "z"),
+             UInt8(ascii: "0")...UInt8(ascii: "9"): true
+        default: false
         }
     }
 

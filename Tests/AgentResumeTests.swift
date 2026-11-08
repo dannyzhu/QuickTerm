@@ -44,6 +44,30 @@ final class AgentResumeTests: XCTestCase {
         XCTAssertFalse(AgentResume.isValidSessionID("a1b2c3d4\n"))
     }
 
+    /// Final review I1: an id that starts with `-` would reach the agent as an option, quoted or not.
+    func testSessionIDMustStartWithALetterOrDigit() {
+        XCTAssertFalse(AgentResume.isValidSessionID("--dangerously-skip-permissions"))
+        XCTAssertFalse(AgentResume.isValidSessionID("--dangerously-bypass-approvals-and-sandbox"))
+        XCTAssertFalse(AgentResume.isValidSessionID("-abcdefgh"))
+        XCTAssertFalse(AgentResume.isValidSessionID("_abcdefgh"))
+        XCTAssertTrue(AgentResume.isValidSessionID("6f1c2a3b-4d5e-4f60-8a71-92b3c4d5e6f7"), "a Claude Code uuid")
+        XCTAssertTrue(AgentResume.isValidSessionID("0199a3f2-7c4e-7b21-9d5a-3e8f1c2b4a6d"), "a Codex uuid")
+        XCTAssertTrue(AgentResume.isValidSessionID("cli_0f9e8d7c-6b5a-4321-abcd-ef0123456789_a1b2c3d4"),
+                      "a kiro cli_<uuid>_<8> id")
+    }
+
+    /// The whole path refuses it: no resume line is built from it, and the quit-time record keeps
+    /// no session id (the pane falls back to "no session", decision 16).
+    func testLeadingDashIDNeverReachesTheResumeLine() throws {
+        let rules = try AgentRules.parse(Self.claude)
+        XCTAssertNil(AgentResume.command(rules: rules, session: "--dangerously-skip-permissions"))
+        let pane = UUID()
+        let records = AgentResume.records(statuses: [pane: status(session: "--dangerously-skip-permissions")],
+                                          running: [pane: running()],
+                                          directories: [pane: "/tmp/a"])
+        XCTAssertEqual(records, [pane: AgentResumeRecord(agent: "claude-code", session: nil)])
+    }
+
     func testResumeLineQuotesEveryArgument() {
         XCTAssertEqual(AgentResume.shellLine(["claude", "--resume", "a1b2c3d4"]),
                        "'claude' '--resume' 'a1b2c3d4'")
