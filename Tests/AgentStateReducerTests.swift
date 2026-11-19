@@ -224,6 +224,46 @@ final class AgentStateReducerTests: XCTestCase {
         XCTAssertEqual(result.status?.agent, "demo")
     }
 
+    /// Spec decision 8 (`hook > program status > notification > process presence`): when the scan
+    /// guessed one agent from an executable basename (`gemini`) and the process itself then emits
+    /// OSC 7501 under another enabled agent's name (`app=antigravity`), program status takes over
+    /// the `.process` placeholder — and never takes over a status backed by a real signal.
+    func testProgramStatusTakesOverProcessPresenceOfAnotherAgentOnly() {
+        let foreignProcess = AgentStatus(agent: "somebody-else", name: "Else", state: .unknown,
+                                         since: now, evidence: .process, seenByScan: true)
+        let working = ProgramStatusStore.Record(
+            report: ProgramStatusReport(state: .working, kind: nil, progress: 25, id: [],
+                                        app: "demo", title: nil, message: "thinking"),
+            foregroundGroup: 100, updatedAt: now.addingTimeInterval(5))
+        let cleared = ProgramStatusStore.Record(
+            report: ProgramStatusReport(state: .clear, kind: nil, progress: nil, id: [],
+                                        app: "demo", title: nil, message: nil),
+            foregroundGroup: 100, updatedAt: now.addingTimeInterval(5))
+
+        let emptyClear = reduce(.programStatus(cleared), current: foreignProcess, at: 5)
+        XCTAssertEqual(emptyClear.kind, .none, "a clear for an absent agent leaves presence alone")
+        XCTAssertEqual(emptyClear.status, foreignProcess)
+
+        let taken = reduce(.programStatus(working), current: foreignProcess, at: 5)
+        XCTAssertEqual(taken.kind, .changed)
+        XCTAssertEqual(taken.status?.agent, "demo")
+        XCTAssertEqual(taken.status?.name, "Demo")
+        XCTAssertEqual(taken.status?.state, .working)
+        XCTAssertEqual(taken.status?.evidence, .programStatus)
+        XCTAssertEqual(taken.status?.seenByScan, false,
+                       "the scan saw somebody-else's binary name, not demo's")
+        XCTAssertEqual(taken.status?.progress, 25)
+        XCTAssertEqual(taken.status?.message, "thinking")
+
+        for evidence in [NoticeEvidence.hook, .report, .notification, .programStatus] {
+            let held = AgentStatus(agent: "somebody-else", name: "Else", state: .idle,
+                                   since: now, evidence: evidence)
+            let refused = reduce(.programStatus(working), current: held, at: 5)
+            XCTAssertEqual(refused.kind, .none, "\(evidence) outranks or holds against another agent's report")
+            XCTAssertEqual(refused.status?.agent, "somebody-else")
+        }
+    }
+
     // MARK: 5. A session that ended stays ended
 
     /// The trace of 2026-09-26: Claude Code's `Stop` reached the socket 50 ms after its

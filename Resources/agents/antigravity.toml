@@ -1,0 +1,6 @@
+# QuickTerm agent rules — Antigravity CLI (agy).
+# Antigravity emits native OSC 7501 program-status sequences (`app=antigravity`), so its state
+# comes from `ProgramStatusStore` rather than a QuickTerm shell hook installer.
+id = "antigravity"
+name = "Antigravity"
+process = ["agy", "antigravity"]

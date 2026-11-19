@@ -351,8 +351,8 @@ pane 拉起，所以钩子分不出自己属于哪个 pane。QuickTerm 会丢弃
 调用里把参数缓冲区丢掉。不读命令行，不读环境变量，不看别人的进程，不碰这个 app 进程树以外的任何东西。它至多只能得出
 "这个 pane 里跑着一个叫这个名字的东西"，于是报的状态就是 `unknown`——这是诚实的答案。精确的状态只可能来自 agent 自己。
 
-**规则文件是什么。** 哪个事件对应哪个状态、工具名和消息在钩子载荷的哪个字段，都写在 TOML 规则文件里——app 内置四份
-（`claude-code`、`codex`、`gemini`、`kiro-cli`），`~/.config/quickterm/agents/*.toml` 里的会与它们一起加载，所以支持一个新 agent
+**规则文件是什么。** 哪个事件对应哪个状态、工具名和消息在钩子载荷的哪个字段，都写在 TOML 规则文件里——app 内置五份
+（`antigravity`、`claude-code`、`codex`、`gemini`、`kiro-cli`），`~/.config/quickterm/agents/*.toml` 里的会与它们一起加载，所以支持一个新 agent
 是加一个文件，不是发一个版本。从钩子进到 QuickTerm 的字段只有一张白名单（事件名、session id、工具名、错误类型、消息，
 以及 `tool_input` 里取值为字符串的条目），每个都截到 200 字符——绝不包括 transcript 路径、工作目录或文件内容。
 
@@ -464,7 +464,7 @@ quickterm mcp --list-tools | jq -r '.tools[].name'
 
 [agents]                    # 识别 pane 里的 AI agent；进程扫描只看 QuickTerm 自己的子进程
 # detect = true                                  # 识别终端 pane 里的 AI agent（钩子、OSC 回退、进程扫描）
-# enabled = ["claude-code", "codex", "gemini", "kiro-cli"]   # 要用的规则 id 列表（内置四个；~/.config/quickterm/agents/*.toml 可覆盖或新增）
+# enabled = ["antigravity", "claude-code", "codex", "gemini", "kiro-cli"]   # 要用的规则 id 列表（内置五个；~/.config/quickterm/agents/*.toml 可覆盖或新增）
 # hook-detail = "lifecycle"                      # tools 会多装 Pre/PostToolUse（每次工具调用多一个进程），并把已装的钩子改写成同一档
 # auto-install-hooks = "ask"                     # 某个 pane 第一次跑起一个还没装钩子的 agent 时：ask = 每个 agent 问一次 | always = 直接装 | never = 不装
 # info-strip = true                              # 每个终端 pane 顶部常驻一条独立状态带（有 agent 或设过标题时才画内容；与内边距无关）

@@ -226,32 +226,59 @@ final class AgentRulesTests: XCTestCase {
 
     // MARK: The bundled files
 
-    /// **All four bundled rule files load**, and everything their installers name is mapped.
+    /// **All five bundled rule files load**, and everything their installers name is mapped.
     /// A rule file that is not in the Xcode project is not in the bundle at all, which this is
     /// also the guard against.
     func testBundledRuleFilesLoad() throws {
         let result = AgentRulesLoader.load(userDirectory: nil)
         XCTAssertEqual(result.failures.count, 0,
                        "a bundled rule file failed to load: \(result.failures)")
-        XCTAssertEqual(result.rules.map(\.id), ["claude-code", "codex", "gemini", "kiro-cli"])
+        XCTAssertEqual(result.rules.map(\.id),
+                       ["antigravity", "claude-code", "codex", "gemini", "kiro-cli"])
+        XCTAssertEqual(result.rules.filter { $0.install != nil }.map(\.id),
+                       ["claude-code", "codex", "gemini", "kiro-cli"])
         for rules in result.rules {
             XCTAssertFalse(rules.name.isEmpty)
             XCTAssertFalse(rules.process.isEmpty, "\(rules.id) names no process")
-            let install = try XCTUnwrap(rules.install, "\(rules.id) has no installer")
-            for event in install.lifecycle + install.tools {
-                XCTAssertNotNil(rules.hooks[event], "\(rules.id) installs \(event) without mapping it")
+            if let install = rules.install {
+                for event in install.lifecycle + install.tools {
+                    XCTAssertNotNil(rules.hooks[event], "\(rules.id) installs \(event) without mapping it")
+                }
             }
         }
-        // Q5: the OSC fallback ships for Claude Code only; the other two stay empty until their
+        // Q5: the OSC fallback ships for Claude Code only; the others stay empty until their
         // wording is recorded from a real session.
         let byID = Dictionary(uniqueKeysWithValues: result.rules.map { ($0.id, $0) })
         XCTAssertFalse(byID["claude-code"]?.notifications.isEmpty ?? true)
         XCTAssertTrue(byID["codex"]?.notifications.isEmpty ?? false)
         XCTAssertTrue(byID["gemini"]?.notifications.isEmpty ?? false)
         XCTAssertTrue(byID["kiro-cli"]?.notifications.isEmpty ?? false)
+        XCTAssertTrue(byID["antigravity"]?.notifications.isEmpty ?? false)
         // The native install is a symlink whose target's file name is a version number: without
         // this fragment the scan never sees Claude Code at all (2026-09-26).
         XCTAssertEqual(byID["claude-code"]?.processPath, ["/.local/share/claude/versions/"])
+    }
+
+    /// Antigravity CLI (`agy` / `antigravity`): native OSC 7501 (`app=antigravity`) and process
+    /// presence, with no QuickTerm hook installer.
+    func testAntigravityRuleFileLoads() throws {
+        let result = AgentRulesLoader.load(userDirectory: nil)
+        let byID = Dictionary(uniqueKeysWithValues: result.rules.map { ($0.id, $0) })
+        let antigravity = try XCTUnwrap(byID["antigravity"], "\(result.failures)")
+        XCTAssertEqual(antigravity.name, "Antigravity")
+        XCTAssertEqual(antigravity.process, ["agy", "antigravity"])
+        XCTAssertTrue(antigravity.processPath.isEmpty)
+        XCTAssertTrue(antigravity.hooks.isEmpty)
+        XCTAssertTrue(antigravity.notifications.isEmpty)
+        XCTAssertNil(antigravity.install)
+        XCTAssertNil(antigravity.resume)
+        XCTAssertTrue(AgentSettings().isEnabled("antigravity"))
+        XCTAssertTrue(ConfigStore.Settings().agentsEnabled.contains("antigravity"))
+        for app in ["antigravity", "agy"] {
+            let report = ProgramStatusReport(state: .working, kind: nil, progress: nil,
+                                             id: [], app: app, title: nil, message: nil)
+            XCTAssertEqual(ProgramStatusMapper.owner(of: report, rules: byID), "antigravity")
+        }
     }
 
     /// kiro-cli (spec decisions 14, 22): its V3 triggers, a standalone hook file, the chat

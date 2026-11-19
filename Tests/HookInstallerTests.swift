@@ -844,11 +844,16 @@ final class ControlHooksCommandTests: XCTestCase {
         XCTAssertEqual(script["exists"]?.boolValue, true)
 
         let agents = try XCTUnwrap(data["agents"]?.arrayValue)
-        XCTAssertEqual(agents.count, HookInstaller.installableIDs.count)
+        // `hooks status` lists every loaded rule, installer or not (ControlHooksCommands).
+        XCTAssertEqual(agents.compactMap { $0.objectValue?["id"]?.stringValue },
+                       ["antigravity", "claude-code", "codex", "gemini", "kiro-cli"])
         let claude = try XCTUnwrap(agents.first { $0.objectValue?["id"]?.stringValue == "claude-code" }?.objectValue)
         XCTAssertEqual(claude["installed"]?.boolValue, true)
         XCTAssertEqual(claude["detail"]?.stringValue, "lifecycle")
         XCTAssertEqual(claude["configPath"]?.stringValue, settingsPath("claude-code"))
+        let antigravity = try XCTUnwrap(agents.first { $0.objectValue?["id"]?.stringValue == "antigravity" }?.objectValue)
+        XCTAssertEqual(antigravity["installed"]?.boolValue, false)
+        XCTAssertEqual(antigravity["issue"]?.stringValue, "this rule file declares no installer")
 
         // One agent by name.
         let one = try harness.run("hooks.status", args: ["agent": .string("codex"),

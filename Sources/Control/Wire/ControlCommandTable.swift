@@ -771,7 +771,7 @@ enum ControlCommandTable {
             cls: .report, idempotent: true, acceptsTarget: false,
             args: [
                 ControlArgSpec("agent", .string,
-                               help: "the agent rule id (claude-code | codex | gemini | kiro-cli, or a user rule file's id)",
+                               help: "the agent rule id (antigravity | claude-code | codex | gemini | kiro-cli, or a user rule file's id)",
                                required: true),
                 ControlArgSpec("event", .string,
                                help: "the reduced hook payload as one JSON object (the CLI builds it from stdin; passing it by hand is for tests)"),

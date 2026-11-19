@@ -13,7 +13,7 @@ enum AgentRulesLoader {
                                category: "AgentRules")
 
     /// The rule files that ship inside the app.
-    static let bundledIDs = ["claude-code", "codex", "gemini", "kiro-cli"]
+    static let bundledIDs = ["antigravity", "claude-code", "codex", "gemini", "kiro-cli"]
 
     /// `~/.config/quickterm/agents`. **Always passed explicitly by a test**: resolving `~` in a
     /// test host would read the developer's own files.

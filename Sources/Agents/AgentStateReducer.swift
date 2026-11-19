@@ -221,8 +221,12 @@ enum AgentStateReducer {
     /// - **Hook first.** From the agent's first hook (or report) until it is released —
     ///   `lastHookAt != nil`, which a text reduction carries along and nothing here sets — a record
     ///   never changes the state. It only adds its progress and message (`.annotated`).
-    /// - **Another agent's pane** is not this record's to take: the registry keeps one agent status
-    ///   per pane, and the record stays in the store, raising its own alarms.
+    /// - **Another agent's pane** is not this record's to take once that agent has actually spoken
+    ///   (hook, report, notification or its own program status): the registry keeps one agent
+    ///   status per pane, and the record stays in the store, raising its own alarms. A bare
+    ///   `.process` placeholder (`unknown`) yields to a live report (spec decision 8: program
+    ///   status ranks above process presence), so a binary whose file name matched another rule
+    ///   (`gemini`) is attributed to the agent its own OSC 7501 reports name (`app=antigravity`).
     /// - Otherwise the record **is** the agent's status, with `.programStatus` evidence; when the
     ///   last record goes, a status that rested on records alone is released.
     private static func reduceProgramStatus(_ record: ProgramStatusStore.Record, rules: AgentRules,
@@ -236,7 +240,9 @@ enum AgentStateReducer {
             if !gone, let message { status.message = message }
             return AgentReduction(status: status, kind: status == mine ? .none : .annotated)
         }
-        if mine == nil, current != nil { return AgentReduction(status: current, kind: .none) }
+        if mine == nil, let current, current.evidence != .process || gone {
+            return AgentReduction(status: current, kind: .none)
+        }
         if gone {
             guard let mine else { return AgentReduction(status: nil, kind: .none) }
             guard mine.evidence == .programStatus else {

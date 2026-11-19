@@ -1020,6 +1020,49 @@ final class AgentRegistryTests: XCTestCase {
                        "demo has no hook here, so its report raises its own alarm")
     }
 
+    /// When a binary named after `other` (`gemini`) actually speaks OSC 7501 as `demo`
+    /// (`app=antigravity`), `demo` takes over `other`'s process-only `unknown` placeholder, holds
+    /// the pane across later scans that still see `other`'s executable name, and releases when its
+    /// records clear.
+    func testARecordTakesOverProcessPresenceOfAnotherAgent() throws {
+        useProgramStore()
+        try loadTwoRules()
+        let pane = try addPane()
+        registry.apply(.processes(["other": [42]]), pane: pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.agent, "other")
+        XCTAssertEqual(registry.status(pane: pane.id)?.evidence, .process)
+
+        let mark = ControlEventBus.shared.seq
+        send(report(.blocked, kind: .permission, app: "demo", message: "Approve plan"), pane.id)
+
+        let status = try XCTUnwrap(registry.status(pane: pane.id))
+        XCTAssertEqual(status.agent, "demo")
+        XCTAssertEqual(status.state, .blocked)
+        XCTAssertEqual(status.detail, .approval)
+        XCTAssertEqual(status.evidence, .programStatus)
+        XCTAssertFalse(status.seenByScan)
+        XCTAssertEqual(live(pane.id, source: "agent:demo").count, 1)
+        XCTAssertTrue(live(pane.id, source: "program:demo").isEmpty)
+        ControlEventBus.shared.flush()
+        let emitted = ControlEventBus.shared
+            .batch(since: mark, limit: ControlEventLimits.maxBatch, types: nil, exposesBrowser: true)
+            .events
+        XCTAssertEqual(emitted.filter { $0.type == ControlEventType.agentStateChanged.rawValue }.map(\.agent),
+                       ["demo"])
+        XCTAssertTrue(emitted.filter { $0.type == ControlEventType.programStatusChanged.rawValue }.isEmpty,
+                      "the holding agent speaks through agent.state.changed, not program.status.changed")
+
+        // The 5 s scan still sees `other`'s binary name and none of `demo`'s: neither reclaims nor releases.
+        registry.apply(.processes(["other": [42]]), pane: pane.id)
+        XCTAssertEqual(registry.status(pane: pane.id)?.agent, "demo")
+        XCTAssertEqual(registry.status(pane: pane.id)?.state, .blocked)
+
+        send(report(.clear, app: "demo"), pane.id)
+        XCTAssertNil(registry.status(pane: pane.id))
+        XCTAssertTrue(live(pane.id, source: "agent:demo").isEmpty)
+        XCTAssertEqual(agentEvents(since: mark).last?.state, "released")
+    }
+
     /// An agent tracked by reports alone goes when its last record does.
     func testAnAgentTrackedByReportsAloneIsReleasedWithItsRecords() throws {
         useProgramStore()
