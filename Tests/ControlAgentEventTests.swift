@@ -27,6 +27,10 @@ final class ControlAgentEventTests: XCTestCase {
     private var center: NoticeCenter { NoticeCenter.shared }
     private var registry: AgentRegistry { AgentRegistry.shared }
     private var children: [Process] = []
+    /// The peer every event speaks as unless a case picks another: a real child of the test host,
+    /// so it has a lineage root. The test host's own pid has none (it *is* the ancestor), and an
+    /// event without a lineage is refused — that refusal has a case of its own.
+    private var agentPeer: pid_t = 0
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -49,6 +53,7 @@ final class ControlAgentEventTests: XCTestCase {
         harness.runner.rateLimiter.reset()
         ControlActivityLog.shared.clear()
         pane = try harness.newTerminal()
+        agentPeer = try spawnChild()
     }
 
     override func tearDown() {
@@ -78,8 +83,9 @@ final class ControlAgentEventTests: XCTestCase {
     /// proves is about *whose* process tree the caller sits in — so the request is built here.
     @discardableResult
     private func event(_ json: String, agent: String = "claude-code",
-                       origin: ControlRequestOrigin? = nil, pid: pid_t = getpid(),
+                       origin: ControlRequestOrigin? = nil, pid: pid_t? = nil,
                        file: StaticString = #filePath, line: UInt = #line) throws -> ControlReply {
+        let pid = pid ?? agentPeer
         let request = ControlRequest(id: UUID().uuidString, cmd: "agent-event", target: nil,
                                      args: ["agent": .string(agent), "event": .string(json)],
                                      token: ControlEnvironment.token,
@@ -414,6 +420,23 @@ final class ControlAgentEventTests: XCTestCase {
         XCTAssertEqual(center.live(pane: pane.id).filter { $0.urgency == .needsUser }.count, 0)
         XCTAssertTrue(center.history.contains { $0.resolution == .stateChanged },
                       "the alarm is resolved as state-changed, which is what the wire tells an agent")
+    }
+
+    /// **A stale `QUICKTERM_PANE` is not believed.** A process whose parent chain never reaches
+    /// QuickTerm (the shape of Codex's shared app-server daemon, started once from one pane and
+    /// then running every pane's hooks) carries a valid token for the pane it was started in. Its
+    /// report is refused and logged, and that pane gets neither a status nor a notice.
+    func testAnEventWithNoLineageToThePaneIsRefusedAndChangesNothing() throws {
+        let reply = try event(try payload("PermissionRequest"), pid: getpid())
+        XCTAssertFalse(reply.ok)
+        XCTAssertEqual(reply.error?.code, ControlErrorCode.originMismatch.rawValue)
+        XCTAssertTrue(try XCTUnwrap(reply.error?.message).contains(handle))
+        XCTAssertTrue(try XCTUnwrap(reply.error?.hint).contains("--no-daemon"))
+        XCTAssertNil(registry.status(pane: pane.id), "the pane's status is untouched")
+        XCTAssertTrue(center.live(pane: pane.id).isEmpty, "no notice lands on the pane")
+
+        let entry = try XCTUnwrap(ControlActivityLog.shared.recent(10).first { $0.command == "agent-event" })
+        XCTAssertEqual(entry.outcome, ControlActivityLog.Entry.Outcome.refused("origin_mismatch"))
     }
 
     // MARK: seq

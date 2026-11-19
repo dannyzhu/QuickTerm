@@ -151,7 +151,7 @@ enum ControlErrorCode: String, Codable, CaseIterable {
         case .internalError: "internal error"
         case .noop: "already in the target state, nothing changed (an error only with --fail-if-noop)"
         case .partialApply: "spec was only half applied: the workspace has already changed, read the state again"
-        case .originMismatch: "A state-changed resolution from a process lineage or session other than the one that posted the alarm: refused, logged, the alarm stays. A forger may add a notice and never remove one."
+        case .originMismatch: "A state-changed resolution from a process lineage or session other than the one that posted the alarm: refused, logged, the alarm stays. A forger may add a notice and never remove one. Also: an agent-event from a process outside the pane's process tree (a stale QUICKTERM_PANE) is dropped with this code."
         }
     }
 }

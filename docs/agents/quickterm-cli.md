@@ -634,6 +634,13 @@ alarm in the first place, so a hook firing in pane `t2` cannot silence the appro
 refusal is logged, and the alarm stays up. There is nothing to retry: the pane's own agent, or the user, or
 the process going away, will clear it.
 
+The same code answers an `agent-event` from a process that is **not inside the pane's process tree** at all,
+even with a valid `QUICKTERM_PANE_TOKEN`: the variables were inherited, then the process left the pane. Such
+an event is dropped, so the pane gets no status and no notice from it. The usual cause is Codex, which by
+default runs hooks in a shared background app-server started once from whichever pane ran `codex` first;
+every Codex in every pane would otherwise report as that first pane. Start Codex with `codex --no-daemon`
+(for example `alias codex='codex --no-daemon'`) and its hooks run inside the pane again.
+
 ## Typing into someone else's shell: `input send-text`
 
 ```sh

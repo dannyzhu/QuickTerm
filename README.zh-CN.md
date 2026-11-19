@@ -342,6 +342,10 @@ quickterm agents list                  # 每个 pane 的 agent 在干什么
 （环境里没有控制 socket），脚本立刻 exit 0 什么也不做，所以同一条配置在 Terminal.app、VS Code、tmux 或 CI 里都无害。
 也不会背着你装：`[agents] auto-install-hooks` 默认是 `ask`，而且每个 agent 每次启动只问一次。
 
+**Codex：请加 `--no-daemon` 启动。** Codex 默认在一个共享的后台服务里执行钩子，这个服务由第一次运行 `codex` 的那个
+pane 拉起，所以钩子分不出自己属于哪个 pane。QuickTerm 会丢弃不是来自 pane 自身进程树的事件，因此不加 `--no-daemon`
+的 Codex 不显示状态（也不会显示到别的 pane 上）。`alias codex='codex --no-daemon'` 即可恢复。
+
 **进程扫描会读什么。** 某个 agent 没装钩子时，QuickTerm 退而去"找"它——而这个兜底是故意近乎瞎的。它只走
 **QuickTerm 自己的子孙进程**，留下一个 pid 和一个可执行文件名，拿这个名字比对规则文件里的 `process` 列表（以及拿解析后的路径比对 `process-path` 片段，为的是符号链接启动器），并在同一次
 调用里把参数缓冲区丢掉。不读命令行，不读环境变量，不看别人的进程，不碰这个 app 进程树以外的任何东西。它至多只能得出

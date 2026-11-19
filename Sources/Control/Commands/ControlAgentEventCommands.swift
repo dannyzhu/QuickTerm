@@ -85,6 +85,24 @@ extension ControlCommandRunner {
                              screen: entry.controller.screenIndex + 1, workspace: entry.workspace + 1,
                              peer: ctx.peer.pid, lineageRoot: origin.lineageRoot,
                              session: payload.sessionID)
+        // **No lineage, no report.** `QUICKTERM_PANE` is only what the process inherited; when the
+        // process tree does not lead back to a pane, that inheritance is stale. The case that
+        // proved it: Codex runs its hooks in a shared app-server daemon, started once from one
+        // pane and kept alive across sessions, so every Codex in every pane reported as that
+        // first pane. Believing such a report puts a status and a notice on a pane whose program
+        // never sent them; dropping it costs only that agent's status, which the process scan
+        // still covers. (An agent whose hook fires after the agent exited lands here too; its
+        // pane's alarm is resolved by presence loss instead.)
+        guard origin.lineageRoot != nil else {
+            logRefusal(ctx.request.cmd, peer: ctx.peer, request: ctx.request, code: .originMismatch,
+                       message: "no process lineage to pane \(handle)")
+            throw ControlErrorBody(
+                .originMismatch,
+                "this event does not come from a process inside pane \(handle): QUICKTERM_PANE "
+                    + "was inherited by a process that left the pane's process tree",
+                hint: "The agent runs its hooks in a background server (Codex: start it with "
+                    + "`codex --no-daemon`), or under tmux / nohup started elsewhere. The event is dropped.")
+        }
         let outcome = registry.apply(.hook(agent: id, payload: payload), pane: paneID, origin: origin)
 
         // Every refusal is an entry in the activity log naming the peer: that log is the record
@@ -147,6 +165,10 @@ enum AgentEventTrace {
             }
             paneByRoot[root] = pane
             rootByPane[pane] = root
+        } else {
+            // A report with no lineage is refused (see `runAgentEvent`); the line says so, because
+            // these are exactly the reports that used to land on the wrong pane unflagged.
+            flags.append("REFUSED no lineage to the pane (stale QUICKTERM_PANE)")
         }
         let id = String(pane.uuidString.prefix(8))
         let line = "\(agent) event=\(event) pane=\(handle) (\(id), screen \(screen) workspace \(workspace)) "

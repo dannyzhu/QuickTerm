@@ -349,6 +349,11 @@ does nothing at all, so the same entry is harmless in Terminal.app, VS Code, tmu
 behind your back: `[agents] auto-install-hooks` is `ask` by default, and the ask happens once per agent per
 launch.
 
+**Codex: run it with `--no-daemon`.** Codex runs its hooks in a shared background server by default, started
+once from whichever pane ran `codex` first, so the hook cannot tell which pane it belongs to. QuickTerm drops
+an event that does not come from inside the pane's own process tree, so a Codex without `--no-daemon` shows no
+status (it never shows on someone else's pane). `alias codex='codex --no-daemon'` restores it.
+
 **What the scan reads.** When an agent has no hooks installed, QuickTerm falls back to looking for it — and
 that fallback is deliberately almost blind. It walks **only QuickTerm's own descendant processes**, keeps a
 pid and an executable name, matches that name against a rule file's `process` list (and the resolved path against its `process-path` fragments, for a launcher that is a symlink), and throws the
